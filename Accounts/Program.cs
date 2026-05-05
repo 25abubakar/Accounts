@@ -20,6 +20,21 @@ builder.Services.AddDefaultIdentity<IdentityUser>(options =>
 .AddRoles<IdentityRole>()                          // enable role management
 .AddEntityFrameworkStores<ApplicationDbContext>();
 
+// ==========================================
+// 1. ADD CORS SERVICE (Allow React Frontend)
+// ==========================================
+builder.Services.AddCors(options =>
+{
+    options.AddPolicy("AllowReactApp",
+        policy =>
+        {
+            // Specifically allowing your Vite React app port
+            policy.WithOrigins("http://localhost:5173", "https://localhost:5173")
+                  .AllowAnyHeader()
+                  .AllowAnyMethod();
+        });
+});
+
 builder.Services.AddControllers();
 builder.Services.AddRazorPages();
 
@@ -57,6 +72,12 @@ if (app.Environment.IsDevelopment())
 app.UseHttpsRedirection();
 app.UseStaticFiles();
 app.UseRouting();
+
+// ==========================================
+// 2. USE CORS MIDDLEWARE
+// (Must be exactly here: after Routing, before Auth)
+// ==========================================
+app.UseCors("AllowReactApp");
 
 app.UseAuthentication();
 app.UseAuthorization();

@@ -2,9 +2,8 @@ using System.ComponentModel.DataAnnotations;
 
 namespace Accounts.Models
 {
-    // ── Response DTOs ──────────────────────────────────────────────
+    // ── Response DTOs ─────────────────────────────────────────────
 
-    /// <summary>Flat node — used in list and flat-tree responses</summary>
     public class OrgNodeDto
     {
         public int Id { get; set; }
@@ -15,7 +14,6 @@ namespace Accounts.Models
         public string? ParentName { get; set; }
     }
 
-    /// <summary>Nested tree node — used in hierarchical tree response</summary>
     public class OrgTreeNodeDto
     {
         public int Id { get; set; }
@@ -28,7 +26,6 @@ namespace Accounts.Models
         public List<OrgTreeNodeDto> Children { get; set; } = new();
     }
 
-    /// <summary>Flat tree row — mirrors the CTE SQL result</summary>
     public class OrgFlatTreeDto
     {
         public int Id { get; set; }
@@ -38,10 +35,10 @@ namespace Accounts.Models
         public int? ParentId { get; set; }
         public int Level { get; set; }
         public string TreePath { get; set; } = string.Empty;
-        public string TreeStructure { get; set; } = string.Empty; // indented display
+        public string TreeStructure { get; set; } = string.Empty;
     }
 
-    // ── Request DTOs ───────────────────────────────────────────────
+    // ── Request DTOs ──────────────────────────────────────────────
 
     public class CreateOrgNodeDto
     {

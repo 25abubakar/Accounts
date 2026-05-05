@@ -7,6 +7,7 @@ namespace Accounts.Models
     public class OrganizationTree
     {
         [Key]
+        [DatabaseGenerated(DatabaseGeneratedOption.None)] // IDs supplied manually
         public int Id { get; set; }
 
         [Required]
@@ -23,7 +24,6 @@ namespace Accounts.Models
 
         public int? ParentId { get; set; }
 
-        // Navigation properties
         [ForeignKey("ParentId")]
         public OrganizationTree? Parent { get; set; }
 

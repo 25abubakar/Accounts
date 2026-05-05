@@ -18,17 +18,16 @@ namespace Accounts.Data
         {
             base.OnModelCreating(builder);
 
-            // Map to existing table — no migration needed
-            builder.Entity<OrganizationTree>(entity =>
+            builder.Entity<OrganizationTree>(e =>
             {
-                entity.ToTable("OrganizationTree", "dbo");
-                entity.HasKey(e => e.Id);
-                entity.Property(e => e.Id).ValueGeneratedNever(); // IDs are supplied manually
+                e.ToTable("OrganizationTree", "dbo");
+                e.HasKey(x => x.Id);
+                e.Property(x => x.Id).ValueGeneratedNever(); // IDs supplied manually
 
-                entity.HasOne(e => e.Parent)
-                      .WithMany(e => e.Children)
-                      .HasForeignKey(e => e.ParentId)
-                      .OnDelete(DeleteBehavior.Restrict);
+                e.HasOne(x => x.Parent)
+                 .WithMany(x => x.Children)
+                 .HasForeignKey(x => x.ParentId)
+                 .OnDelete(DeleteBehavior.Restrict);
             });
         }
     }
