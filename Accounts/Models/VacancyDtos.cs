@@ -8,9 +8,19 @@ namespace Accounts.Models
     {
         public int VacancyId { get; set; }
         public int OrganizationId { get; set; }
+
+        /// <summary>The org node this position is directly attached to</summary>
         public string BranchName { get; set; } = string.Empty;
+
+        /// <summary>One level up from the attached node</summary>
         public string CompanyName { get; set; } = string.Empty;
+
+        /// <summary>Two levels up from the attached node</summary>
         public string CountryName { get; set; } = string.Empty;
+
+        /// <summary>Full path label of the attached node (e.g. "Branch" / "Company" / "Group")</summary>
+        public string NodeLabel { get; set; } = string.Empty;
+
         public string VacancyCode { get; set; } = string.Empty;
         public string JobTitle { get; set; } = string.Empty;
         public string? Department { get; set; }
