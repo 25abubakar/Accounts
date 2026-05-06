@@ -7,7 +7,7 @@ namespace Accounts.Models
     public class OrganizationTree
     {
         [Key]
-        [DatabaseGenerated(DatabaseGeneratedOption.None)] // IDs supplied manually
+        [DatabaseGenerated(DatabaseGeneratedOption.None)]
         public int Id { get; set; }
 
         [Required]
@@ -17,12 +17,19 @@ namespace Accounts.Models
         [MaxLength(20)]
         public string? Code { get; set; }
 
-        /// <summary>Country / Company / Branch / Staff</summary>
+        /// <summary>
+        /// Flexible label — any value: Country, Group, Company, Division,
+        /// Region, Branch, Department, Team, Staff, etc.
+        /// </summary>
         [Required]
         [MaxLength(50)]
         public string Label { get; set; } = string.Empty;
 
         public int? ParentId { get; set; }
+
+        /// <summary>Flag image URL — auto-fetched for Country nodes</summary>
+        [MaxLength(500)]
+        public string? FlagUrl { get; set; }
 
         [ForeignKey("ParentId")]
         public OrganizationTree? Parent { get; set; }

@@ -11,28 +11,30 @@ builder.Services.AddDbContext<ApplicationDbContext>(options =>
 // Identity with Roles support
 builder.Services.AddDefaultIdentity<IdentityUser>(options =>
 {
-    options.SignIn.RequireConfirmedAccount = false; // no email confirmation needed
+    options.SignIn.RequireConfirmedAccount = false;
     options.Password.RequireDigit = true;
     options.Password.RequiredLength = 6;
     options.Password.RequireNonAlphanumeric = false;
     options.Password.RequireUppercase = false;
 })
-.AddRoles<IdentityRole>()                          // enable role management
+.AddRoles<IdentityRole>()
 .AddEntityFrameworkStores<ApplicationDbContext>();
 
-// ==========================================
-// 1. ADD CORS SERVICE (Allow React Frontend)
-// ==========================================
+// HttpClient for country lookup (restcountries.com)
+builder.Services.AddHttpClient("CountryApi", client =>
+{
+    client.BaseAddress = new Uri("https://restcountries.com/v3.1/");
+    client.DefaultRequestHeaders.Add("Accept", "application/json");
+});
+
+// CORS — allow React frontend
 builder.Services.AddCors(options =>
 {
-    options.AddPolicy("AllowReactApp",
-        policy =>
-        {
-            // Specifically allowing your Vite React app port
-            policy.WithOrigins("http://localhost:5173", "https://localhost:5173")
-                  .AllowAnyHeader()
-                  .AllowAnyMethod();
-        });
+    options.AddPolicy("AllowReactApp", policy =>
+        policy.WithOrigins("http://localhost:5173", "https://localhost:5173")
+              .AllowAnyHeader()
+              .AllowAnyMethod()
+              .AllowCredentials());
 });
 
 builder.Services.AddControllers();
