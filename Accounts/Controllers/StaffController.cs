@@ -19,9 +19,7 @@ namespace Accounts.Controllers
             _env = env;
         }
 
-        // ─────────────────────────────────────────────────────────────
         // GET /api/staff
-        // ─────────────────────────────────────────────────────────────
         /// <summary>Get all employees with vacancy and org info</summary>
         [HttpGet]
         public async Task<IActionResult> GetAll()
@@ -30,9 +28,7 @@ namespace Accounts.Controllers
             return Ok(list.Select(s => MapToDto(s)));
         }
 
-        // ─────────────────────────────────────────────────────────────
         // GET /api/staff/{id}
-        // ─────────────────────────────────────────────────────────────
         /// <summary>Get a single employee by ID</summary>
         [HttpGet("{id:int}")]
         public async Task<IActionResult> GetById(int id)
@@ -42,9 +38,7 @@ namespace Accounts.Controllers
             return Ok(MapToDto(s));
         }
 
-        // ─────────────────────────────────────────────────────────────
         // GET /api/staff/search?q=ali
-        // ─────────────────────────────────────────────────────────────
         /// <summary>Search employees by name or email</summary>
         [HttpGet("search")]
         public async Task<IActionResult> Search([FromQuery] string q)
@@ -59,10 +53,8 @@ namespace Accounts.Controllers
             return Ok(list.Select(s => MapToDto(s)));
         }
 
-        // ─────────────────────────────────────────────────────────────
         // POST /api/staff/hire/{vacancyId}
         // Hire employee — marks vacancy as filled
-        // ─────────────────────────────────────────────────────────────
         /// <summary>Hire an employee on a vacancy — marks vacancy as filled</summary>
         [HttpPost("hire/{vacancyId:int}")]
         public async Task<IActionResult> Hire(int vacancyId, [FromBody] HireStaffDto dto)
@@ -93,10 +85,8 @@ namespace Accounts.Controllers
             return CreatedAtAction(nameof(GetById), new { id = staff.StaffId }, MapToDto(created!));
         }
 
-        // ─────────────────────────────────────────────────────────────
         // PUT /api/staff/{id}
         // Update employee personal info
-        // ─────────────────────────────────────────────────────────────
         /// <summary>Update employee name, email, phone</summary>
         [HttpPut("{id:int}")]
         public async Task<IActionResult> Update(int id, [FromBody] UpdateStaffDto dto)
@@ -116,10 +106,8 @@ namespace Accounts.Controllers
             return Ok(MapToDto(updated!));
         }
 
-        // ─────────────────────────────────────────────────────────────
         // POST /api/staff/{id}/upload-photo
         // Upload employee profile picture
-        // ─────────────────────────────────────────────────────────────
         /// <summary>
         /// Upload employee profile picture.
         /// Send as multipart/form-data with field name "photo".
@@ -178,10 +166,8 @@ namespace Accounts.Controllers
             });
         }
 
-        // ─────────────────────────────────────────────────────────────
         // DELETE /api/staff/{id}/photo
         // Remove employee photo
-        // ─────────────────────────────────────────────────────────────
         /// <summary>Remove employee profile picture</summary>
         [HttpDelete("{id:int}/photo")]
         public async Task<IActionResult> DeletePhoto(int id)
@@ -203,10 +189,8 @@ namespace Accounts.Controllers
             return Ok(new { message = "Photo removed." });
         }
 
-        // ─────────────────────────────────────────────────────────────
         // PUT /api/staff/{id}/transfer
         // Transfer employee to different vacancy
-        // ─────────────────────────────────────────────────────────────
         /// <summary>Transfer employee to a different vacancy (old vacancy becomes vacant)</summary>
         [HttpPut("{id:int}/transfer")]
         public async Task<IActionResult> Transfer(int id, [FromBody] TransferStaffDto dto)
@@ -238,10 +222,8 @@ namespace Accounts.Controllers
             return Ok(MapToDto(updated!));
         }
 
-        // ─────────────────────────────────────────────────────────────
         // DELETE /api/staff/{id}
         // Remove employee — vacancy becomes vacant
-        // ─────────────────────────────────────────────────────────────
         /// <summary>Remove an employee — their vacancy becomes vacant again</summary>
         [HttpDelete("{id:int}")]
         public async Task<IActionResult> Delete(int id)
@@ -271,9 +253,7 @@ namespace Accounts.Controllers
             return Ok(new { message = $"Employee '{staff.FullName}' removed. Vacancy is now vacant." });
         }
 
-        // ─────────────────────────────────────────────────────────────
         // Helpers
-        // ─────────────────────────────────────────────────────────────
 
         private IQueryable<Staff> GetStaffWithIncludes() =>
             _db.Staff

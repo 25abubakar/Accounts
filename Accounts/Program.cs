@@ -75,10 +75,9 @@ app.UseHttpsRedirection();
 app.UseStaticFiles();
 app.UseRouting();
 
-// ==========================================
 // 2. USE CORS MIDDLEWARE
 // (Must be exactly here: after Routing, before Auth)
-// ==========================================
+
 app.UseCors("AllowReactApp");
 
 app.UseAuthentication();

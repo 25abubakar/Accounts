@@ -13,9 +13,7 @@ namespace Accounts.Controllers
         private readonly ApplicationDbContext _db;
         public VacanciesController(ApplicationDbContext db) => _db = db;
 
-        // ─────────────────────────────────────────────────────────────
         // GET /api/positions
-        // ─────────────────────────────────────────────────────────────
         /// <summary>Get all positions with organization info and assigned employee</summary>
         [HttpGet]
         public async Task<IActionResult> GetAll()
@@ -29,9 +27,7 @@ namespace Accounts.Controllers
             return Ok(list.Select(MapToDto));
         }
 
-        // ─────────────────────────────────────────────────────────────
         // GET /api/positions/{id}
-        // ─────────────────────────────────────────────────────────────
         /// <summary>Get a single position by ID</summary>
         [HttpGet("{id:int}")]
         public async Task<IActionResult> GetById(int id)
@@ -41,9 +37,7 @@ namespace Accounts.Controllers
             return Ok(MapToDto(v));
         }
 
-        // ─────────────────────────────────────────────────────────────
         // GET /api/positions/vacant
-        // ─────────────────────────────────────────────────────────────
         /// <summary>Get all vacant (unfilled) positions</summary>
         [HttpGet("vacant")]
         public async Task<IActionResult> GetVacant()
@@ -57,9 +51,7 @@ namespace Accounts.Controllers
             return Ok(list.Select(MapToDto));
         }
 
-        // ─────────────────────────────────────────────────────────────
         // GET /api/positions/filled
-        // ─────────────────────────────────────────────────────────────
         /// <summary>Get all filled positions with employee info</summary>
         [HttpGet("filled")]
         public async Task<IActionResult> GetFilled()
@@ -73,10 +65,8 @@ namespace Accounts.Controllers
             return Ok(list.Select(MapToDto));
         }
 
-        // ─────────────────────────────────────────────────────────────
         // GET /api/positions/by-node/{orgId}
         // All positions under any org node (not just branches)
-        // ─────────────────────────────────────────────────────────────
         /// <summary>
         /// Get all positions attached to a specific organization node.
         /// Works for any node type — Company, Group, Branch, Department, etc.
@@ -93,9 +83,7 @@ namespace Accounts.Controllers
             return Ok(list.Select(MapToDto));
         }
 
-        // ─────────────────────────────────────────────────────────────
         // GET /api/positions/report
-        // ─────────────────────────────────────────────────────────────
         /// <summary>
         /// Full report: Organization path → Position → Employee.
         /// Works for any hierarchy depth — not limited to 3 levels.
@@ -130,10 +118,8 @@ namespace Accounts.Controllers
             return Ok(report);
         }
 
-        // ─────────────────────────────────────────────────────────────
         // POST /api/positions
         // Create a position under ANY org node
-        // ─────────────────────────────────────────────────────────────
         /// <summary>
         /// Create a new position (empty seat) under any organization node.
         /// No longer restricted to Branch nodes — can be under Company, Group, Department, etc.
@@ -168,9 +154,7 @@ namespace Accounts.Controllers
             return CreatedAtAction(nameof(GetById), new { id = vacancy.VacancyId }, MapToDto(created!));
         }
 
-        // ─────────────────────────────────────────────────────────────
         // PUT /api/positions/{id}
-        // ─────────────────────────────────────────────────────────────
         /// <summary>
         /// Update position details. Can be moved to any org node — not restricted to Branch.
         /// </summary>
@@ -198,9 +182,7 @@ namespace Accounts.Controllers
             return Ok(MapToDto(updated!));
         }
 
-        // ─────────────────────────────────────────────────────────────
         // DELETE /api/positions/{id}
-        // ─────────────────────────────────────────────────────────────
         /// <summary>Delete a position — blocked if an employee is assigned</summary>
         [HttpDelete("{id:int}")]
         public async Task<IActionResult> Delete(int id)
@@ -216,9 +198,7 @@ namespace Accounts.Controllers
             return Ok(new { message = $"Position '{vacancy.VacancyCode}' deleted." });
         }
 
-        // ─────────────────────────────────────────────────────────────
         // HELPERS
-        // ─────────────────────────────────────────────────────────────
 
         private async Task<Vacancy?> GetVacancyWithIncludes(int id) =>
             await _db.Vacancies

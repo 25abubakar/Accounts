@@ -205,10 +205,8 @@ namespace Accounts.Controllers
             return Ok(nodes);
         }
 
-        // ═══════════════════════════════════════════════════════════════
         // GENERIC NODE CRUD — works for ANY label
         // (Country, Group, Company, Division, Region, Branch, Team, etc.)
-        // ═══════════════════════════════════════════════════════════════
 
         /// <summary>Get all nodes as flat list</summary>
         [HttpGet]
@@ -383,9 +381,7 @@ namespace Accounts.Controllers
             return Ok(new { message = $"Node '{node.Name}' (ID: {id}) deleted." });
         }
 
-        // ═══════════════════════════════════════════════════════════════
         // PRIVATE HELPERS
-        // ═══════════════════════════════════════════════════════════════
 
         private static OrgNodeDto ToDto(OrganizationTree n) => new()
         {
