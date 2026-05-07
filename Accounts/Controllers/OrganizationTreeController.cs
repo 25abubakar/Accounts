@@ -22,9 +22,7 @@ namespace Accounts.Controllers
             _httpClientFactory = httpClientFactory;
         }
 
-        // ═══════════════════════════════════════════════════════════════
         // COUNTRY LOOKUP — auto-fetch flag + code from restcountries.com
-        // ═══════════════════════════════════════════════════════════════
 
         /// <summary>
         /// Lookup country info by name — returns code, flag URL, capital, region.
@@ -117,9 +115,7 @@ namespace Accounts.Controllers
             }
         }
 
-        // ═══════════════════════════════════════════════════════════════
         // TREE / HIERARCHY ENDPOINTS
-        // ═══════════════════════════════════════════════════════════════
 
         /// <summary>Full hierarchy as nested JSON tree</summary>
         [HttpGet("tree")]
