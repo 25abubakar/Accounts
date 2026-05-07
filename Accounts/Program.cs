@@ -1,4 +1,5 @@
 using Accounts.Data;
+using Accounts.Services;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 
@@ -39,6 +40,9 @@ builder.Services.AddCors(options =>
 
 builder.Services.AddControllers();
 builder.Services.AddRazorPages();
+
+// Services
+builder.Services.AddScoped<VacancyCodeService>();
 
 // Swagger
 builder.Services.AddEndpointsApiExplorer();

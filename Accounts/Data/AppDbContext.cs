@@ -38,6 +38,7 @@ namespace Accounts.Data
             {
                 e.ToTable("Vacancies");
                 e.HasKey(x => x.VacancyId);
+                e.Property(x => x.VacancyId).HasDefaultValueSql("NEWID()");
                 e.Property(x => x.IsFilled).HasDefaultValue(false);
                 e.Property(x => x.CreatedDate).HasDefaultValueSql("GETDATE()");
 
@@ -58,6 +59,7 @@ namespace Accounts.Data
             {
                 e.ToTable("Staff");
                 e.HasKey(x => x.StaffId);
+                e.Property(x => x.StaffId).HasDefaultValueSql("NEWID()");
                 e.Property(x => x.JoiningDate).HasDefaultValueSql("GETDATE()");
                 e.Property(x => x.PhotoUrl).HasMaxLength(500).IsRequired(false);
                 // UNIQUE constraint: one vacancy = one employee

@@ -11,7 +11,7 @@ namespace Accounts.Controllers
     public class StaffController : ControllerBase
     {
         private readonly ApplicationDbContext _db;
-        private readonly IWebHostEnvironment _env;
+        private readonly IWebHostEnvironment  _env;
 
         public StaffController(ApplicationDbContext db, IWebHostEnvironment env)
         {
@@ -20,18 +20,16 @@ namespace Accounts.Controllers
         }
 
         // GET /api/staff
-        /// <summary>Get all employees with vacancy and org info</summary>
         [HttpGet]
         public async Task<IActionResult> GetAll()
         {
             var list = await GetStaffWithIncludes().ToListAsync();
-            return Ok(list.Select(s => MapToDto(s)));
+            return Ok(list.Select(MapToDto));
         }
 
         // GET /api/staff/{id}
-        /// <summary>Get a single employee by ID</summary>
-        [HttpGet("{id:int}")]
-        public async Task<IActionResult> GetById(int id)
+        [HttpGet("{id:guid}")]
+        public async Task<IActionResult> GetById(Guid id)
         {
             var s = await GetStaffWithIncludes().FirstOrDefaultAsync(x => x.StaffId == id);
             if (s == null) return NotFound(new { message = $"Staff {id} not found." });
@@ -39,7 +37,6 @@ namespace Accounts.Controllers
         }
 
         // GET /api/staff/search?q=ali
-        /// <summary>Search employees by name or email</summary>
         [HttpGet("search")]
         public async Task<IActionResult> Search([FromQuery] string q)
         {
@@ -50,14 +47,12 @@ namespace Accounts.Controllers
                 .Where(s => s.FullName.Contains(q) || (s.Email != null && s.Email.Contains(q)))
                 .ToListAsync();
 
-            return Ok(list.Select(s => MapToDto(s)));
+            return Ok(list.Select(MapToDto));
         }
 
         // POST /api/staff/hire/{vacancyId}
-        // Hire employee — marks vacancy as filled
-        /// <summary>Hire an employee on a vacancy — marks vacancy as filled</summary>
-        [HttpPost("hire/{vacancyId:int}")]
-        public async Task<IActionResult> Hire(int vacancyId, [FromBody] HireStaffDto dto)
+        [HttpPost("hire/{vacancyId:guid}")]
+        public async Task<IActionResult> Hire(Guid vacancyId, [FromBody] HireStaffDto dto)
         {
             if (!ModelState.IsValid) return BadRequest(ModelState);
 
@@ -70,6 +65,7 @@ namespace Accounts.Controllers
 
             var staff = new Staff
             {
+                StaffId     = Guid.NewGuid(),
                 FullName    = dto.FullName,
                 Email       = dto.Email,
                 Phone       = dto.Phone,
@@ -86,10 +82,8 @@ namespace Accounts.Controllers
         }
 
         // PUT /api/staff/{id}
-        // Update employee personal info
-        /// <summary>Update employee name, email, phone</summary>
-        [HttpPut("{id:int}")]
-        public async Task<IActionResult> Update(int id, [FromBody] UpdateStaffDto dto)
+        [HttpPut("{id:guid}")]
+        public async Task<IActionResult> Update(Guid id, [FromBody] UpdateStaffDto dto)
         {
             if (!ModelState.IsValid) return BadRequest(ModelState);
 
@@ -107,16 +101,9 @@ namespace Accounts.Controllers
         }
 
         // POST /api/staff/{id}/upload-photo
-        // Upload employee profile picture
-        /// <summary>
-        /// Upload employee profile picture.
-        /// Send as multipart/form-data with field name "photo".
-        /// Allowed: jpg, jpeg, png, webp. Max size: 5MB.
-        /// Returns the photo URL.
-        /// </summary>
-        [HttpPost("{id:int}/upload-photo")]
+        [HttpPost("{id:guid}/upload-photo")]
         [Consumes("multipart/form-data")]
-        public async Task<IActionResult> UploadPhoto(int id, IFormFile photo)
+        public async Task<IActionResult> UploadPhoto(Guid id, IFormFile photo)
         {
             var staff = await _db.Staff.FindAsync(id);
             if (staff == null) return NotFound(new { message = $"Staff {id} not found." });
@@ -124,21 +111,17 @@ namespace Accounts.Controllers
             if (photo == null || photo.Length == 0)
                 return BadRequest(new { message = "No file uploaded." });
 
-            // Validate type
             var allowed = new[] { ".jpg", ".jpeg", ".png", ".webp" };
             var ext = Path.GetExtension(photo.FileName).ToLowerInvariant();
             if (!allowed.Contains(ext))
                 return BadRequest(new { message = "Only jpg, jpeg, png, webp files are allowed." });
 
-            // Validate size (5MB max)
             if (photo.Length > 5 * 1024 * 1024)
                 return BadRequest(new { message = "File size must be under 5MB." });
 
-            // Save to wwwroot/uploads/staff/
             var uploadsDir = Path.Combine(_env.WebRootPath, "uploads", "staff");
             Directory.CreateDirectory(uploadsDir);
 
-            // Delete old photo if exists
             if (!string.IsNullOrWhiteSpace(staff.PhotoUrl))
             {
                 var oldFile = Path.Combine(_env.WebRootPath,
@@ -147,14 +130,12 @@ namespace Accounts.Controllers
                     System.IO.File.Delete(oldFile);
             }
 
-            // Generate unique filename
-            var fileName = $"staff_{id}_{Guid.NewGuid():N}{ext}";
+            var fileName = $"staff_{id:N}_{Guid.NewGuid():N}{ext}";
             var filePath = Path.Combine(uploadsDir, fileName);
 
             using (var stream = new FileStream(filePath, FileMode.Create))
                 await photo.CopyToAsync(stream);
 
-            // Store relative URL
             staff.PhotoUrl = $"/uploads/staff/{fileName}";
             await _db.SaveChangesAsync();
 
@@ -167,10 +148,8 @@ namespace Accounts.Controllers
         }
 
         // DELETE /api/staff/{id}/photo
-        // Remove employee photo
-        /// <summary>Remove employee profile picture</summary>
-        [HttpDelete("{id:int}/photo")]
-        public async Task<IActionResult> DeletePhoto(int id)
+        [HttpDelete("{id:guid}/photo")]
+        public async Task<IActionResult> DeletePhoto(Guid id)
         {
             var staff = await _db.Staff.FindAsync(id);
             if (staff == null) return NotFound(new { message = $"Staff {id} not found." });
@@ -190,10 +169,8 @@ namespace Accounts.Controllers
         }
 
         // PUT /api/staff/{id}/transfer
-        // Transfer employee to different vacancy
-        /// <summary>Transfer employee to a different vacancy (old vacancy becomes vacant)</summary>
-        [HttpPut("{id:int}/transfer")]
-        public async Task<IActionResult> Transfer(int id, [FromBody] TransferStaffDto dto)
+        [HttpPut("{id:guid}/transfer")]
+        public async Task<IActionResult> Transfer(Guid id, [FromBody] TransferStaffDto dto)
         {
             if (!ModelState.IsValid) return BadRequest(ModelState);
 
@@ -223,22 +200,18 @@ namespace Accounts.Controllers
         }
 
         // DELETE /api/staff/{id}
-        // Remove employee — vacancy becomes vacant
-        /// <summary>Remove an employee — their vacancy becomes vacant again</summary>
-        [HttpDelete("{id:int}")]
-        public async Task<IActionResult> Delete(int id)
+        [HttpDelete("{id:guid}")]
+        public async Task<IActionResult> Delete(Guid id)
         {
             var staff = await _db.Staff.FindAsync(id);
             if (staff == null) return NotFound(new { message = $"Staff {id} not found." });
 
-            // Free the vacancy
             if (staff.VacancyId.HasValue)
             {
                 var vacancy = await _db.Vacancies.FindAsync(staff.VacancyId.Value);
                 if (vacancy != null) vacancy.IsFilled = false;
             }
 
-            // Delete photo file if exists
             if (!string.IsNullOrWhiteSpace(staff.PhotoUrl))
             {
                 var filePath = Path.Combine(_env.WebRootPath,
@@ -253,7 +226,7 @@ namespace Accounts.Controllers
             return Ok(new { message = $"Employee '{staff.FullName}' removed. Vacancy is now vacant." });
         }
 
-        // Helpers
+        // ── HELPERS ───────────────────────────────────────────────────────────
 
         private IQueryable<Staff> GetStaffWithIncludes() =>
             _db.Staff

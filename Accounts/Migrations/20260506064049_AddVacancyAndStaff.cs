@@ -1,4 +1,5 @@
-﻿using Microsoft.EntityFrameworkCore.Migrations;
+﻿using System;
+using Microsoft.EntityFrameworkCore.Migrations;
 
 #nullable disable
 
@@ -10,8 +11,65 @@ namespace Accounts.Migrations
         /// <inheritdoc />
         protected override void Up(MigrationBuilder migrationBuilder)
         {
-            // Vacancies and Staff tables already exist in DB.
-            // This migration just registers the EF models in __EFMigrationsHistory.
+            migrationBuilder.CreateTable(
+                name: "Vacancies",
+                columns: table => new
+                {
+                    VacancyId     = table.Column<int>(type: "int", nullable: false)
+                                        .Annotation("SqlServer:Identity", "1, 1"),
+                    VacancyCode   = table.Column<string>(type: "nvarchar(50)",  maxLength: 50,  nullable: false),
+                    JobTitle      = table.Column<string>(type: "nvarchar(100)", maxLength: 100, nullable: false),
+                    Department    = table.Column<string>(type: "nvarchar(100)", maxLength: 100, nullable: true),
+                    IsFilled      = table.Column<bool>(type: "bit", nullable: false, defaultValue: false),
+                    CreatedDate   = table.Column<DateTime>(type: "datetime2", nullable: false, defaultValueSql: "GETDATE()"),
+                    OrganizationId = table.Column<int>(type: "int", nullable: false)
+                },
+                constraints: table =>
+                {
+                    table.PrimaryKey("PK_Vacancies", x => x.VacancyId);
+                    table.ForeignKey(
+                        name: "FK_Vacancies_OrganizationTree_OrganizationId",
+                        column: x => x.OrganizationId,
+                        principalSchema: "dbo",
+                        principalTable: "OrganizationTree",
+                        principalColumn: "Id",
+                        onDelete: ReferentialAction.Restrict);
+                });
+
+            migrationBuilder.CreateTable(
+                name: "Staff",
+                columns: table => new
+                {
+                    StaffId     = table.Column<int>(type: "int", nullable: false)
+                                      .Annotation("SqlServer:Identity", "1, 1"),
+                    FullName    = table.Column<string>(type: "nvarchar(150)", maxLength: 150, nullable: false),
+                    Email       = table.Column<string>(type: "nvarchar(150)", maxLength: 150, nullable: true),
+                    Phone       = table.Column<string>(type: "nvarchar(50)",  maxLength: 50,  nullable: true),
+                    JoiningDate = table.Column<DateTime>(type: "datetime2", nullable: false, defaultValueSql: "GETDATE()"),
+                    VacancyId   = table.Column<int>(type: "int", nullable: true)
+                },
+                constraints: table =>
+                {
+                    table.PrimaryKey("PK_Staff", x => x.StaffId);
+                    table.ForeignKey(
+                        name: "FK_Staff_Vacancies_VacancyId",
+                        column: x => x.VacancyId,
+                        principalTable: "Vacancies",
+                        principalColumn: "VacancyId",
+                        onDelete: ReferentialAction.SetNull);
+                });
+
+            migrationBuilder.CreateIndex(
+                name: "IX_Vacancies_OrganizationId",
+                table: "Vacancies",
+                column: "OrganizationId");
+
+            migrationBuilder.CreateIndex(
+                name: "IX_Staff_VacancyId",
+                table: "Staff",
+                column: "VacancyId",
+                unique: true,
+                filter: "[VacancyId] IS NOT NULL");
         }
 
         /// <inheritdoc />

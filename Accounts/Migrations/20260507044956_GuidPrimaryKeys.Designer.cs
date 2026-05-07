@@ -12,15 +12,15 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace Accounts.Migrations
 {
     [DbContext(typeof(ApplicationDbContext))]
-    [Migration("20260505081335_AddOrganizationTree")]
-    partial class AddOrganizationTree
+    [Migration("20260507044956_GuidPrimaryKeys")]
+    partial class GuidPrimaryKeys
     {
         /// <inheritdoc />
         protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
-                .HasAnnotation("ProductVersion", "10.0.7")
+                .HasAnnotation("ProductVersion", "9.0.5")
                 .HasAnnotation("Relational:MaxIdentifierLength", 128);
 
             SqlServerModelBuilderExtensions.UseIdentityColumns(modelBuilder);
@@ -33,6 +33,10 @@ namespace Accounts.Migrations
                     b.Property<string>("Code")
                         .HasMaxLength(20)
                         .HasColumnType("nvarchar(20)");
+
+                    b.Property<string>("FlagUrl")
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)");
 
                     b.Property<string>("Label")
                         .IsRequired()
@@ -52,6 +56,88 @@ namespace Accounts.Migrations
                     b.HasIndex("ParentId");
 
                     b.ToTable("OrganizationTree", "dbo");
+                });
+
+            modelBuilder.Entity("Accounts.Models.Staff", b =>
+                {
+                    b.Property<Guid>("StaffId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasDefaultValueSql("NEWID()");
+
+                    b.Property<string>("Email")
+                        .HasMaxLength(150)
+                        .HasColumnType("nvarchar(150)");
+
+                    b.Property<string>("FullName")
+                        .IsRequired()
+                        .HasMaxLength(150)
+                        .HasColumnType("nvarchar(150)");
+
+                    b.Property<DateTime>("JoiningDate")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("datetime2")
+                        .HasDefaultValueSql("GETDATE()");
+
+                    b.Property<string>("Phone")
+                        .HasMaxLength(50)
+                        .HasColumnType("nvarchar(50)");
+
+                    b.Property<string>("PhotoUrl")
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)");
+
+                    b.Property<Guid?>("VacancyId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.HasKey("StaffId");
+
+                    b.HasIndex("VacancyId")
+                        .IsUnique()
+                        .HasFilter("[VacancyId] IS NOT NULL");
+
+                    b.ToTable("Staff", (string)null);
+                });
+
+            modelBuilder.Entity("Accounts.Models.Vacancy", b =>
+                {
+                    b.Property<Guid>("VacancyId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasDefaultValueSql("NEWID()");
+
+                    b.Property<DateTime>("CreatedDate")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("datetime2")
+                        .HasDefaultValueSql("GETDATE()");
+
+                    b.Property<string>("Department")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<bool>("IsFilled")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bit")
+                        .HasDefaultValue(false);
+
+                    b.Property<string>("JobTitle")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<int>("OrganizationId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("VacancyCode")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .HasColumnType("nvarchar(50)");
+
+                    b.HasKey("VacancyId");
+
+                    b.HasIndex("OrganizationId");
+
+                    b.ToTable("Vacancies", (string)null);
                 });
 
             modelBuilder.Entity("Microsoft.AspNetCore.Identity.IdentityRole", b =>
@@ -266,6 +352,27 @@ namespace Accounts.Migrations
                     b.Navigation("Parent");
                 });
 
+            modelBuilder.Entity("Accounts.Models.Staff", b =>
+                {
+                    b.HasOne("Accounts.Models.Vacancy", "Vacancy")
+                        .WithOne("Staff")
+                        .HasForeignKey("Accounts.Models.Staff", "VacancyId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
+                    b.Navigation("Vacancy");
+                });
+
+            modelBuilder.Entity("Accounts.Models.Vacancy", b =>
+                {
+                    b.HasOne("Accounts.Models.OrganizationTree", "Organization")
+                        .WithMany()
+                        .HasForeignKey("OrganizationId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Organization");
+                });
+
             modelBuilder.Entity("Microsoft.AspNetCore.Identity.IdentityRoleClaim<string>", b =>
                 {
                     b.HasOne("Microsoft.AspNetCore.Identity.IdentityRole", null)
@@ -320,6 +427,11 @@ namespace Accounts.Migrations
             modelBuilder.Entity("Accounts.Models.OrganizationTree", b =>
                 {
                     b.Navigation("Children");
+                });
+
+            modelBuilder.Entity("Accounts.Models.Vacancy", b =>
+                {
+                    b.Navigation("Staff");
                 });
 #pragma warning restore 612, 618
         }

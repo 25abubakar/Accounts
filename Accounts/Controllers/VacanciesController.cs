@@ -1,5 +1,6 @@
 using Accounts.Data;
 using Accounts.Models;
+using Accounts.Services;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 
@@ -11,26 +12,30 @@ namespace Accounts.Controllers
     public class VacanciesController : ControllerBase
     {
         private readonly ApplicationDbContext _db;
-        public VacanciesController(ApplicationDbContext db) => _db = db;
+        private readonly VacancyCodeService   _codeService;
+
+        public VacanciesController(ApplicationDbContext db, VacancyCodeService codeService)
+        {
+            _db          = db;
+            _codeService = codeService;
+        }
 
         // GET /api/positions
-        /// <summary>Get all positions with organization info and assigned employee</summary>
         [HttpGet]
         public async Task<IActionResult> GetAll()
         {
             var list = await _db.Vacancies
                 .Include(v => v.Organization).ThenInclude(o => o!.Parent).ThenInclude(p => p!.Parent)
                 .Include(v => v.Staff)
-                .OrderBy(v => v.VacancyId)
+                .OrderBy(v => v.VacancyCode)
                 .ToListAsync();
 
             return Ok(list.Select(MapToDto));
         }
 
         // GET /api/positions/{id}
-        /// <summary>Get a single position by ID</summary>
-        [HttpGet("{id:int}")]
-        public async Task<IActionResult> GetById(int id)
+        [HttpGet("{id:guid}")]
+        public async Task<IActionResult> GetById(Guid id)
         {
             var v = await GetVacancyWithIncludes(id);
             if (v == null) return NotFound(new { message = $"Position {id} not found." });
@@ -38,7 +43,6 @@ namespace Accounts.Controllers
         }
 
         // GET /api/positions/vacant
-        /// <summary>Get all vacant (unfilled) positions</summary>
         [HttpGet("vacant")]
         public async Task<IActionResult> GetVacant()
         {
@@ -52,7 +56,6 @@ namespace Accounts.Controllers
         }
 
         // GET /api/positions/filled
-        /// <summary>Get all filled positions with employee info</summary>
         [HttpGet("filled")]
         public async Task<IActionResult> GetFilled()
         {
@@ -66,11 +69,6 @@ namespace Accounts.Controllers
         }
 
         // GET /api/positions/by-node/{orgId}
-        // All positions under any org node (not just branches)
-        /// <summary>
-        /// Get all positions attached to a specific organization node.
-        /// Works for any node type — Company, Group, Branch, Department, etc.
-        /// </summary>
         [HttpGet("by-node/{orgId:int}")]
         public async Task<IActionResult> GetByNode(int orgId)
         {
@@ -84,10 +82,6 @@ namespace Accounts.Controllers
         }
 
         // GET /api/positions/report
-        /// <summary>
-        /// Full report: Organization path → Position → Employee.
-        /// Works for any hierarchy depth — not limited to 3 levels.
-        /// </summary>
         [HttpGet("report")]
         public async Task<IActionResult> GetReport()
         {
@@ -118,29 +112,47 @@ namespace Accounts.Controllers
             return Ok(report);
         }
 
-        // POST /api/positions
-        // Create a position under ANY org node
+        // GET /api/positions/preview-code?organizationId=1&jobTitle=Manager
         /// <summary>
-        /// Create a new position (empty seat) under any organization node.
-        /// No longer restricted to Branch nodes — can be under Company, Group, Department, etc.
+        /// Preview what vacancy code will be generated before creating.
+        /// Useful for frontend to show the user the code before submitting.
+        /// </summary>
+        [HttpGet("preview-code")]
+        public async Task<IActionResult> PreviewCode([FromQuery] int organizationId, [FromQuery] string jobTitle)
+        {
+            if (organizationId <= 0 || string.IsNullOrWhiteSpace(jobTitle))
+                return BadRequest(new { message = "organizationId and jobTitle are required." });
+
+            var orgNode = await _db.OrganizationTree.FindAsync(organizationId);
+            if (orgNode == null)
+                return BadRequest(new { message = $"Organization node {organizationId} not found." });
+
+            var code = await _codeService.GenerateAsync(organizationId, jobTitle);
+            return Ok(new { vacancyCode = code });
+        }
+
+        // POST /api/positions
+        /// <summary>
+        /// Create a new position. VacancyCode is AUTO-GENERATED — do NOT send it.
+        /// Format: {CompanyCode}-{CityCode}-{JobCode}-{NN}  e.g. LT-KHI-MGR-01
         /// </summary>
         [HttpPost]
         public async Task<IActionResult> Create([FromBody] CreateVacancyDto dto)
         {
             if (!ModelState.IsValid) return BadRequest(ModelState);
 
-            // Validate the org node exists — any label is accepted
             var orgNode = await _db.OrganizationTree.FindAsync(dto.OrganizationId);
             if (orgNode == null)
                 return BadRequest(new { message = $"Organization node {dto.OrganizationId} not found." });
 
-            if (await _db.Vacancies.AnyAsync(v => v.VacancyCode == dto.VacancyCode))
-                return Conflict(new { message = $"Position code '{dto.VacancyCode}' already exists." });
+            // Auto-generate vacancy code
+            var vacancyCode = await _codeService.GenerateAsync(dto.OrganizationId, dto.JobTitle);
 
             var vacancy = new Vacancy
             {
+                VacancyId      = Guid.NewGuid(),
                 OrganizationId = dto.OrganizationId,
-                VacancyCode    = dto.VacancyCode,
+                VacancyCode    = vacancyCode,
                 JobTitle       = dto.JobTitle,
                 Department     = dto.Department,
                 IsFilled       = false,
@@ -156,25 +168,30 @@ namespace Accounts.Controllers
 
         // PUT /api/positions/{id}
         /// <summary>
-        /// Update position details. Can be moved to any org node — not restricted to Branch.
+        /// Update position. If JobTitle or OrganizationId changes, VacancyCode is regenerated.
         /// </summary>
-        [HttpPut("{id:int}")]
-        public async Task<IActionResult> Update(int id, [FromBody] UpdateVacancyDto dto)
+        [HttpPut("{id:guid}")]
+        public async Task<IActionResult> Update(Guid id, [FromBody] UpdateVacancyDto dto)
         {
             if (!ModelState.IsValid) return BadRequest(ModelState);
 
             var vacancy = await _db.Vacancies.FindAsync(id);
             if (vacancy == null) return NotFound(new { message = $"Position {id} not found." });
 
-            // Validate the org node exists — any label is accepted
             var orgNode = await _db.OrganizationTree.FindAsync(dto.OrganizationId);
             if (orgNode == null)
                 return BadRequest(new { message = $"Organization node {dto.OrganizationId} not found." });
 
-            vacancy.VacancyCode    = dto.VacancyCode;
+            // Regenerate code if job title or org changed
+            bool needsNewCode = vacancy.JobTitle != dto.JobTitle
+                             || vacancy.OrganizationId != dto.OrganizationId;
+
             vacancy.JobTitle       = dto.JobTitle;
             vacancy.Department     = dto.Department;
             vacancy.OrganizationId = dto.OrganizationId;
+
+            if (needsNewCode)
+                vacancy.VacancyCode = await _codeService.GenerateAsync(dto.OrganizationId, dto.JobTitle);
 
             await _db.SaveChangesAsync();
 
@@ -183,9 +200,8 @@ namespace Accounts.Controllers
         }
 
         // DELETE /api/positions/{id}
-        /// <summary>Delete a position — blocked if an employee is assigned</summary>
-        [HttpDelete("{id:int}")]
-        public async Task<IActionResult> Delete(int id)
+        [HttpDelete("{id:guid}")]
+        public async Task<IActionResult> Delete(Guid id)
         {
             var vacancy = await _db.Vacancies.FindAsync(id);
             if (vacancy == null) return NotFound(new { message = $"Position {id} not found." });
@@ -198,34 +214,25 @@ namespace Accounts.Controllers
             return Ok(new { message = $"Position '{vacancy.VacancyCode}' deleted." });
         }
 
-        // HELPERS
+        // ── HELPERS ───────────────────────────────────────────────────────────
 
-        private async Task<Vacancy?> GetVacancyWithIncludes(int id) =>
+        private async Task<Vacancy?> GetVacancyWithIncludes(Guid id) =>
             await _db.Vacancies
                 .Include(v => v.Organization).ThenInclude(o => o!.Parent).ThenInclude(p => p!.Parent)
                 .Include(v => v.Staff)
                 .FirstOrDefaultAsync(v => v.VacancyId == id);
 
-        /// <summary>
-        /// Dynamically resolves the org path regardless of hierarchy depth.
-        /// Returns (directNodeName, parentName, grandParentName).
-        /// Works whether vacancy is under a Branch, Company, Group, or Country.
-        /// </summary>
         private static (string node, string parent, string grandParent) ResolveOrgPath(
             OrganizationTree? org)
         {
-            var node        = org?.Name        ?? "-";
-            var parent      = org?.Parent?.Name ?? "-";
+            var node        = org?.Name         ?? "-";
+            var parent      = org?.Parent?.Name  ?? "-";
             var grandParent = org?.Parent?.Parent?.Name ?? "-";
             return (node, parent, grandParent);
         }
 
         private static VacancyDto MapToDto(Vacancy v)
         {
-            // Dynamically resolve org path — works at any hierarchy level
-            // node  = the org node the vacancy is directly attached to
-            // p1    = its parent (one level up)
-            // p2    = grandparent (two levels up)
             var node = v.Organization;
             var p1   = node?.Parent;
             var p2   = p1?.Parent;
@@ -234,18 +241,15 @@ namespace Accounts.Controllers
             {
                 VacancyId      = v.VacancyId,
                 OrganizationId = v.OrganizationId,
-
-                // Dynamic labels — show what's actually there, not assumed names
-                BranchName  = node?.Name  ?? "-",
-                CompanyName = p1?.Name    ?? "-",
-                CountryName = p2?.Name    ?? "-",
-                NodeLabel   = node?.Label ?? "-",
-
-                VacancyCode = v.VacancyCode,
-                JobTitle    = v.JobTitle,
-                Department  = v.Department,
-                IsFilled    = v.IsFilled,
-                CreatedDate = v.CreatedDate,
+                BranchName     = node?.Name  ?? "-",
+                CompanyName    = p1?.Name    ?? "-",
+                CountryName    = p2?.Name    ?? "-",
+                NodeLabel      = node?.Label ?? "-",
+                VacancyCode    = v.VacancyCode,
+                JobTitle       = v.JobTitle,
+                Department     = v.Department,
+                IsFilled       = v.IsFilled,
+                CreatedDate    = v.CreatedDate,
 
                 Employee = v.Staff == null ? null : new StaffDto
                 {

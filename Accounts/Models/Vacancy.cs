@@ -7,7 +7,7 @@ namespace Accounts.Models
     public class Vacancy
     {
         [Key]
-        public int VacancyId { get; set; }
+        public Guid VacancyId { get; set; } = Guid.NewGuid();
 
         /// <summary>Links to a Branch node in OrganizationTree</summary>
         [Required]

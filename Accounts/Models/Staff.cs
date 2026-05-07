@@ -7,7 +7,7 @@ namespace Accounts.Models
     public class Staff
     {
         [Key]
-        public int StaffId { get; set; }
+        public Guid StaffId { get; set; } = Guid.NewGuid();
 
         [Required]
         [MaxLength(150)]
@@ -24,7 +24,7 @@ namespace Accounts.Models
         public string? PhotoUrl { get; set; }
 
         /// <summary>One vacancy = one employee (UNIQUE enforced in DB)</summary>
-        public int? VacancyId { get; set; }
+        public Guid? VacancyId { get; set; }
 
         [ForeignKey("VacancyId")]
         public Vacancy? Vacancy { get; set; }

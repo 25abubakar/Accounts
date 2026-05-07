@@ -6,22 +6,16 @@ namespace Accounts.Models
 
     public class VacancyDto
     {
-        public int VacancyId { get; set; }
+        public Guid VacancyId { get; set; }
         public int OrganizationId { get; set; }
-
-        /// <summary>The org node this position is directly attached to</summary>
         public string BranchName { get; set; } = string.Empty;
-
-        /// <summary>One level up from the attached node</summary>
         public string CompanyName { get; set; } = string.Empty;
-
-        /// <summary>Two levels up from the attached node</summary>
         public string CountryName { get; set; } = string.Empty;
-
-        /// <summary>Full path label of the attached node (e.g. "Branch" / "Company" / "Group")</summary>
         public string NodeLabel { get; set; } = string.Empty;
 
+        /// <summary>Auto-generated e.g. LT-KHI-MGR-01</summary>
         public string VacancyCode { get; set; } = string.Empty;
+
         public string JobTitle { get; set; } = string.Empty;
         public string? Department { get; set; }
         public bool IsFilled { get; set; }
@@ -36,9 +30,10 @@ namespace Accounts.Models
         [Required]
         public int OrganizationId { get; set; }
 
-        [Required, MaxLength(50)]
-        public string VacancyCode { get; set; } = string.Empty;
-
+        /// <summary>
+        /// e.g. "Manager", "Developer", "Head of Department"
+        /// VacancyCode is auto-generated from this — do NOT send VacancyCode.
+        /// </summary>
         [Required, MaxLength(100)]
         public string JobTitle { get; set; } = string.Empty;
 
@@ -48,9 +43,6 @@ namespace Accounts.Models
 
     public class UpdateVacancyDto
     {
-        [Required, MaxLength(50)]
-        public string VacancyCode { get; set; } = string.Empty;
-
         [Required, MaxLength(100)]
         public string JobTitle { get; set; } = string.Empty;
 
@@ -65,12 +57,12 @@ namespace Accounts.Models
 
     public class StaffDto
     {
-        public int StaffId { get; set; }
+        public Guid StaffId { get; set; }
         public string FullName { get; set; } = string.Empty;
         public string? Email { get; set; }
         public string? Phone { get; set; }
         public string? PhotoUrl { get; set; }
-        public int? VacancyId { get; set; }
+        public Guid? VacancyId { get; set; }
         public string? VacancyCode { get; set; }
         public string? JobTitle { get; set; }
         public string? BranchName { get; set; }
@@ -93,9 +85,8 @@ namespace Accounts.Models
         [MaxLength(50)]
         public string? Phone { get; set; }
 
-        /// <summary>Vacancy this employee is hired for</summary>
         [Required]
-        public int VacancyId { get; set; }
+        public Guid VacancyId { get; set; }
     }
 
     public class UpdateStaffDto
@@ -128,9 +119,8 @@ namespace Accounts.Models
 
     public class TransferStaffDto
     {
-        /// <summary>New vacancy to transfer the employee to</summary>
         [Required]
-        public int NewVacancyId { get; set; }
+        public Guid NewVacancyId { get; set; }
     }
 
     // ── FULL REPORT ROW ──────────────────────────────────────────────
