@@ -47,8 +47,40 @@ namespace Accounts.Controllers
             public string?    MaritalStatus   { get; set; }
             public string     LoginId         { get; set; } = string.Empty;
             public string     Password        { get; set; } = string.Empty;
-            public AddressDto? CurrentAddress  { get; set; }
-            public AddressDto? PermanentAddress { get; set; }
+
+            // Accept as raw JsonElement so any shape (object, string, null) is tolerated
+            [System.Text.Json.Serialization.JsonPropertyName("currentAddress")]
+            public System.Text.Json.JsonElement? CurrentAddressRaw { get; set; }
+
+            [System.Text.Json.Serialization.JsonPropertyName("permanentAddress")]
+            public System.Text.Json.JsonElement? PermanentAddressRaw { get; set; }
+
+            // Parsed lazily from the raw elements
+            [System.Text.Json.Serialization.JsonIgnore]
+            public AddressDto? CurrentAddress => ParseAddress(CurrentAddressRaw);
+
+            [System.Text.Json.Serialization.JsonIgnore]
+            public AddressDto? PermanentAddress => ParseAddress(PermanentAddressRaw);
+
+            private static AddressDto? ParseAddress(System.Text.Json.JsonElement? raw)
+            {
+                if (raw is null) return null;
+                var el = raw.Value;
+
+                // Already an object — deserialize normally
+                if (el.ValueKind == System.Text.Json.JsonValueKind.Object)
+                    return System.Text.Json.JsonSerializer.Deserialize<AddressDto>(el.GetRawText());
+
+                // Frontend double-serialized it as a string — unwrap and parse
+                if (el.ValueKind == System.Text.Json.JsonValueKind.String)
+                {
+                    var inner = el.GetString();
+                    if (string.IsNullOrWhiteSpace(inner)) return null;
+                    return System.Text.Json.JsonSerializer.Deserialize<AddressDto>(inner);
+                }
+
+                return null;
+            }
         }
 
         public class PersonDto
@@ -106,22 +138,36 @@ namespace Accounts.Controllers
             return Ok(MapToDto(person));
         }
 
+        // ── POST /api/persons/register-raw  (debug only) ─────────────────────
+        /// <summary>Echoes the raw JSON body so you can inspect exactly what the frontend sends.</summary>
+        [HttpPost("register-raw")]
+        public async Task<IActionResult> RegisterRaw()
+        {
+            using var reader = new System.IO.StreamReader(Request.Body);
+            var body = await reader.ReadToEndAsync();
+            return Ok(new { received = body });
+        }
+
         // ── POST /api/persons/register ────────────────────────────────────────
         /// <summary>
         /// Creates an Identity user (using LoginId as UserName) + a Person record
         /// + optional Current and Permanent address rows — all in one transaction.
         /// </summary>
         [HttpPost("register")]
-        public async Task<IActionResult> Register([FromBody] RegisterPersonDto dto)
+        public async Task<IActionResult> Register([FromBody] RegisterPersonDto? dto)
         {
+            if (dto is null)
+                return BadRequest(new { message = "Request body is missing or malformed JSON. Send POST /api/persons/register-raw with the same body to inspect what was received." });
+
             if (string.IsNullOrWhiteSpace(dto.FullName))
                 return BadRequest(new { message = "FullName is required." });
 
-            if (string.IsNullOrWhiteSpace(dto.LoginId))
-                return BadRequest(new { message = "LoginId is required." });
-
             if (string.IsNullOrWhiteSpace(dto.Password))
                 return BadRequest(new { message = "Password is required." });
+
+            // ── Auto-generate LoginId if frontend didn't send one ─────
+            if (string.IsNullOrWhiteSpace(dto.LoginId))
+                dto.LoginId = await GenerateUniqueLoginIdAsync();
 
             // ── 1. Check LoginId uniqueness ───────────────────────────
             if (await _db.Persons.AnyAsync(p => p.LoginId == dto.LoginId))
@@ -308,5 +354,24 @@ namespace Accounts.Controllers
                 PostalCode  = a.PostalCode
             })
         };
+
+        /// <summary>
+        /// Generates a unique LoginId in the format USR-XXXXXXXX (8 random uppercase alphanumeric chars).
+        /// Retries until a value not already in the Persons table is found.
+        /// </summary>
+        private async Task<string> GenerateUniqueLoginIdAsync()
+        {
+            const string chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+            var rng = System.Security.Cryptography.RandomNumberGenerator.Create();
+            string loginId;
+            do
+            {
+                var bytes = new byte[8];
+                rng.GetBytes(bytes);
+                loginId = "USR-" + new string(bytes.Select(b => chars[b % chars.Length]).ToArray());
+            }
+            while (await _db.Persons.AnyAsync(p => p.LoginId == loginId));
+            return loginId;
+        }
     }
 }
