@@ -177,19 +177,48 @@ namespace Accounts.Controllers
             var staff = await _db.Staff.FindAsync(id);
             if (staff == null) return NotFound(new { message = $"Staff {id} not found." });
 
-            var newVacancy = await _db.Vacancies.FindAsync(dto.NewVacancyId);
+            if (!staff.VacancyId.HasValue)
+                return BadRequest(new { message = "Staff member is not assigned to any vacancy." });
+
+            // ── Load current vacancy with its full org chain (Branch → Company → Country) ──
+            var currentVacancy = await _db.Vacancies
+                .Include(v => v.Organization)
+                    .ThenInclude(o => o!.Parent)
+                        .ThenInclude(p => p!.Parent)
+                .FirstOrDefaultAsync(v => v.VacancyId == staff.VacancyId.Value);
+
+            if (currentVacancy == null)
+                return NotFound(new { message = "Current vacancy not found." });
+
+            // ── Load target vacancy with its full org chain ──────────────────────────────
+            var newVacancy = await _db.Vacancies
+                .Include(v => v.Organization)
+                    .ThenInclude(o => o!.Parent)
+                        .ThenInclude(p => p!.Parent)
+                .FirstOrDefaultAsync(v => v.VacancyId == dto.NewVacancyId);
+
             if (newVacancy == null)
                 return NotFound(new { message = $"Vacancy {dto.NewVacancyId} not found." });
 
             if (newVacancy.IsFilled)
                 return BadRequest(new { message = $"Vacancy '{newVacancy.VacancyCode}' is already filled." });
 
-            // Free old vacancy
-            if (staff.VacancyId.HasValue)
-            {
-                var oldVacancy = await _db.Vacancies.FindAsync(staff.VacancyId.Value);
-                if (oldVacancy != null) oldVacancy.IsFilled = false;
-            }
+            // ── Traverse org tree: Branch → Company → Country ────────────────────────────
+            var currentBranch  = currentVacancy.Organization;
+            var currentCompany = currentBranch?.Parent;
+            var currentCountry = currentCompany?.Parent;
+
+            var targetBranch  = newVacancy.Organization;
+            var targetCompany = targetBranch?.Parent;
+            var targetCountry = targetCompany?.Parent;
+
+            // ── Cross-company / cross-country transfer guard ─────────────────────────────
+            if (currentCompany?.Id != targetCompany?.Id || currentCountry?.Id != targetCountry?.Id)
+                return BadRequest(new { message = "Transfers are strictly limited to roles within the same Company and Country." });
+
+            // ── Perform the transfer ─────────────────────────────────────────────────────
+            var oldVacancy = await _db.Vacancies.FindAsync(staff.VacancyId.Value);
+            if (oldVacancy != null) oldVacancy.IsFilled = false;
 
             staff.VacancyId     = dto.NewVacancyId;
             newVacancy.IsFilled = true;
