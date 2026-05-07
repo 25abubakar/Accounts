@@ -29,6 +29,15 @@ namespace Accounts.Models
         [ForeignKey("VacancyId")]
         public Vacancy? Vacancy { get; set; }
 
+        /// <summary>
+        /// Links to a registered Person. Null for legacy hires created via
+        /// POST /api/staff/hire/{vacancyId} before the Person system existed.
+        /// </summary>
+        public Guid? PersonId { get; set; }
+
+        [ForeignKey("PersonId")]
+        public Person? Person { get; set; }
+
         public DateTime JoiningDate { get; set; } = DateTime.UtcNow;
     }
 }

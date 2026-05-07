@@ -28,6 +28,13 @@ builder.Services.AddHttpClient("CountryApi", client =>
     client.DefaultRequestHeaders.Add("Accept", "application/json");
 });
 
+// HttpClient for CountriesNow (provinces + cities — no auth required)
+builder.Services.AddHttpClient("CountriesNow", client =>
+{
+    client.BaseAddress = new Uri("https://countriesnow.space/api/v0.1/");
+    client.DefaultRequestHeaders.Add("Accept", "application/json");
+});
+
 // CORS — allow React frontend
 builder.Services.AddCors(options =>
 {
@@ -78,9 +85,6 @@ if (app.Environment.IsDevelopment())
 app.UseHttpsRedirection();
 app.UseStaticFiles();
 app.UseRouting();
-
-// 2. USE CORS MIDDLEWARE
-// (Must be exactly here: after Routing, before Auth)
 
 app.UseCors("AllowReactApp");
 
