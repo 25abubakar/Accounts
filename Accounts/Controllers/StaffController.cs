@@ -63,6 +63,11 @@ namespace Accounts.Controllers
             if (vacancy.IsFilled)
                 return BadRequest(new { message = $"Vacancy '{vacancy.VacancyCode}' is already filled." });
 
+            // ── Try to find a matching Person to link (by email, then by name) ──
+            Person? linkedPerson = null;
+            if (!string.IsNullOrWhiteSpace(dto.Email))
+                linkedPerson = await _db.Persons.FirstOrDefaultAsync(p => p.Email == dto.Email.Trim());
+
             var staff = new Staff
             {
                 StaffId     = Guid.NewGuid(),
@@ -70,6 +75,47 @@ namespace Accounts.Controllers
                 Email       = dto.Email,
                 Phone       = dto.Phone,
                 VacancyId   = vacancyId,
+                PersonId    = linkedPerson?.PersonId,   // ← link Person if found
+                JoiningDate = DateTime.UtcNow
+            };
+
+            _db.Staff.Add(staff);
+            vacancy.IsFilled = true;
+            await _db.SaveChangesAsync();
+
+            var created = await GetStaffWithIncludes().FirstOrDefaultAsync(s => s.StaffId == staff.StaffId);
+            return CreatedAtAction(nameof(GetById), new { id = staff.StaffId }, MapToDto(created!));
+        }
+
+        // POST /api/staff/hire-person/{vacancyId}?personId={personId}
+        // Hire a registered Person directly — uses their existing name/email/phone.
+        [HttpPost("hire-person/{vacancyId:guid}")]
+        public async Task<IActionResult> HirePerson(Guid vacancyId, [FromQuery] Guid personId)
+        {
+            var vacancy = await _db.Vacancies.FindAsync(vacancyId);
+            if (vacancy == null)
+                return NotFound(new { message = $"Vacancy {vacancyId} not found." });
+
+            if (vacancy.IsFilled)
+                return BadRequest(new { message = $"Vacancy '{vacancy.VacancyCode}' is already filled." });
+
+            var person = await _db.Persons.FindAsync(personId);
+            if (person == null)
+                return NotFound(new { message = $"Person {personId} not found." });
+
+            // Check person isn't already hired
+            var alreadyHired = await _db.Staff.AnyAsync(s => s.PersonId == personId);
+            if (alreadyHired)
+                return BadRequest(new { message = $"Person '{person.FullName}' is already hired." });
+
+            var staff = new Staff
+            {
+                StaffId     = Guid.NewGuid(),
+                FullName    = person.FullName,
+                Email       = person.Email,
+                Phone       = person.Phone,
+                VacancyId   = vacancyId,
+                PersonId    = personId,            // ← direct link
                 JoiningDate = DateTime.UtcNow
             };
 
@@ -235,12 +281,14 @@ namespace Accounts.Controllers
             var staff = await _db.Staff.FindAsync(id);
             if (staff == null) return NotFound(new { message = $"Staff {id} not found." });
 
+            // ── Free the vacancy ──────────────────────────────────────
             if (staff.VacancyId.HasValue)
             {
                 var vacancy = await _db.Vacancies.FindAsync(staff.VacancyId.Value);
                 if (vacancy != null) vacancy.IsFilled = false;
             }
 
+            // ── Delete photo file ─────────────────────────────────────
             if (!string.IsNullOrWhiteSpace(staff.PhotoUrl))
             {
                 var filePath = Path.Combine(_env.WebRootPath,
@@ -249,6 +297,7 @@ namespace Accounts.Controllers
                     System.IO.File.Delete(filePath);
             }
 
+            // ── Remove the Staff record (Person.Staff nav becomes null → isHired = false) ──
             _db.Staff.Remove(staff);
             await _db.SaveChangesAsync();
 
