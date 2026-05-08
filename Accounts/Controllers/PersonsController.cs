@@ -39,9 +39,20 @@ namespace Accounts.Controllers
             public string? PostalCode  { get; set; }
         }
 
-        public class RegisterPersonDto
+        public class UpdatePersonDto
         {
-            // ── Personal Info ─────────────────────────────────────────
+            public string    FullName      { get; set; } = string.Empty;
+            public string?   Phone         { get; set; }
+            public string?   Email         { get; set; }
+            public string?   Gender        { get; set; }
+            public DateTime? DateOfBirth   { get; set; }
+            public string?   MaritalStatus { get; set; }
+            public AddressDto? CurrentAddress   { get; set; }
+            public AddressDto? PermanentAddress { get; set; }
+        }
+
+        public class RegisterPersonDto
+        {            // ── Personal Info ─────────────────────────────────────────
             public string    FullName      { get; set; } = string.Empty;
             public string?   Phone         { get; set; }
             public string?   Email         { get; set; }
@@ -100,12 +111,20 @@ namespace Accounts.Controllers
             public DateTime  CreatedDate     { get; set; }
 
             // Org placement
-            public int?   BranchId    { get; set; }
+            public int?    BranchId    { get; set; }
             public string? BranchName  { get; set; }
             public string? CompanyName { get; set; }
             public string? CountryName { get; set; }
 
-            public IEnumerable<PersonAddressDto> Addresses { get; set; } = [];
+            // Addresses — flat named fields instead of a raw array
+            public PersonAddressDto? CurrentAddress   { get; set; }
+            public PersonAddressDto? PermanentAddress { get; set; }
+
+            /// <summary>
+            /// True when both addresses exist and are identical.
+            /// Frontend can use this to show "Same as current address" instead of repeating.
+            /// </summary>
+            public bool SameAddress { get; set; }
         }
 
         public class PersonAddressDto
@@ -308,11 +327,16 @@ namespace Accounts.Controllers
             };
 
             // ── 6. Add addresses ──────────────────────────────────────
-            if (dto.CurrentAddress != null)
-                person.Addresses.Add(MapAddress(dto.CurrentAddress, "Current", person.PersonId));
+            var currentAddr   = dto.CurrentAddress;
+            var permanentAddr = dto.PermanentAddress;
 
-            if (dto.PermanentAddress != null)
-                person.Addresses.Add(MapAddress(dto.PermanentAddress, "Permanent", person.PersonId));
+            if (currentAddr != null)
+                person.Addresses.Add(MapAddress(currentAddr, "Current", person.PersonId));
+
+            // Only save Permanent separately if it differs from Current.
+            // If both are identical (or Permanent is null), mark Current as both.
+            if (permanentAddr != null && !AddressesAreEqual(currentAddr, permanentAddr))
+                person.Addresses.Add(MapAddress(permanentAddr, "Permanent", person.PersonId));
 
             _db.Persons.Add(person);
 
@@ -331,6 +355,95 @@ namespace Accounts.Controllers
                 .FirstOrDefaultAsync(p => p.PersonId == person.PersonId);
 
             return CreatedAtAction(nameof(GetById), new { id = person.PersonId }, MapToDto(created!, all));
+        }
+
+        // ═══════════════════════════════════════════════════════════════
+        // PUT /api/persons/{id}
+        // Updates personal info + both addresses in one call.
+        // ═══════════════════════════════════════════════════════════════
+
+        [HttpPut("{id:guid}")]
+        public async Task<IActionResult> Update(Guid id, [FromBody] UpdatePersonDto? dto)
+        {
+            if (dto is null)
+                return BadRequest(new { message = "Request body is missing." });
+
+            if (string.IsNullOrWhiteSpace(dto.FullName))
+                return BadRequest(new { message = "FullName is required." });
+
+            var person = await _db.Persons
+                .Include(p => p.Addresses)
+                .FirstOrDefaultAsync(p => p.PersonId == id);
+
+            if (person == null)
+                return NotFound(new { message = $"Person {id} not found." });
+
+            // ── 1. Update personal fields ─────────────────────────────
+            person.FullName      = dto.FullName.Trim();
+            person.Phone         = dto.Phone?.Trim();
+            person.Email         = dto.Email?.Trim();
+            person.Gender        = dto.Gender?.Trim();
+            person.DateOfBirth   = dto.DateOfBirth;
+            person.MaritalStatus = dto.MaritalStatus?.Trim();
+
+            // ── 2. Update email on Identity user too ──────────────────
+            if (!string.IsNullOrWhiteSpace(dto.Email))
+            {
+                var identityUser = await _userManager.FindByIdAsync(person.IdentityUserId);
+                if (identityUser != null && identityUser.Email != dto.Email.Trim())
+                {
+                    identityUser.Email          = dto.Email.Trim();
+                    identityUser.NormalizedEmail = dto.Email.Trim().ToUpperInvariant();
+                    await _userManager.UpdateAsync(identityUser);
+                }
+            }
+
+            // ── 3. Upsert addresses ───────────────────────────────────
+            UpsertAddress(person, "Current",   dto.CurrentAddress);
+            UpsertAddress(person, "Permanent", dto.PermanentAddress);
+
+            await _db.SaveChangesAsync();
+
+            var all = await _db.OrganizationTree.ToListAsync();
+            var updated = await _db.Persons
+                .Include(p => p.Addresses)
+                .FirstOrDefaultAsync(p => p.PersonId == id);
+
+            return Ok(MapToDto(updated!, all));
+        }
+
+        // ── Upsert helper: update existing address row or insert new one ──
+        private void UpsertAddress(Person person, string addressType, AddressDto? dto)
+        {
+            if (dto == null) return;
+
+            var existing = person.Addresses.FirstOrDefault(a => a.AddressType == addressType);
+            if (existing != null)
+            {
+                // Update in place
+                existing.AddressLine = dto.AddressLine?.Trim();
+                existing.Country     = dto.Country?.Trim();
+                existing.Province    = dto.Province?.Trim();
+                existing.District    = dto.District?.Trim();
+                existing.City        = dto.City?.Trim();
+                existing.PostalCode  = dto.PostalCode?.Trim();
+            }
+            else
+            {
+                // Insert new row
+                person.Addresses.Add(new PersonAddress
+                {
+                    AddressId   = Guid.NewGuid(),
+                    PersonId    = person.PersonId,
+                    AddressType = addressType,
+                    AddressLine = dto.AddressLine?.Trim(),
+                    Country     = dto.Country?.Trim(),
+                    Province    = dto.Province?.Trim(),
+                    District    = dto.District?.Trim(),
+                    City        = dto.City?.Trim(),
+                    PostalCode  = dto.PostalCode?.Trim()
+                });
+            }
         }
 
         // ═══════════════════════════════════════════════════════════════
@@ -499,6 +612,33 @@ namespace Accounts.Controllers
             OrganizationTree? company = branch?.ParentId.HasValue == true ? all.FirstOrDefault(n => n.Id == branch.ParentId) : null;
             OrganizationTree? country = company?.ParentId.HasValue == true ? all.FirstOrDefault(n => n.Id == company.ParentId) : null;
 
+            // Map addresses to named fields
+            var currentRow   = p.Addresses.FirstOrDefault(a => a.AddressType == "Current");
+            var permanentRow = p.Addresses.FirstOrDefault(a => a.AddressType == "Permanent");
+
+            var currentDto   = currentRow   != null ? MapAddressToDto(currentRow)   : null;
+            var permanentDto = permanentRow != null ? MapAddressToDto(permanentRow) : null;
+
+            // Detect same address: if only Current exists (Permanent was not saved because
+            // they were identical), or if both exist but all fields match.
+            bool sameAddress = permanentDto == null
+                ? currentDto != null   // only current saved → they were the same
+                : AddressDtosAreEqual(currentDto, permanentDto);
+
+            // If same, expose permanent as a copy of current so frontend always has both fields
+            if (sameAddress && permanentDto == null && currentDto != null)
+                permanentDto = new PersonAddressDto
+                {
+                    AddressId   = currentDto.AddressId,
+                    AddressType = "Permanent",
+                    AddressLine = currentDto.AddressLine,
+                    Country     = currentDto.Country,
+                    Province    = currentDto.Province,
+                    District    = currentDto.District,
+                    City        = currentDto.City,
+                    PostalCode  = currentDto.PostalCode
+                };
+
             return new PersonDto
             {
                 PersonId        = p.PersonId,
@@ -515,18 +655,54 @@ namespace Accounts.Controllers
                 BranchName      = branch?.Name,
                 CompanyName     = company?.Name,
                 CountryName     = country?.Name,
-                Addresses       = p.Addresses.Select(a => new PersonAddressDto
-                {
-                    AddressId   = a.AddressId,
-                    AddressType = a.AddressType,
-                    AddressLine = a.AddressLine,
-                    Country     = a.Country,
-                    Province    = a.Province,
-                    District    = a.District,
-                    City        = a.City,
-                    PostalCode  = a.PostalCode
-                })
+                CurrentAddress   = currentDto,
+                PermanentAddress = permanentDto,
+                SameAddress      = sameAddress
             };
+        }
+
+        private static PersonAddressDto MapAddressToDto(PersonAddress a) => new PersonAddressDto
+        {
+            AddressId   = a.AddressId,
+            AddressType = a.AddressType,
+            AddressLine = a.AddressLine,
+            Country     = a.Country,
+            Province    = a.Province,
+            District    = a.District,
+            City        = a.City,
+            PostalCode  = a.PostalCode
+        };
+
+        /// <summary>
+        /// Compares two AddressDto (from request) field by field.
+        /// Used to avoid saving duplicate Permanent row when it equals Current.
+        /// </summary>
+        private static bool AddressesAreEqual(AddressDto? a, AddressDto? b)
+        {
+            if (a == null && b == null) return true;
+            if (a == null || b == null) return false;
+            return string.Equals(a.AddressLine, b.AddressLine, StringComparison.OrdinalIgnoreCase)
+                && string.Equals(a.Country,     b.Country,     StringComparison.OrdinalIgnoreCase)
+                && string.Equals(a.Province,    b.Province,    StringComparison.OrdinalIgnoreCase)
+                && string.Equals(a.District,    b.District,    StringComparison.OrdinalIgnoreCase)
+                && string.Equals(a.City,        b.City,        StringComparison.OrdinalIgnoreCase)
+                && string.Equals(a.PostalCode,  b.PostalCode,  StringComparison.OrdinalIgnoreCase);
+        }
+
+        /// <summary>
+        /// Compares two PersonAddressDto (from DB) field by field.
+        /// Used in MapToDto to set SameAddress flag.
+        /// </summary>
+        private static bool AddressDtosAreEqual(PersonAddressDto? a, PersonAddressDto? b)
+        {
+            if (a == null && b == null) return true;
+            if (a == null || b == null) return false;
+            return string.Equals(a.AddressLine, b.AddressLine, StringComparison.OrdinalIgnoreCase)
+                && string.Equals(a.Country,     b.Country,     StringComparison.OrdinalIgnoreCase)
+                && string.Equals(a.Province,    b.Province,    StringComparison.OrdinalIgnoreCase)
+                && string.Equals(a.District,    b.District,    StringComparison.OrdinalIgnoreCase)
+                && string.Equals(a.City,        b.City,        StringComparison.OrdinalIgnoreCase)
+                && string.Equals(a.PostalCode,  b.PostalCode,  StringComparison.OrdinalIgnoreCase);
         }
     }
 }
