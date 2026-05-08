@@ -11,9 +11,9 @@ namespace Accounts.Controllers
     [Produces("application/json")]
     public class PersonsController : ControllerBase
     {
-        private readonly ApplicationDbContext    _db;
+        private readonly ApplicationDbContext     _db;
         private readonly UserManager<IdentityUser> _userManager;
-        private readonly IWebHostEnvironment     _env;
+        private readonly IWebHostEnvironment      _env;
 
         public PersonsController(
             ApplicationDbContext db,
@@ -25,7 +25,9 @@ namespace Accounts.Controllers
             _env         = env;
         }
 
-        // ── DTOs ──────────────────────────────────────────────────────────────
+        // ═══════════════════════════════════════════════════════════════
+        // DTOs
+        // ═══════════════════════════════════════════════════════════════
 
         public class AddressDto
         {
@@ -39,15 +41,22 @@ namespace Accounts.Controllers
 
         public class RegisterPersonDto
         {
-            public string     FullName        { get; set; } = string.Empty;
-            public string?    Phone           { get; set; }
-            public string?    Email           { get; set; }
-            public string?    Gender          { get; set; }
-            public DateTime?  DateOfBirth     { get; set; }
-            public string?    MaritalStatus   { get; set; }
-            public string     LoginId         { get; set; } = string.Empty;
-            public string     Password        { get; set; } = string.Empty;
+            // ── Personal Info ─────────────────────────────────────────
+            public string    FullName      { get; set; } = string.Empty;
+            public string?   Phone         { get; set; }
+            public string?   Email         { get; set; }
+            public string?   Gender        { get; set; }
+            public DateTime? DateOfBirth   { get; set; }
+            public string?   MaritalStatus { get; set; }
 
+            // ── Org placement (required) ──────────────────────────────
+            /// <summary>ID of the Branch node in OrganizationTree where this person is registered</summary>
+            public int BranchId { get; set; }
+
+            // ── System Access ─────────────────────────────────────────
+            public string Password { get; set; } = string.Empty;
+
+            // ── Addresses ─────────────────────────────────────────────
             // Accept as raw JsonElement so any shape (object, string, null) is tolerated
             [System.Text.Json.Serialization.JsonPropertyName("currentAddress")]
             public System.Text.Json.JsonElement? CurrentAddressRaw { get; set; }
@@ -55,7 +64,6 @@ namespace Accounts.Controllers
             [System.Text.Json.Serialization.JsonPropertyName("permanentAddress")]
             public System.Text.Json.JsonElement? PermanentAddressRaw { get; set; }
 
-            // Parsed lazily from the raw elements
             [System.Text.Json.Serialization.JsonIgnore]
             public AddressDto? CurrentAddress => ParseAddress(CurrentAddressRaw);
 
@@ -66,19 +74,14 @@ namespace Accounts.Controllers
             {
                 if (raw is null) return null;
                 var el = raw.Value;
-
-                // Already an object — deserialize normally
                 if (el.ValueKind == System.Text.Json.JsonValueKind.Object)
                     return System.Text.Json.JsonSerializer.Deserialize<AddressDto>(el.GetRawText());
-
-                // Frontend double-serialized it as a string — unwrap and parse
                 if (el.ValueKind == System.Text.Json.JsonValueKind.String)
                 {
                     var inner = el.GetString();
                     if (string.IsNullOrWhiteSpace(inner)) return null;
                     return System.Text.Json.JsonSerializer.Deserialize<AddressDto>(inner);
                 }
-
                 return null;
             }
         }
@@ -95,6 +98,13 @@ namespace Accounts.Controllers
             public string?   ProfilePhotoUrl { get; set; }
             public string    LoginId         { get; set; } = string.Empty;
             public DateTime  CreatedDate     { get; set; }
+
+            // Org placement
+            public int?   BranchId    { get; set; }
+            public string? BranchName  { get; set; }
+            public string? CompanyName { get; set; }
+            public string? CountryName { get; set; }
+
             public IEnumerable<PersonAddressDto> Addresses { get; set; } = [];
         }
 
@@ -110,7 +120,51 @@ namespace Accounts.Controllers
             public string? PostalCode  { get; set; }
         }
 
-        // ── GET /api/persons ──────────────────────────────────────────────────
+        // ═══════════════════════════════════════════════════════════════
+        // GET /api/persons/org-tree
+        // Returns the full org tree grouped for cascading dropdowns:
+        // Countries → Companies → Branches
+        // ═══════════════════════════════════════════════════════════════
+
+        [HttpGet("org-tree")]
+        public async Task<IActionResult> GetOrgTree()
+        {
+            var all = await _db.OrganizationTree.OrderBy(n => n.Name).ToListAsync();
+
+            // Build a lookup by parentId
+            var byParent = all.ToLookup(n => n.ParentId);
+
+            // Root nodes (no parent) = Countries / top-level groups
+            var roots = byParent[null].Select(country => new
+            {
+                id       = country.Id,
+                name     = country.Name,
+                code     = country.Code,
+                label    = country.Label,
+                flagUrl  = country.FlagUrl,
+                children = byParent[country.Id].Select(company => new
+                {
+                    id       = company.Id,
+                    name     = company.Name,
+                    code     = company.Code,
+                    label    = company.Label,
+                    loginPrefix = ResolveCompanyPrefix(company),
+                    children = byParent[company.Id].Select(branch => new
+                    {
+                        id    = branch.Id,
+                        name  = branch.Name,
+                        code  = branch.Code,
+                        label = branch.Label
+                    }).ToList()
+                }).ToList()
+            }).ToList();
+
+            return Ok(roots);
+        }
+
+        // ═══════════════════════════════════════════════════════════════
+        // GET /api/persons
+        // ═══════════════════════════════════════════════════════════════
 
         [HttpGet]
         public async Task<IActionResult> GetAll()
@@ -120,10 +174,13 @@ namespace Accounts.Controllers
                 .OrderByDescending(p => p.CreatedDate)
                 .ToListAsync();
 
-            return Ok(persons.Select(MapToDto));
+            var all = await _db.OrganizationTree.ToListAsync();
+            return Ok(persons.Select(p => MapToDto(p, all)));
         }
 
-        // ── GET /api/persons/{id} ─────────────────────────────────────────────
+        // ═══════════════════════════════════════════════════════════════
+        // GET /api/persons/{id}
+        // ═══════════════════════════════════════════════════════════════
 
         [HttpGet("{id:guid}")]
         public async Task<IActionResult> GetById(Guid id)
@@ -135,11 +192,43 @@ namespace Accounts.Controllers
             if (person == null)
                 return NotFound(new { message = $"Person {id} not found." });
 
-            return Ok(MapToDto(person));
+            var all = await _db.OrganizationTree.ToListAsync();
+            return Ok(MapToDto(person, all));
         }
 
-        // ── POST /api/persons/register-raw  (debug only) ─────────────────────
-        /// <summary>Echoes the raw JSON body so you can inspect exactly what the frontend sends.</summary>
+        // ═══════════════════════════════════════════════════════════════
+        // GET /api/persons/preview-login-id?branchId=5
+        // Returns the LoginId that WILL be assigned if you register now.
+        // Frontend shows this on the "System Access" step.
+        // ═══════════════════════════════════════════════════════════════
+
+        [HttpGet("preview-login-id")]
+        public async Task<IActionResult> PreviewLoginId([FromQuery] int branchId)
+        {
+            if (branchId <= 0)
+                return BadRequest(new { message = "branchId is required." });
+
+            var all = await _db.OrganizationTree.ToListAsync();
+            var branch  = all.FirstOrDefault(n => n.Id == branchId);
+            if (branch == null)
+                return NotFound(new { message = $"Branch {branchId} not found." });
+
+            var company = branch.ParentId.HasValue ? all.FirstOrDefault(n => n.Id == branch.ParentId) : null;
+            var loginId = await GenerateLoginIdAsync(company ?? branch, all);
+
+            return Ok(new
+            {
+                loginId,
+                prefix      = ResolveCompanyPrefix(company ?? branch),
+                branchName  = branch.Name,
+                companyName = company?.Name
+            });
+        }
+
+        // ═══════════════════════════════════════════════════════════════
+        // POST /api/persons/register-raw  (debug — echoes raw body)
+        // ═══════════════════════════════════════════════════════════════
+
         [HttpPost("register-raw")]
         public async Task<IActionResult> RegisterRaw()
         {
@@ -148,16 +237,15 @@ namespace Accounts.Controllers
             return Ok(new { received = body });
         }
 
-        // ── POST /api/persons/register ────────────────────────────────────────
-        /// <summary>
-        /// Creates an Identity user (using LoginId as UserName) + a Person record
-        /// + optional Current and Permanent address rows — all in one transaction.
-        /// </summary>
+        // ═══════════════════════════════════════════════════════════════
+        // POST /api/persons/register
+        // ═══════════════════════════════════════════════════════════════
+
         [HttpPost("register")]
         public async Task<IActionResult> Register([FromBody] RegisterPersonDto? dto)
         {
             if (dto is null)
-                return BadRequest(new { message = "Request body is missing or malformed JSON. Send POST /api/persons/register-raw with the same body to inspect what was received." });
+                return BadRequest(new { message = "Request body is missing or malformed. Use POST /api/persons/register-raw to inspect what was received." });
 
             if (string.IsNullOrWhiteSpace(dto.FullName))
                 return BadRequest(new { message = "FullName is required." });
@@ -165,23 +253,33 @@ namespace Accounts.Controllers
             if (string.IsNullOrWhiteSpace(dto.Password))
                 return BadRequest(new { message = "Password is required." });
 
-            // ── Auto-generate LoginId if frontend didn't send one ─────
-            if (string.IsNullOrWhiteSpace(dto.LoginId))
-                dto.LoginId = await GenerateUniqueLoginIdAsync();
+            if (dto.BranchId <= 0)
+                return BadRequest(new { message = "BranchId is required. Select a branch from the organization tree." });
 
-            // ── 1. Check LoginId uniqueness ───────────────────────────
-            if (await _db.Persons.AnyAsync(p => p.LoginId == dto.LoginId))
-                return Conflict(new { message = $"LoginId '{dto.LoginId}' is already taken." });
+            // ── 1. Resolve org chain: Branch → Company → Country ─────
+            var all = await _db.OrganizationTree.ToListAsync();
 
-            // ── 2. Check email uniqueness (if provided) ───────────────
+            var branch  = all.FirstOrDefault(n => n.Id == dto.BranchId);
+            if (branch == null)
+                return BadRequest(new { message = $"Branch with ID {dto.BranchId} not found in the organization tree." });
+
+            var company = branch.ParentId.HasValue ? all.FirstOrDefault(n => n.Id == branch.ParentId) : null;
+            var country = company?.ParentId.HasValue == true ? all.FirstOrDefault(n => n.Id == company.ParentId) : null;
+
+            // ── 2. Generate LoginId from company code ─────────────────
+            //    Format: {CompanyCode}{5-digit-sequence}
+            //    e.g.  LT10291,  SA10021
+            var loginId = await GenerateLoginIdAsync(company ?? branch, all);
+
+            // ── 3. Check email uniqueness (if provided) ───────────────
             if (!string.IsNullOrWhiteSpace(dto.Email) &&
                 await _userManager.FindByEmailAsync(dto.Email) != null)
                 return Conflict(new { message = $"Email '{dto.Email}' is already registered." });
 
-            // ── 3. Create Identity user (UserName = LoginId) ──────────
+            // ── 4. Create Identity user (UserName = LoginId) ──────────
             var identityUser = new IdentityUser
             {
-                UserName       = dto.LoginId,
+                UserName       = loginId,
                 Email          = string.IsNullOrWhiteSpace(dto.Email) ? null : dto.Email,
                 EmailConfirmed = true
             };
@@ -193,7 +291,7 @@ namespace Accounts.Controllers
                     message = string.Join("; ", createResult.Errors.Select(e => e.Description))
                 });
 
-            // ── 4. Create Person record ───────────────────────────────
+            // ── 5. Create Person record ───────────────────────────────
             var person = new Person
             {
                 PersonId       = Guid.NewGuid(),
@@ -203,12 +301,13 @@ namespace Accounts.Controllers
                 Gender         = dto.Gender?.Trim(),
                 DateOfBirth    = dto.DateOfBirth,
                 MaritalStatus  = dto.MaritalStatus?.Trim(),
-                LoginId        = dto.LoginId.Trim(),
+                LoginId        = loginId,
                 IdentityUserId = identityUser.Id,
+                BranchId       = dto.BranchId,
                 CreatedDate    = DateTime.UtcNow
             };
 
-            // ── 5. Add addresses ──────────────────────────────────────
+            // ── 6. Add addresses ──────────────────────────────────────
             if (dto.CurrentAddress != null)
                 person.Addresses.Add(MapAddress(dto.CurrentAddress, "Current", person.PersonId));
 
@@ -223,7 +322,6 @@ namespace Accounts.Controllers
             }
             catch (Exception)
             {
-                // Roll back the Identity user so we don't leave orphaned accounts
                 await _userManager.DeleteAsync(identityUser);
                 throw;
             }
@@ -232,10 +330,12 @@ namespace Accounts.Controllers
                 .Include(p => p.Addresses)
                 .FirstOrDefaultAsync(p => p.PersonId == person.PersonId);
 
-            return CreatedAtAction(nameof(GetById), new { id = person.PersonId }, MapToDto(created!));
+            return CreatedAtAction(nameof(GetById), new { id = person.PersonId }, MapToDto(created!, all));
         }
 
-        // ── POST /api/persons/{id}/upload-photo ───────────────────────────────
+        // ═══════════════════════════════════════════════════════════════
+        // POST /api/persons/{id}/upload-photo
+        // ═══════════════════════════════════════════════════════════════
 
         [HttpPost("{id:guid}/upload-photo")]
         [Consumes("multipart/form-data")]
@@ -259,7 +359,6 @@ namespace Accounts.Controllers
             var uploadsDir = Path.Combine(_env.WebRootPath, "uploads", "persons");
             Directory.CreateDirectory(uploadsDir);
 
-            // Delete old photo if present
             if (!string.IsNullOrWhiteSpace(person.ProfilePhotoUrl))
             {
                 var oldFile = Path.Combine(_env.WebRootPath,
@@ -279,13 +378,15 @@ namespace Accounts.Controllers
 
             return Ok(new
             {
-                message        = "Photo uploaded successfully.",
+                message         = "Photo uploaded successfully.",
                 profilePhotoUrl = person.ProfilePhotoUrl,
-                fullUrl        = $"{Request.Scheme}://{Request.Host}{person.ProfilePhotoUrl}"
+                fullUrl         = $"{Request.Scheme}://{Request.Host}{person.ProfilePhotoUrl}"
             });
         }
 
-        // ── DELETE /api/persons/{id} ──────────────────────────────────────────
+        // ═══════════════════════════════════════════════════════════════
+        // DELETE /api/persons/{id}
+        // ═══════════════════════════════════════════════════════════════
 
         [HttpDelete("{id:guid}")]
         public async Task<IActionResult> Delete(Guid id)
@@ -294,12 +395,10 @@ namespace Accounts.Controllers
             if (person == null)
                 return NotFound(new { message = $"Person {id} not found." });
 
-            // Remove Identity user
             var identityUser = await _userManager.FindByIdAsync(person.IdentityUserId);
             if (identityUser != null)
                 await _userManager.DeleteAsync(identityUser);
 
-            // Remove photo file if present
             if (!string.IsNullOrWhiteSpace(person.ProfilePhotoUrl))
             {
                 var filePath = Path.Combine(_env.WebRootPath,
@@ -314,7 +413,70 @@ namespace Accounts.Controllers
             return Ok(new { message = $"Person '{person.FullName}' deleted." });
         }
 
-        // ── HELPERS ───────────────────────────────────────────────────────────
+        // ═══════════════════════════════════════════════════════════════
+        // HELPERS
+        // ═══════════════════════════════════════════════════════════════
+
+        /// <summary>
+        /// Generates a LoginId in the format {CompanyCode}{5-digit-sequence}.
+        /// Company code is taken from the Code field of the company node,
+        /// or derived from initials of the company name.
+        /// Examples:  LT10001, LT10002 ... SA10001, SA10002
+        /// </summary>
+        private async Task<string> GenerateLoginIdAsync(
+            OrganizationTree companyNode,
+            List<OrganizationTree> all)
+        {
+            // Resolve the company code (initials of name if Code field is empty)
+            string prefix = ResolveCompanyPrefix(companyNode);
+
+            // Count existing persons whose LoginId starts with this prefix
+            // to determine the next sequence number
+            int existing = await _db.Persons
+                .CountAsync(p => p.LoginId.StartsWith(prefix));
+
+            string loginId;
+            int seq = 10001 + existing;   // starts at 10001 so first ID is e.g. LT10001
+
+            // Ensure uniqueness (handles gaps / deletions)
+            do
+            {
+                loginId = $"{prefix}{seq}";
+                seq++;
+            }
+            while (await _db.Persons.AnyAsync(p => p.LoginId == loginId));
+
+            return loginId;
+        }
+
+        /// <summary>
+        /// Returns the company prefix for LoginId generation.
+        /// Uses stored Code if set, otherwise derives initials from the name.
+        /// "Lal Technology"              → LT
+        /// "Sierra Allergy Asthma Center"→ SA  (first two initials)
+        /// "Pakistan"                    → PK
+        /// </summary>
+        private static string ResolveCompanyPrefix(OrganizationTree node)
+        {
+            // Use stored Code field if available (already set by admin)
+            if (!string.IsNullOrWhiteSpace(node.Code))
+                return node.Code.ToUpper().Trim();
+
+            // Derive from name initials
+            var words = node.Name
+                .Split(' ', StringSplitOptions.RemoveEmptyEntries)
+                .Where(w => w.Length > 0)
+                .ToArray();
+
+            if (words.Length >= 2)
+                // Take first letter of each word, max 4 chars
+                return string.Concat(words.Take(4).Select(w => char.ToUpper(w[0])));
+
+            // Single word — take first 2-3 chars
+            return node.Name.Length >= 2
+                ? node.Name[..Math.Min(3, node.Name.Length)].ToUpper()
+                : node.Name.ToUpper();
+        }
 
         private static PersonAddress MapAddress(AddressDto src, string type, Guid personId) =>
             new PersonAddress
@@ -330,48 +492,41 @@ namespace Accounts.Controllers
                 PostalCode  = src.PostalCode?.Trim()
             };
 
-        private static PersonDto MapToDto(Person p) => new PersonDto
+        private static PersonDto MapToDto(Person p, List<OrganizationTree> all)
         {
-            PersonId        = p.PersonId,
-            FullName        = p.FullName,
-            Phone           = p.Phone,
-            Email           = p.Email,
-            Gender          = p.Gender,
-            DateOfBirth     = p.DateOfBirth,
-            MaritalStatus   = p.MaritalStatus,
-            ProfilePhotoUrl = p.ProfilePhotoUrl,
-            LoginId         = p.LoginId,
-            CreatedDate     = p.CreatedDate,
-            Addresses       = p.Addresses.Select(a => new PersonAddressDto
-            {
-                AddressId   = a.AddressId,
-                AddressType = a.AddressType,
-                AddressLine = a.AddressLine,
-                Country     = a.Country,
-                Province    = a.Province,
-                District    = a.District,
-                City        = a.City,
-                PostalCode  = a.PostalCode
-            })
-        };
+            // Resolve org chain from BranchId
+            OrganizationTree? branch  = p.BranchId.HasValue ? all.FirstOrDefault(n => n.Id == p.BranchId) : null;
+            OrganizationTree? company = branch?.ParentId.HasValue == true ? all.FirstOrDefault(n => n.Id == branch.ParentId) : null;
+            OrganizationTree? country = company?.ParentId.HasValue == true ? all.FirstOrDefault(n => n.Id == company.ParentId) : null;
 
-        /// <summary>
-        /// Generates a unique LoginId in the format USR-XXXXXXXX (8 random uppercase alphanumeric chars).
-        /// Retries until a value not already in the Persons table is found.
-        /// </summary>
-        private async Task<string> GenerateUniqueLoginIdAsync()
-        {
-            const string chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-            var rng = System.Security.Cryptography.RandomNumberGenerator.Create();
-            string loginId;
-            do
+            return new PersonDto
             {
-                var bytes = new byte[8];
-                rng.GetBytes(bytes);
-                loginId = "USR-" + new string(bytes.Select(b => chars[b % chars.Length]).ToArray());
-            }
-            while (await _db.Persons.AnyAsync(p => p.LoginId == loginId));
-            return loginId;
+                PersonId        = p.PersonId,
+                FullName        = p.FullName,
+                Phone           = p.Phone,
+                Email           = p.Email,
+                Gender          = p.Gender,
+                DateOfBirth     = p.DateOfBirth,
+                MaritalStatus   = p.MaritalStatus,
+                ProfilePhotoUrl = p.ProfilePhotoUrl,
+                LoginId         = p.LoginId,
+                CreatedDate     = p.CreatedDate,
+                BranchId        = p.BranchId,
+                BranchName      = branch?.Name,
+                CompanyName     = company?.Name,
+                CountryName     = country?.Name,
+                Addresses       = p.Addresses.Select(a => new PersonAddressDto
+                {
+                    AddressId   = a.AddressId,
+                    AddressType = a.AddressType,
+                    AddressLine = a.AddressLine,
+                    Country     = a.Country,
+                    Province    = a.Province,
+                    District    = a.District,
+                    City        = a.City,
+                    PostalCode  = a.PostalCode
+                })
+            };
         }
     }
 }

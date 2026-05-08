@@ -85,13 +85,11 @@ namespace Accounts.Data
                 e.Property(x => x.LoginId).HasMaxLength(30).IsRequired();
                 e.Property(x => x.IdentityUserId).HasMaxLength(450).IsRequired();
                 e.Property(x => x.ProfilePhotoUrl).HasMaxLength(500).IsRequired(false);
+                e.Property(x => x.BranchId).IsRequired(false);
 
                 // Unique indexes
                 e.HasIndex(x => x.LoginId).IsUnique();
                 e.HasIndex(x => x.IdentityUserId).IsUnique();
-
-                // Restrict delete of Identity user while Person references it
-                // (handled at application layer — no direct EF FK to AspNetUsers)
             });
 
             // ── PersonAddress ─────────────────────────────────────────

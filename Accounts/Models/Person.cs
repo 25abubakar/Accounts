@@ -31,7 +31,13 @@ namespace Accounts.Models
         [MaxLength(500)]
         public string? ProfilePhotoUrl { get; set; }
 
-        /// <summary>Auto-generated e.g. LT-10001 — used as ASP.NET Identity UserName and Email</summary>
+        /// <summary>
+        /// The branch (OrganizationTree node) where this person is registered.
+        /// Used to derive LoginId prefix and display org placement.
+        /// </summary>
+        public int? BranchId { get; set; }
+
+        /// <summary>Auto-generated e.g. LT10001 — derived from company code + sequence</summary>
         [Required]
         [MaxLength(30)]
         public string LoginId { get; set; } = string.Empty;
