@@ -65,9 +65,10 @@ namespace Accounts.Models
         public Guid? VacancyId { get; set; }
         public string? VacancyCode { get; set; }
         public string? JobTitle { get; set; }
+        public string? Department { get; set; }   // ← added
         public string? BranchName { get; set; }
         public string? CompanyName { get; set; }
-        public string? CountryName { get; set; }
+        public string? CountryName { get; set; }  // ← required for country filter
         public DateTime JoiningDate { get; set; }
     }
 

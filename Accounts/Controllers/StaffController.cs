@@ -280,9 +280,10 @@ namespace Accounts.Controllers
                 VacancyId   = s.VacancyId,
                 VacancyCode = s.Vacancy?.VacancyCode,
                 JobTitle    = s.Vacancy?.JobTitle,
+                Department  = s.Vacancy?.Department,   // ← populated
                 BranchName  = branch?.Name,
                 CompanyName = company?.Name,
-                CountryName = country?.Name,
+                CountryName = country?.Name,            // ← always populated via org chain
                 JoiningDate = s.JoiningDate
             };
         }
