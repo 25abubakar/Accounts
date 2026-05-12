@@ -23,6 +23,7 @@ namespace Accounts.Data
         public DbSet<Staff>            Staff               => Set<Staff>();
         public DbSet<Person>           Persons             => Set<Person>();
         public DbSet<PersonAddress>    PersonAddresses     => Set<PersonAddress>();
+        public DbSet<VacancyCounter>   VacancyCounters     => Set<VacancyCounter>();
 
         protected override void OnModelCreating(ModelBuilder builder)
         {
@@ -114,6 +115,15 @@ namespace Accounts.Data
                  .WithMany(x => x.Addresses)
                  .HasForeignKey(x => x.PersonId)
                  .OnDelete(DeleteBehavior.Cascade);
+            });
+
+            // ── VacancyCounter ────────────────────────────────────────
+            builder.Entity<VacancyCounter>(e =>
+            {
+                e.ToTable("VacancyCounters");
+                e.HasKey(x => x.Prefix);
+                e.Property(x => x.Prefix).HasMaxLength(200).IsRequired();
+                e.Property(x => x.LastNumber).HasDefaultValue(0).IsRequired();
             });
         }
     }
