@@ -90,44 +90,89 @@ namespace Accounts.Services.Services
             var all    = await _db.OrganizationTree.ToListAsync();
             var branch = all.FirstOrDefault(n => n.Id == branchId);
             if (branch == null) return null;
-            var company = branch.ParentId.HasValue ? all.FirstOrDefault(n => n.Id == branch.ParentId) : null;
-            var loginId = await GenerateLoginIdAsync(company ?? branch, all);
-            return new { loginId, companyName = company?.Name ?? branch.Name };
+
+            // Walk up to find the Company node (parent of branch)
+            var company = branch.ParentId.HasValue
+                ? all.FirstOrDefault(n => n.Id == branch.ParentId)
+                : null;
+
+            var companyNode = company ?? branch;
+            var loginId     = await GenerateLoginIdAsync(companyNode);
+            var password    = $"{loginId}@";
+
+            // Preview email uses a placeholder name since we don't know the person yet
+            var domain      = BuildCompanyDomain(companyNode.Name);
+            var sampleEmail = $"firstname.lastname@{domain}";
+
+            return new
+            {
+                loginId,
+                password,
+                generatedEmail = sampleEmail,
+                emailDomain    = domain,
+                companyName    = companyNode.Name,
+                companyCode    = GetCompanyInitials(companyNode),
+                branchName     = branch.Name
+            };
         }
 
-        public async Task<(PersonDto? Person, string? Error, int StatusCode)> RegisterAsync(RegisterPersonDto dto)
+        public async Task<(PersonDto? Person, string? GeneratedLoginId, string? GeneratedPassword, string? Error, int StatusCode)> RegisterAsync(RegisterPersonDto dto)
         {
-            if (string.IsNullOrWhiteSpace(dto.FullName)) return (null, "FullName is required.", 400);
-            if (string.IsNullOrWhiteSpace(dto.Password)) return (null, "Password is required.", 400);
-            if (dto.BranchId <= 0) return (null, "BranchId is required.", 400);
+            if (string.IsNullOrWhiteSpace(dto.FullName)) return (null, null, null, "FullName is required.", 400);
+            if (dto.BranchId <= 0) return (null, null, null, "BranchId is required.", 400);
 
             var orgNodes = await _db.OrganizationTree.ToListAsync();
             var branch   = orgNodes.FirstOrDefault(n => n.Id == dto.BranchId);
-            if (branch == null) return (null, $"Branch {dto.BranchId} not found.", 400);
+            if (branch == null) return (null, null, null, $"Branch {dto.BranchId} not found.", 400);
 
-            var company = branch.ParentId.HasValue ? orgNodes.FirstOrDefault(n => n.Id == branch.ParentId) : null;
-            var loginId = await GenerateLoginIdAsync(company ?? branch, orgNodes);
+            // ── Walk up to Company node (parent of branch) ────────────────────
+            var company     = branch.ParentId.HasValue ? orgNodes.FirstOrDefault(n => n.Id == branch.ParentId) : null;
+            var companyNode = company ?? branch;
 
-            if (!string.IsNullOrWhiteSpace(dto.Email) && await _userManager.FindByEmailAsync(dto.Email) != null)
-                return (null, $"Email '{dto.Email}' is already registered.", 409);
+            // ── Auto-generate Login ID from Company initials only ─────────────
+            // Format: [CompanyInitials][5-digit seq]  e.g. LT10001
+            var loginId = await GenerateLoginIdAsync(companyNode);
+
+            // ── Auto-generate Password = LoginId + "@"  e.g. LT10001@ ─────────
+            var password = $"{loginId}@";
+
+            // ── Auto-generate Email if not provided ───────────────────────────
+            // Format: firstname.lastname@companyname.com  e.g. abubakar.khan@laltechnology.com
+            // Collision: abubakar.khan.1@laltechnology.com, abubakar.khan.2@...
+            var email = string.IsNullOrWhiteSpace(dto.Email)
+                ? await GenerateEmailAsync(dto.FullName, companyNode)
+                : dto.Email.Trim();
+
+            // Check email uniqueness in Identity
+            if (await _userManager.FindByEmailAsync(email) != null)
+            {
+                // If user provided an email that's taken, reject it
+                if (!string.IsNullOrWhiteSpace(dto.Email))
+                    return (null, null, null, $"Email '{email}' is already registered.", 409);
+
+                // Auto-generated email collision — GenerateEmailAsync already handles this,
+                // but double-check just in case of race condition
+                email = await GenerateEmailAsync(dto.FullName, companyNode);
+            }
 
             var identityUser = new IdentityUser
             {
                 UserName       = loginId,
-                Email          = string.IsNullOrWhiteSpace(dto.Email) ? null : dto.Email,
+                Email          = email,
                 EmailConfirmed = true
             };
 
-            var createResult = await _userManager.CreateAsync(identityUser, dto.Password);
+            // Always use auto-generated password — ignore any password sent from frontend
+            var createResult = await _userManager.CreateAsync(identityUser, password);
             if (!createResult.Succeeded)
-                return (null, string.Join("; ", createResult.Errors.Select(e => e.Description)), 400);
+                return (null, null, null, string.Join("; ", createResult.Errors.Select(e => e.Description)), 400);
 
             var person = new Person
             {
                 PersonId       = Guid.NewGuid(),
                 FullName       = dto.FullName.Trim(),
                 Phone          = dto.Phone?.Trim(),
-                Email          = dto.Email?.Trim(),
+                Email          = email,                // always store the final email
                 Gender         = dto.Gender?.Trim(),
                 DateOfBirth    = dto.DateOfBirth,
                 MaritalStatus  = dto.MaritalStatus?.Trim(),
@@ -148,7 +193,8 @@ namespace Accounts.Services.Services
 
             var created = await _db.Persons.Include(p => p.Addresses).Include(p => p.Staff)
                 .FirstOrDefaultAsync(p => p.PersonId == person.PersonId);
-            return (MapToDto(created!, orgNodes), null, 201);
+
+            return (MapToDto(created!, orgNodes), loginId, password, null, 201);
         }
 
         public async Task<(PersonDto? Person, string? Error)> UpdateAsync(Guid id, UpdatePersonDto dto)
@@ -238,25 +284,297 @@ namespace Accounts.Services.Services
             return (true, $"Person '{person.FullName}' deleted.");
         }
 
+        // ── Password Management ───────────────────────────────────────────────
+
+        /// <summary>
+        /// Employee changes their own password.
+        /// Requires the current password to be correct.
+        /// </summary>
+        public async Task<(bool Success, string Message)> ChangePasswordAsync(
+            Guid personId, string currentPassword, string newPassword)
+        {
+            var person = await _db.Persons.FindAsync(personId);
+            if (person == null) return (false, $"Person {personId} not found.");
+
+            var user = await _userManager.FindByIdAsync(person.IdentityUserId);
+            if (user == null) return (false, "Identity account not found.");
+
+            var result = await _userManager.ChangePasswordAsync(user, currentPassword, newPassword);
+            if (!result.Succeeded)
+                return (false, string.Join("; ", result.Errors.Select(e => e.Description)));
+
+            return (true, "Password changed successfully.");
+        }
+
+        /// <summary>
+        /// Admin resets password for any person — no current password needed.
+        /// If newPassword is null, auto-generates a new one as LoginId@NewSeq.
+        /// </summary>
+        public async Task<(bool Success, string Message, string? NewPassword)> ResetPasswordAsync(
+            Guid personId, string? newPassword = null)
+        {
+            var person = await _db.Persons.FindAsync(personId);
+            if (person == null) return (false, $"Person {personId} not found.", null);
+
+            var user = await _userManager.FindByIdAsync(person.IdentityUserId);
+            if (user == null) return (false, "Identity account not found.", null);
+
+            // If no password provided, generate one: LoginId@
+            var password = string.IsNullOrWhiteSpace(newPassword)
+                ? $"{person.LoginId}@"
+                : newPassword;
+
+            // Remove old password and set new one
+            var token  = await _userManager.GeneratePasswordResetTokenAsync(user);
+            var result = await _userManager.ResetPasswordAsync(user, token, password);
+
+            if (!result.Succeeded)
+                return (false, string.Join("; ", result.Errors.Select(e => e.Description)), null);
+
+            return (true, $"Password reset successfully for '{person.FullName}'.", password);
+        }
+
+        /// <summary>
+        /// Resets password back to the default: LoginId@
+        /// e.g. LT10001 → LT10001@
+        /// </summary>
+        public async Task<(bool Success, string Message, string? DefaultPassword)> ResetToDefaultPasswordAsync(
+            Guid personId)
+        {
+            var person = await _db.Persons.FindAsync(personId);
+            if (person == null) return (false, $"Person {personId} not found.", null);
+
+            var defaultPassword = $"{person.LoginId}@";
+            var (success, message, _) = await ResetPasswordAsync(personId, defaultPassword);
+
+            return success
+                ? (true, $"Password reset to default for '{person.FullName}'.", defaultPassword)
+                : (false, message, null);
+        }
+
+        /// <summary>
+        /// Previews the email that will be auto-generated for a given name + branch.
+        /// Useful for frontend to show the user before submitting.
+        /// </summary>
+        public async Task<object?> PreviewEmailAsync(int branchId, string fullName)
+        {
+            var all    = await _db.OrganizationTree.ToListAsync();
+            var branch = all.FirstOrDefault(n => n.Id == branchId);
+            if (branch == null) return null;
+
+            var company     = branch.ParentId.HasValue ? all.FirstOrDefault(n => n.Id == branch.ParentId) : null;
+            var companyNode = company ?? branch;
+
+            var email  = await GenerateEmailAsync(fullName, companyNode);
+            var domain = BuildCompanyDomain(companyNode.Name);
+
+            return new
+            {
+                generatedEmail = email,
+                emailDomain    = domain,
+                companyName    = companyNode.Name
+            };
+        }
+
         // ── Private Helpers ───────────────────────────────────────────────────
 
-        private async Task<string> GenerateLoginIdAsync(OrganizationTree node, List<OrganizationTree> all)
+        /// <summary>
+        /// Generates Login ID from COMPANY only (never branch or country).
+        /// Format: [CompanyInitials][5-digit sequence starting at 10001]
+        /// Example: "Lal Technology" → LT10001, LT10002, ...
+        /// </summary>
+        private async Task<string> GenerateLoginIdAsync(OrganizationTree companyNode)
         {
-            var prefix   = ResolveCompanyPrefix(node);
+            // Always derive prefix from company name initials (first letter of each word)
+            var prefix = GetCompanyInitials(companyNode);
+
+            // Count existing persons whose LoginId starts with this prefix
             var existing = await _db.Persons.CountAsync(p => p.LoginId.StartsWith(prefix));
-            string id; int seq = 10001 + existing;
-            do { id = $"{prefix}{seq}"; seq++; }
-            while (await _db.Persons.AnyAsync(p => p.LoginId == id));
-            return id;
+            int seq = 10001 + existing;
+            string loginId;
+
+            // Guarantee uniqueness even if there are gaps from deletions
+            do
+            {
+                loginId = $"{prefix}{seq}";
+                seq++;
+            }
+            while (await _db.Persons.AnyAsync(p => p.LoginId == loginId));
+
+            return loginId;
         }
 
-        private static string ResolveCompanyPrefix(OrganizationTree node)
+        /// <summary>
+        /// Derives company initials from the company name.
+        ///
+        /// Priority:
+        ///   1. Use stored Code field if set (e.g. "TS", "NS", "NT")
+        ///   2. Split by spaces → first letter of each word  ("Lal Technology" → "LT")
+        ///   3. Split CamelCase → first letter of each part  ("NetSolutions" → "NS")
+        ///   4. Single word fallback → first 2 uppercase chars ("Tech" → "TE")
+        ///
+        /// To override: set the Code field on the org node (e.g. Code = "NT").
+        /// </summary>
+        private static string GetCompanyInitials(OrganizationTree node)
         {
-            if (!string.IsNullOrWhiteSpace(node.Code)) return node.Code.ToUpper().Trim();
-            var words = node.Name.Split(' ', StringSplitOptions.RemoveEmptyEntries).Where(w => w.Length > 0).ToArray();
-            if (words.Length >= 2) return string.Concat(words.Take(4).Select(w => char.ToUpper(w[0])));
-            return node.Name.Length >= 2 ? node.Name[..Math.Min(3, node.Name.Length)].ToUpper() : node.Name.ToUpper();
+            // 1. Use stored Code field if set — highest priority
+            if (!string.IsNullOrWhiteSpace(node.Code))
+                return node.Code.ToUpper().Trim();
+
+            var name = node.Name.Trim();
+
+            // 2. Space-separated words → "Lal Technology" = "LT"
+            var spaceWords = name.Split(' ', StringSplitOptions.RemoveEmptyEntries)
+                                 .Where(w => w.Length > 0)
+                                 .ToArray();
+            if (spaceWords.Length >= 2)
+                return string.Concat(spaceWords.Select(w => char.ToUpper(w[0])));
+
+            // 3. CamelCase split → "NetSolutions" = ["Net","Solutions"] = "NS"
+            //                      "TechSoft"     = ["Tech","Soft"]     = "TS"
+            var camelWords = SplitCamelCase(name);
+            if (camelWords.Length >= 2)
+                return string.Concat(camelWords.Select(w => char.ToUpper(w[0])));
+
+            // 4. Single word fallback → first 2 chars → "Tech" = "TE"
+            return name.Length >= 2 ? name[..2].ToUpper() : name.ToUpper();
         }
+
+        /// <summary>
+        /// Splits a CamelCase string into words.
+        /// "NetSolutions" → ["Net", "Solutions"]
+        /// "TechSoft"     → ["Tech", "Soft"]
+        /// "LALTechnology"→ ["LAL", "Technology"]
+        /// </summary>
+        private static string[] SplitCamelCase(string input)
+        {
+            if (string.IsNullOrWhiteSpace(input)) return [input];
+
+            var result = new List<string>();
+            int start  = 0;
+
+            for (int i = 1; i < input.Length; i++)
+            {
+                bool isUpper = char.IsUpper(input[i]);
+                bool prevLower = char.IsLower(input[i - 1]);
+                bool nextLower = i + 1 < input.Length && char.IsLower(input[i + 1]);
+
+                // Start new word at uppercase letter after lowercase, or at start of new word
+                if (isUpper && (prevLower || nextLower))
+                {
+                    result.Add(input[start..i]);
+                    start = i;
+                }
+            }
+            result.Add(input[start..]);
+            return result.Where(w => w.Length > 0).ToArray();
+        }
+
+        // Keep for backward compat (used by GetOrgTreeAsync)
+        private static string ResolveCompanyPrefix(OrganizationTree node) =>
+            GetCompanyInitials(node);
+
+        // ── Email Generation ──────────────────────────────────────────────────
+
+        /// <summary>
+        /// Auto-generates a unique company email for a person.
+        ///
+        /// Format:  firstname.lastname@companyname.com
+        /// Example: "Muhammad Abubakar" + "Lal Technology" → abubakar.muhammad@laltechnology.com
+        ///
+        /// Collision handling (appends incrementing number to name part):
+        ///   abubakar.muhammad@laltechnology.com      ← taken
+        ///   abubakar.muhammad.1@laltechnology.com    ← taken
+        ///   abubakar.muhammad.2@laltechnology.com    ← assigned ✓
+        ///
+        /// Rules:
+        ///   - All lowercase
+        ///   - Remove spaces, special chars (keep only a-z, 0-9, dot)
+        ///   - Domain = company name lowercased, spaces removed + .com
+        /// </summary>
+        private async Task<string> GenerateEmailAsync(string fullName, OrganizationTree companyNode)
+        {
+            // ── 1. Build domain from company name ─────────────────────────────
+            var domain = BuildCompanyDomain(companyNode.Name);
+
+            // ── 2. Split full name into parts ─────────────────────────────────
+            var parts = fullName.Trim()
+                                .Split(' ', StringSplitOptions.RemoveEmptyEntries)
+                                .Select(SanitizeEmailPart)
+                                .Where(p => p.Length > 0)
+                                .ToArray();
+
+            string namePart;
+            if (parts.Length == 0)
+            {
+                namePart = "user";
+            }
+            else if (parts.Length == 1)
+            {
+                // Only one name → use it alone
+                namePart = parts[0];
+            }
+            else
+            {
+                // firstname.lastname  (first word = first name, last word = last name)
+                namePart = $"{parts[0]}.{parts[^1]}";
+            }
+
+            // ── 3. Find unique email with collision handling ───────────────────
+            var baseEmail = $"{namePart}@{domain}";
+
+            // Check both Identity (AspNetUsers) and Persons table
+            if (!await EmailExistsAsync(baseEmail))
+                return baseEmail;
+
+            // Append incrementing number until unique
+            int counter = 1;
+            string candidate;
+            do
+            {
+                candidate = $"{namePart}.{counter}@{domain}";
+                counter++;
+            }
+            while (await EmailExistsAsync(candidate));
+
+            return candidate;
+        }
+
+        /// <summary>
+        /// Checks if an email already exists in either Identity or Persons table.
+        /// </summary>
+        private async Task<bool> EmailExistsAsync(string email) =>
+            await _userManager.FindByEmailAsync(email) != null
+            || await _db.Persons.AnyAsync(p => p.Email != null &&
+               p.Email.ToLower() == email.ToLower());
+
+        /// <summary>
+        /// Builds the email domain from a company name.
+        /// "Lal Technology"  → "laltechnology.com"
+        /// "NetSolutions"    → "netsolutions.com"
+        /// "Soft Vision Ltd" → "softvisionltd.com"
+        /// </summary>
+        private static string BuildCompanyDomain(string companyName) =>
+            companyName
+                .ToLower()
+                .Replace(" ", "")           // remove spaces
+                .Replace(".", "")           // remove dots
+                .Replace(",", "")           // remove commas
+                .Replace("'", "")           // remove apostrophes
+                .Replace("-", "")           // remove hyphens
+                + ".com";
+
+        /// <summary>
+        /// Sanitizes a name part for use in an email address.
+        /// Keeps only a-z, 0-9. Removes everything else.
+        /// "Abubakar" → "abubakar"
+        /// "O'Brien"  → "obrien"
+        /// "Jean-Luc" → "jeanluc"
+        /// </summary>
+        private static string SanitizeEmailPart(string part) =>
+            new string(part.ToLower()
+                           .Where(c => char.IsLetterOrDigit(c))
+                           .ToArray());
 
         private static PersonAddress BuildAddress(AddressDto src, string type, Guid personId) =>
             new PersonAddress

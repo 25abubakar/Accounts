@@ -55,7 +55,7 @@ namespace Accounts.Controllers
             public DateTime? DateOfBirth   { get; set; }
             public string?   MaritalStatus { get; set; }
             public int       BranchId      { get; set; }
-            public string    Password      { get; set; } = string.Empty;
+            // Password is NOT required — auto-generated as LoginId@
 
             [System.Text.Json.Serialization.JsonPropertyName("currentAddress")]
             public System.Text.Json.JsonElement? CurrentAddressRaw { get; set; }
@@ -191,14 +191,45 @@ namespace Accounts.Controllers
             return Ok(new { received = await reader.ReadToEndAsync() });
         }
 
-        /// <summary>Register a new person with address and identity account</summary>
+        /// <summary>
+        /// Register a new person.
+        /// Login ID, Password, and Email are ALL AUTO-GENERATED.
+        /// - LoginId  = CompanyInitials + 5-digit seq  (e.g. LT10001)
+        /// - Password = LoginId + @                    (e.g. LT10001@)
+        /// - Email    = firstname.lastname@company.com (e.g. abubakar.khan@laltechnology.com)
+        ///
+        /// You can override the email by sending it in the request body.
+        /// The response includes all generated credentials (show once to admin).
+        /// </summary>
         [HttpPost("register")]
         public async Task<IActionResult> Register([FromBody] RegisterPersonDto? dto)
         {
             if (dto is null) return BadRequest(new { message = "Request body missing." });
-            var (person, error, statusCode) = await _service.RegisterAsync(dto);
+            var (person, loginId, password, error, statusCode) = await _service.RegisterAsync(dto);
             if (error != null) return StatusCode(statusCode, new { message = error });
-            return CreatedAtAction(nameof(GetById), new { id = person!.PersonId }, person);
+
+            return CreatedAtAction(nameof(GetById), new { id = person!.PersonId }, new
+            {
+                person,
+                generatedLoginId  = loginId,
+                generatedPassword = password,
+                generatedEmail    = person.Email,
+                note = "Save these credentials — the password cannot be retrieved again."
+            });
+        }
+
+        /// <summary>
+        /// Preview the email that will be auto-generated for a given name + branch.
+        /// Call this on the frontend as the user types their name.
+        /// GET /api/persons/preview-email?branchId=4&fullName=Abubakar+Khan
+        /// </summary>
+        [HttpGet("preview-email")]
+        public async Task<IActionResult> PreviewEmail([FromQuery] int branchId, [FromQuery] string fullName)
+        {
+            if (branchId <= 0) return BadRequest(new { message = "branchId is required." });
+            if (string.IsNullOrWhiteSpace(fullName)) return BadRequest(new { message = "fullName is required." });
+            var result = await _service.PreviewEmailAsync(branchId, fullName);
+            return result == null ? NotFound(new { message = $"Branch {branchId} not found." }) : Ok(result);
         }
 
         /// <summary>Update person info and addresses</summary>
@@ -229,6 +260,74 @@ namespace Accounts.Controllers
             var (success, message) = await _service.DeleteAsync(id);
             if (!success) return message.Contains("not found") ? NotFound(new { message }) : BadRequest(new { message });
             return Ok(new { message });
+        }
+
+        // ── Password Management ───────────────────────────────────────────────
+
+        public class ChangePasswordDto
+        {
+            public string CurrentPassword { get; set; } = string.Empty;
+            public string NewPassword     { get; set; } = string.Empty;
+        }
+
+        public class ResetPasswordDto
+        {
+            /// <summary>Leave empty to auto-generate (LoginId@)</summary>
+            public string? NewPassword { get; set; }
+        }
+
+        /// <summary>
+        /// Employee changes their own password.
+        /// Requires the current password to be correct.
+        /// POST /api/persons/{id}/change-password
+        /// </summary>
+        [HttpPost("{id:guid}/change-password")]
+        public async Task<IActionResult> ChangePassword(Guid id, [FromBody] ChangePasswordDto dto)
+        {
+            if (string.IsNullOrWhiteSpace(dto.CurrentPassword))
+                return BadRequest(new { message = "CurrentPassword is required." });
+            if (string.IsNullOrWhiteSpace(dto.NewPassword))
+                return BadRequest(new { message = "NewPassword is required." });
+
+            var (success, message) = await _service.ChangePasswordAsync(id, dto.CurrentPassword, dto.NewPassword);
+            if (!success) return message.Contains("not found") ? NotFound(new { message }) : BadRequest(new { message });
+            return Ok(new { message });
+        }
+
+        /// <summary>
+        /// Admin resets password for any person — no current password needed.
+        /// If NewPassword is empty, auto-generates as LoginId@
+        /// POST /api/persons/{id}/reset-password
+        /// </summary>
+        [HttpPost("{id:guid}/reset-password")]
+        public async Task<IActionResult> ResetPassword(Guid id, [FromBody] ResetPasswordDto? dto)
+        {
+            var (success, message, newPassword) = await _service.ResetPasswordAsync(id, dto?.NewPassword);
+            if (!success) return message.Contains("not found") ? NotFound(new { message }) : BadRequest(new { message });
+            return Ok(new
+            {
+                message,
+                newPassword,
+                note = "Share this password with the employee securely."
+            });
+        }
+
+        /// <summary>
+        /// Reset password back to default (LoginId@).
+        /// e.g. LT10001 → LT10001@
+        /// POST /api/persons/{id}/reset-to-default-password
+        /// </summary>
+        [HttpPost("{id:guid}/reset-to-default-password")]
+        public async Task<IActionResult> ResetToDefaultPassword(Guid id)
+        {
+            var (success, message, defaultPassword) = await _service.ResetToDefaultPasswordAsync(id);
+            if (!success) return message.Contains("not found") ? NotFound(new { message }) : BadRequest(new { message });
+            return Ok(new
+            {
+                message,
+                defaultPassword,
+                note = "Password has been reset to the default (LoginId@)."
+            });
         }
     }
 }

@@ -5,158 +5,74 @@ using Microsoft.EntityFrameworkCore;
 namespace Accounts.Services
 {
     /// <summary>
-    /// Generates vacancy codes in the format: {CompanyCode}-{CityCode}-{JobCode}-{NN}
-    /// e.g.  LT-KHI-MGR-01,  LT-KHI-DEV-03
+    /// Generates vacancy codes.
+    ///
+    /// NEW FORMAT (as per business requirement):
+    ///   {Country}-{Group}-{CompanyInitials}-{AutoIncrementNumber}
+    ///
+    /// Examples:
+    ///   Pakistan-LalGroup-LT-1
+    ///   Pakistan-LalGroup-LT-2
+    ///   Pakistan-LalGroup-NS-1
+    ///
+    /// Rules:
+    ///   Country      = Country node Name  (e.g. "Pakistan")
+    ///   Group        = Group node Name    (e.g. "LalGroup") — spaces removed
+    ///   Company      = Company initials   (e.g. "LT" for "Lal Technology")
+    ///   AutoIncrement= Global counter per Country-Group-Company prefix, starts at 1
     /// </summary>
     public class VacancyCodeService
     {
         private readonly ApplicationDbContext _db;
 
-        // ── Built-in job-title → abbreviation map ─────────────────────────────
-        // Add / extend as needed. Keys are lower-cased for matching.
-        private static readonly Dictionary<string, string> _jobCodes =
-            new(StringComparer.OrdinalIgnoreCase)
-            {
-                // Management
-                { "manager",                  "MGR"  },
-                { "general manager",          "GM"   },
-                { "assistant manager",        "AM"   },
-                { "deputy manager",           "DM"   },
-                { "senior manager",           "SM"   },
-                { "head of department",       "HOD"  },
-                { "head of dept",             "HOD"  },
-                { "department head",          "HOD"  },
-                { "director",                 "DIR"  },
-                { "ceo",                      "CEO"  },
-                { "coo",                      "COO"  },
-                { "cfo",                      "CFO"  },
-                { "cto",                      "CTO"  },
-                { "chairman",                 "CHR"  },
-
-                // Technology
-                { "developer",                "DEV"  },
-                { "software developer",       "DEV"  },
-                { "software engineer",        "SWE"  },
-                { "senior developer",         "SDEV" },
-                { "junior developer",         "JDEV" },
-                { "full stack developer",     "FSD"  },
-                { "frontend developer",       "FED"  },
-                { "backend developer",        "BED"  },
-                { "mobile developer",         "MOB"  },
-                { "devops engineer",          "DOP"  },
-                { "qa engineer",              "QA"   },
-                { "quality assurance",        "QA"   },
-                { "data analyst",             "DA"   },
-                { "data scientist",           "DS"   },
-                { "database administrator",   "DBA"  },
-                { "system administrator",     "SA"   },
-                { "network engineer",         "NET"  },
-                { "networking",               "NET"  },
-                { "it support",               "ITS"  },
-                { "cybersecurity",            "SEC"  },
-                { "security engineer",        "SEC"  },
-                { "ui/ux designer",           "UXD"  },
-                { "ui designer",              "UID"  },
-                { "ux designer",              "UXD"  },
-                { "graphic designer",         "GFX"  },
-
-                // Finance & Accounts
-                { "accountant",               "ACC"  },
-                { "senior accountant",        "SACC" },
-                { "finance officer",          "FIN"  },
-                { "finance manager",          "FM"   },
-                { "auditor",                  "AUD"  },
-                { "tax consultant",           "TAX"  },
-
-                // HR
-                { "hr officer",               "HRO"  },
-                { "hr manager",               "HRM"  },
-                { "human resources",          "HR"   },
-                { "recruiter",                "REC"  },
-                { "talent acquisition",       "TA"   },
-                { "payroll officer",          "PAY"  },
-
-                // Sales & Marketing
-                { "marketing",                "MKT"  },
-                { "marketing manager",        "MM"   },
-                { "marketing officer",        "MKT"  },
-                { "sales",                    "SLS"  },
-                { "sales manager",            "SLM"  },
-                { "sales officer",            "SLS"  },
-                { "business development",     "BD"   },
-                { "brand manager",            "BRM"  },
-                { "digital marketing",        "DM"   },
-                { "seo specialist",           "SEO"  },
-                { "content writer",           "CW"   },
-                { "social media manager",     "SMM"  },
-
-                // Operations & Logistics
-                { "operations manager",       "OPM"  },
-                { "operations officer",       "OPS"  },
-                { "logistics",                "LOG"  },
-                { "supply chain",             "SCM"  },
-                { "procurement officer",      "PRO"  },
-                { "warehouse manager",        "WHM"  },
-                { "driver",                   "DRV"  },
-
-                // Admin & Support
-                { "admin",                    "ADM"  },
-                { "administrator",            "ADM"  },
-                { "receptionist",             "RCP"  },
-                { "office boy",               "OB"   },
-                { "peon",                     "PEO"  },
-                { "security guard",           "SEC"  },
-                { "cleaner",                  "CLN"  },
-
-                // Legal & Compliance
-                { "legal officer",            "LEG"  },
-                { "compliance officer",       "COM"  },
-                { "lawyer",                   "LAW"  },
-
-                // Customer Service
-                { "customer service",         "CS"   },
-                { "customer support",         "CS"   },
-                { "call center agent",        "CCA"  },
-                { "help desk",                "HDS"  },
-            };
-
         public VacancyCodeService(ApplicationDbContext db) => _db = db;
 
         /// <summary>
         /// Generates a unique vacancy code.
-        /// Format: {CompanyCode}-{CityCode}-{JobCode}-{NN}
-        /// e.g.  LT-KHI-MGR-01
+        /// Walks up the org tree from the given node to find Country, Group, Company.
+        /// Format: {Country}-{Group}-{CompanyInitials}-{N}
         /// </summary>
         public async Task<string> GenerateAsync(int organizationId, string jobTitle)
         {
-            // ── 1. Walk up the org tree to find Company and City codes ─────────
-            var node    = await _db.OrganizationTree.FindAsync(organizationId);
-            var parent  = node?.ParentId != null ? await _db.OrganizationTree.FindAsync(node.ParentId) : null;
-            var grandP  = parent?.ParentId != null ? await _db.OrganizationTree.FindAsync(parent.ParentId) : null;
+            // ── 1. Load the full ancestor chain ──────────────────────────────
+            var chain = await BuildAncestorChainAsync(organizationId);
 
-            // Company code — use stored Code field, else derive from Name
-            string companyCode = DeriveCode(parent ?? node, 3);
+            // ── 2. Resolve Country, Group, Company from the chain ─────────────
+            var country = FindByLabel(chain, "Country");
+            var group   = FindByLabel(chain, "Group");
+            var company = FindByLabel(chain, "Company");
 
-            // City code — grandparent's Code or Name abbreviation
-            string cityCode = DeriveCode(grandP ?? parent ?? node, 3);
+            // Fallback: if labels don't match exactly, use positional order
+            // chain[0] = deepest node (the org node itself)
+            // chain[last] = root (Country)
+            if (country == null && chain.Count > 0)
+                country = chain.Last();   // root = Country
 
-            // ── 2. Resolve job abbreviation ───────────────────────────────────
-            string jobCode = ResolveJobCode(jobTitle);
+            if (company == null && chain.Count >= 2)
+                company = chain[^2];      // one level above root = Company (or Group)
 
-            // ── 3. Build prefix and find next sequence number ─────────────────
-            string prefix = $"{companyCode}-{cityCode}-{jobCode}-";
+            if (group == null && chain.Count >= 3)
+                group = chain[^3];        // two levels above root = Group
 
-            // Count existing vacancies with same prefix to get next number
+            // ── 3. Build each segment ─────────────────────────────────────────
+            string countryPart  = SanitizeName(country?.Name ?? "ORG");
+            string groupPart    = SanitizeName(group?.Name   ?? "GRP");
+            string companyPart  = GetInitials(company ?? chain.FirstOrDefault());
+
+            // ── 4. Build prefix and find next sequence number ─────────────────
+            // Format: Pakistan-LalGroup-LT-
+            string prefix = $"{countryPart}-{groupPart}-{companyPart}-";
+
             int count = await _db.Vacancies
                 .CountAsync(v => v.VacancyCode.StartsWith(prefix));
 
             string code;
-            int seq = count + 1;
+            int seq = count + 1;   // starts at 1, increments by 1
 
-            // Ensure uniqueness (handles gaps from deletions)
+            // Guarantee uniqueness even if there are gaps from deletions
             do
             {
-                code = $"{prefix}{seq:D2}";
+                code = $"{prefix}{seq}";
                 seq++;
             }
             while (await _db.Vacancies.AnyAsync(v => v.VacancyCode == code));
@@ -167,55 +83,54 @@ namespace Accounts.Services
         // ── Helpers ───────────────────────────────────────────────────────────
 
         /// <summary>
-        /// Returns the stored Code if set, otherwise derives an abbreviation from the Name.
-        /// e.g. "Lal Technology" → "LT", "Karachi" → "KHI" (if in map), else "KAR"
+        /// Walks up the org tree from the given node and returns the full ancestor chain.
+        /// Index 0 = the node itself, last index = root (Country).
         /// </summary>
-        private static string DeriveCode(OrganizationTree? node, int maxLen)
+        private async Task<List<OrganizationTree>> BuildAncestorChainAsync(int nodeId)
         {
-            if (node == null) return "ORG";
+            var chain = new List<OrganizationTree>();
+            int? currentId = nodeId;
 
-            // Use stored Code field if available
-            if (!string.IsNullOrWhiteSpace(node.Code))
-                return node.Code.ToUpper().Trim();
+            while (currentId.HasValue)
+            {
+                var node = await _db.OrganizationTree.FindAsync(currentId.Value);
+                if (node == null) break;
+                chain.Add(node);
+                currentId = node.ParentId;
+            }
 
-            // Derive from Name — take first letter of each word
+            return chain; // [0]=deepest, [last]=root
+        }
+
+        /// <summary>Find a node in the chain by its Label (case-insensitive)</summary>
+        private static OrganizationTree? FindByLabel(List<OrganizationTree> chain, string label) =>
+            chain.FirstOrDefault(n => string.Equals(n.Label, label, StringComparison.OrdinalIgnoreCase));
+
+        /// <summary>
+        /// Gets company initials — uses stored Code if available,
+        /// otherwise takes first letter of each word.
+        /// "Lal Technology" → "LT", "NetSolutions" → "NS"
+        /// </summary>
+        private static string GetInitials(OrganizationTree? node)
+        {
+            if (node == null) return "CO";
+            if (!string.IsNullOrWhiteSpace(node.Code)) return node.Code.ToUpper().Trim();
+
             var words = node.Name.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-            string abbr = words.Length > 1
-                ? string.Concat(words.Select(w => w[0])).ToUpper()   // "Lal Technology" → "LT"
-                : node.Name.Length >= maxLen
-                    ? node.Name[..maxLen].ToUpper()                   // "Karachi" → "KAR"
-                    : node.Name.ToUpper();
+            if (words.Length >= 2)
+                return string.Concat(words.Select(w => char.ToUpper(w[0])));
 
-            return abbr.Length > maxLen ? abbr[..maxLen] : abbr;
+            return node.Name.Length >= 2
+                ? node.Name[..Math.Min(3, node.Name.Length)].ToUpper()
+                : node.Name.ToUpper();
         }
 
         /// <summary>
-        /// Looks up the job title in the built-in map.
-        /// Falls back to first-letters of words, then first 3 chars.
+        /// Removes spaces and special chars from a name for use in a code.
+        /// "Lal Group" → "LalGroup", "Pakistan" → "Pakistan"
         /// </summary>
-        private static string ResolveJobCode(string jobTitle)
-        {
-            if (string.IsNullOrWhiteSpace(jobTitle)) return "POS";
-
-            // Exact match
-            if (_jobCodes.TryGetValue(jobTitle.Trim(), out var code))
-                return code;
-
-            // Partial match — check if any key is contained in the title
-            var lower = jobTitle.ToLower();
-            foreach (var kv in _jobCodes)
-                if (lower.Contains(kv.Key.ToLower()))
-                    return kv.Value;
-
-            // Fallback — initials of words
-            var words = jobTitle.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-            if (words.Length > 1)
-                return string.Concat(words.Select(w => w[0])).ToUpper();
-
-            // Last resort — first 3 chars
-            return jobTitle.Length >= 3
-                ? jobTitle[..3].ToUpper()
-                : jobTitle.ToUpper();
-        }
+        private static string SanitizeName(string name) =>
+            string.Concat(name.Split(' ', StringSplitOptions.RemoveEmptyEntries)
+                              .Select(w => char.ToUpper(w[0]) + w[1..]));
     }
 }
