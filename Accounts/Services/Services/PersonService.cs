@@ -383,23 +383,46 @@ namespace Accounts.Services.Services
         /// Format: [CompanyInitials][5-digit sequence starting at 10001]
         /// Example: "Lal Technology" → LT10001, LT10002, ...
         /// </summary>
+        //private async Task<string> GenerateLoginIdAsync(OrganizationTree companyNode)
+        //{
+        //    // Always derive prefix from company name initials (first letter of each word)
+        //    var prefix = GetCompanyInitials(companyNode);
+
+        //    // Count existing persons whose LoginId starts with this prefix
+        //    var existing = await _db.Persons.CountAsync(p => p.LoginId.StartsWith(prefix));
+        //    int seq = 10001 + existing;
+        //    string loginId;
+
+        //    // Guarantee uniqueness even if there are gaps from deletions
+        //    do
+        //    {
+        //        loginId = $"{prefix}{seq}";
+        //        seq++;
+        //    }
+        //    while (await _db.Persons.AnyAsync(p => p.LoginId == loginId));
+
+        //    return loginId;
+        //}
+
+
         private async Task<string> GenerateLoginIdAsync(OrganizationTree companyNode)
         {
             // Always derive prefix from company name initials (first letter of each word)
             var prefix = GetCompanyInitials(companyNode);
 
-            // Count existing persons whose LoginId starts with this prefix
-            var existing = await _db.Persons.CountAsync(p => p.LoginId.StartsWith(prefix));
-            int seq = 10001 + existing;
+            // We start looking for sequences starting at 10001
+            int seq = 10001;
             string loginId;
 
-            // Guarantee uniqueness even if there are gaps from deletions
+            // Loop until we find a LoginId that does NOT exist in the Identity (AspNetUsers) table.
+            // This perfectly prevents the "Username is already taken" error.
             do
             {
                 loginId = $"{prefix}{seq}";
                 seq++;
             }
-            while (await _db.Persons.AnyAsync(p => p.LoginId == loginId));
+            // We check _userManager instead of _db.Persons because AspNetUsers enforces the uniqueness
+            while (await _userManager.FindByNameAsync(loginId) != null);
 
             return loginId;
         }

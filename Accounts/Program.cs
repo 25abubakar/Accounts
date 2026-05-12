@@ -13,10 +13,13 @@ builder.Services.AddDbContext<ApplicationDbContext>(options =>
 builder.Services.AddDefaultIdentity<IdentityUser>(options =>
 {
     options.SignIn.RequireConfirmedAccount = false;
-    options.Password.RequireDigit = true;
     options.Password.RequiredLength = 6;
-    options.Password.RequireNonAlphanumeric = false;
-    options.Password.RequireUppercase = false;
+    options.Password.RequireDigit = true;
+
+    // 🌟 FIXED: These three lines allow auto-generated passwords like "AFG10001@"
+    options.Password.RequireLowercase = false;      // Doesn't need a-z
+    options.Password.RequireUppercase = true;       // Needs A-Z (for AFG)
+    options.Password.RequireNonAlphanumeric = true; // Needs symbol (for @)
 })
 .AddRoles<IdentityRole>()
 .AddEntityFrameworkStores<ApplicationDbContext>();
@@ -50,11 +53,11 @@ builder.Services.AddRazorPages();
 
 // ── Services (Clean Architecture) ────────────────────────────────────────
 builder.Services.AddScoped<VacancyCodeService>();
-builder.Services.AddScoped<Accounts.Services.Interfaces.IAuthService,         Accounts.Services.Services.AuthService>();
+builder.Services.AddScoped<Accounts.Services.Interfaces.IAuthService, Accounts.Services.Services.AuthService>();
 builder.Services.AddScoped<Accounts.Services.Interfaces.IOrganizationService, Accounts.Services.Services.OrganizationService>();
-builder.Services.AddScoped<Accounts.Services.Interfaces.IVacancyService,      Accounts.Services.Services.VacancyService>();
-builder.Services.AddScoped<Accounts.Services.Interfaces.IStaffService,        Accounts.Services.Services.StaffService>();
-builder.Services.AddScoped<Accounts.Services.Interfaces.IPersonService,       Accounts.Services.Services.PersonService>();
+builder.Services.AddScoped<Accounts.Services.Interfaces.IVacancyService, Accounts.Services.Services.VacancyService>();
+builder.Services.AddScoped<Accounts.Services.Interfaces.IStaffService, Accounts.Services.Services.StaffService>();
+builder.Services.AddScoped<Accounts.Services.Interfaces.IPersonService, Accounts.Services.Services.PersonService>();
 
 // Swagger
 builder.Services.AddEndpointsApiExplorer();
