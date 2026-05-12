@@ -12,6 +12,12 @@ namespace Accounts.Data
         {
         }
 
+        protected override void OnConfiguring(DbContextOptionsBuilder optionsBuilder)
+        {
+            optionsBuilder.ConfigureWarnings(w =>
+                w.Ignore(Microsoft.EntityFrameworkCore.Diagnostics.RelationalEventId.PendingModelChangesWarning));
+        }
+
         public DbSet<OrganizationTree> OrganizationTree   => Set<OrganizationTree>();
         public DbSet<Vacancy>          Vacancies           => Set<Vacancy>();
         public DbSet<Staff>            Staff               => Set<Staff>();

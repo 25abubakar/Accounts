@@ -1,8 +1,5 @@
-using Accounts.Data;
-using Accounts.Models;
-using Microsoft.AspNetCore.Identity;
+using Accounts.Services.Interfaces;
 using Microsoft.AspNetCore.Mvc;
-using Microsoft.EntityFrameworkCore;
 
 namespace Accounts.Controllers
 {
@@ -11,16 +8,11 @@ namespace Accounts.Controllers
     [Produces("application/json")]
     public class PersonsController : ControllerBase
     {
-        private readonly ApplicationDbContext      _db;
-        private readonly UserManager<IdentityUser> _userManager;
-        private readonly IWebHostEnvironment       _env;
+        private readonly IPersonService _service;
 
-        public PersonsController(ApplicationDbContext db, UserManager<IdentityUser> userManager, IWebHostEnvironment env)
-        {
-            _db = db; _userManager = userManager; _env = env;
-        }
+        public PersonsController(IPersonService service) => _service = service;
 
-        // ── DTOs ─────────────────────────────────────────────────────────────
+        // ── DTOs (kept here so frontend-facing types stay in one place) ───────
 
         public class AddressDto
         {
@@ -144,104 +136,54 @@ namespace Accounts.Controllers
             public AddressResponseDto PermanentAddress { get; set; } = new();
         }
 
-        // ── GET /api/persons/profiles ─────────────────────────────────────────
+        // ── Endpoints ─────────────────────────────────────────────────────────
 
+        /// <summary>Get all person profiles with full org + employment info</summary>
         [HttpGet("profiles")]
-        public async Task<IActionResult> GetProfiles()
-        {
-            var orgNodes = await _db.OrganizationTree.AsNoTracking().ToListAsync();
-            var persons  = await _db.Persons.AsNoTracking()
-                .Include(p => p.Addresses)
-                .Include(p => p.Staff).ThenInclude(s => s!.Vacancy)
-                .OrderByDescending(p => p.CreatedDate)
-                .ToListAsync();
-            return Ok(persons.Select(p => MapToProfile(p, orgNodes)));
-        }
+        public async Task<IActionResult> GetProfiles() =>
+            Ok(await _service.GetProfilesAsync());
 
-        // ── GET /api/persons/{id}/profile ─────────────────────────────────────
-
+        /// <summary>Get a single person's full profile</summary>
         [HttpGet("{id:guid}/profile")]
         public async Task<IActionResult> GetProfile(Guid id)
         {
-            var person = await _db.Persons.AsNoTracking()
-                .Include(p => p.Addresses)
-                .Include(p => p.Staff).ThenInclude(s => s!.Vacancy)
-                .FirstOrDefaultAsync(p => p.PersonId == id);
-            if (person == null) return NotFound(new { message = $"Person {id} not found." });
-            var orgNodes = await _db.OrganizationTree.AsNoTracking().ToListAsync();
-            return Ok(MapToProfile(person, orgNodes));
+            var profile = await _service.GetProfileAsync(id);
+            return profile == null ? NotFound(new { message = $"Person {id} not found." }) : Ok(profile);
         }
 
-        // ── GET /api/persons/org-tree ─────────────────────────────────────────
-
+        /// <summary>Get org tree for registration form dropdowns</summary>
         [HttpGet("org-tree")]
-        public async Task<IActionResult> GetOrgTree()
-        {
-            var all      = await _db.OrganizationTree.OrderBy(n => n.Name).ToListAsync();
-            var byParent = all.ToLookup(n => n.ParentId);
-            var roots = byParent[null].Select(c => new
-            {
-                id = c.Id, name = c.Name, label = c.Label, flagUrl = c.FlagUrl,
-                children = byParent[c.Id].Select(co => new
-                {
-                    id = co.Id, name = co.Name, label = co.Label,
-                    loginPrefix = ResolveCompanyPrefix(co),
-                    children = byParent[co.Id].Select(b => new { id = b.Id, name = b.Name, label = b.Label }).ToList()
-                }).ToList()
-            }).ToList();
-            return Ok(roots);
-        }
+        public async Task<IActionResult> GetOrgTree() =>
+            Ok(await _service.GetOrgTreeAsync());
 
-        // ── GET /api/persons/preview-login-id?branchId=5 ─────────────────────
-
+        /// <summary>Preview the login ID that will be generated for a branch</summary>
         [HttpGet("preview-login-id")]
         public async Task<IActionResult> PreviewLoginId([FromQuery] int branchId)
         {
             if (branchId <= 0) return BadRequest(new { message = "branchId is required." });
-            var all    = await _db.OrganizationTree.ToListAsync();
-            var branch = all.FirstOrDefault(n => n.Id == branchId);
-            if (branch == null) return NotFound(new { message = $"Branch {branchId} not found." });
-            var company = branch.ParentId.HasValue ? all.FirstOrDefault(n => n.Id == branch.ParentId) : null;
-            var loginId = await GenerateLoginIdAsync(company ?? branch, all);
-            return Ok(new { loginId, companyName = company?.Name ?? branch.Name });
+            var result = await _service.PreviewLoginIdAsync(branchId);
+            return result == null ? NotFound(new { message = $"Branch {branchId} not found." }) : Ok(result);
         }
 
-        // ── GET /api/persons ──────────────────────────────────────────────────
-
+        /// <summary>Get all persons</summary>
         [HttpGet]
-        public async Task<IActionResult> GetAll()
-        {
-            var persons  = await _db.Persons.Include(p => p.Addresses).Include(p => p.Staff)
-                .OrderByDescending(p => p.CreatedDate).ToListAsync();
-            var orgNodes = await _db.OrganizationTree.ToListAsync();
-            return Ok(persons.Select(p => MapToDto(p, orgNodes)));
-        }
+        public async Task<IActionResult> GetAll() =>
+            Ok(await _service.GetAllAsync());
 
-        // ── GET /api/persons/unassigned ───────────────────────────────────────
-
+        /// <summary>Get persons not yet assigned to any vacancy</summary>
         [HttpGet("unassigned")]
-        public async Task<IActionResult> GetUnassigned()
-        {
-            var persons  = await _db.Persons.Include(p => p.Addresses).Include(p => p.Staff)
-                .Where(p => p.Staff == null).OrderByDescending(p => p.CreatedDate).ToListAsync();
-            var orgNodes = await _db.OrganizationTree.ToListAsync();
-            return Ok(persons.Select(p => MapToDto(p, orgNodes)));
-        }
+        public async Task<IActionResult> GetUnassigned() =>
+            Ok(await _service.GetUnassignedAsync());
 
-        // ── GET /api/persons/{id} ─────────────────────────────────────────────
-
+        /// <summary>Get a single person by ID</summary>
         [HttpGet("{id:guid}")]
         public async Task<IActionResult> GetById(Guid id)
         {
-            var person = await _db.Persons.Include(p => p.Addresses).Include(p => p.Staff)
-                .FirstOrDefaultAsync(p => p.PersonId == id);
-            if (person == null) return NotFound(new { message = $"Person {id} not found." });
-            var orgNodes = await _db.OrganizationTree.ToListAsync();
-            return Ok(MapToDto(person, orgNodes));
+            var person = await _service.GetByIdAsync(id);
+            return person == null ? NotFound(new { message = $"Person {id} not found." }) : Ok(person);
         }
 
-        // ── POST /api/persons/register-raw ────────────────────────────────────
-
+        /// <summary>Debug endpoint — returns raw request body</summary>
         [HttpPost("register-raw")]
         public async Task<IActionResult> RegisterRaw()
         {
@@ -249,283 +191,44 @@ namespace Accounts.Controllers
             return Ok(new { received = await reader.ReadToEndAsync() });
         }
 
-        // ── POST /api/persons/register ────────────────────────────────────────
-
+        /// <summary>Register a new person with address and identity account</summary>
         [HttpPost("register")]
         public async Task<IActionResult> Register([FromBody] RegisterPersonDto? dto)
         {
-            if (dto is null) return BadRequest(new { message = "Request body missing. Use /register-raw to debug." });
-            if (string.IsNullOrWhiteSpace(dto.FullName)) return BadRequest(new { message = "FullName is required." });
-            if (string.IsNullOrWhiteSpace(dto.Password)) return BadRequest(new { message = "Password is required." });
-            if (dto.BranchId <= 0) return BadRequest(new { message = "BranchId is required." });
-
-            var orgNodes = await _db.OrganizationTree.ToListAsync();
-            var branch   = orgNodes.FirstOrDefault(n => n.Id == dto.BranchId);
-            if (branch == null) return BadRequest(new { message = $"Branch {dto.BranchId} not found." });
-            var company = branch.ParentId.HasValue ? orgNodes.FirstOrDefault(n => n.Id == branch.ParentId) : null;
-
-            var loginId = await GenerateLoginIdAsync(company ?? branch, orgNodes);
-
-            if (!string.IsNullOrWhiteSpace(dto.Email) && await _userManager.FindByEmailAsync(dto.Email) != null)
-                return Conflict(new { message = $"Email '{dto.Email}' is already registered." });
-
-            var identityUser = new IdentityUser
-            {
-                UserName = loginId,
-                Email    = string.IsNullOrWhiteSpace(dto.Email) ? null : dto.Email,
-                EmailConfirmed = true
-            };
-            var createResult = await _userManager.CreateAsync(identityUser, dto.Password);
-            if (!createResult.Succeeded)
-                return BadRequest(new { message = string.Join("; ", createResult.Errors.Select(e => e.Description)) });
-
-            var person = new Person
-            {
-                PersonId       = Guid.NewGuid(),
-                FullName       = dto.FullName.Trim(),
-                Phone          = dto.Phone?.Trim(),
-                Email          = dto.Email?.Trim(),
-                Gender         = dto.Gender?.Trim(),
-                DateOfBirth    = dto.DateOfBirth,
-                MaritalStatus  = dto.MaritalStatus?.Trim(),
-                LoginId        = loginId,
-                IdentityUserId = identityUser.Id,
-                BranchId       = dto.BranchId,
-                CreatedDate    = DateTime.UtcNow
-            };
-
-            var ca = dto.CurrentAddress;
-            var pa = dto.PermanentAddress;
-            if (ca != null) person.Addresses.Add(BuildAddress(ca, "Current", person.PersonId));
-            if (pa != null && !AddressesAreEqual(ca, pa)) person.Addresses.Add(BuildAddress(pa, "Permanent", person.PersonId));
-
-            _db.Persons.Add(person);
-            try { await _db.SaveChangesAsync(); }
-            catch { await _userManager.DeleteAsync(identityUser); throw; }
-
-            var created = await _db.Persons.Include(p => p.Addresses).Include(p => p.Staff)
-                .FirstOrDefaultAsync(p => p.PersonId == person.PersonId);
-            return CreatedAtAction(nameof(GetById), new { id = person.PersonId }, MapToDto(created!, orgNodes));
+            if (dto is null) return BadRequest(new { message = "Request body missing." });
+            var (person, error, statusCode) = await _service.RegisterAsync(dto);
+            if (error != null) return StatusCode(statusCode, new { message = error });
+            return CreatedAtAction(nameof(GetById), new { id = person!.PersonId }, person);
         }
 
-        // ── PUT /api/persons/{id} ─────────────────────────────────────────────
-
+        /// <summary>Update person info and addresses</summary>
         [HttpPut("{id:guid}")]
         public async Task<IActionResult> Update(Guid id, [FromBody] UpdatePersonDto? dto)
         {
             if (dto is null) return BadRequest(new { message = "Request body missing." });
-            if (string.IsNullOrWhiteSpace(dto.FullName)) return BadRequest(new { message = "FullName is required." });
-
-            var person = await _db.Persons.Include(p => p.Addresses).Include(p => p.Staff)
-                .FirstOrDefaultAsync(p => p.PersonId == id);
-            if (person == null) return NotFound(new { message = $"Person {id} not found." });
-
-            person.FullName      = dto.FullName.Trim();
-            person.Phone         = dto.Phone?.Trim();
-            person.Email         = dto.Email?.Trim();
-            person.Gender        = dto.Gender?.Trim();
-            person.DateOfBirth   = dto.DateOfBirth;
-            person.MaritalStatus = dto.MaritalStatus?.Trim();
-
-            if (!string.IsNullOrWhiteSpace(dto.Email))
-            {
-                var iu = await _userManager.FindByIdAsync(person.IdentityUserId);
-                if (iu != null && !string.Equals(iu.Email, dto.Email.Trim(), StringComparison.OrdinalIgnoreCase))
-                {
-                    iu.Email = dto.Email.Trim(); iu.NormalizedEmail = dto.Email.Trim().ToUpperInvariant();
-                    await _userManager.UpdateAsync(iu);
-                }
-            }
-
-            UpsertAddress(person, "Current",   dto.CurrentAddress);
-            UpsertAddress(person, "Permanent", dto.PermanentAddress);
-            await _db.SaveChangesAsync();
-
-            var orgNodes = await _db.OrganizationTree.ToListAsync();
-            var updated  = await _db.Persons.Include(p => p.Addresses).Include(p => p.Staff)
-                .FirstOrDefaultAsync(p => p.PersonId == id);
-            return Ok(MapToDto(updated!, orgNodes));
+            var (person, error) = await _service.UpdateAsync(id, dto);
+            if (error != null) return error.Contains("not found") ? NotFound(new { message = error }) : BadRequest(new { message = error });
+            return Ok(person);
         }
 
-        // ── POST /api/persons/{id}/upload-photo ───────────────────────────────
-
+        /// <summary>Upload person profile photo (multipart/form-data, field: photo, max 5MB)</summary>
         [HttpPost("{id:guid}/upload-photo")]
         [Consumes("multipart/form-data")]
         public async Task<IActionResult> UploadPhoto(Guid id, IFormFile photo)
         {
-            var person = await _db.Persons.FindAsync(id);
-            if (person == null) return NotFound(new { message = $"Person {id} not found." });
-            if (photo == null || photo.Length == 0) return BadRequest(new { message = "No file uploaded." });
-
-            var allowed = new[] { ".jpg", ".jpeg", ".png", ".webp" };
-            var ext = Path.GetExtension(photo.FileName).ToLowerInvariant();
-            if (!allowed.Contains(ext)) return BadRequest(new { message = "Only jpg, jpeg, png, webp allowed." });
-            if (photo.Length > 5 * 1024 * 1024) return BadRequest(new { message = "Max 5 MB." });
-
-            var dir = Path.Combine(_env.WebRootPath, "uploads", "persons");
-            Directory.CreateDirectory(dir);
-
-            if (!string.IsNullOrWhiteSpace(person.ProfilePhotoUrl))
-            {
-                var old = Path.Combine(_env.WebRootPath, person.ProfilePhotoUrl.TrimStart('/').Replace('/', Path.DirectorySeparatorChar));
-                if (System.IO.File.Exists(old)) System.IO.File.Delete(old);
-            }
-
-            var fileName = $"person_{id:N}_{Guid.NewGuid():N}{ext}";
-            using (var s = new FileStream(Path.Combine(dir, fileName), FileMode.Create))
-                await photo.CopyToAsync(s);
-
-            person.ProfilePhotoUrl = $"/uploads/persons/{fileName}";
-            await _db.SaveChangesAsync();
-            return Ok(new { photoUrl = person.ProfilePhotoUrl, fullUrl = $"{Request.Scheme}://{Request.Host}{person.ProfilePhotoUrl}" });
+            var baseUrl = $"{Request.Scheme}://{Request.Host}";
+            var (photoUrl, fullUrl, error) = await _service.UploadPhotoAsync(id, photo, baseUrl);
+            if (error != null) return error.Contains("not found") ? NotFound(new { message = error }) : BadRequest(new { message = error });
+            return Ok(new { photoUrl, fullUrl });
         }
 
-        // ── DELETE /api/persons/{id} ──────────────────────────────────────────
-
+        /// <summary>Delete a person and their identity account</summary>
         [HttpDelete("{id:guid}")]
         public async Task<IActionResult> Delete(Guid id)
         {
-            var person = await _db.Persons.FindAsync(id);
-            if (person == null) return NotFound(new { message = $"Person {id} not found." });
-
-            var iu = await _userManager.FindByIdAsync(person.IdentityUserId);
-            if (iu != null) await _userManager.DeleteAsync(iu);
-
-            if (!string.IsNullOrWhiteSpace(person.ProfilePhotoUrl))
-            {
-                var fp = Path.Combine(_env.WebRootPath, person.ProfilePhotoUrl.TrimStart('/').Replace('/', Path.DirectorySeparatorChar));
-                if (System.IO.File.Exists(fp)) System.IO.File.Delete(fp);
-            }
-
-            _db.Persons.Remove(person);
-            await _db.SaveChangesAsync();
-            return Ok(new { message = $"Person '{person.FullName}' deleted." });
-        }
-
-        // ── HELPERS ───────────────────────────────────────────────────────────
-
-        private async Task<string> GenerateLoginIdAsync(OrganizationTree node, List<OrganizationTree> all)
-        {
-            var prefix  = ResolveCompanyPrefix(node);
-            var existing = await _db.Persons.CountAsync(p => p.LoginId.StartsWith(prefix));
-            string id; int seq = 10001 + existing;
-            do { id = $"{prefix}{seq}"; seq++; }
-            while (await _db.Persons.AnyAsync(p => p.LoginId == id));
-            return id;
-        }
-
-        private static string ResolveCompanyPrefix(OrganizationTree node)
-        {
-            if (!string.IsNullOrWhiteSpace(node.Code)) return node.Code.ToUpper().Trim();
-            var words = node.Name.Split(' ', StringSplitOptions.RemoveEmptyEntries).Where(w => w.Length > 0).ToArray();
-            if (words.Length >= 2) return string.Concat(words.Take(4).Select(w => char.ToUpper(w[0])));
-            return node.Name.Length >= 2 ? node.Name[..Math.Min(3, node.Name.Length)].ToUpper() : node.Name.ToUpper();
-        }
-
-        private static PersonAddress BuildAddress(AddressDto src, string type, Guid personId) =>
-            new PersonAddress
-            {
-                AddressId = Guid.NewGuid(), PersonId = personId, AddressType = type,
-                AddressLine = src.AddressLine?.Trim(), Country = src.Country?.Trim(),
-                Province = src.Province?.Trim(), District = src.District?.Trim(),
-                City = src.City?.Trim(), PostalCode = src.PostalCode?.Trim()
-            };
-
-        private void UpsertAddress(Person person, string type, AddressDto? dto)
-        {
-            if (dto == null) return;
-            var ex = person.Addresses.FirstOrDefault(a => a.AddressType == type);
-            if (ex != null)
-            {
-                ex.AddressLine = dto.AddressLine?.Trim(); ex.Country   = dto.Country?.Trim();
-                ex.Province    = dto.Province?.Trim();    ex.District  = dto.District?.Trim();
-                ex.City        = dto.City?.Trim();        ex.PostalCode = dto.PostalCode?.Trim();
-            }
-            else
-            {
-                person.Addresses.Add(new PersonAddress
-                {
-                    AddressId = Guid.NewGuid(), PersonId = person.PersonId, AddressType = type,
-                    AddressLine = dto.AddressLine?.Trim(), Country = dto.Country?.Trim(),
-                    Province = dto.Province?.Trim(), District = dto.District?.Trim(),
-                    City = dto.City?.Trim(), PostalCode = dto.PostalCode?.Trim()
-                });
-            }
-        }
-
-        private static bool AddressesAreEqual(AddressDto? a, AddressDto? b)
-        {
-            if (a == null && b == null) return true;
-            if (a == null || b == null) return false;
-            return string.Equals(a.AddressLine, b.AddressLine, StringComparison.OrdinalIgnoreCase)
-                && string.Equals(a.Country,     b.Country,     StringComparison.OrdinalIgnoreCase)
-                && string.Equals(a.Province,    b.Province,    StringComparison.OrdinalIgnoreCase)
-                && string.Equals(a.District,    b.District,    StringComparison.OrdinalIgnoreCase)
-                && string.Equals(a.City,        b.City,        StringComparison.OrdinalIgnoreCase)
-                && string.Equals(a.PostalCode,  b.PostalCode,  StringComparison.OrdinalIgnoreCase);
-        }
-
-        private static AddressResponseDto ToAddressResponse(PersonAddress? a) =>
-            a == null ? new AddressResponseDto() : new AddressResponseDto
-            {
-                AddressLine = a.AddressLine, Country = a.Country, Province = a.Province,
-                District = a.District, City = a.City, PostalCode = a.PostalCode
-            };
-
-        private static PersonDto MapToDto(Person p, List<OrganizationTree> org)
-        {
-            var branch  = p.BranchId.HasValue ? org.FirstOrDefault(n => n.Id == p.BranchId) : null;
-            var company = branch?.ParentId.HasValue == true ? org.FirstOrDefault(n => n.Id == branch.ParentId) : null;
-            var country = company?.ParentId.HasValue == true ? org.FirstOrDefault(n => n.Id == company.ParentId) : null;
-
-            var cur  = p.Addresses.FirstOrDefault(a => a.AddressType == "Current");
-            var perm = p.Addresses.FirstOrDefault(a => a.AddressType == "Permanent");
-            var curDto  = ToAddressResponse(cur);
-            var permDto = ToAddressResponse(perm ?? cur);
-
-            bool same = perm == null ||
-                (string.Equals(curDto.AddressLine, permDto.AddressLine, StringComparison.OrdinalIgnoreCase)
-                 && string.Equals(curDto.Country,  permDto.Country,     StringComparison.OrdinalIgnoreCase)
-                 && string.Equals(curDto.City,     permDto.City,        StringComparison.OrdinalIgnoreCase));
-
-            return new PersonDto
-            {
-                PersonId = p.PersonId, LoginId = p.LoginId, FullName = p.FullName,
-                Gender = p.Gender, DateOfBirth = p.DateOfBirth, MaritalStatus = p.MaritalStatus,
-                Phone = p.Phone, Email = p.Email, PhotoUrl = p.ProfilePhotoUrl,
-                IsHired = p.Staff != null, RegisteredAt = p.CreatedDate.ToString("o"),
-                BranchId = p.BranchId, BranchName = branch?.Name, CompanyName = company?.Name, CountryName = country?.Name,
-                CurrentAddress = curDto, PermanentAddress = permDto, SameAddress = same
-            };
-        }
-
-        private static PersonProfileDto MapToProfile(Person p, List<OrganizationTree> org)
-        {
-            var branch  = p.BranchId.HasValue ? org.FirstOrDefault(n => n.Id == p.BranchId) : null;
-            var company = branch?.ParentId.HasValue == true ? org.FirstOrDefault(n => n.Id == branch.ParentId) : null;
-            var country = company?.ParentId.HasValue == true ? org.FirstOrDefault(n => n.Id == company.ParentId) : null;
-
-            var parts    = p.FullName.Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries);
-            var initials = parts.Length >= 2
-                ? $"{char.ToUpper(parts[0][0])}{char.ToUpper(parts[1][0])}"
-                : p.FullName.Length >= 1 ? char.ToUpper(p.FullName[0]).ToString() : "?";
-
-            var cur  = p.Addresses.FirstOrDefault(a => a.AddressType == "Current");
-            var perm = p.Addresses.FirstOrDefault(a => a.AddressType == "Permanent");
-
-            return new PersonProfileDto
-            {
-                PersonId = p.PersonId, LoginId = p.LoginId, FullName = p.FullName, Initials = initials,
-                Gender = p.Gender, DateOfBirth = p.DateOfBirth, MaritalStatus = p.MaritalStatus,
-                Phone = p.Phone, Email = p.Email, PhotoUrl = p.ProfilePhotoUrl, RegisteredAt = p.CreatedDate,
-                BranchId = p.BranchId, BranchName = branch?.Name, CompanyName = company?.Name,
-                CountryName = country?.Name, CountryFlag = country?.FlagUrl,
-                IsHired = p.Staff != null, StaffId = p.Staff?.StaffId, JoiningDate = p.Staff?.JoiningDate,
-                VacancyId = p.Staff?.VacancyId, VacancyCode = p.Staff?.Vacancy?.VacancyCode,
-                JobTitle = p.Staff?.Vacancy?.JobTitle, Department = p.Staff?.Vacancy?.Department,
-                CurrentAddress   = ToAddressResponse(cur),
-                PermanentAddress = ToAddressResponse(perm ?? cur)
-            };
+            var (success, message) = await _service.DeleteAsync(id);
+            if (!success) return message.Contains("not found") ? NotFound(new { message }) : BadRequest(new { message });
+            return Ok(new { message });
         }
     }
 }

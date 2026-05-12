@@ -1,340 +1,105 @@
-using Accounts.Data;
 using Accounts.Models;
+using Accounts.Services.Interfaces;
 using Microsoft.AspNetCore.Mvc;
-using Microsoft.EntityFrameworkCore;
 
 namespace Accounts.Controllers
 {
     [ApiController]
-    [Route("api/[controller]")]
+    [Route("api/employees")]
     [Produces("application/json")]
     public class StaffController : ControllerBase
     {
-        private readonly ApplicationDbContext _db;
-        private readonly IWebHostEnvironment  _env;
+        private readonly IStaffService _service;
 
-        public StaffController(ApplicationDbContext db, IWebHostEnvironment env)
-        {
-            _db  = db;
-            _env = env;
-        }
+        public StaffController(IStaffService service) => _service = service;
 
-        // GET /api/staff
+        /// <summary>Get all employees with vacancy and org info</summary>
         [HttpGet]
-        public async Task<IActionResult> GetAll()
-        {
-            var list = await GetStaffWithIncludes().ToListAsync();
-            return Ok(list.Select(MapToDto));
-        }
+        public async Task<IActionResult> GetAll() =>
+            Ok(await _service.GetAllAsync());
 
-        // GET /api/staff/{id}
+        /// <summary>Get a single employee by ID</summary>
         [HttpGet("{id:guid}")]
         public async Task<IActionResult> GetById(Guid id)
         {
-            var s = await GetStaffWithIncludes().FirstOrDefaultAsync(x => x.StaffId == id);
-            if (s == null) return NotFound(new { message = $"Staff {id} not found." });
-            return Ok(MapToDto(s));
+            var s = await _service.GetByIdAsync(id);
+            return s == null ? NotFound(new { message = $"Employee {id} not found." }) : Ok(s);
         }
 
-        // GET /api/staff/search?q=ali
+        /// <summary>Search employees by name or email</summary>
         [HttpGet("search")]
         public async Task<IActionResult> Search([FromQuery] string q)
         {
-            if (string.IsNullOrWhiteSpace(q))
-                return BadRequest(new { message = "Query 'q' is required." });
-
-            var list = await GetStaffWithIncludes()
-                .Where(s => s.FullName.Contains(q) || (s.Email != null && s.Email.Contains(q)))
-                .ToListAsync();
-
-            return Ok(list.Select(MapToDto));
+            if (string.IsNullOrWhiteSpace(q)) return BadRequest(new { message = "Query 'q' is required." });
+            return Ok(await _service.SearchAsync(q));
         }
 
-        // POST /api/staff/hire/{vacancyId}
+        /// <summary>Hire an employee on a vacancy — marks vacancy as filled</summary>
         [HttpPost("hire/{vacancyId:guid}")]
         public async Task<IActionResult> Hire(Guid vacancyId, [FromBody] HireStaffDto dto)
         {
             if (!ModelState.IsValid) return BadRequest(ModelState);
-
-            var vacancy = await _db.Vacancies.FindAsync(vacancyId);
-            if (vacancy == null)
-                return NotFound(new { message = $"Vacancy {vacancyId} not found." });
-
-            if (vacancy.IsFilled)
-                return BadRequest(new { message = $"Vacancy '{vacancy.VacancyCode}' is already filled." });
-
-            // ── Try to find a matching Person to link (by email, then by name) ──
-            Person? linkedPerson = null;
-            if (!string.IsNullOrWhiteSpace(dto.Email))
-                linkedPerson = await _db.Persons.FirstOrDefaultAsync(p => p.Email == dto.Email.Trim());
-
-            var staff = new Staff
-            {
-                StaffId     = Guid.NewGuid(),
-                FullName    = dto.FullName,
-                Email       = dto.Email,
-                Phone       = dto.Phone,
-                VacancyId   = vacancyId,
-                PersonId    = linkedPerson?.PersonId,   // ← link Person if found
-                JoiningDate = DateTime.UtcNow
-            };
-
-            _db.Staff.Add(staff);
-            vacancy.IsFilled = true;
-            await _db.SaveChangesAsync();
-
-            var created = await GetStaffWithIncludes().FirstOrDefaultAsync(s => s.StaffId == staff.StaffId);
-            return CreatedAtAction(nameof(GetById), new { id = staff.StaffId }, MapToDto(created!));
+            var (staff, error) = await _service.HireAsync(vacancyId, dto);
+            if (error != null) return error.Contains("not found") ? NotFound(new { message = error }) : BadRequest(new { message = error });
+            return CreatedAtAction(nameof(GetById), new { id = staff!.StaffId }, staff);
         }
 
-        // POST /api/staff/hire-person/{vacancyId}?personId={personId}
-        // Hire a registered Person directly — uses their existing name/email/phone.
+        /// <summary>Hire a registered Person directly onto a vacancy</summary>
         [HttpPost("hire-person/{vacancyId:guid}")]
         public async Task<IActionResult> HirePerson(Guid vacancyId, [FromQuery] Guid personId)
         {
-            var vacancy = await _db.Vacancies.FindAsync(vacancyId);
-            if (vacancy == null)
-                return NotFound(new { message = $"Vacancy {vacancyId} not found." });
-
-            if (vacancy.IsFilled)
-                return BadRequest(new { message = $"Vacancy '{vacancy.VacancyCode}' is already filled." });
-
-            var person = await _db.Persons.FindAsync(personId);
-            if (person == null)
-                return NotFound(new { message = $"Person {personId} not found." });
-
-            // Check person isn't already hired
-            var alreadyHired = await _db.Staff.AnyAsync(s => s.PersonId == personId);
-            if (alreadyHired)
-                return BadRequest(new { message = $"Person '{person.FullName}' is already hired." });
-
-            var staff = new Staff
-            {
-                StaffId     = Guid.NewGuid(),
-                FullName    = person.FullName,
-                Email       = person.Email,
-                Phone       = person.Phone,
-                VacancyId   = vacancyId,
-                PersonId    = personId,            // ← direct link
-                JoiningDate = DateTime.UtcNow
-            };
-
-            _db.Staff.Add(staff);
-            vacancy.IsFilled = true;
-            await _db.SaveChangesAsync();
-
-            var created = await GetStaffWithIncludes().FirstOrDefaultAsync(s => s.StaffId == staff.StaffId);
-            return CreatedAtAction(nameof(GetById), new { id = staff.StaffId }, MapToDto(created!));
+            var (staff, error) = await _service.HirePersonAsync(vacancyId, personId);
+            if (error != null) return error.Contains("not found") ? NotFound(new { message = error }) : BadRequest(new { message = error });
+            return CreatedAtAction(nameof(GetById), new { id = staff!.StaffId }, staff);
         }
 
-        // PUT /api/staff/{id}
+        /// <summary>Update employee name, email, phone</summary>
         [HttpPut("{id:guid}")]
         public async Task<IActionResult> Update(Guid id, [FromBody] UpdateStaffDto dto)
         {
             if (!ModelState.IsValid) return BadRequest(ModelState);
-
-            var staff = await _db.Staff.FindAsync(id);
-            if (staff == null) return NotFound(new { message = $"Staff {id} not found." });
-
-            staff.FullName = dto.FullName;
-            staff.Email    = dto.Email;
-            staff.Phone    = dto.Phone;
-
-            await _db.SaveChangesAsync();
-
-            var updated = await GetStaffWithIncludes().FirstOrDefaultAsync(s => s.StaffId == id);
-            return Ok(MapToDto(updated!));
+            var (staff, error) = await _service.UpdateAsync(id, dto);
+            if (error != null) return NotFound(new { message = error });
+            return Ok(staff);
         }
 
-        // POST /api/staff/{id}/upload-photo
+        /// <summary>Upload employee profile picture (multipart/form-data, field: photo, max 5MB)</summary>
         [HttpPost("{id:guid}/upload-photo")]
         [Consumes("multipart/form-data")]
         public async Task<IActionResult> UploadPhoto(Guid id, IFormFile photo)
         {
-            var staff = await _db.Staff.FindAsync(id);
-            if (staff == null) return NotFound(new { message = $"Staff {id} not found." });
-
-            if (photo == null || photo.Length == 0)
-                return BadRequest(new { message = "No file uploaded." });
-
-            var allowed = new[] { ".jpg", ".jpeg", ".png", ".webp" };
-            var ext = Path.GetExtension(photo.FileName).ToLowerInvariant();
-            if (!allowed.Contains(ext))
-                return BadRequest(new { message = "Only jpg, jpeg, png, webp files are allowed." });
-
-            if (photo.Length > 5 * 1024 * 1024)
-                return BadRequest(new { message = "File size must be under 5MB." });
-
-            var uploadsDir = Path.Combine(_env.WebRootPath, "uploads", "staff");
-            Directory.CreateDirectory(uploadsDir);
-
-            if (!string.IsNullOrWhiteSpace(staff.PhotoUrl))
-            {
-                var oldFile = Path.Combine(_env.WebRootPath,
-                    staff.PhotoUrl.TrimStart('/').Replace('/', Path.DirectorySeparatorChar));
-                if (System.IO.File.Exists(oldFile))
-                    System.IO.File.Delete(oldFile);
-            }
-
-            var fileName = $"staff_{id:N}_{Guid.NewGuid():N}{ext}";
-            var filePath = Path.Combine(uploadsDir, fileName);
-
-            using (var stream = new FileStream(filePath, FileMode.Create))
-                await photo.CopyToAsync(stream);
-
-            staff.PhotoUrl = $"/uploads/staff/{fileName}";
-            await _db.SaveChangesAsync();
-
-            return Ok(new
-            {
-                message  = "Photo uploaded successfully.",
-                photoUrl = staff.PhotoUrl,
-                fullUrl  = $"{Request.Scheme}://{Request.Host}{staff.PhotoUrl}"
-            });
+            var baseUrl = $"{Request.Scheme}://{Request.Host}";
+            var (photoUrl, fullUrl, error) = await _service.UploadPhotoAsync(id, photo, baseUrl);
+            if (error != null) return error.Contains("not found") ? NotFound(new { message = error }) : BadRequest(new { message = error });
+            return Ok(new { message = "Photo uploaded successfully.", photoUrl, fullUrl });
         }
 
-        // DELETE /api/staff/{id}/photo
+        /// <summary>Remove employee profile picture</summary>
         [HttpDelete("{id:guid}/photo")]
         public async Task<IActionResult> DeletePhoto(Guid id)
         {
-            var staff = await _db.Staff.FindAsync(id);
-            if (staff == null) return NotFound(new { message = $"Staff {id} not found." });
-
-            if (string.IsNullOrWhiteSpace(staff.PhotoUrl))
-                return BadRequest(new { message = "No photo to delete." });
-
-            var filePath = Path.Combine(_env.WebRootPath,
-                staff.PhotoUrl.TrimStart('/').Replace('/', Path.DirectorySeparatorChar));
-            if (System.IO.File.Exists(filePath))
-                System.IO.File.Delete(filePath);
-
-            staff.PhotoUrl = null;
-            await _db.SaveChangesAsync();
-
-            return Ok(new { message = "Photo removed." });
+            var (success, message) = await _service.DeletePhotoAsync(id);
+            if (!success) return message.Contains("not found") ? NotFound(new { message }) : BadRequest(new { message });
+            return Ok(new { message });
         }
 
-        // PUT /api/staff/{id}/transfer
+        /// <summary>Transfer employee to a different vacancy (old vacancy becomes vacant)</summary>
         [HttpPut("{id:guid}/transfer")]
         public async Task<IActionResult> Transfer(Guid id, [FromBody] TransferStaffDto dto)
         {
             if (!ModelState.IsValid) return BadRequest(ModelState);
-
-            var staff = await _db.Staff.FindAsync(id);
-            if (staff == null) return NotFound(new { message = $"Staff {id} not found." });
-
-            if (!staff.VacancyId.HasValue)
-                return BadRequest(new { message = "Staff member is not assigned to any vacancy." });
-
-            // ── Load current vacancy with its full org chain (Branch → Company → Country) ──
-            var currentVacancy = await _db.Vacancies
-                .Include(v => v.Organization)
-                    .ThenInclude(o => o!.Parent)
-                        .ThenInclude(p => p!.Parent)
-                .FirstOrDefaultAsync(v => v.VacancyId == staff.VacancyId.Value);
-
-            if (currentVacancy == null)
-                return NotFound(new { message = "Current vacancy not found." });
-
-            // ── Load target vacancy with its full org chain ──────────────────────────────
-            var newVacancy = await _db.Vacancies
-                .Include(v => v.Organization)
-                    .ThenInclude(o => o!.Parent)
-                        .ThenInclude(p => p!.Parent)
-                .FirstOrDefaultAsync(v => v.VacancyId == dto.NewVacancyId);
-
-            if (newVacancy == null)
-                return NotFound(new { message = $"Vacancy {dto.NewVacancyId} not found." });
-
-            if (newVacancy.IsFilled)
-                return BadRequest(new { message = $"Vacancy '{newVacancy.VacancyCode}' is already filled." });
-
-            // ── Traverse org tree: Branch → Company → Country ────────────────────────────
-            var currentBranch  = currentVacancy.Organization;
-            var currentCompany = currentBranch?.Parent;
-            var currentCountry = currentCompany?.Parent;
-
-            var targetBranch  = newVacancy.Organization;
-            var targetCompany = targetBranch?.Parent;
-            var targetCountry = targetCompany?.Parent;
-
-            // ── Cross-company / cross-country transfer guard ─────────────────────────────
-            if (currentCompany?.Id != targetCompany?.Id || currentCountry?.Id != targetCountry?.Id)
-                return BadRequest(new { message = "Transfers are strictly limited to roles within the same Company and Country." });
-
-            // ── Perform the transfer ─────────────────────────────────────────────────────
-            var oldVacancy = await _db.Vacancies.FindAsync(staff.VacancyId.Value);
-            if (oldVacancy != null) oldVacancy.IsFilled = false;
-
-            staff.VacancyId     = dto.NewVacancyId;
-            newVacancy.IsFilled = true;
-            await _db.SaveChangesAsync();
-
-            var updated = await GetStaffWithIncludes().FirstOrDefaultAsync(s => s.StaffId == id);
-            return Ok(MapToDto(updated!));
+            var (staff, error) = await _service.TransferAsync(id, dto);
+            if (error != null) return error.Contains("not found") ? NotFound(new { message = error }) : BadRequest(new { message = error });
+            return Ok(staff);
         }
 
-        // DELETE /api/staff/{id}
+        /// <summary>Remove an employee — their vacancy becomes vacant again</summary>
         [HttpDelete("{id:guid}")]
         public async Task<IActionResult> Delete(Guid id)
         {
-            var staff = await _db.Staff.FindAsync(id);
-            if (staff == null) return NotFound(new { message = $"Staff {id} not found." });
-
-            // ── Free the vacancy ──────────────────────────────────────
-            if (staff.VacancyId.HasValue)
-            {
-                var vacancy = await _db.Vacancies.FindAsync(staff.VacancyId.Value);
-                if (vacancy != null) vacancy.IsFilled = false;
-            }
-
-            // ── Delete photo file ─────────────────────────────────────
-            if (!string.IsNullOrWhiteSpace(staff.PhotoUrl))
-            {
-                var filePath = Path.Combine(_env.WebRootPath,
-                    staff.PhotoUrl.TrimStart('/').Replace('/', Path.DirectorySeparatorChar));
-                if (System.IO.File.Exists(filePath))
-                    System.IO.File.Delete(filePath);
-            }
-
-            // ── Remove the Staff record (Person.Staff nav becomes null → isHired = false) ──
-            _db.Staff.Remove(staff);
-            await _db.SaveChangesAsync();
-
-            return Ok(new { message = $"Employee '{staff.FullName}' removed. Vacancy is now vacant." });
-        }
-
-        // ── HELPERS ───────────────────────────────────────────────────────────
-
-        private IQueryable<Staff> GetStaffWithIncludes() =>
-            _db.Staff
-               .Include(s => s.Vacancy)
-                   .ThenInclude(v => v!.Organization)
-                       .ThenInclude(o => o!.Parent)
-                           .ThenInclude(p => p!.Parent);
-
-        private static StaffDto MapToDto(Staff s)
-        {
-            var branch  = s.Vacancy?.Organization;
-            var company = branch?.Parent;
-            var country = company?.Parent;
-
-            return new StaffDto
-            {
-                StaffId     = s.StaffId,
-                FullName    = s.FullName,
-                Email       = s.Email,
-                Phone       = s.Phone,
-                PhotoUrl    = s.PhotoUrl,
-                VacancyId   = s.VacancyId,
-                VacancyCode = s.Vacancy?.VacancyCode,
-                JobTitle    = s.Vacancy?.JobTitle,
-                Department  = s.Vacancy?.Department,   // ← populated
-                BranchName  = branch?.Name,
-                CompanyName = company?.Name,
-                CountryName = country?.Name,            // ← always populated via org chain
-                JoiningDate = s.JoiningDate
-            };
+            var (success, message) = await _service.DeleteAsync(id);
+            if (!success) return message.Contains("not found") ? NotFound(new { message }) : BadRequest(new { message });
+            return Ok(new { message });
         }
     }
 }

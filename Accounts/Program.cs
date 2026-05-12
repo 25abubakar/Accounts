@@ -48,8 +48,13 @@ builder.Services.AddCors(options =>
 builder.Services.AddControllers();
 builder.Services.AddRazorPages();
 
-// Services
+// ── Services (Clean Architecture) ────────────────────────────────────────
 builder.Services.AddScoped<VacancyCodeService>();
+builder.Services.AddScoped<Accounts.Services.Interfaces.IAuthService,         Accounts.Services.Services.AuthService>();
+builder.Services.AddScoped<Accounts.Services.Interfaces.IOrganizationService, Accounts.Services.Services.OrganizationService>();
+builder.Services.AddScoped<Accounts.Services.Interfaces.IVacancyService,      Accounts.Services.Services.VacancyService>();
+builder.Services.AddScoped<Accounts.Services.Interfaces.IStaffService,        Accounts.Services.Services.StaffService>();
+builder.Services.AddScoped<Accounts.Services.Interfaces.IPersonService,       Accounts.Services.Services.PersonService>();
 
 // Swagger
 builder.Services.AddEndpointsApiExplorer();
