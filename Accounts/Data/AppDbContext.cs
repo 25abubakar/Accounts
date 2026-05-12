@@ -40,9 +40,7 @@ namespace Accounts.Data
             {
                 e.ToTable("Vacancies");
                 e.HasKey(x => x.VacancyId);
-                // Do NOT use HasDefaultValueSql for PK — we set it in code (Guid.NewGuid())
-                // Using HasDefaultValueSql causes EF to treat it as DB-generated and
-                // lose the concurrency token, causing DbUpdateConcurrencyException on hire.
+                e.Property(x => x.VacancyId).HasDefaultValueSql("NEWID()").ValueGeneratedNever();
                 e.Property(x => x.IsFilled).HasDefaultValue(false);
                 e.Property(x => x.CreatedDate).HasDefaultValueSql("GETDATE()");
 
@@ -63,7 +61,7 @@ namespace Accounts.Data
             {
                 e.ToTable("Staff");
                 e.HasKey(x => x.StaffId);
-                // PK set in code — do not use HasDefaultValueSql to avoid concurrency issues
+                e.Property(x => x.StaffId).HasDefaultValueSql("NEWID()").ValueGeneratedNever();
                 e.Property(x => x.JoiningDate).HasDefaultValueSql("GETDATE()");
                 e.Property(x => x.PhotoUrl).HasMaxLength(500).IsRequired(false);
 
@@ -82,7 +80,7 @@ namespace Accounts.Data
             {
                 e.ToTable("Persons");
                 e.HasKey(x => x.PersonId);
-                // PK set in code — do not use HasDefaultValueSql
+                e.Property(x => x.PersonId).HasDefaultValueSql("NEWID()").ValueGeneratedNever();
                 e.Property(x => x.CreatedDate).HasDefaultValueSql("GETDATE()");
                 e.Property(x => x.LoginId).HasMaxLength(30).IsRequired();
                 e.Property(x => x.IdentityUserId).HasMaxLength(450).IsRequired();
@@ -99,7 +97,7 @@ namespace Accounts.Data
             {
                 e.ToTable("PersonAddresses");
                 e.HasKey(x => x.AddressId);
-                // PK set in code — do not use HasDefaultValueSql
+                e.Property(x => x.AddressId).HasDefaultValueSql("NEWID()").ValueGeneratedNever();
                 e.Property(x => x.AddressType).HasMaxLength(20).IsRequired();
 
                 // Unique: one Current + one Permanent per Person
