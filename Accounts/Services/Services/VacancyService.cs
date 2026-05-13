@@ -74,7 +74,9 @@ namespace Accounts.Services.Services
         {
             var orgNode = await _db.OrganizationTree.FindAsync(organizationId);
             if (orgNode == null) return null;
-            return await _codeService.GenerateAsync(organizationId, jobTitle);
+
+            // Use PreviewAsync — reads counter WITHOUT incrementing it
+            return await _codeService.PreviewAsync(organizationId, jobTitle);
         }
 
         public async Task<(VacancyDto? Vacancy, string? Error)> CreateAsync(CreateVacancyDto dto)
@@ -101,6 +103,64 @@ namespace Accounts.Services.Services
 
             var created = await WithIncludes().FirstOrDefaultAsync(v => v.VacancyId == vacancy.VacancyId);
             return (MapToDto(created!), null);
+        }
+
+        /// <summary>
+        /// Creates multiple vacancies in one request.
+        /// The loop runs server-side — frontend just sends VacancyCount.
+        /// Each vacancy gets a unique auto-incremented code (race-condition safe).
+        ///
+        /// Example: VacancyCount = 5, JobTitle = "Developer"
+        /// Creates: Pakistan-LalGroup-LT-1
+        ///          Pakistan-LalGroup-LT-2
+        ///          Pakistan-LalGroup-LT-3
+        ///          Pakistan-LalGroup-LT-4
+        ///          Pakistan-LalGroup-LT-5
+        /// </summary>
+        public async Task<(IEnumerable<VacancyDto> Created, IEnumerable<string> Errors)> CreateBulkAsync(
+            CreateVacancyDto dto)
+        {
+            var orgNode = await _db.OrganizationTree.FindAsync(dto.OrganizationId);
+            if (orgNode == null)
+                return ([], [$"Organization node {dto.OrganizationId} not found."]);
+
+            int count = dto.VacancyCount < 1 ? 1 : dto.VacancyCount;
+
+            var created = new List<VacancyDto>();
+            var errors  = new List<string>();
+
+            // Loop runs entirely on the backend — each iteration gets a unique code
+            // from the atomic VacancyCounters table (no race conditions)
+            for (int i = 0; i < count; i++)
+            {
+                try
+                {
+                    var vacancyCode = await _codeService.GenerateAsync(dto.OrganizationId, dto.JobTitle);
+
+                    var vacancy = new Vacancy
+                    {
+                        VacancyId      = Guid.NewGuid(),
+                        OrganizationId = dto.OrganizationId,
+                        VacancyCode    = vacancyCode,
+                        JobTitle       = dto.JobTitle,
+                        Department     = dto.Department,
+                        IsFilled       = false,
+                        CreatedDate    = DateTime.UtcNow
+                    };
+
+                    _db.Vacancies.Add(vacancy);
+                    await _db.SaveChangesAsync();
+
+                    var saved = await WithIncludes().FirstOrDefaultAsync(v => v.VacancyId == vacancy.VacancyId);
+                    if (saved != null) created.Add(MapToDto(saved));
+                }
+                catch (Exception ex)
+                {
+                    errors.Add($"Vacancy {i + 1} failed: {ex.Message}");
+                }
+            }
+
+            return (created, errors);
         }
 
         public async Task<(VacancyDto? Vacancy, string? Error)> UpdateAsync(Guid id, UpdateVacancyDto dto)

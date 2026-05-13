@@ -1,3 +1,4 @@
+using Accounts.DTOs;
 using Accounts.Services.Interfaces;
 using Microsoft.AspNetCore.Mvc;
 
@@ -12,131 +13,7 @@ namespace Accounts.Controllers
 
         public PersonsController(IPersonService service) => _service = service;
 
-        // ── DTOs (kept here so frontend-facing types stay in one place) ───────
-
-        public class AddressDto
-        {
-            public string? AddressLine { get; set; }
-            public string? Country     { get; set; }
-            public string? Province    { get; set; }
-            public string? District    { get; set; }
-            public string? City        { get; set; }
-            public string? PostalCode  { get; set; }
-        }
-
-        public class AddressResponseDto
-        {
-            public string? AddressLine { get; set; }
-            public string? Country     { get; set; }
-            public string? Province    { get; set; }
-            public string? District    { get; set; }
-            public string? City        { get; set; }
-            public string? PostalCode  { get; set; }
-        }
-
-        public class UpdatePersonDto
-        {
-            public string    FullName      { get; set; } = string.Empty;
-            public string?   Phone         { get; set; }
-            public string?   Email         { get; set; }
-            public string?   Gender        { get; set; }
-            public DateTime? DateOfBirth   { get; set; }
-            public string?   MaritalStatus { get; set; }
-            public AddressDto? CurrentAddress   { get; set; }
-            public AddressDto? PermanentAddress { get; set; }
-        }
-
-        public class RegisterPersonDto
-        {
-            public string    FullName      { get; set; } = string.Empty;
-            public string?   Phone         { get; set; }
-            public string?   Email         { get; set; }
-            public string?   Gender        { get; set; }
-            public DateTime? DateOfBirth   { get; set; }
-            public string?   MaritalStatus { get; set; }
-            public int       BranchId      { get; set; }
-            // Password is NOT required — auto-generated as LoginId@
-
-            [System.Text.Json.Serialization.JsonPropertyName("currentAddress")]
-            public System.Text.Json.JsonElement? CurrentAddressRaw { get; set; }
-
-            [System.Text.Json.Serialization.JsonPropertyName("permanentAddress")]
-            public System.Text.Json.JsonElement? PermanentAddressRaw { get; set; }
-
-            [System.Text.Json.Serialization.JsonIgnore]
-            public AddressDto? CurrentAddress => ParseAddress(CurrentAddressRaw);
-
-            [System.Text.Json.Serialization.JsonIgnore]
-            public AddressDto? PermanentAddress => ParseAddress(PermanentAddressRaw);
-
-            private static AddressDto? ParseAddress(System.Text.Json.JsonElement? raw)
-            {
-                if (raw is null) return null;
-                var el = raw.Value;
-                if (el.ValueKind == System.Text.Json.JsonValueKind.Object)
-                    return System.Text.Json.JsonSerializer.Deserialize<AddressDto>(el.GetRawText());
-                if (el.ValueKind == System.Text.Json.JsonValueKind.String)
-                {
-                    var inner = el.GetString();
-                    if (string.IsNullOrWhiteSpace(inner)) return null;
-                    return System.Text.Json.JsonSerializer.Deserialize<AddressDto>(inner);
-                }
-                return null;
-            }
-        }
-
-        public class PersonDto
-        {
-            public Guid      PersonId      { get; set; }
-            public string    LoginId       { get; set; } = string.Empty;
-            public string    FullName      { get; set; } = string.Empty;
-            public string?   Gender        { get; set; }
-            public DateTime? DateOfBirth   { get; set; }
-            public string?   MaritalStatus { get; set; }
-            public string?   Phone         { get; set; }
-            public string?   Email         { get; set; }
-            public string?   PhotoUrl      { get; set; }
-            public bool      IsHired       { get; set; }
-            public string    RegisteredAt  { get; set; } = string.Empty;
-            public int?      BranchId      { get; set; }
-            public string?   BranchName    { get; set; }
-            public string?   CompanyName   { get; set; }
-            public string?   CountryName   { get; set; }
-            public AddressResponseDto CurrentAddress   { get; set; } = new();
-            public AddressResponseDto PermanentAddress { get; set; } = new();
-            public bool               SameAddress      { get; set; }
-        }
-
-        public class PersonProfileDto
-        {
-            public Guid      PersonId      { get; set; }
-            public string    LoginId       { get; set; } = string.Empty;
-            public string    FullName      { get; set; } = string.Empty;
-            public string    Initials      { get; set; } = string.Empty;
-            public string?   Gender        { get; set; }
-            public DateTime? DateOfBirth   { get; set; }
-            public string?   MaritalStatus { get; set; }
-            public string?   Phone         { get; set; }
-            public string?   Email         { get; set; }
-            public string?   PhotoUrl      { get; set; }
-            public DateTime  RegisteredAt  { get; set; }
-            public int?      BranchId      { get; set; }
-            public string?   BranchName    { get; set; }
-            public string?   CompanyName   { get; set; }
-            public string?   CountryName   { get; set; }
-            public string?   CountryFlag   { get; set; }
-            public bool      IsHired       { get; set; }
-            public Guid?     StaffId       { get; set; }
-            public DateTime? JoiningDate   { get; set; }
-            public Guid?     VacancyId     { get; set; }
-            public string?   VacancyCode   { get; set; }
-            public string?   JobTitle      { get; set; }
-            public string?   Department    { get; set; }
-            public AddressResponseDto CurrentAddress   { get; set; } = new();
-            public AddressResponseDto PermanentAddress { get; set; } = new();
-        }
-
-        // ── Endpoints ─────────────────────────────────────────────────────────
+        // ── Queries ───────────────────────────────────────────────────────────
 
         /// <summary>Get all person profiles with full org + employment info</summary>
         [HttpGet("profiles")]
@@ -156,12 +33,29 @@ namespace Accounts.Controllers
         public async Task<IActionResult> GetOrgTree() =>
             Ok(await _service.GetOrgTreeAsync());
 
-        /// <summary>Preview the login ID that will be generated for a branch</summary>
+        /// <summary>
+        /// Preview the login ID, password and email domain that will be
+        /// auto-generated for a given branch.
+        /// </summary>
         [HttpGet("preview-login-id")]
         public async Task<IActionResult> PreviewLoginId([FromQuery] int branchId)
         {
             if (branchId <= 0) return BadRequest(new { message = "branchId is required." });
             var result = await _service.PreviewLoginIdAsync(branchId);
+            return result == null ? NotFound(new { message = $"Branch {branchId} not found." }) : Ok(result);
+        }
+
+        /// <summary>
+        /// Preview the email that will be auto-generated for a given name + branch.
+        /// Call this on the frontend as the user types their name.
+        /// GET /api/persons/preview-email?branchId=4&amp;fullName=Abubakar+Khan
+        /// </summary>
+        [HttpGet("preview-email")]
+        public async Task<IActionResult> PreviewEmail([FromQuery] int branchId, [FromQuery] string fullName)
+        {
+            if (branchId <= 0) return BadRequest(new { message = "branchId is required." });
+            if (string.IsNullOrWhiteSpace(fullName)) return BadRequest(new { message = "fullName is required." });
+            var result = await _service.PreviewEmailAsync(branchId, fullName);
             return result == null ? NotFound(new { message = $"Branch {branchId} not found." }) : Ok(result);
         }
 
@@ -183,6 +77,8 @@ namespace Accounts.Controllers
             return person == null ? NotFound(new { message = $"Person {id} not found." }) : Ok(person);
         }
 
+        // ── Commands ──────────────────────────────────────────────────────────
+
         /// <summary>Debug endpoint — returns raw request body</summary>
         [HttpPost("register-raw")]
         public async Task<IActionResult> RegisterRaw()
@@ -193,12 +89,7 @@ namespace Accounts.Controllers
 
         /// <summary>
         /// Register a new person.
-        /// Login ID, Password, and Email are ALL AUTO-GENERATED.
-        /// - LoginId  = CompanyInitials + 5-digit seq  (e.g. LT10001)
-        /// - Password = LoginId + @                    (e.g. LT10001@)
-        /// - Email    = firstname.lastname@company.com (e.g. abubakar.khan@laltechnology.com)
-        ///
-        /// You can override the email by sending it in the request body.
+        /// LoginId, Password and Email are ALL AUTO-GENERATED — do not send them.
         /// The response includes all generated credentials (show once to admin).
         /// </summary>
         [HttpPost("register")]
@@ -216,20 +107,6 @@ namespace Accounts.Controllers
                 generatedEmail    = person.Email,
                 note = "Save these credentials — the password cannot be retrieved again."
             });
-        }
-
-        /// <summary>
-        /// Preview the email that will be auto-generated for a given name + branch.
-        /// Call this on the frontend as the user types their name.
-        /// GET /api/persons/preview-email?branchId=4&fullName=Abubakar+Khan
-        /// </summary>
-        [HttpGet("preview-email")]
-        public async Task<IActionResult> PreviewEmail([FromQuery] int branchId, [FromQuery] string fullName)
-        {
-            if (branchId <= 0) return BadRequest(new { message = "branchId is required." });
-            if (string.IsNullOrWhiteSpace(fullName)) return BadRequest(new { message = "fullName is required." });
-            var result = await _service.PreviewEmailAsync(branchId, fullName);
-            return result == null ? NotFound(new { message = $"Branch {branchId} not found." }) : Ok(result);
         }
 
         /// <summary>Update person info and addresses</summary>
@@ -264,22 +141,8 @@ namespace Accounts.Controllers
 
         // ── Password Management ───────────────────────────────────────────────
 
-        public class ChangePasswordDto
-        {
-            public string CurrentPassword { get; set; } = string.Empty;
-            public string NewPassword     { get; set; } = string.Empty;
-        }
-
-        public class ResetPasswordDto
-        {
-            /// <summary>Leave empty to auto-generate (LoginId@)</summary>
-            public string? NewPassword { get; set; }
-        }
-
         /// <summary>
-        /// Employee changes their own password.
-        /// Requires the current password to be correct.
-        /// POST /api/persons/{id}/change-password
+        /// Employee changes their own password (requires current password).
         /// </summary>
         [HttpPost("{id:guid}/change-password")]
         public async Task<IActionResult> ChangePassword(Guid id, [FromBody] ChangePasswordDto dto)
@@ -295,39 +158,27 @@ namespace Accounts.Controllers
         }
 
         /// <summary>
-        /// Admin resets password for any person — no current password needed.
-        /// If NewPassword is empty, auto-generates as LoginId@
-        /// POST /api/persons/{id}/reset-password
+        /// Admin resets password — no current password needed.
+        /// Leave NewPassword empty to auto-generate as LoginId@
         /// </summary>
         [HttpPost("{id:guid}/reset-password")]
         public async Task<IActionResult> ResetPassword(Guid id, [FromBody] ResetPasswordDto? dto)
         {
             var (success, message, newPassword) = await _service.ResetPasswordAsync(id, dto?.NewPassword);
             if (!success) return message.Contains("not found") ? NotFound(new { message }) : BadRequest(new { message });
-            return Ok(new
-            {
-                message,
-                newPassword,
-                note = "Share this password with the employee securely."
-            });
+            return Ok(new { message, newPassword, note = "Share this password with the employee securely." });
         }
 
         /// <summary>
         /// Reset password back to default (LoginId@).
         /// e.g. LT10001 → LT10001@
-        /// POST /api/persons/{id}/reset-to-default-password
         /// </summary>
         [HttpPost("{id:guid}/reset-to-default-password")]
         public async Task<IActionResult> ResetToDefaultPassword(Guid id)
         {
             var (success, message, defaultPassword) = await _service.ResetToDefaultPasswordAsync(id);
             if (!success) return message.Contains("not found") ? NotFound(new { message }) : BadRequest(new { message });
-            return Ok(new
-            {
-                message,
-                defaultPassword,
-                note = "Password has been reset to the default (LoginId@)."
-            });
+            return Ok(new { message, defaultPassword, note = "Password has been reset to the default (LoginId@)." });
         }
     }
 }

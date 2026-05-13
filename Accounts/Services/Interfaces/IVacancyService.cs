@@ -12,6 +12,7 @@ namespace Accounts.Services.Interfaces
         Task<IEnumerable<OrgVacancyReportDto>> GetReportAsync();
         Task<string?> PreviewCodeAsync(int organizationId, string jobTitle);
         Task<(VacancyDto? Vacancy, string? Error)> CreateAsync(CreateVacancyDto dto);
+        Task<(IEnumerable<VacancyDto> Created, IEnumerable<string> Errors)> CreateBulkAsync(CreateVacancyDto dto);
         Task<(VacancyDto? Vacancy, string? Error)> UpdateAsync(Guid id, UpdateVacancyDto dto);
         Task<(bool Success, string Message)> DeleteAsync(Guid id);
     }

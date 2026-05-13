@@ -1,9 +1,9 @@
 using Accounts.Data;
+using Accounts.DTOs;
 using Accounts.Models;
 using Accounts.Services.Interfaces;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
-using static Accounts.Controllers.PersonsController;
 
 namespace Accounts.Services.Services
 {
