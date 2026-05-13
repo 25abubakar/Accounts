@@ -59,14 +59,73 @@ namespace Accounts.Controllers
                 : Ok(new { vacancyCode = code });
         }
 
-        /// <summary>Create a new position under any org node. VacancyCode is auto-generated.</summary>
+        /// <summary>
+        /// Create one or more positions in a single request.
+        /// Set VacancyCount = 1 (default) for a single vacancy.
+        /// Set VacancyCount = N to create N vacancies — the loop runs on the backend.
+        /// Each vacancy gets a unique auto-incremented code.
+        ///
+        /// Example body (creates 5 Developer vacancies):
+        /// {
+        ///   "organizationId": 4,
+        ///   "jobTitle": "Developer",
+        ///   "department": "IT",
+        ///   "vacancyCount": 5
+        /// }
+        /// </summary>
         [HttpPost]
         public async Task<IActionResult> Create([FromBody] CreateVacancyDto dto)
         {
             if (!ModelState.IsValid) return BadRequest(ModelState);
-            var (vacancy, error) = await _service.CreateAsync(dto);
-            if (error != null) return error.Contains("already") ? Conflict(new { message = error }) : BadRequest(new { message = error });
-            return CreatedAtAction(nameof(GetById), new { id = vacancy!.VacancyId }, vacancy);
+
+            // Single vacancy (default)
+            if (dto.VacancyCount <= 1)
+            {
+                var (vacancy, error) = await _service.CreateAsync(dto);
+                if (error != null)
+                    return error.Contains("not found") ? NotFound(new { message = error }) : BadRequest(new { message = error });
+                return CreatedAtAction(nameof(GetById), new { id = vacancy!.VacancyId }, vacancy);
+            }
+
+            // Bulk — loop runs server-side
+            var (created, errors) = await _service.CreateBulkAsync(dto);
+            var createdList = created.ToList();
+
+            return Ok(new
+            {
+                requested = dto.VacancyCount,
+                created   = createdList.Count,
+                failed    = errors.Count(),
+                vacancies = createdList,
+                errors    = errors.Any() ? errors : null
+            });
+        }
+
+        /// <summary>
+        /// Dedicated bulk endpoint — same as POST /api/positions with VacancyCount > 1.
+        /// Useful when you always want the bulk response format.
+        ///
+        /// Example: create 10 Manager seats in one call.
+        /// </summary>
+        [HttpPost("bulk")]
+        public async Task<IActionResult> CreateBulk([FromBody] CreateVacancyDto dto)
+        {
+            if (!ModelState.IsValid) return BadRequest(ModelState);
+
+            if (dto.VacancyCount < 1)
+                return BadRequest(new { message = "VacancyCount must be at least 1." });
+
+            var (created, errors) = await _service.CreateBulkAsync(dto);
+            var createdList = created.ToList();
+
+            return Ok(new
+            {
+                requested = dto.VacancyCount,
+                created   = createdList.Count,
+                failed    = errors.Count(),
+                vacancies = createdList,
+                errors    = errors.Any() ? errors : null
+            });
         }
 
         /// <summary>Update position details. VacancyCode is regenerated if job title or org changes.</summary>

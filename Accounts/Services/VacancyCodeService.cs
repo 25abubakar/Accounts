@@ -35,14 +35,43 @@ namespace Accounts.Services
 
         /// <summary>
         /// Generates the next unique vacancy code for the given org node and job title.
+        /// INCREMENTS the counter — call this only when actually creating a vacancy.
         /// Thread-safe — uses database-level row locking to prevent duplicate numbers.
         /// </summary>
         public async Task<string> GenerateAsync(int organizationId, string jobTitle)
         {
-            // ── 1. Build the ancestor chain (deepest → root) ──────────────────
+            var (prefix, _) = await BuildPrefixAsync(organizationId);
+            int nextNumber  = await GetNextNumberAsync(prefix);
+            return $"{prefix}{nextNumber}";
+        }
+
+        /// <summary>
+        /// Previews what the next vacancy code WOULD be — does NOT increment the counter.
+        /// Safe to call as many times as needed from the frontend form.
+        /// </summary>
+        public async Task<string> PreviewAsync(int organizationId, string jobTitle)
+        {
+            var (prefix, _) = await BuildPrefixAsync(organizationId);
+
+            // Read current counter value without locking or incrementing
+            var counter = await _db.VacancyCounters
+                .AsNoTracking()
+                .FirstOrDefaultAsync(c => c.Prefix == prefix);
+
+            int nextNumber = (counter?.LastNumber ?? 0) + 1;
+            return $"{prefix}{nextNumber}";
+        }
+
+        // ── Core: Atomic Counter ──────────────────────────────────────────────
+
+        /// <summary>
+        /// Builds the prefix string from the org tree.
+        /// Returns (prefix, chain) — shared by both GenerateAsync and PreviewAsync.
+        /// </summary>
+        private async Task<(string Prefix, List<OrganizationTree> Chain)> BuildPrefixAsync(int organizationId)
+        {
             var chain = await BuildAncestorChainAsync(organizationId);
 
-            // ── 2. Resolve Country, Group, Company from the chain ─────────────
             var country = FindByLabel(chain, "Country");
             var group   = FindByLabel(chain, "Group");
             var company = FindByLabel(chain, "Company");
@@ -52,43 +81,23 @@ namespace Accounts.Services
             if (company == null && chain.Count >= 2) company = chain[^2];
             if (group   == null && chain.Count >= 3) group   = chain[^3];
 
-            // ── 3. Build prefix segments ──────────────────────────────────────
             string countryPart = SanitizeName(country?.Name ?? "ORG");
             string groupPart   = SanitizeName(group?.Name   ?? "GRP");
             string companyPart = GetInitials(company ?? chain.FirstOrDefault());
 
-            string prefix = $"{countryPart}-{groupPart}-{companyPart}-";
-
-            // ── 4. Atomically get the next number from VacancyCounters ─────────
-            int nextNumber = await GetNextNumberAsync(prefix);
-
-            return $"{prefix}{nextNumber}";
+            return ($"{countryPart}-{groupPart}-{companyPart}-", chain);
         }
-
-        // ── Core: Atomic Counter ──────────────────────────────────────────────
 
         /// <summary>
         /// Atomically increments and returns the next sequence number for a prefix.
-        ///
-        /// Uses a SQL transaction with UPDLOCK to lock the counter row,
-        /// preventing two concurrent requests from getting the same number.
-        ///
-        /// Flow:
-        ///   1. Begin transaction
-        ///   2. SELECT counter row WITH (UPDLOCK) — locks the row
-        ///   3. If row doesn't exist → INSERT with LastNumber = 1, return 1
-        ///   4. If row exists → UPDATE LastNumber = LastNumber + 1, return new value
-        ///   5. Commit
+        /// Uses SQL UPDLOCK to prevent race conditions under concurrent requests.
         /// </summary>
         private async Task<int> GetNextNumberAsync(string prefix)
         {
-            // Use a transaction to ensure atomicity
             await using var transaction = await _db.Database.BeginTransactionAsync();
 
             try
             {
-                // Lock the row with UPDLOCK so no other request can read/write it
-                // until this transaction commits. This is the key to thread safety.
                 var counter = await _db.VacancyCounters
                     .FromSqlRaw(
                         "SELECT * FROM VacancyCounters WITH (UPDLOCK, ROWLOCK) WHERE Prefix = {0}",
@@ -99,14 +108,12 @@ namespace Accounts.Services
 
                 if (counter == null)
                 {
-                    // First vacancy for this prefix — create counter starting at 1
                     counter = new VacancyCounter { Prefix = prefix, LastNumber = 1 };
                     _db.VacancyCounters.Add(counter);
                     nextNumber = 1;
                 }
                 else
                 {
-                    // Increment existing counter
                     counter.LastNumber += 1;
                     nextNumber = counter.LastNumber;
                 }

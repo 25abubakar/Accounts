@@ -39,6 +39,15 @@ namespace Accounts.Models
 
         [MaxLength(100)]
         public string? Department { get; set; }
+
+        /// <summary>
+        /// How many vacancies to create in one request.
+        /// Default = 1. Max = 100.
+        /// If Count = 5, the backend creates 5 vacancies with codes:
+        /// Pakistan-LalGroup-LT-1, Pakistan-LalGroup-LT-2, ... Pakistan-LalGroup-LT-5
+        /// </summary>
+        [Range(1, 100, ErrorMessage = "VacancyCount must be between 1 and 100.")]
+        public int VacancyCount { get; set; } = 1;
     }
 
     public class UpdateVacancyDto
