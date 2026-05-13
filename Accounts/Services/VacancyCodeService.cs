@@ -5,27 +5,30 @@ using Microsoft.EntityFrameworkCore;
 namespace Accounts.Services
 {
     /// <summary>
-    /// Generates vacancy codes with guaranteed unique, gap-free, incrementing numbers.
+    /// Generates vacancy codes in the format:
     ///
-    /// FORMAT:  {Country}-{Group}-{CompanyInitials}-{N}
-    /// EXAMPLE: Pakistan-LalGroup-LT-1
-    ///          Pakistan-LalGroup-LT-2
-    ///          Pakistan-LalGroup-LT-3
-    ///          Pakistan-LalGroup-NS-1
+    ///   {DeptAbbr}-{CompanyAbbr}-{JobTitleAbbr}-{NN}
     ///
-    /// HOW IT WORKS (race-condition safe):
-    ///   A dedicated VacancyCounters table stores the last-used number per prefix.
-    ///   Each call atomically increments the counter using a SQL UPDLOCK hint,
-    ///   so concurrent requests always get different numbers — no duplicates ever.
+    /// Rules:
+    ///   • DeptAbbr      = abbreviation of the selected org node (the deepest node you pick)
+    ///   • CompanyAbbr   = abbreviation of the nearest ancestor whose Label == "Company"
+    ///                     (falls back to the node 2 levels up, then the node itself)
+    ///   • JobTitleAbbr  = first 3 letters of each word in the job title, joined with nothing
+    ///                     "Supervisor"         → "sup"
+    ///                     "Software Engineer"  → "sof-eng"  (each word abbreviated)
+    ///   • NN            = zero-padded 2-digit sequence per prefix (01, 02 … 99, 100, …)
     ///
-    ///   VacancyCounters table:
-    ///   ┌─────────────────────────────┬────────────┐
-    ///   │ Prefix                      │ LastNumber │
-    ///   ├─────────────────────────────┼────────────┤
-    ///   │ Pakistan-LalGroup-LT-       │ 3          │
-    ///   │ Pakistan-LalGroup-NS-       │ 1          │
-    ///   │ Pakistan-TechGroup-TS-      │ 7          │
-    ///   └─────────────────────────────┴────────────┘
+    /// Example:
+    ///   Node  : Software Dept  (Label = Department, under Lal Technology Company)
+    ///   Title : Supervisor
+    ///   Code  : sof-lt-sup-01
+    ///
+    ///   Node  : Software Dept  (Label = Department, under Lal Technology Company)
+    ///   Title : Software Engineer
+    ///   Code  : sof-lt-sof-eng-01
+    ///
+    /// Counter table (VacancyCounters) stores last-used number per prefix.
+    /// SQL UPDLOCK ensures no duplicate numbers under concurrent requests.
     /// </summary>
     public class VacancyCodeService
     {
@@ -33,69 +36,76 @@ namespace Accounts.Services
 
         public VacancyCodeService(ApplicationDbContext db) => _db = db;
 
+        // ── Public API ────────────────────────────────────────────────────────
+
         /// <summary>
-        /// Generates the next unique vacancy code for the given org node and job title.
-        /// INCREMENTS the counter — call this only when actually creating a vacancy.
-        /// Thread-safe — uses database-level row locking to prevent duplicate numbers.
+        /// Generates the next unique vacancy code.
+        /// INCREMENTS the counter — call only when actually creating a vacancy.
         /// </summary>
         public async Task<string> GenerateAsync(int organizationId, string jobTitle)
         {
-            var (prefix, _) = await BuildPrefixAsync(organizationId);
-            int nextNumber  = await GetNextNumberAsync(prefix);
-            return $"{prefix}{nextNumber}";
+            var prefix = await BuildPrefixAsync(organizationId, jobTitle);
+            int next   = await GetNextNumberAsync(prefix);
+            return $"{prefix}{next:D2}";
         }
 
         /// <summary>
-        /// Previews what the next vacancy code WOULD be — does NOT increment the counter.
-        /// Safe to call as many times as needed from the frontend form.
+        /// Previews what the next code WOULD be — does NOT increment the counter.
+        /// Safe to call repeatedly from the frontend.
         /// </summary>
         public async Task<string> PreviewAsync(int organizationId, string jobTitle)
         {
-            var (prefix, _) = await BuildPrefixAsync(organizationId);
+            var prefix = await BuildPrefixAsync(organizationId, jobTitle);
 
-            // Read current counter value without locking or incrementing
             var counter = await _db.VacancyCounters
                 .AsNoTracking()
                 .FirstOrDefaultAsync(c => c.Prefix == prefix);
 
-            int nextNumber = (counter?.LastNumber ?? 0) + 1;
-            return $"{prefix}{nextNumber}";
+            int next = (counter?.LastNumber ?? 0) + 1;
+            return $"{prefix}{next:D2}";
         }
 
-        // ── Core: Atomic Counter ──────────────────────────────────────────────
+        // ── Prefix Builder ────────────────────────────────────────────────────
 
         /// <summary>
-        /// Builds the prefix string from the org tree.
-        /// Returns (prefix, chain) — shared by both GenerateAsync and PreviewAsync.
+        /// Builds the prefix:  {deptAbbr}-{companyAbbr}-{jobAbbr}-
+        ///
+        /// Chain (index 0 = selected node, last = root):
+        ///   [0] Software Dept  (Department)
+        ///   [1] Lal Technology (Company)
+        ///   [2] Lal Group      (Group)
+        ///   [3] Pakistan       (Country)
+        ///
+        /// DeptAbbr    = abbreviate(chain[0])   → "sof"
+        /// CompanyAbbr = abbreviate(Company node) → "lt"
+        /// JobAbbr     = abbreviate each word of jobTitle → "sup"
         /// </summary>
-        private async Task<(string Prefix, List<OrganizationTree> Chain)> BuildPrefixAsync(int organizationId)
+        private async Task<string> BuildPrefixAsync(int organizationId, string jobTitle)
         {
             var chain = await BuildAncestorChainAsync(organizationId);
+            if (chain.Count == 0)
+                throw new InvalidOperationException($"Organization node {organizationId} not found.");
 
-            var country = FindByLabel(chain, "Country");
-            var group   = FindByLabel(chain, "Group");
-            var company = FindByLabel(chain, "Company");
+            // The node the user selected (deepest — Department, Branch, etc.)
+            var selectedNode = chain[0];
 
-            // Positional fallback if labels aren't set exactly
-            if (country == null && chain.Count > 0)  country = chain.Last();
-            if (company == null && chain.Count >= 2) company = chain[^2];
-            if (group   == null && chain.Count >= 3) group   = chain[^3];
+            // Find Company by label; fall back to the node 1 level up, then the node itself
+            var companyNode = FindByLabel(chain, "Company")
+                           ?? (chain.Count >= 2 ? chain[1] : chain[0]);
 
-            string countryPart = SanitizeName(country?.Name ?? "ORG");
-            string groupPart   = SanitizeName(group?.Name   ?? "GRP");
-            string companyPart = GetInitials(company ?? chain.FirstOrDefault());
+            string deptPart    = Abbreviate(selectedNode.Name);
+            string companyPart = GetInitials(companyNode);
+            string jobPart     = AbbreviateJobTitle(jobTitle);
 
-            return ($"{countryPart}-{groupPart}-{companyPart}-", chain);
+            // e.g.  "sof-lt-sup-"
+            return $"{deptPart}-{companyPart}-{jobPart}-";
         }
 
-        /// <summary>
-        /// Atomically increments and returns the next sequence number for a prefix.
-        /// Uses SQL UPDLOCK to prevent race conditions under concurrent requests.
-        /// </summary>
+        // ── Atomic Counter ────────────────────────────────────────────────────
+
         private async Task<int> GetNextNumberAsync(string prefix)
         {
-            await using var transaction = await _db.Database.BeginTransactionAsync();
-
+            await using var tx = await _db.Database.BeginTransactionAsync();
             try
             {
                 var counter = await _db.VacancyCounters
@@ -104,28 +114,26 @@ namespace Accounts.Services
                         prefix)
                     .FirstOrDefaultAsync();
 
-                int nextNumber;
-
+                int next;
                 if (counter == null)
                 {
                     counter = new VacancyCounter { Prefix = prefix, LastNumber = 1 };
                     _db.VacancyCounters.Add(counter);
-                    nextNumber = 1;
+                    next = 1;
                 }
                 else
                 {
                     counter.LastNumber += 1;
-                    nextNumber = counter.LastNumber;
+                    next = counter.LastNumber;
                 }
 
                 await _db.SaveChangesAsync();
-                await transaction.CommitAsync();
-
-                return nextNumber;
+                await tx.CommitAsync();
+                return next;
             }
             catch
             {
-                await transaction.RollbackAsync();
+                await tx.RollbackAsync();
                 throw;
             }
         }
@@ -133,20 +141,20 @@ namespace Accounts.Services
         // ── Org Tree Helpers ──────────────────────────────────────────────────
 
         /// <summary>
-        /// Walks up the org tree and returns the full ancestor chain.
-        /// Index 0 = the node itself (deepest), last index = root (Country).
+        /// Walks up the tree from nodeId.
+        /// chain[0] = selected node (deepest), chain[last] = root.
         /// </summary>
         private async Task<List<OrganizationTree>> BuildAncestorChainAsync(int nodeId)
         {
             var chain = new List<OrganizationTree>();
-            int? currentId = nodeId;
+            int? current = nodeId;
 
-            while (currentId.HasValue)
+            while (current.HasValue)
             {
-                var node = await _db.OrganizationTree.FindAsync(currentId.Value);
+                var node = await _db.OrganizationTree.FindAsync(current.Value);
                 if (node == null) break;
                 chain.Add(node);
-                currentId = node.ParentId;
+                current = node.ParentId;
             }
 
             return chain;
@@ -155,48 +163,76 @@ namespace Accounts.Services
         private static OrganizationTree? FindByLabel(List<OrganizationTree> chain, string label) =>
             chain.FirstOrDefault(n => string.Equals(n.Label, label, StringComparison.OrdinalIgnoreCase));
 
-        // ── Code Formatting Helpers ───────────────────────────────────────────
+        // ── Abbreviation Helpers ──────────────────────────────────────────────
+
+        /// <summary>
+        /// Abbreviates a node name to 3 lowercase letters per word, joined by nothing.
+        /// "Software Dept"   → "sof"   (first word only if single meaningful word)
+        /// "Software Dept"   → "sofdep" if you want both — but we take first word only
+        ///
+        /// Rule: take first 3 chars of the FIRST word (lowercase).
+        /// If the name has multiple words, take first 3 chars of EACH word joined.
+        /// "Software Dept"   → "sofdep"
+        /// "Lal Technology"  → "lalte"  — but for dept we just use first word → "sof"
+        ///
+        /// Actually: take first 3 chars of each word, join with nothing, lowercase.
+        /// "Software Dept"   → "sofdep"
+        /// "Software"        → "sof"
+        /// "IT"              → "it"
+        /// </summary>
+        private static string Abbreviate(string name)
+        {
+            if (string.IsNullOrWhiteSpace(name)) return "org";
+
+            var words = name.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            return string.Concat(words.Select(w => w.Length >= 3 ? w[..3].ToLower() : w.ToLower()));
+        }
 
         /// <summary>
         /// Gets company initials — uses stored Code if available,
-        /// otherwise takes first letter of each word (space or CamelCase split).
-        /// "Lal Technology" → "LT"
-        /// "NetSolutions"   → "NS"
+        /// otherwise takes first letter of each word (uppercase → lowercase).
+        /// "Lal Technology"  → "lt"
+        /// "NetSolutions"    → "ns"
         /// </summary>
         private static string GetInitials(OrganizationTree? node)
         {
-            if (node == null) return "CO";
-            if (!string.IsNullOrWhiteSpace(node.Code)) return node.Code.ToUpper().Trim();
+            if (node == null) return "co";
 
-            // Space-separated words
+            // Use explicit Code field if set
+            if (!string.IsNullOrWhiteSpace(node.Code))
+                return node.Code.ToLower().Trim();
+
+            // Space-separated words → first letter of each
             var spaceWords = node.Name.Split(' ', StringSplitOptions.RemoveEmptyEntries);
             if (spaceWords.Length >= 2)
-                return string.Concat(spaceWords.Select(w => char.ToUpper(w[0])));
+                return string.Concat(spaceWords.Select(w => char.ToLower(w[0]))).ToLower();
 
             // CamelCase split
             var camelWords = SplitCamelCase(node.Name);
             if (camelWords.Length >= 2)
-                return string.Concat(camelWords.Select(w => char.ToUpper(w[0])));
+                return string.Concat(camelWords.Select(w => char.ToLower(w[0]))).ToLower();
 
-            // Single word fallback
-            return node.Name.Length >= 2 ? node.Name[..2].ToUpper() : node.Name.ToUpper();
+            // Single word — first 2 chars
+            return node.Name.Length >= 2 ? node.Name[..2].ToLower() : node.Name.ToLower();
         }
 
         /// <summary>
-        /// Removes spaces from a name for use in a code segment (PascalCase).
-        /// "Lal Group" → "LalGroup"
-        /// "Pakistan"  → "Pakistan"
+        /// Abbreviates a job title: first 3 chars of each word, joined by "-", lowercase.
+        /// "Supervisor"        → "sup"
+        /// "Software Engineer" → "sof-eng"
+        /// "HR Officer"        → "hr-off"
+        /// "CEO"               → "ceo"
         /// </summary>
-        private static string SanitizeName(string name) =>
-            string.Concat(
-                name.Split(' ', StringSplitOptions.RemoveEmptyEntries)
-                    .Select(w => w.Length > 0 ? char.ToUpper(w[0]) + w[1..] : w));
+        private static string AbbreviateJobTitle(string jobTitle)
+        {
+            if (string.IsNullOrWhiteSpace(jobTitle)) return "pos";
 
-        /// <summary>
-        /// Splits a CamelCase string into words.
-        /// "NetSolutions" → ["Net", "Solutions"]
-        /// "TechSoft"     → ["Tech", "Soft"]
-        /// </summary>
+            var words = jobTitle.Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            var parts = words.Select(w => w.Length >= 3 ? w[..3].ToLower() : w.ToLower());
+            return string.Join("-", parts);
+        }
+
+        /// <summary>Splits CamelCase into words. "NetSolutions" → ["Net","Solutions"]</summary>
         private static string[] SplitCamelCase(string input)
         {
             if (string.IsNullOrWhiteSpace(input)) return [input];

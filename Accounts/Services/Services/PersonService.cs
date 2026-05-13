@@ -91,16 +91,13 @@ namespace Accounts.Services.Services
             var branch = all.FirstOrDefault(n => n.Id == branchId);
             if (branch == null) return null;
 
-            // Walk up to find the Company node (parent of branch)
-            var company = branch.ParentId.HasValue
-                ? all.FirstOrDefault(n => n.Id == branch.ParentId)
-                : null;
+            // Walk up the full ancestor chain to find the Company node by label
+            OrganizationTree companyNode;
+            try   { companyNode = FindCompanyNode(all, branch); }
+            catch { return null; }
 
-            var companyNode = company ?? branch;
             var loginId     = await GenerateLoginIdAsync(companyNode);
             var password    = $"{loginId}@";
-
-            // Preview email uses a placeholder name since we don't know the person yet
             var domain      = BuildCompanyDomain(companyNode.Name);
             var sampleEmail = $"firstname.lastname@{domain}";
 
@@ -125,9 +122,10 @@ namespace Accounts.Services.Services
             var branch   = orgNodes.FirstOrDefault(n => n.Id == dto.BranchId);
             if (branch == null) return (null, null, null, $"Branch {dto.BranchId} not found.", 400);
 
-            // ── Walk up to Company node (parent of branch) ────────────────────
-            var company     = branch.ParentId.HasValue ? orgNodes.FirstOrDefault(n => n.Id == branch.ParentId) : null;
-            var companyNode = company ?? branch;
+            // ── Walk up the full ancestor chain to find the Company node by label ─
+            OrganizationTree companyNode;
+            try   { companyNode = FindCompanyNode(orgNodes, branch); }
+            catch (InvalidOperationException ex) { return (null, null, null, ex.Message, 400); }
 
             // ── Auto-generate Login ID from Company initials only ─────────────
             // Format: [CompanyInitials][5-digit seq]  e.g. LT10001
@@ -362,8 +360,10 @@ namespace Accounts.Services.Services
             var branch = all.FirstOrDefault(n => n.Id == branchId);
             if (branch == null) return null;
 
-            var company     = branch.ParentId.HasValue ? all.FirstOrDefault(n => n.Id == branch.ParentId) : null;
-            var companyNode = company ?? branch;
+            // Walk up the full ancestor chain to find the Company node by label
+            OrganizationTree companyNode;
+            try   { companyNode = FindCompanyNode(all, branch); }
+            catch { return null; }
 
             var email  = await GenerateEmailAsync(fullName, companyNode);
             var domain = BuildCompanyDomain(companyNode.Name);
@@ -425,6 +425,41 @@ namespace Accounts.Services.Services
             while (await _userManager.FindByNameAsync(loginId) != null);
 
             return loginId;
+        }
+
+        /// <summary>
+        /// Walks the full ancestor chain from startNode up to the root and returns
+        /// the FIRST node whose Label == "Company" (case-insensitive).
+        ///
+        /// This is the ONLY rule — no positional fallbacks.
+        /// The tree can be any depth:
+        ///
+        ///   Pakistan (Country)
+        ///     └── Lal Group (Group)
+        ///           └── Lal Technology (Company)   ← always found by label
+        ///                 └── Software (Department)
+        ///                       └── Dev Team (Branch)
+        ///                             └── Sub Team (Unit)  ← selected node
+        ///
+        /// Throws InvalidOperationException if no ancestor (including the node itself)
+        /// has Label == "Company", so the caller can return a clear error to the client.
+        /// </summary>
+        private static OrganizationTree FindCompanyNode(List<OrganizationTree> all, OrganizationTree startNode)
+        {
+            var current = startNode;
+            while (current != null)
+            {
+                if (string.Equals(current.Label, "Company", StringComparison.OrdinalIgnoreCase))
+                    return current;
+
+                current = current.ParentId.HasValue
+                    ? all.FirstOrDefault(n => n.Id == current.ParentId)
+                    : null;
+            }
+
+            throw new InvalidOperationException(
+                $"No ancestor of node '{startNode.Name}' (Id={startNode.Id}) has Label='Company'. " +
+                $"Please ensure the organization tree has a node with Label='Company' above this node.");
         }
 
         /// <summary>
