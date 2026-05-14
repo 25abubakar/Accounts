@@ -18,18 +18,31 @@ namespace Accounts.Data
                 w.Ignore(Microsoft.EntityFrameworkCore.Diagnostics.RelationalEventId.PendingModelChangesWarning));
         }
 
-        public DbSet<OrganizationTree> OrganizationTree   => Set<OrganizationTree>();
-        public DbSet<Vacancy>          Vacancies           => Set<Vacancy>();
-        public DbSet<Staff>            Staff               => Set<Staff>();
-        public DbSet<Person>           Persons             => Set<Person>();
-        public DbSet<PersonAddress>    PersonAddresses     => Set<PersonAddress>();
-        public DbSet<VacancyCounter>   VacancyCounters     => Set<VacancyCounter>();
+        // ── DbSets ────────────────────────────────────────────────────────────
+        public DbSet<OrganizationTree> OrganizationTree => Set<OrganizationTree>();
+        public DbSet<Vacancy>          Vacancies        => Set<Vacancy>();
+        public DbSet<Staff>            Staff            => Set<Staff>();
+        public DbSet<Person>           Persons          => Set<Person>();
+        public DbSet<PersonAddress>    PersonAddresses  => Set<PersonAddress>();
+        public DbSet<VacancyCounter>   VacancyCounters  => Set<VacancyCounter>();
+        public DbSet<Menu>             Menus            => Set<Menu>();
+        public DbSet<MenuRole>         MenuRoles        => Set<MenuRole>();
 
         protected override void OnModelCreating(ModelBuilder builder)
         {
             base.OnModelCreating(builder);
 
-            // ── OrganizationTree ──────────────────────────────────────
+            // ── Menu ──────────────────────────────────────────────────────────
+            builder.Entity<MenuRole>()
+                .HasKey(mr => new { mr.MenuId, mr.RoleName });
+
+            builder.Entity<Menu>()
+                .HasOne(m => m.Parent)
+                .WithMany(m => m.Children)
+                .HasForeignKey(m => m.ParentId)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            // ── OrganizationTree ──────────────────────────────────────────────
             builder.Entity<OrganizationTree>(e =>
             {
                 e.ToTable("OrganizationTree", "dbo");
@@ -42,7 +55,7 @@ namespace Accounts.Data
                  .OnDelete(DeleteBehavior.Restrict);
             });
 
-            // ── Vacancy ───────────────────────────────────────────────
+            // ── Vacancy ───────────────────────────────────────────────────────
             builder.Entity<Vacancy>(e =>
             {
                 e.ToTable("Vacancies");
@@ -56,14 +69,13 @@ namespace Accounts.Data
                  .HasForeignKey(x => x.OrganizationId)
                  .OnDelete(DeleteBehavior.Restrict);
 
-                // One vacancy → one staff (1:1)
                 e.HasOne(x => x.Staff)
                  .WithOne(x => x.Vacancy)
                  .HasForeignKey<Staff>(x => x.VacancyId)
                  .OnDelete(DeleteBehavior.SetNull);
             });
 
-            // ── Staff ─────────────────────────────────────────────────
+            // ── Staff ─────────────────────────────────────────────────────────
             builder.Entity<Staff>(e =>
             {
                 e.ToTable("Staff");
@@ -72,17 +84,15 @@ namespace Accounts.Data
                 e.Property(x => x.JoiningDate).HasDefaultValueSql("GETDATE()");
                 e.Property(x => x.PhotoUrl).HasMaxLength(500).IsRequired(false);
 
-                // UNIQUE constraint: one vacancy = one employee
                 e.HasIndex(x => x.VacancyId).IsUnique();
 
-                // PersonId FK — SetNull so deleting a Person doesn't delete Staff
                 e.HasOne(x => x.Person)
                  .WithOne(x => x.Staff)
                  .HasForeignKey<Staff>(x => x.PersonId)
                  .OnDelete(DeleteBehavior.SetNull);
             });
 
-            // ── Person ────────────────────────────────────────────────
+            // ── Person ────────────────────────────────────────────────────────
             builder.Entity<Person>(e =>
             {
                 e.ToTable("Persons");
@@ -94,12 +104,11 @@ namespace Accounts.Data
                 e.Property(x => x.ProfilePhotoUrl).HasMaxLength(500).IsRequired(false);
                 e.Property(x => x.BranchId).IsRequired(false);
 
-                // Unique indexes
                 e.HasIndex(x => x.LoginId).IsUnique();
                 e.HasIndex(x => x.IdentityUserId).IsUnique();
             });
 
-            // ── PersonAddress ─────────────────────────────────────────
+            // ── PersonAddress ─────────────────────────────────────────────────
             builder.Entity<PersonAddress>(e =>
             {
                 e.ToTable("PersonAddresses");
@@ -107,17 +116,15 @@ namespace Accounts.Data
                 e.Property(x => x.AddressId).HasDefaultValueSql("NEWID()").ValueGeneratedNever();
                 e.Property(x => x.AddressType).HasMaxLength(20).IsRequired();
 
-                // Unique: one Current + one Permanent per Person
                 e.HasIndex(x => new { x.PersonId, x.AddressType }).IsUnique();
 
-                // Cascade delete when Person is deleted
                 e.HasOne(x => x.Person)
                  .WithMany(x => x.Addresses)
                  .HasForeignKey(x => x.PersonId)
                  .OnDelete(DeleteBehavior.Cascade);
             });
 
-            // ── VacancyCounter ────────────────────────────────────────
+            // ── VacancyCounter ────────────────────────────────────────────────
             builder.Entity<VacancyCounter>(e =>
             {
                 e.ToTable("VacancyCounters");
