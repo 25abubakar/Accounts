@@ -66,6 +66,7 @@ builder.Services.AddScoped<Accounts.Services.Interfaces.IOrganizationService, Ac
 builder.Services.AddScoped<Accounts.Services.Interfaces.IVacancyService, Accounts.Services.Services.VacancyService>();
 builder.Services.AddScoped<Accounts.Services.Interfaces.IStaffService, Accounts.Services.Services.StaffService>();
 builder.Services.AddScoped<Accounts.Services.Interfaces.IPersonService, Accounts.Services.Services.PersonService>();
+builder.Services.AddScoped<Accounts.Services.Interfaces.IMenuService, Accounts.Services.Services.MenuService>();
 
 // Swagger
 builder.Services.AddEndpointsApiExplorer();
