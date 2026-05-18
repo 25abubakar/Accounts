@@ -18,21 +18,27 @@ namespace Accounts.Data
                 w.Ignore(Microsoft.EntityFrameworkCore.Diagnostics.RelationalEventId.PendingModelChangesWarning));
         }
 
-        // ── DbSets ────────────────────────────────────────────────────────────
-        public DbSet<OrganizationTree> OrganizationTree => Set<OrganizationTree>();
-        public DbSet<Vacancy>          Vacancies        => Set<Vacancy>();
-        public DbSet<Staff>            Staff            => Set<Staff>();
-        public DbSet<Person>           Persons          => Set<Person>();
-        public DbSet<PersonAddress>    PersonAddresses  => Set<PersonAddress>();
-        public DbSet<VacancyCounter>   VacancyCounters  => Set<VacancyCounter>();
-        public DbSet<Menu>             Menus            => Set<Menu>();
-        public DbSet<MenuRole>         MenuRoles        => Set<MenuRole>();
+        public DbSet<OrganizationTree>         OrganizationTree         => Set<OrganizationTree>();
+        public DbSet<Vacancy>                  Vacancies                => Set<Vacancy>();
+        public DbSet<Staff>                    Staff                    => Set<Staff>();
+        public DbSet<Person>                   Persons                  => Set<Person>();
+        public DbSet<PersonAddress>            PersonAddresses          => Set<PersonAddress>();
+        public DbSet<VacancyCounter>           VacancyCounters          => Set<VacancyCounter>();
+        public DbSet<Menu>                     Menus                    => Set<Menu>();
+        public DbSet<MenuRole>                 MenuRoles                => Set<MenuRole>();
+        public DbSet<Feature>                  Features                 => Set<Feature>();
+        public DbSet<AccessGroup>              AccessGroups             => Set<AccessGroup>();
+        public DbSet<AccessGroupFeature>       AccessGroupFeatures      => Set<AccessGroupFeature>();
+        public DbSet<StaffAccessGroup>         StaffAccessGroups        => Set<StaffAccessGroup>();
+        public DbSet<DepartmentAccessMatrix>   DepartmentAccessMatrix   => Set<DepartmentAccessMatrix>();
+        // ── Hierarchical RBAC ─────────────────────────────────────────────────
+        public DbSet<RolePermission>           RolePermissions          => Set<RolePermission>();
+        public DbSet<UserPermissionOverride>   UserPermissionOverrides  => Set<UserPermissionOverride>();
 
         protected override void OnModelCreating(ModelBuilder builder)
         {
             base.OnModelCreating(builder);
 
-            // ── Menu ──────────────────────────────────────────────────────────
             builder.Entity<MenuRole>()
                 .HasKey(mr => new { mr.MenuId, mr.RoleName });
 
@@ -42,7 +48,6 @@ namespace Accounts.Data
                 .HasForeignKey(m => m.ParentId)
                 .OnDelete(DeleteBehavior.Restrict);
 
-            // ── OrganizationTree ──────────────────────────────────────────────
             builder.Entity<OrganizationTree>(e =>
             {
                 e.ToTable("OrganizationTree", "dbo");
@@ -55,7 +60,6 @@ namespace Accounts.Data
                  .OnDelete(DeleteBehavior.Restrict);
             });
 
-            // ── Vacancy ───────────────────────────────────────────────────────
             builder.Entity<Vacancy>(e =>
             {
                 e.ToTable("Vacancies");
@@ -75,7 +79,6 @@ namespace Accounts.Data
                  .OnDelete(DeleteBehavior.SetNull);
             });
 
-            // ── Staff ─────────────────────────────────────────────────────────
             builder.Entity<Staff>(e =>
             {
                 e.ToTable("Staff");
@@ -92,7 +95,6 @@ namespace Accounts.Data
                  .OnDelete(DeleteBehavior.SetNull);
             });
 
-            // ── Person ────────────────────────────────────────────────────────
             builder.Entity<Person>(e =>
             {
                 e.ToTable("Persons");
@@ -108,7 +110,6 @@ namespace Accounts.Data
                 e.HasIndex(x => x.IdentityUserId).IsUnique();
             });
 
-            // ── PersonAddress ─────────────────────────────────────────────────
             builder.Entity<PersonAddress>(e =>
             {
                 e.ToTable("PersonAddresses");
@@ -124,13 +125,146 @@ namespace Accounts.Data
                  .OnDelete(DeleteBehavior.Cascade);
             });
 
-            // ── VacancyCounter ────────────────────────────────────────────────
             builder.Entity<VacancyCounter>(e =>
             {
                 e.ToTable("VacancyCounters");
                 e.HasKey(x => x.Prefix);
                 e.Property(x => x.Prefix).HasMaxLength(200).IsRequired();
                 e.Property(x => x.LastNumber).HasDefaultValue(0).IsRequired();
+            });
+
+            builder.Entity<Feature>(e =>
+            {
+                e.ToTable("Features");
+                e.HasKey(x => x.FeatureKey);
+                e.Property(x => x.FeatureKey).HasMaxLength(100).IsRequired();
+                e.Property(x => x.FeatureName).HasMaxLength(150).IsRequired();
+                e.Property(x => x.Module).HasMaxLength(100).IsRequired();
+            });
+
+            builder.Entity<AccessGroup>(e =>
+            {
+                e.ToTable("AccessGroups");
+                e.HasKey(x => x.GroupId);
+                e.Property(x => x.GroupName).HasMaxLength(100).IsRequired();
+                e.Property(x => x.CreatedDate).HasDefaultValueSql("GETDATE()");
+                e.Property(x => x.IsActive).HasDefaultValue(true);
+            });
+
+            builder.Entity<AccessGroupFeature>(e =>
+            {
+                e.ToTable("AccessGroupFeatures");
+                e.HasKey(x => new { x.GroupId, x.FeatureKey });
+
+                e.HasOne(x => x.Group)
+                 .WithMany(x => x.Features)
+                 .HasForeignKey(x => x.GroupId)
+                 .OnDelete(DeleteBehavior.Cascade);
+
+                e.HasOne(x => x.Feature)
+                 .WithMany(x => x.AccessGroupFeatures)
+                 .HasForeignKey(x => x.FeatureKey)
+                 .OnDelete(DeleteBehavior.Cascade);
+            });
+
+            builder.Entity<StaffAccessGroup>(e =>
+            {
+                e.ToTable("StaffAccessGroups");
+                e.HasKey(x => new { x.StaffId, x.GroupId });
+                e.Property(x => x.AssignedDate)
+                 .HasColumnType("datetime")          // DB column is datetime, not datetime2
+                 .HasDefaultValueSql("GETDATE()");
+
+                e.HasOne(x => x.Staff)
+                 .WithMany()
+                 .HasForeignKey(x => x.StaffId)
+                 .OnDelete(DeleteBehavior.Cascade);
+
+                e.HasOne(x => x.Group)
+                 .WithMany(x => x.Staff)
+                 .HasForeignKey(x => x.GroupId)
+                 .OnDelete(DeleteBehavior.Cascade);
+            });
+
+            builder.Entity<DepartmentAccessMatrix>(e =>
+            {
+                e.ToTable("DepartmentAccessMatrix");
+                e.HasKey(x => x.Id);
+                e.Property(x => x.GrantedDate)
+                 .HasColumnType("datetime")          // DB column is datetime, not datetime2
+                 .HasDefaultValueSql("GETDATE()");
+                e.Property(x => x.HasAccess).HasDefaultValue(false);
+
+                e.HasIndex(x => new { x.StaffId, x.FeatureKey }).IsUnique();
+
+                e.HasOne(x => x.Staff)
+                 .WithMany()
+                 .HasForeignKey(x => x.StaffId)
+                 .OnDelete(DeleteBehavior.Cascade);
+
+                e.HasOne(x => x.Department)
+                 .WithMany()
+                 .HasForeignKey(x => x.DeptId)
+                 .OnDelete(DeleteBehavior.Restrict);
+
+                e.HasOne(x => x.Feature)
+                 .WithMany(x => x.DepartmentAccessMatrix)
+                 .HasForeignKey(x => x.FeatureKey)
+                 .OnDelete(DeleteBehavior.Cascade);
+            });
+
+            // ── RolePermission ────────────────────────────────────────────────
+            builder.Entity<RolePermission>(e =>
+            {
+                e.ToTable("RolePermissions");
+                e.HasKey(x => x.Id);
+                e.Property(x => x.JobTitle).HasMaxLength(100).IsRequired();
+                e.Property(x => x.FeatureKey).HasMaxLength(100).IsRequired();
+                e.Property(x => x.IsAllowed).HasDefaultValue(false);
+                e.Property(x => x.CreatedDate).HasDefaultValueSql("GETDATE()");
+
+                // Unique: one row per JobTitle + DeptId + FeatureKey
+                e.HasIndex(x => new { x.JobTitle, x.DeptId, x.FeatureKey }).IsUnique();
+
+                e.HasOne(x => x.Department)
+                 .WithMany()
+                 .HasForeignKey(x => x.DeptId)
+                 .OnDelete(DeleteBehavior.Restrict)
+                 .IsRequired(false);
+
+                e.HasOne(x => x.Feature)
+                 .WithMany()
+                 .HasForeignKey(x => x.FeatureKey)
+                 .OnDelete(DeleteBehavior.Cascade);
+            });
+
+            // ── UserPermissionOverride ────────────────────────────────────────
+            builder.Entity<UserPermissionOverride>(e =>
+            {
+                e.ToTable("UserPermissionOverrides");
+                e.HasKey(x => x.Id);
+                e.Property(x => x.Status)
+                 .HasMaxLength(10)
+                 .IsRequired()
+                 .HasDefaultValue(nameof(PermissionStatus.INHERIT));
+                e.Property(x => x.SetDate)
+                 .HasColumnType("datetime")          // DB column is datetime, not datetime2
+                 .HasDefaultValueSql("GETDATE()");
+                // Tell EF to ignore IsAllowed — it exists in DB but not in the model
+                e.Ignore("IsAllowed");
+
+                // Unique: one override per staff per feature
+                e.HasIndex(x => new { x.StaffId, x.FeatureKey }).IsUnique();
+
+                e.HasOne(x => x.Staff)
+                 .WithMany()
+                 .HasForeignKey(x => x.StaffId)
+                 .OnDelete(DeleteBehavior.Cascade);
+
+                e.HasOne(x => x.Feature)
+                 .WithMany()
+                 .HasForeignKey(x => x.FeatureKey)
+                 .OnDelete(DeleteBehavior.Cascade);
             });
         }
     }

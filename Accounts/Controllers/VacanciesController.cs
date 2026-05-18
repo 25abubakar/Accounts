@@ -1,3 +1,4 @@
+using Accounts.Authorization;
 using Accounts.Models;
 using Accounts.Services.Interfaces;
 using Microsoft.AspNetCore.Mvc;
@@ -10,15 +11,13 @@ namespace Accounts.Controllers
     public class VacanciesController : ControllerBase
     {
         private readonly IVacancyService _service;
-
         public VacanciesController(IVacancyService service) => _service = service;
 
-        /// <summary>Get all positions with org info and assigned employee</summary>
+        [HasPermission("VACANCY_VIEW")]
         [HttpGet]
-        public async Task<IActionResult> GetAll() =>
-            Ok(await _service.GetAllAsync());
+        public async Task<IActionResult> GetAll() => Ok(await _service.GetAllAsync());
 
-        /// <summary>Get a single position by ID</summary>
+        [HasPermission("VACANCY_VIEW")]
         [HttpGet("{id:guid}")]
         public async Task<IActionResult> GetById(Guid id)
         {
@@ -26,59 +25,40 @@ namespace Accounts.Controllers
             return v == null ? NotFound(new { message = $"Position {id} not found." }) : Ok(v);
         }
 
-        /// <summary>Get all vacant (unfilled) positions</summary>
+        [HasPermission("VACANCY_VIEW")]
         [HttpGet("vacant")]
-        public async Task<IActionResult> GetVacant() =>
-            Ok(await _service.GetVacantAsync());
+        public async Task<IActionResult> GetVacant() => Ok(await _service.GetVacantAsync());
 
-        /// <summary>Get all filled positions with employee info</summary>
+        [HasPermission("VACANCY_VIEW")]
         [HttpGet("filled")]
-        public async Task<IActionResult> GetFilled() =>
-            Ok(await _service.GetFilledAsync());
+        public async Task<IActionResult> GetFilled() => Ok(await _service.GetFilledAsync());
 
-        /// <summary>Get all positions attached to a specific organization node</summary>
+        [HasPermission("VACANCY_VIEW")]
         [HttpGet("by-node/{orgId:int}")]
-        public async Task<IActionResult> GetByNode(int orgId) =>
-            Ok(await _service.GetByNodeAsync(orgId));
+        public async Task<IActionResult> GetByNode(int orgId) => Ok(await _service.GetByNodeAsync(orgId));
 
-        /// <summary>Full report: Organization → Position → Employee</summary>
+        [HasPermission("VACANCY_VIEW")]
         [HttpGet("report")]
-        public async Task<IActionResult> GetReport() =>
-            Ok(await _service.GetReportAsync());
+        public async Task<IActionResult> GetReport() => Ok(await _service.GetReportAsync());
 
-        /// <summary>Preview the auto-generated position code before creating</summary>
+        /// <summary>Preview code — no permission needed (used in form)</summary>
         [HttpGet("preview-code")]
         public async Task<IActionResult> PreviewCode([FromQuery] int organizationId, [FromQuery] string jobTitle)
         {
             if (organizationId <= 0 || string.IsNullOrWhiteSpace(jobTitle))
                 return BadRequest(new { message = "organizationId and jobTitle are required." });
-
             var code = await _service.PreviewCodeAsync(organizationId, jobTitle);
             return code == null
                 ? BadRequest(new { message = $"Organization node {organizationId} not found." })
                 : Ok(new { vacancyCode = code });
         }
 
-        /// <summary>
-        /// Create one or more positions in a single request.
-        /// Set VacancyCount = 1 (default) for a single vacancy.
-        /// Set VacancyCount = N to create N vacancies — the loop runs on the backend.
-        /// Each vacancy gets a unique auto-incremented code.
-        ///
-        /// Example body (creates 5 Developer vacancies):
-        /// {
-        ///   "organizationId": 4,
-        ///   "jobTitle": "Developer",
-        ///   "department": "IT",
-        ///   "vacancyCount": 5
-        /// }
-        /// </summary>
+        /// <summary>Create one or more positions — VacancyCount=1 single, N=bulk</summary>
+        [HasPermission("VACANCY_CREATE")]
         [HttpPost]
         public async Task<IActionResult> Create([FromBody] CreateVacancyDto dto)
         {
             if (!ModelState.IsValid) return BadRequest(ModelState);
-
-            // Single vacancy (default)
             if (dto.VacancyCount <= 1)
             {
                 var (vacancy, error) = await _service.CreateAsync(dto);
@@ -86,49 +66,23 @@ namespace Accounts.Controllers
                     return error.Contains("not found") ? NotFound(new { message = error }) : BadRequest(new { message = error });
                 return CreatedAtAction(nameof(GetById), new { id = vacancy!.VacancyId }, vacancy);
             }
-
-            // Bulk — loop runs server-side
             var (created, errors) = await _service.CreateBulkAsync(dto);
-            var createdList = created.ToList();
-
-            return Ok(new
-            {
-                requested = dto.VacancyCount,
-                created   = createdList.Count,
-                failed    = errors.Count(),
-                vacancies = createdList,
-                errors    = errors.Any() ? errors : null
-            });
+            var list = created.ToList();
+            return Ok(new { requested = dto.VacancyCount, created = list.Count, failed = errors.Count(), vacancies = list, errors = errors.Any() ? errors : null });
         }
 
-        /// <summary>
-        /// Dedicated bulk endpoint — same as POST /api/positions with VacancyCount > 1.
-        /// Useful when you always want the bulk response format.
-        ///
-        /// Example: create 10 Manager seats in one call.
-        /// </summary>
+        [HasPermission("VACANCY_CREATE")]
         [HttpPost("bulk")]
         public async Task<IActionResult> CreateBulk([FromBody] CreateVacancyDto dto)
         {
             if (!ModelState.IsValid) return BadRequest(ModelState);
-
-            if (dto.VacancyCount < 1)
-                return BadRequest(new { message = "VacancyCount must be at least 1." });
-
+            if (dto.VacancyCount < 1) return BadRequest(new { message = "VacancyCount must be at least 1." });
             var (created, errors) = await _service.CreateBulkAsync(dto);
-            var createdList = created.ToList();
-
-            return Ok(new
-            {
-                requested = dto.VacancyCount,
-                created   = createdList.Count,
-                failed    = errors.Count(),
-                vacancies = createdList,
-                errors    = errors.Any() ? errors : null
-            });
+            var list = created.ToList();
+            return Ok(new { requested = dto.VacancyCount, created = list.Count, failed = errors.Count(), vacancies = list, errors = errors.Any() ? errors : null });
         }
 
-        /// <summary>Update position details. VacancyCode is regenerated if job title or org changes.</summary>
+        [HasPermission("VACANCY_EDIT")]
         [HttpPut("{id:guid}")]
         public async Task<IActionResult> Update(Guid id, [FromBody] UpdateVacancyDto dto)
         {
@@ -138,7 +92,7 @@ namespace Accounts.Controllers
             return Ok(vacancy);
         }
 
-        /// <summary>Delete a position — blocked if an employee is assigned</summary>
+        [HasPermission("VACANCY_DELETE")]
         [HttpDelete("{id:guid}")]
         public async Task<IActionResult> Delete(Guid id)
         {

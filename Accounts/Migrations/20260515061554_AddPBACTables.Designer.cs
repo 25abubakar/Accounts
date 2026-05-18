@@ -4,6 +4,7 @@ using Accounts.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 #nullable disable
@@ -11,9 +12,11 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace Accounts.Migrations
 {
     [DbContext(typeof(ApplicationDbContext))]
-    partial class ApplicationDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260515061554_AddPBACTables")]
+    partial class AddPBACTables
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -333,50 +336,6 @@ namespace Accounts.Migrations
                     b.ToTable("PersonAddresses", (string)null);
                 });
 
-            modelBuilder.Entity("Accounts.Models.RolePermission", b =>
-                {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("int");
-
-                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
-
-                    b.Property<DateTime>("CreatedDate")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("datetime2")
-                        .HasDefaultValueSql("GETDATE()");
-
-                    b.Property<int?>("DeptId")
-                        .HasColumnType("int");
-
-                    b.Property<string>("FeatureKey")
-                        .IsRequired()
-                        .HasMaxLength(100)
-                        .HasColumnType("nvarchar(100)");
-
-                    b.Property<bool>("IsAllowed")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("bit")
-                        .HasDefaultValue(false);
-
-                    b.Property<string>("JobTitle")
-                        .IsRequired()
-                        .HasMaxLength(100)
-                        .HasColumnType("nvarchar(100)");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("DeptId");
-
-                    b.HasIndex("FeatureKey");
-
-                    b.HasIndex("JobTitle", "DeptId", "FeatureKey")
-                        .IsUnique()
-                        .HasFilter("[DeptId] IS NOT NULL");
-
-                    b.ToTable("RolePermissions", (string)null);
-                });
-
             modelBuilder.Entity("Accounts.Models.Staff", b =>
                 {
                     b.Property<Guid>("StaffId")
@@ -450,50 +409,6 @@ namespace Accounts.Migrations
                     b.HasIndex("GroupId");
 
                     b.ToTable("StaffAccessGroups", (string)null);
-                });
-
-            modelBuilder.Entity("Accounts.Models.UserPermissionOverride", b =>
-                {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("int");
-
-                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
-
-                    b.Property<string>("FeatureKey")
-                        .IsRequired()
-                        .HasMaxLength(100)
-                        .HasColumnType("nvarchar(100)");
-
-                    b.Property<bool>("IsAllowed")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("bit")
-                        .HasDefaultValue(false);
-
-                    b.Property<string>("Reason")
-                        .HasMaxLength(250)
-                        .HasColumnType("nvarchar(250)");
-
-                    b.Property<string>("SetBy")
-                        .HasMaxLength(450)
-                        .HasColumnType("nvarchar(450)");
-
-                    b.Property<DateTime>("SetDate")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("datetime2")
-                        .HasDefaultValueSql("GETDATE()");
-
-                    b.Property<Guid>("StaffId")
-                        .HasColumnType("uniqueidentifier");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("FeatureKey");
-
-                    b.HasIndex("StaffId", "FeatureKey")
-                        .IsUnique();
-
-                    b.ToTable("UserPermissionOverrides", (string)null);
                 });
 
             modelBuilder.Entity("Accounts.Models.Vacancy", b =>
@@ -842,24 +757,6 @@ namespace Accounts.Migrations
                     b.Navigation("Person");
                 });
 
-            modelBuilder.Entity("Accounts.Models.RolePermission", b =>
-                {
-                    b.HasOne("Accounts.Models.OrganizationTree", "Department")
-                        .WithMany()
-                        .HasForeignKey("DeptId")
-                        .OnDelete(DeleteBehavior.Restrict);
-
-                    b.HasOne("Accounts.Models.Feature", "Feature")
-                        .WithMany()
-                        .HasForeignKey("FeatureKey")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
-
-                    b.Navigation("Department");
-
-                    b.Navigation("Feature");
-                });
-
             modelBuilder.Entity("Accounts.Models.Staff", b =>
                 {
                     b.HasOne("Accounts.Models.Person", "Person")
@@ -892,25 +789,6 @@ namespace Accounts.Migrations
                         .IsRequired();
 
                     b.Navigation("Group");
-
-                    b.Navigation("Staff");
-                });
-
-            modelBuilder.Entity("Accounts.Models.UserPermissionOverride", b =>
-                {
-                    b.HasOne("Accounts.Models.Feature", "Feature")
-                        .WithMany()
-                        .HasForeignKey("FeatureKey")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
-
-                    b.HasOne("Accounts.Models.Staff", "Staff")
-                        .WithMany()
-                        .HasForeignKey("StaffId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
-
-                    b.Navigation("Feature");
 
                     b.Navigation("Staff");
                 });

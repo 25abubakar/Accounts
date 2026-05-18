@@ -10,7 +10,8 @@ namespace Accounts.Services.Services
         private readonly SignInManager<IdentityUser> _signInManager;
         private readonly RoleManager<IdentityRole>  _roleManager;
 
-        private static readonly string[] AllowedRoles = ["Manager", "Developer", "AssistantManager"];
+        private static readonly string[] AllowedRoles =
+            ["Manager", "Developer", "AssistantManager", "SuperAdmin"];
 
         public AuthService(
             UserManager<IdentityUser>  userManager,
@@ -21,6 +22,8 @@ namespace Accounts.Services.Services
             _signInManager = signInManager;
             _roleManager   = roleManager;
         }
+
+        // ── Register ──────────────────────────────────────────────────────────
 
         public async Task<(bool Success, string Message, AuthResponseDto Response)> RegisterAsync(RegisterDto dto)
         {
@@ -50,34 +53,74 @@ namespace Accounts.Services.Services
             await _userManager.AddToRoleAsync(user, dto.Role);
             var roles = await _userManager.GetRolesAsync(user);
 
-            return (true, "User registered successfully.",
-                new AuthResponseDto { Success = true, Message = "User registered successfully.", Email = user.Email, Roles = roles });
+            return (true, "User registered successfully.", new AuthResponseDto
+            {
+                Success  = true,
+                Message  = "User registered successfully.",
+                Username = user.UserName,
+                Email    = user.Email,
+                Roles    = roles
+            });
         }
+
+        // ── Login — accepts Username (LT10001) OR Email ───────────────────────
 
         public async Task<(bool Success, int StatusCode, AuthResponseDto Response)> LoginAsync(LoginDto dto)
         {
+            // Step 1: Resolve the IdentityUser by username or email
+            IdentityUser? user = null;
+
+            // Try username first (e.g. LT10001, admin)
+            user = await _userManager.FindByNameAsync(dto.Username);
+
+            // Fallback: try email (e.g. abubakar@laltechnologies.com)
+            if (user == null && dto.Username.Contains('@'))
+                user = await _userManager.FindByEmailAsync(dto.Username);
+
+            if (user == null)
+                return (false, 401, new AuthResponseDto
+                {
+                    Success = false,
+                    Message = "Invalid username or password."
+                });
+
+            // Step 2: Sign in using the resolved username
             var result = await _signInManager.PasswordSignInAsync(
-                dto.Email, dto.Password, dto.RememberMe, lockoutOnFailure: false);
+                user.UserName!, dto.Password, dto.RememberMe, lockoutOnFailure: false);
 
             if (result.Succeeded)
             {
-                var user  = await _userManager.FindByEmailAsync(dto.Email);
-                var roles = await _userManager.GetRolesAsync(user!);
+                var roles = await _userManager.GetRolesAsync(user);
                 return (true, 200, new AuthResponseDto
                 {
-                    Success = true, Message = "Login successful.",
-                    Email = user!.Email, Roles = roles
+                    Success  = true,
+                    Message  = "Login successful.",
+                    Username = user.UserName,
+                    Email    = user.Email,
+                    Roles    = roles
                 });
             }
 
             if (result.IsLockedOut)
-                return (false, 423, new AuthResponseDto { Success = false, Message = "Account is locked out." });
+                return (false, 423, new AuthResponseDto
+                {
+                    Success = false,
+                    Message = "Account is locked out."
+                });
 
-            return (false, 401, new AuthResponseDto { Success = false, Message = "Invalid email or password." });
+            return (false, 401, new AuthResponseDto
+            {
+                Success = false,
+                Message = "Invalid username or password."
+            });
         }
+
+        // ── Logout ────────────────────────────────────────────────────────────
 
         public async Task LogoutAsync() =>
             await _signInManager.SignOutAsync();
+
+        // ── Assign Role — accepts Username OR Email ───────────────────────────
 
         public async Task<(bool Success, string Message, AuthResponseDto Response)> AssignRoleAsync(AssignRoleDto dto)
         {
@@ -85,7 +128,10 @@ namespace Accounts.Services.Services
                 return (false, $"Invalid role. Allowed: {string.Join(", ", AllowedRoles)}",
                     new AuthResponseDto { Success = false });
 
-            var user = await _userManager.FindByEmailAsync(dto.Email);
+            // Try username first, then email
+            var user = await _userManager.FindByNameAsync(dto.Username)
+                    ?? await _userManager.FindByEmailAsync(dto.Username);
+
             if (user == null)
                 return (false, "User not found.", new AuthResponseDto { Success = false });
 
@@ -97,16 +143,26 @@ namespace Accounts.Services.Services
             await _userManager.AddToRoleAsync(user, dto.Role);
 
             var updated = await _userManager.GetRolesAsync(user);
-            return (true, $"Role '{dto.Role}' assigned to {user.Email}.",
-                new AuthResponseDto { Success = true, Message = $"Role '{dto.Role}' assigned.", Email = user.Email, Roles = updated });
+            return (true, $"Role '{dto.Role}' assigned to {user.UserName}.", new AuthResponseDto
+            {
+                Success  = true,
+                Message  = $"Role '{dto.Role}' assigned.",
+                Username = user.UserName,
+                Email    = user.Email,
+                Roles    = updated
+            });
         }
+
+        // ── Get All Users ─────────────────────────────────────────────────────
 
         public Task<IEnumerable<object>> GetUsersAsync()
         {
-            var users = _userManager.Users.ToList();
+            var users  = _userManager.Users.ToList();
             var result = users.Select(u => (object)new
             {
-                u.Id, u.Email, u.UserName,
+                u.Id,
+                u.UserName,
+                u.Email,
                 Roles = _userManager.GetRolesAsync(u).Result
             });
             return Task.FromResult(result);

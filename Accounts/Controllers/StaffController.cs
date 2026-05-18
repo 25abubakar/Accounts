@@ -1,3 +1,4 @@
+using Accounts.Authorization;
 using Accounts.Models;
 using Accounts.Services.Interfaces;
 using Microsoft.AspNetCore.Mvc;
@@ -10,15 +11,13 @@ namespace Accounts.Controllers
     public class StaffController : ControllerBase
     {
         private readonly IStaffService _service;
-
         public StaffController(IStaffService service) => _service = service;
 
-        /// <summary>Get all employees with vacancy and org info</summary>
+        [HasPermission("EMPLOYEE_VIEW")]
         [HttpGet]
-        public async Task<IActionResult> GetAll() =>
-            Ok(await _service.GetAllAsync());
+        public async Task<IActionResult> GetAll() => Ok(await _service.GetAllAsync());
 
-        /// <summary>Get a single employee by ID</summary>
+        [HasPermission("EMPLOYEE_VIEW")]
         [HttpGet("{id:guid}")]
         public async Task<IActionResult> GetById(Guid id)
         {
@@ -26,7 +25,7 @@ namespace Accounts.Controllers
             return s == null ? NotFound(new { message = $"Employee {id} not found." }) : Ok(s);
         }
 
-        /// <summary>Search employees by name or email</summary>
+        [HasPermission("EMPLOYEE_VIEW")]
         [HttpGet("search")]
         public async Task<IActionResult> Search([FromQuery] string q)
         {
@@ -34,7 +33,7 @@ namespace Accounts.Controllers
             return Ok(await _service.SearchAsync(q));
         }
 
-        /// <summary>Hire an employee on a vacancy — marks vacancy as filled</summary>
+        [HasPermission("VACANCY_ASSIGN")]
         [HttpPost("hire/{vacancyId:guid}")]
         public async Task<IActionResult> Hire(Guid vacancyId, [FromBody] HireStaffDto dto)
         {
@@ -44,7 +43,7 @@ namespace Accounts.Controllers
             return CreatedAtAction(nameof(GetById), new { id = staff!.StaffId }, staff);
         }
 
-        /// <summary>Hire a registered Person directly onto a vacancy</summary>
+        [HasPermission("VACANCY_ASSIGN")]
         [HttpPost("hire-person/{vacancyId:guid}")]
         public async Task<IActionResult> HirePerson(Guid vacancyId, [FromQuery] Guid personId)
         {
@@ -53,7 +52,7 @@ namespace Accounts.Controllers
             return CreatedAtAction(nameof(GetById), new { id = staff!.StaffId }, staff);
         }
 
-        /// <summary>Update employee name, email, phone</summary>
+        [HasPermission("EMPLOYEE_EDIT")]
         [HttpPut("{id:guid}")]
         public async Task<IActionResult> Update(Guid id, [FromBody] UpdateStaffDto dto)
         {
@@ -63,7 +62,7 @@ namespace Accounts.Controllers
             return Ok(staff);
         }
 
-        /// <summary>Upload employee profile picture (multipart/form-data, field: photo, max 5MB)</summary>
+        [HasPermission("EMPLOYEE_EDIT")]
         [HttpPost("{id:guid}/upload-photo")]
         [Consumes("multipart/form-data")]
         public async Task<IActionResult> UploadPhoto(Guid id, IFormFile photo)
@@ -74,7 +73,7 @@ namespace Accounts.Controllers
             return Ok(new { message = "Photo uploaded successfully.", photoUrl, fullUrl });
         }
 
-        /// <summary>Remove employee profile picture</summary>
+        [HasPermission("EMPLOYEE_EDIT")]
         [HttpDelete("{id:guid}/photo")]
         public async Task<IActionResult> DeletePhoto(Guid id)
         {
@@ -83,7 +82,7 @@ namespace Accounts.Controllers
             return Ok(new { message });
         }
 
-        /// <summary>Transfer employee to a different vacancy (old vacancy becomes vacant)</summary>
+        [HasPermission("EMPLOYEE_TRANSFER")]
         [HttpPut("{id:guid}/transfer")]
         public async Task<IActionResult> Transfer(Guid id, [FromBody] TransferStaffDto dto)
         {
@@ -93,7 +92,7 @@ namespace Accounts.Controllers
             return Ok(staff);
         }
 
-        /// <summary>Remove an employee — their vacancy becomes vacant again</summary>
+        [HasPermission("EMPLOYEE_DELETE")]
         [HttpDelete("{id:guid}")]
         public async Task<IActionResult> Delete(Guid id)
         {

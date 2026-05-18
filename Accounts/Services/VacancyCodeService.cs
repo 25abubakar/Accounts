@@ -105,37 +105,43 @@ namespace Accounts.Services
 
         private async Task<int> GetNextNumberAsync(string prefix)
         {
-            await using var tx = await _db.Database.BeginTransactionAsync();
-            try
-            {
-                var counter = await _db.VacancyCounters
-                    .FromSqlRaw(
-                        "SELECT * FROM VacancyCounters WITH (UPDLOCK, ROWLOCK) WHERE Prefix = {0}",
-                        prefix)
-                    .FirstOrDefaultAsync();
+            // Wrap in execution strategy so it works with SqlServerRetryingExecutionStrategy
+            var strategy = _db.Database.CreateExecutionStrategy();
 
-                int next;
-                if (counter == null)
-                {
-                    counter = new VacancyCounter { Prefix = prefix, LastNumber = 1 };
-                    _db.VacancyCounters.Add(counter);
-                    next = 1;
-                }
-                else
-                {
-                    counter.LastNumber += 1;
-                    next = counter.LastNumber;
-                }
-
-                await _db.SaveChangesAsync();
-                await tx.CommitAsync();
-                return next;
-            }
-            catch
+            return await strategy.ExecuteAsync(async () =>
             {
-                await tx.RollbackAsync();
-                throw;
-            }
+                await using var tx = await _db.Database.BeginTransactionAsync();
+                try
+                {
+                    var counter = await _db.VacancyCounters
+                        .FromSqlRaw(
+                            "SELECT * FROM VacancyCounters WITH (UPDLOCK, ROWLOCK) WHERE Prefix = {0}",
+                            prefix)
+                        .FirstOrDefaultAsync();
+
+                    int next;
+                    if (counter == null)
+                    {
+                        counter = new VacancyCounter { Prefix = prefix, LastNumber = 1 };
+                        _db.VacancyCounters.Add(counter);
+                        next = 1;
+                    }
+                    else
+                    {
+                        counter.LastNumber += 1;
+                        next = counter.LastNumber;
+                    }
+
+                    await _db.SaveChangesAsync();
+                    await tx.CommitAsync();
+                    return next;
+                }
+                catch
+                {
+                    await tx.RollbackAsync();
+                    throw;
+                }
+            });
         }
 
         // ── Org Tree Helpers ──────────────────────────────────────────────────

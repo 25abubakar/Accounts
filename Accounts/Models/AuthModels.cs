@@ -16,16 +16,22 @@ namespace Accounts.Models
         [Compare("Password", ErrorMessage = "Passwords do not match.")]
         public string ConfirmPassword { get; set; } = string.Empty;
 
-        /// <summary>Allowed values: Manager, Developer, AssistantManager</summary>
         [Required]
         public string Role { get; set; } = string.Empty;
     }
 
+    /// <summary>
+    /// Login using Username (e.g. LT10001) or Email — both accepted.
+    /// Password is the same format: LT10001@
+    /// </summary>
     public class LoginDto
     {
+        /// <summary>
+        /// Username (e.g. LT10001, admin) OR Email (e.g. abubakar@laltechnologies.com).
+        /// Both work — backend tries username first, then email.
+        /// </summary>
         [Required]
-        [EmailAddress]
-        public string Email { get; set; } = string.Empty;
+        public string Username { get; set; } = string.Empty;
 
         [Required]
         public string Password { get; set; } = string.Empty;
@@ -35,20 +41,20 @@ namespace Accounts.Models
 
     public class AssignRoleDto
     {
+        /// <summary>Username (LT10001) or Email</summary>
         [Required]
-        [EmailAddress]
-        public string Email { get; set; } = string.Empty;
+        public string Username { get; set; } = string.Empty;
 
-        /// <summary>Allowed values: Manager, Developer, AssistantManager</summary>
         [Required]
         public string Role { get; set; } = string.Empty;
     }
 
     public class AuthResponseDto
     {
-        public bool Success { get; set; }
-        public string Message { get; set; } = string.Empty;
-        public string? Email { get; set; }
+        public bool    Success  { get; set; }
+        public string  Message  { get; set; } = string.Empty;
+        public string? Username { get; set; }
+        public string? Email    { get; set; }
         public IList<string>? Roles { get; set; }
     }
 }

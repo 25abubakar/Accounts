@@ -723,7 +723,7 @@ namespace Accounts.Services.Services
             {
                 PersonId = p.PersonId, LoginId = p.LoginId, FullName = p.FullName, Initials = initials,
                 Gender = p.Gender, DateOfBirth = p.DateOfBirth, MaritalStatus = p.MaritalStatus,
-                Phone = p.Phone, Email = p.Email, PhotoUrl = p.ProfilePhotoUrl, RegisteredAt = p.CreatedDate,
+                Phone = p.Phone, UserName = p.Email, PhotoUrl = p.ProfilePhotoUrl, RegisteredAt = p.CreatedDate,
                 BranchId = p.BranchId, BranchName = branch?.Name, CompanyName = company?.Name,
                 CountryName = country?.Name, CountryFlag = country?.FlagUrl,
                 IsHired = p.Staff != null, StaffId = p.Staff?.StaffId, JoiningDate = p.Staff?.JoiningDate,

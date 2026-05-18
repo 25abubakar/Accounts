@@ -1,0 +1,414 @@
+using Accounts.Data;
+using Accounts.Models;
+using Microsoft.EntityFrameworkCore;
+
+namespace Accounts.Services.Services
+{
+    /// <summary>
+    /// Hierarchical RBAC Engine with explicit DENY short-circuit.
+    ///
+    /// Permission resolution order (strict, highest priority first):
+    ///
+    ///   1. UserPermissionOverride.Status == DENY   → return FALSE immediately (no further checks)
+    ///   2. UserPermissionOverride.Status == ALLOW  → return TRUE immediately
+    ///   3. UserPermissionOverride.Status == INHERIT → fall through
+    ///   4. RolePermission (dept-specific)          → IsAllowed value
+    ///   5. RolePermission (global, DeptId = null)  → IsAllowed value
+    ///   6. DepartmentAccessMatrix (legacy)         → HasAccess value
+    ///   7. false                                   → deny by default
+    ///
+    /// DENY always wins — even if a role says ALLOW.
+    /// </summary>
+    public class RbacService
+    {
+        private readonly ApplicationDbContext _db;
+        public RbacService(ApplicationDbContext db) => _db = db;
+
+        // ── HasAccess — single permission check ───────────────────────────────
+
+        public async Task<bool> HasAccessAsync(Guid staffId, string featureKey)
+        {
+            // ── 1 & 2. Check user-specific override (DENY short-circuits) ─────
+            var userOverride = await _db.UserPermissionOverrides
+                .AsNoTracking()
+                .FirstOrDefaultAsync(u => u.StaffId == staffId && u.FeatureKey == featureKey);
+
+            if (userOverride != null)
+            {
+                if (userOverride.Status == nameof(PermissionStatus.DENY))
+                    return false;   // ← HARD DENY — stop here, no further checks
+
+                if (userOverride.Status == nameof(PermissionStatus.ALLOW))
+                    return true;    // ← EXPLICIT ALLOW
+
+                // INHERIT → fall through to role default
+            }
+
+            // ── 3. Get staff's job title and dept ─────────────────────────────
+            var staff = await _db.Staff
+                .AsNoTracking()
+                .Include(s => s.Vacancy)
+                .FirstOrDefaultAsync(s => s.StaffId == staffId);
+
+            if (staff == null) return false;
+
+            var jobTitle = staff.Vacancy?.JobTitle;
+            var deptId   = staff.Vacancy?.OrganizationId;
+
+            if (!string.IsNullOrWhiteSpace(jobTitle))
+            {
+                // ── 4. Role permission — dept-specific ────────────────────────
+                if (deptId.HasValue)
+                {
+                    var deptRolePerm = await _db.RolePermissions
+                        .AsNoTracking()
+                        .FirstOrDefaultAsync(r =>
+                            r.JobTitle == jobTitle &&
+                            r.DeptId == deptId &&
+                            r.FeatureKey == featureKey);
+
+                    if (deptRolePerm != null)
+                        return deptRolePerm.IsAllowed;
+                }
+
+                // ── 5. Role permission — global (DeptId = null) ───────────────
+                var globalRolePerm = await _db.RolePermissions
+                    .AsNoTracking()
+                    .FirstOrDefaultAsync(r =>
+                        r.JobTitle == jobTitle &&
+                        r.DeptId == null &&
+                        r.FeatureKey == featureKey);
+
+                if (globalRolePerm != null)
+                    return globalRolePerm.IsAllowed;
+            }
+
+            // ── 6. Legacy DepartmentAccessMatrix ─────────────────────────────
+            var matrixRow = await _db.DepartmentAccessMatrix
+                .AsNoTracking()
+                .FirstOrDefaultAsync(m => m.StaffId == staffId && m.FeatureKey == featureKey);
+
+            return matrixRow?.HasAccess ?? false;
+        }
+
+        // ── GetEffectivePermissions — all allowed features for one staff ──────
+
+        public async Task<IEnumerable<string>> GetEffectivePermissionsAsync(Guid staffId)
+        {
+            var features = await _db.Features.AsNoTracking()
+                .Select(f => f.FeatureKey).ToListAsync();
+
+            var result = new List<string>();
+            foreach (var key in features)
+            {
+                if (await HasAccessAsync(staffId, key))
+                    result.Add(key);
+            }
+            return result;
+        }
+
+        // ── GetFilteredSidebar — menu items the user can actually see ─────────
+
+        /// <summary>
+        /// Returns the sidebar menu tree filtered by the user's effective permissions.
+        /// Menu items linked to a PermissionKey the user doesn't have are removed.
+        /// Menu items with no PermissionKey are always shown (public items).
+        /// Empty parent groups are also removed.
+        /// </summary>
+        public async Task<List<object>> GetFilteredSidebarAsync(Guid staffId)
+        {
+            // Load all active menus
+            var allMenus = await _db.Menus
+                .AsNoTracking()
+                .Include(m => m.MenuRoles)
+                .Where(m => m.IsActive)
+                .OrderBy(m => m.SortOrder)
+                .ToListAsync();
+
+            // Load all user permissions in one bulk query
+            var userPermissions = (await GetEffectivePermissionsAsync(staffId)).ToHashSet();
+
+            // Build lookup by parentId
+            var lookup = allMenus.ToLookup(m => m.ParentId);
+
+            return BuildFilteredTree(null, lookup, userPermissions);
+        }
+
+        private static List<object> BuildFilteredTree(
+            int? parentId,
+            ILookup<int?, Menu> lookup,
+            HashSet<string> userPermissions)
+        {
+            var result = new List<object>();
+
+            foreach (var menu in lookup[parentId])
+            {
+                // Check if this menu item requires a permission
+                var requiredRoles = menu.MenuRoles.Select(r => r.RoleName).ToList();
+
+                // If menu has required roles/permissions, check if user has any of them
+                bool canSee = !requiredRoles.Any() ||
+                              requiredRoles.Any(r => userPermissions.Contains(r));
+
+                if (!canSee) continue;
+
+                // Recursively build children
+                var children = BuildFilteredTree(menu.Id, lookup, userPermissions);
+
+                // Skip parent groups that have no visible children
+                // (unless the parent itself has a route — it's a leaf node)
+                if (!children.Any() && string.IsNullOrWhiteSpace(menu.Route) && lookup[menu.Id].Any())
+                    continue;
+
+                result.Add(new
+                {
+                    id       = menu.Id,
+                    title    = menu.Title,
+                    icon     = menu.Icon,
+                    route    = menu.Route,
+                    sortOrder = menu.SortOrder,
+                    children
+                });
+            }
+
+            return result;
+        }
+
+        // ── GetDepartmentMatrix — optimized bulk load ─────────────────────────
+
+        public async Task<object> GetDepartmentMatrixAsync(int deptId)
+        {
+            var features = await _db.Features
+                .AsNoTracking()
+                .OrderBy(f => f.Module).ThenBy(f => f.FeatureKey)
+                .ToListAsync();
+
+            var personsInDept = await _db.Persons
+                .AsNoTracking()
+                .Include(p => p.Staff).ThenInclude(s => s!.Vacancy)
+                .Where(p => p.BranchId == deptId)
+                .OrderBy(p => p.FullName)
+                .ToListAsync();
+
+            var coveredPersonIds = personsInDept.Select(p => p.PersonId).ToHashSet();
+
+            var staffViaVacancy = await _db.Staff
+                .AsNoTracking()
+                .Include(s => s.Person)
+                .Include(s => s.Vacancy)
+                .Where(s => s.Vacancy != null && s.Vacancy.OrganizationId == deptId)
+                .OrderBy(s => s.FullName)
+                .ToListAsync();
+
+            var extraStaff = staffViaVacancy
+                .Where(s => s.PersonId == null || !coveredPersonIds.Contains(s.PersonId.Value))
+                .ToList();
+
+            var allStaffIds = personsInDept
+                .Where(p => p.Staff != null).Select(p => p.Staff!.StaffId)
+                .Concat(extraStaff.Select(s => s.StaffId))
+                .ToHashSet();
+
+            var allOverrides = await _db.UserPermissionOverrides
+                .AsNoTracking()
+                .Where(u => allStaffIds.Contains(u.StaffId))
+                .ToListAsync();
+
+            var jobTitles = personsInDept
+                .Select(p => p.Staff?.Vacancy?.JobTitle)
+                .Concat(extraStaff.Select(s => s.Vacancy?.JobTitle))
+                .Where(j => j != null).Distinct().ToList();
+
+            var allRolePerms = await _db.RolePermissions
+                .AsNoTracking()
+                .Where(r => jobTitles.Contains(r.JobTitle) &&
+                            (r.DeptId == null || r.DeptId == deptId))
+                .ToListAsync();
+
+            var allMatrixRows = await _db.DepartmentAccessMatrix
+                .AsNoTracking()
+                .Where(m => allStaffIds.Contains(m.StaffId))
+                .ToListAsync();
+
+            // Resolve cell with DENY short-circuit
+            object ResolveCell(Guid staffId, string jobTitle, int? staffDeptId, string featureKey)
+            {
+                var uo = allOverrides.FirstOrDefault(u =>
+                    u.StaffId == staffId && u.FeatureKey == featureKey);
+
+                if (uo != null)
+                {
+                    if (uo.Status == nameof(PermissionStatus.DENY))
+                        return new { effectiveAccess = false, source = "UserDeny", hasUserOverride = true };
+                    if (uo.Status == nameof(PermissionStatus.ALLOW))
+                        return new { effectiveAccess = true, source = "UserAllow", hasUserOverride = true };
+                    // INHERIT → fall through
+                }
+
+                var rp = allRolePerms.FirstOrDefault(r =>
+                    r.JobTitle == jobTitle && r.DeptId == staffDeptId && r.FeatureKey == featureKey);
+                if (rp != null)
+                    return new { effectiveAccess = rp.IsAllowed, source = "RoleDefault", hasUserOverride = false };
+
+                var rpGlobal = allRolePerms.FirstOrDefault(r =>
+                    r.JobTitle == jobTitle && r.DeptId == null && r.FeatureKey == featureKey);
+                if (rpGlobal != null)
+                    return new { effectiveAccess = rpGlobal.IsAllowed, source = "RoleDefault", hasUserOverride = false };
+
+                var mx = allMatrixRows.FirstOrDefault(m =>
+                    m.StaffId == staffId && m.FeatureKey == featureKey);
+                if (mx != null)
+                    return new { effectiveAccess = mx.HasAccess, source = "Matrix", hasUserOverride = false };
+
+                return new { effectiveAccess = false, source = "Denied", hasUserOverride = false };
+            }
+
+            var gridFromPersons = personsInDept.Select(p =>
+            {
+                var sid = p.Staff?.StaffId ?? Guid.Empty;
+                var jt  = p.Staff?.Vacancy?.JobTitle ?? "";
+                var dId = p.Staff?.Vacancy?.OrganizationId;
+                return new
+                {
+                    staffId = sid, personId = p.PersonId, fullName = p.FullName,
+                    loginId = p.LoginId, jobTitle = jt, isHired = p.Staff != null,
+                    permissions = features.Select(f => new
+                    {
+                        f.FeatureKey, f.FeatureName, f.Module,
+                        access = sid != Guid.Empty
+                            ? ResolveCell(sid, jt, dId, f.FeatureKey)
+                            : new { effectiveAccess = false, source = "NotHired", hasUserOverride = false }
+                    }).ToList()
+                };
+            }).ToList();
+
+            var gridFromStaff = extraStaff.Select(s =>
+            {
+                var jt  = s.Vacancy?.JobTitle ?? "";
+                var dId = s.Vacancy?.OrganizationId;
+                return new
+                {
+                    staffId = s.StaffId, personId = s.PersonId, fullName = s.FullName,
+                    loginId = s.Person?.LoginId ?? "-", jobTitle = jt, isHired = true,
+                    permissions = features.Select(f => new
+                    {
+                        f.FeatureKey, f.FeatureName, f.Module,
+                        access = ResolveCell(s.StaffId, jt, dId, f.FeatureKey)
+                    }).ToList()
+                };
+            }).ToList();
+
+            var allStaff = gridFromPersons.Cast<object>()
+                .Concat(gridFromStaff.Cast<object>()).ToList();
+
+            return new
+            {
+                deptId,
+                totalStaff = allStaff.Count,
+                features   = features.Select(f => new { f.FeatureKey, f.FeatureName, f.Module }).ToList(),
+                staff      = allStaff
+            };
+        }
+
+        // ── Role Permission Management ────────────────────────────────────────
+
+        public async Task<int> SetRolePermissionsAsync(
+            string jobTitle, int? deptId, Dictionary<string, bool> permissions, string? setBy)
+        {
+            int count = 0;
+            foreach (var (featureKey, isAllowed) in permissions)
+            {
+                var existing = await _db.RolePermissions
+                    .FirstOrDefaultAsync(r =>
+                        r.JobTitle == jobTitle && r.DeptId == deptId && r.FeatureKey == featureKey);
+
+                if (existing == null)
+                    _db.RolePermissions.Add(new RolePermission
+                    {
+                        JobTitle = jobTitle, DeptId = deptId,
+                        FeatureKey = featureKey, IsAllowed = isAllowed
+                    });
+                else
+                    existing.IsAllowed = isAllowed;
+
+                count++;
+            }
+            await _db.SaveChangesAsync();
+            return count;
+        }
+
+        public async Task<IEnumerable<object>> GetRolePermissionsAsync(string jobTitle, int? deptId = null)
+        {
+            var query = _db.RolePermissions.AsNoTracking().Where(r => r.JobTitle == jobTitle);
+            if (deptId.HasValue)
+                query = query.Where(r => r.DeptId == deptId || r.DeptId == null);
+
+            return await query.OrderBy(r => r.FeatureKey)
+                .Select(r => new { r.Id, r.JobTitle, r.DeptId, r.FeatureKey, r.IsAllowed })
+                .ToListAsync<object>();
+        }
+
+        // ── User Override Management ──────────────────────────────────────────
+
+        /// <summary>
+        /// Set a user override with explicit ALLOW, DENY, or INHERIT.
+        /// DENY immediately blocks the feature regardless of role.
+        /// </summary>
+        public async Task<(bool Success, string Message)> SetUserOverrideAsync(
+            Guid staffId, string featureKey, PermissionStatus status,
+            string? setBy, string? reason)
+        {
+            if (!await _db.Staff.AnyAsync(s => s.StaffId == staffId))
+                return (false, $"Staff {staffId} not found.");
+            if (!await _db.Features.AnyAsync(f => f.FeatureKey == featureKey))
+                return (false, $"Feature '{featureKey}' not found.");
+
+            var existing = await _db.UserPermissionOverrides
+                .FirstOrDefaultAsync(u => u.StaffId == staffId && u.FeatureKey == featureKey);
+
+            if (existing == null)
+            {
+                _db.UserPermissionOverrides.Add(new UserPermissionOverride
+                {
+                    StaffId    = staffId,
+                    FeatureKey = featureKey,
+                    Status     = status.ToString(),
+                    SetBy      = setBy,
+                    SetDate    = DateTime.Now,
+                    Reason     = reason
+                });
+            }
+            else
+            {
+                existing.Status  = status.ToString();
+                existing.SetBy   = setBy;
+                existing.SetDate = DateTime.Now;
+                existing.Reason  = reason;
+            }
+
+            await _db.SaveChangesAsync();
+            return (true, $"Override set: '{featureKey}' = {status} for staff {staffId}.");
+        }
+
+        public async Task<(bool Success, string Message)> RemoveUserOverrideAsync(
+            Guid staffId, string featureKey)
+        {
+            var existing = await _db.UserPermissionOverrides
+                .FirstOrDefaultAsync(u => u.StaffId == staffId && u.FeatureKey == featureKey);
+
+            if (existing == null) return (false, "Override not found.");
+
+            _db.UserPermissionOverrides.Remove(existing);
+            await _db.SaveChangesAsync();
+            return (true, $"Override removed. '{featureKey}' now uses role default.");
+        }
+
+        public async Task<IEnumerable<object>> GetUserOverridesAsync(Guid staffId) =>
+            await _db.UserPermissionOverrides
+                .AsNoTracking()
+                .Where(u => u.StaffId == staffId)
+                .OrderBy(u => u.FeatureKey)
+                .Select(u => new { u.Id, u.StaffId, u.FeatureKey, u.Status, u.SetBy, u.SetDate, u.Reason })
+                .ToListAsync<object>();
+    }
+}
