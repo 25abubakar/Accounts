@@ -16,16 +16,16 @@ namespace Accounts.Controllers
         private string? CurrentUserId => User.FindFirstValue(ClaimTypes.NameIdentifier);
 
         [HttpGet("features")]
-        public async Task<IActionResult> GetFeatures() =>
+        public async Task<IActionResult> GetFeatures() => 
             Ok(await _service.GetAllFeaturesAsync());
 
         [HttpGet("features/module/{module}")]
-        public async Task<IActionResult> GetFeaturesByModule(string module) =>
+        public async Task<IActionResult> GetFeaturesByModule(string module) => 
             Ok(await _service.GetFeaturesByModuleAsync(module));
 
         [HasPermission("ACCESS_GROUP_VIEW")]
         [HttpGet("groups")]
-        public async Task<IActionResult> GetGroups() =>
+        public async Task<IActionResult> GetGroups() => 
             Ok(await _service.GetAllGroupsAsync());
 
         [HasPermission("ACCESS_GROUP_VIEW")]
@@ -40,12 +40,12 @@ namespace Accounts.Controllers
         [HttpPost("groups")]
         public async Task<IActionResult> CreateGroup([FromBody] CreateGroupDto dto)
         {
-            if (string.IsNullOrWhiteSpace(dto.GroupName))
+            if (string.IsNullOrWhiteSpace(dto.GroupName)) 
                 return BadRequest(new { message = "GroupName is required." });
-
+                
             var group = await _service.CreateGroupAsync(dto.GroupName, dto.Description);
             // Assuming your dynamic object or entity contains GroupId
-            dynamic dynamicGroup = group;
+            dynamic dynamicGroup = group; 
             return CreatedAtAction(nameof(GetGroup), new { id = dynamicGroup.GroupId }, group);
         }
 
@@ -75,7 +75,7 @@ namespace Accounts.Controllers
 
         [HasPermission("ACCESS_GROUP_VIEW")]
         [HttpGet("staff/{staffId:guid}/groups")]
-        public async Task<IActionResult> GetStaffGroups(Guid staffId) =>
+        public async Task<IActionResult> GetStaffGroups(Guid staffId) => 
             Ok(await _service.GetStaffGroupsAsync(staffId));
 
         [HasPermission("ACCESS_GROUP_ASSIGN")]
@@ -121,7 +121,7 @@ namespace Accounts.Controllers
                 .Select(i => new MatrixUpdateItem { StaffId = Guid.Parse(i.StaffId), FeatureKey = i.FeatureKey, HasAccess = i.HasAccess })
                 .ToList();
 
-            if (!items.Any())
+            if (!items.Any()) 
                 return BadRequest(new { message = "No valid items found. Check staffId format (must be GUID)." });
 
             (int count, string msg) = await _service.SaveDepartmentMatrixAsync(deptId, items, CurrentUserId);
@@ -155,10 +155,10 @@ namespace Accounts.Controllers
     }
 
     // ── Request DTOs ──────────────────────────────────────────────────────────
-    public class CreateGroupDto { public string GroupName { get; set; } = string.Empty; public string? Description { get; set; } }
-    public class SetFeaturesDto { public List<string> FeatureKeys { get; set; } = new(); }
-    public class AssignGroupDto { public string? Note { get; set; } }
-    public class SaveMatrixDto { public List<MatrixItemDto> Items { get; set; } = new(); }
-    public class MatrixItemDto { public string StaffId { get; set; } = string.Empty; public string FeatureKey { get; set; } = string.Empty; public bool HasAccess { get; set; } }
-    public class ToggleDto { public bool HasAccess { get; set; } }
+    public class CreateGroupDto  { public string GroupName { get; set; } = string.Empty; public string? Description { get; set; } }
+    public class SetFeaturesDto  { public List<string> FeatureKeys { get; set; } = new(); }
+    public class AssignGroupDto  { public string? Note { get; set; } }
+    public class SaveMatrixDto   { public List<MatrixItemDto> Items { get; set; } = new(); }
+    public class MatrixItemDto   { public string StaffId { get; set; } = string.Empty; public string FeatureKey { get; set; } = string.Empty; public bool HasAccess { get; set; } }
+    public class ToggleDto       { public bool HasAccess { get; set; } }
 }

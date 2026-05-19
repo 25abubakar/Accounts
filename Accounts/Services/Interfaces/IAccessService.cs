@@ -34,6 +34,23 @@ namespace Accounts.Services.Interfaces
 
         /// <summary>Get all persons in a department (BranchId match) — hired and not hired</summary>
         Task<IEnumerable<object>> GetDepartmentPersonsAsync(int deptId);
+
+        // ── New: Effective Access + Group Sync ────────────────────────────────
+
+        /// <summary>
+        /// Returns the merged effective access for a staff member.
+        /// Priority: Individual DepartmentAccessMatrix OR Group AccessGroupFeatures.
+        /// A feature is accessible if EITHER the individual matrix OR any assigned group grants it.
+        /// </summary>
+        Task<EffectiveAccessResult> GetEffectiveAccessAsync(Guid staffId, int groupId);
+
+        /// <summary>
+        /// When a group's features are updated, sync those changes into DepartmentAccessMatrix
+        /// for every staff member who belongs to that group.
+        /// Runs inside a transaction — rolls back fully on any failure.
+        /// </summary>
+        Task<(bool Success, string Message, int StaffSynced, int PermissionsSynced)> SyncGroupToDeptMatrixAsync(
+            int groupId, string? syncedBy = null);
     }
 
     public class MatrixUpdateItem
@@ -41,5 +58,48 @@ namespace Accounts.Services.Interfaces
         public Guid   StaffId    { get; set; }
         public string FeatureKey { get; set; } = string.Empty;
         public bool   HasAccess  { get; set; }
+    }
+
+    /// <summary>Result of GetEffectiveAccessAsync — merged view of group + individual access.</summary>
+    public class EffectiveAccessResult
+    {
+        public Guid   StaffId  { get; set; }
+        public int    GroupId  { get; set; }
+        public string StaffName { get; set; } = string.Empty;
+        public string GroupName { get; set; } = string.Empty;
+
+        /// <summary>
+        /// Each feature with its effective access and the source that granted it.
+        /// Source: "Individual" | "Group" | "Both" | "None"
+        /// </summary>
+        public List<EffectiveFeatureAccess> Features { get; set; } = new();
+
+        public int TotalGranted => Features.Count(f => f.HasAccess);
+        public int TotalDenied  => Features.Count(f => !f.HasAccess);
+    }
+
+    public class EffectiveFeatureAccess
+    {
+        public string FeatureKey  { get; set; } = string.Empty;
+        public string FeatureName { get; set; } = string.Empty;
+        public string Module      { get; set; } = string.Empty;
+
+        /// <summary>True if individual matrix grants it</summary>
+        public bool IndividualAccess { get; set; }
+
+        /// <summary>True if the group grants it</summary>
+        public bool GroupAccess { get; set; }
+
+        /// <summary>Final merged result — true if EITHER individual OR group grants it</summary>
+        public bool HasAccess => IndividualAccess || GroupAccess;
+
+        /// <summary>Where the access came from: Individual / Group / Both / None</summary>
+        public string Source => (IndividualAccess, GroupAccess) switch
+        {
+            (true,  true)  => "Both",
+            (true,  false) => "Individual",
+            (false, true)  => "Group",
+            _              => "None"
+        };
     }
 }
