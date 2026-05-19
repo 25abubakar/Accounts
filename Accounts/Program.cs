@@ -88,6 +88,7 @@ builder.Services.AddScoped<Accounts.Services.Interfaces.IStaffService, Accounts.
 builder.Services.AddScoped<Accounts.Services.Interfaces.IPersonService, Accounts.Services.Services.PersonService>();
 builder.Services.AddScoped<Accounts.Services.Interfaces.IMenuService, Accounts.Services.Services.MenuService>();
 builder.Services.AddScoped<Accounts.Services.Interfaces.IAccessService, Accounts.Services.Services.AccessService>();
+builder.Services.AddScoped<Accounts.Services.Interfaces.IPermissionFilterService, Accounts.Services.Services.PermissionFilterService>();
 builder.Services.AddScoped<Accounts.Services.Services.RbacService>();
 
 builder.Services.AddEndpointsApiExplorer();

@@ -84,10 +84,34 @@ namespace Accounts.Controllers
             if (permissions == null || !permissions.Any())
                 return BadRequest(new { message = "No permissions provided." });
 
-            var count = await _rbac.SetRolePermissionsAsync(
+            // Check Features table is not empty first
+            var featuresExist = await _db.Features.AnyAsync();
+            if (!featuresExist)
+                return BadRequest(new
+                {
+                    message = "Features table is empty. Seed features first via POST /api/rbac/seed-features.",
+                    hint    = "RolePermissions.FeatureKey has a FK to Features table — the key must exist there first."
+                });
+
+            var (count, invalidKeys) = await _rbac.SetRolePermissionsAsync(
                 jobTitle, deptId, permissions, CurrentUserId);
 
-            return Ok(new { message = $"{count} role permissions updated.", jobTitle, deptId });
+            if (count == 0 && invalidKeys.Any())
+                return BadRequest(new
+                {
+                    message     = "No permissions saved. All provided FeatureKeys are invalid.",
+                    invalidKeys,
+                    hint        = "Use GET /api/access/features to see valid feature keys."
+                });
+
+            return Ok(new
+            {
+                message     = $"{count} role permissions saved for '{jobTitle}'.",
+                jobTitle,
+                deptId,
+                saved       = count,
+                invalidKeys = invalidKeys.Any() ? invalidKeys : null
+            });
         }
 
         // ── User Overrides ────────────────────────────────────────────────────
@@ -158,6 +182,79 @@ namespace Accounts.Controllers
         {
             var (ok, msg) = await _rbac.RemoveUserOverrideAsync(staffId, featureKey);
             return ok ? Ok(new { message = msg }) : NotFound(new { message = msg });
+        }
+
+        // ── Seed Features ─────────────────────────────────────────────────────
+
+        /// <summary>
+        /// Seed all system feature keys into the Features table.
+        /// Must be called BEFORE saving RolePermissions — FK requires features to exist.
+        /// Safe to call multiple times (idempotent).
+        /// </summary>
+        [HttpPost("seed-features")]
+        public async Task<IActionResult> SeedFeatures()
+        {
+            var features = new List<Feature>
+            {
+                // ── Organization ──────────────────────────────────────────────
+                new() { FeatureKey = "DEPT_VIEW",            FeatureName = "View Department",         Module = "Organization" },
+                new() { FeatureKey = "DEPT_VIEW_ALL",        FeatureName = "View All Departments",    Module = "Organization" },
+                new() { FeatureKey = "DEPT_CREATE",          FeatureName = "Create Department",       Module = "Organization" },
+                new() { FeatureKey = "DEPT_EDIT",            FeatureName = "Edit Department",         Module = "Organization" },
+                new() { FeatureKey = "DEPT_DELETE",          FeatureName = "Delete Department",       Module = "Organization" },
+
+                // ── Vacancy ───────────────────────────────────────────────────
+                new() { FeatureKey = "VACANCY_VIEW",         FeatureName = "View Vacancies",          Module = "Vacancy" },
+                new() { FeatureKey = "VACANCY_CREATE",       FeatureName = "Create Vacancy",          Module = "Vacancy" },
+                new() { FeatureKey = "VACANCY_EDIT",         FeatureName = "Edit Vacancy",            Module = "Vacancy" },
+                new() { FeatureKey = "VACANCY_DELETE",       FeatureName = "Delete Vacancy",          Module = "Vacancy" },
+                new() { FeatureKey = "VACANCY_ASSIGN",       FeatureName = "Assign Staff to Vacancy", Module = "Vacancy" },
+
+                // ── Employee ──────────────────────────────────────────────────
+                new() { FeatureKey = "EMPLOYEE_VIEW",        FeatureName = "View Employees",          Module = "Employee" },
+                new() { FeatureKey = "EMPLOYEE_VIEW_ALL",    FeatureName = "View All Employees",      Module = "Employee" },
+                new() { FeatureKey = "EMPLOYEE_EDIT",        FeatureName = "Edit Employee",           Module = "Employee" },
+                new() { FeatureKey = "EMPLOYEE_DELETE",      FeatureName = "Delete Employee",         Module = "Employee" },
+                new() { FeatureKey = "EMPLOYEE_TRANSFER",    FeatureName = "Transfer Employee",       Module = "Employee" },
+
+                // ── Person ────────────────────────────────────────────────────
+                new() { FeatureKey = "PERSON_VIEW",          FeatureName = "View Persons",            Module = "Person" },
+                new() { FeatureKey = "PERSON_VIEW_ALL",      FeatureName = "View All Persons",        Module = "Person" },
+                new() { FeatureKey = "PERSON_REGISTER",      FeatureName = "Register Person",         Module = "Person" },
+                new() { FeatureKey = "PERSON_EDIT",          FeatureName = "Edit Person",             Module = "Person" },
+                new() { FeatureKey = "PERSON_DELETE",        FeatureName = "Delete Person",           Module = "Person" },
+                new() { FeatureKey = "PERSON_RESET_PASSWORD",FeatureName = "Reset Person Password",  Module = "Person" },
+
+                // ── Access Groups ─────────────────────────────────────────────
+                new() { FeatureKey = "ACCESS_GROUP_VIEW",    FeatureName = "View Access Groups",      Module = "Access" },
+                new() { FeatureKey = "ACCESS_GROUP_CREATE",  FeatureName = "Create Access Group",     Module = "Access" },
+                new() { FeatureKey = "ACCESS_GROUP_EDIT",    FeatureName = "Edit Access Group",       Module = "Access" },
+                new() { FeatureKey = "ACCESS_GROUP_DELETE",  FeatureName = "Delete Access Group",     Module = "Access" },
+                new() { FeatureKey = "ACCESS_GROUP_ASSIGN",  FeatureName = "Assign Group to Staff",   Module = "Access" },
+
+                // ── Location ──────────────────────────────────────────────────
+                new() { FeatureKey = "LOCATION_VIEW",        FeatureName = "View Locations",          Module = "Location" },
+                new() { FeatureKey = "LOCATION_MANAGE",      FeatureName = "Manage Locations",        Module = "Location" },
+            };
+
+            var existingKeys = await _db.Features
+                .Select(f => f.FeatureKey)
+                .ToHashSetAsync();
+
+            var toAdd = features.Where(f => !existingKeys.Contains(f.FeatureKey)).ToList();
+
+            if (toAdd.Any())
+            {
+                _db.Features.AddRange(toAdd);
+                await _db.SaveChangesAsync();
+            }
+
+            return Ok(new
+            {
+                message  = $"Seed complete. {toAdd.Count} new features added, {existingKeys.Count} already existed.",
+                added    = toAdd.Select(f => f.FeatureKey).ToList(),
+                total    = existingKeys.Count + toAdd.Count
+            });
         }
     }
 

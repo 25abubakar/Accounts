@@ -499,24 +499,21 @@ namespace Accounts.Services.Services
         {
             // ── 1. Validate group ─────────────────────────────────────────────
             var group = await _db.AccessGroups
-                .AsNoTracking()
+                .Include(g => g.Features)
                 .FirstOrDefaultAsync(g => g.GroupId == groupId);
 
             if (group == null)
                 return (false, $"Group {groupId} not found.", 0, 0);
 
             // ── 2. Load group's current feature keys ──────────────────────────
-            var groupFeatureKeys = await _db.AccessGroupFeatures
-                .AsNoTracking()
-                .Where(f => f.GroupId == groupId)
-                .Select(f => f.FeatureKey)
-                .ToHashSetAsync();
+            var groupFeatureKeys = group.Features.Select(f => f.FeatureKey).ToHashSet();
 
             // ── 3. Load all staff who belong to this group ────────────────────
             var groupMembers = await _db.StaffAccessGroups
                 .AsNoTracking()
+                .Include(s => s.Staff).ThenInclude(s => s!.Vacancy)
                 .Where(s => s.GroupId == groupId)
-                .Select(s => new { s.StaffId, s.Staff!.FullName, s.Staff.Vacancy!.OrganizationId })
+                .Select(s => new { s.StaffId, s.Staff!.FullName, DeptId = s.Staff.Vacancy != null ? s.Staff.Vacancy.OrganizationId : 0 })
                 .ToListAsync();
 
             if (!groupMembers.Any())
@@ -546,7 +543,7 @@ namespace Accounts.Services.Services
                     {
                         foreach (var member in groupMembers)
                         {
-                            int deptId = member.OrganizationId ?? 0;
+                            int deptId = member.DeptId;
 
                             // Load existing matrix rows for this staff member
                             var existingRows = await _db.DepartmentAccessMatrix
@@ -564,7 +561,7 @@ namespace Accounts.Services.Services
                                     if (!row.HasAccess)
                                     {
                                         row.HasAccess   = true;
-                                        row.GrantedBy   = syncedBy ?? $"GroupSync:{group.GroupName}";
+                                        row.GrantedBy   = $"GroupSync:{group.GroupName}";
                                         row.GrantedDate = DateTime.Now;
                                         permissionsSynced++;
                                     }
@@ -578,7 +575,7 @@ namespace Accounts.Services.Services
                                         DeptId      = deptId,
                                         FeatureKey  = key,
                                         HasAccess   = true,
-                                        GrantedBy   = syncedBy ?? $"GroupSync:{group.GroupName}",
+                                        GrantedBy   = $"GroupSync:{group.GroupName}",
                                         GrantedDate = DateTime.Now
                                     });
                                     permissionsSynced++;
@@ -587,7 +584,7 @@ namespace Accounts.Services.Services
 
                             // ── Revoke: features the group no longer has ──────
                             // Only revoke rows that were granted BY this group sync
-                            // (rows with GrantedBy containing the group name or "GroupSync")
+                            // (rows with GrantedBy starting with "GroupSync:")
                             // This preserves individual overrides set by admins directly
                             foreach (var row in existingRows)
                             {
@@ -596,13 +593,12 @@ namespace Accounts.Services.Services
                                     // Only revoke if this row was originally set by a group sync
                                     // (not an individual admin override)
                                     bool wasGroupGranted = row.GrantedBy != null &&
-                                        (row.GrantedBy.StartsWith("GroupSync:") ||
-                                         row.GrantedBy == syncedBy);
+                                        row.GrantedBy.StartsWith("GroupSync:");
 
                                     if (wasGroupGranted)
                                     {
                                         row.HasAccess   = false;
-                                        row.GrantedBy   = syncedBy ?? $"GroupSync:{group.GroupName}";
+                                        row.GrantedBy   = $"GroupSync:{group.GroupName}";
                                         row.GrantedDate = DateTime.Now;
                                         permissionsSynced++;
                                     }

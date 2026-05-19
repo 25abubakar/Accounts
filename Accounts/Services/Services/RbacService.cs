@@ -312,12 +312,26 @@ namespace Accounts.Services.Services
 
         // ── Role Permission Management ────────────────────────────────────────
 
-        public async Task<int> SetRolePermissionsAsync(
+        public async Task<(int Saved, List<string> InvalidKeys)> SetRolePermissionsAsync(
             string jobTitle, int? deptId, Dictionary<string, bool> permissions, string? setBy)
         {
+            // ── Validate: only save keys that exist in Features table ─────────
+            var validKeys = await _db.Features
+                .AsNoTracking()
+                .Select(f => f.FeatureKey)
+                .ToHashSetAsync();
+
+            var invalidKeys = permissions.Keys
+                .Where(k => !validKeys.Contains(k))
+                .ToList();
+
             int count = 0;
             foreach (var (featureKey, isAllowed) in permissions)
             {
+                // Skip keys that don't exist in Features — prevents FK violation
+                if (!validKeys.Contains(featureKey))
+                    continue;
+
                 var existing = await _db.RolePermissions
                     .FirstOrDefaultAsync(r =>
                         r.JobTitle == jobTitle && r.DeptId == deptId && r.FeatureKey == featureKey);
@@ -325,16 +339,21 @@ namespace Accounts.Services.Services
                 if (existing == null)
                     _db.RolePermissions.Add(new RolePermission
                     {
-                        JobTitle = jobTitle, DeptId = deptId,
-                        FeatureKey = featureKey, IsAllowed = isAllowed
+                        JobTitle   = jobTitle,
+                        DeptId     = deptId,
+                        FeatureKey = featureKey,
+                        IsAllowed  = isAllowed
                     });
                 else
                     existing.IsAllowed = isAllowed;
 
                 count++;
             }
-            await _db.SaveChangesAsync();
-            return count;
+
+            if (count > 0)
+                await _db.SaveChangesAsync();
+
+            return (count, invalidKeys);
         }
 
         public async Task<IEnumerable<object>> GetRolePermissionsAsync(string jobTitle, int? deptId = null)

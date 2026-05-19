@@ -70,7 +70,37 @@ namespace Accounts.Controllers
         public async Task<IActionResult> SetGroupFeatures(int id, [FromBody] SetFeaturesDto dto)
         {
             (bool ok, string msg) = await _service.SetGroupFeaturesAsync(id, dto.FeatureKeys);
-            return ok ? Ok(new { message = msg }) : NotFound(new { message = msg });
+
+            if (ok)
+            {
+                await _service.SyncGroupToDeptMatrixAsync(id, CurrentUserId);
+                return Ok(new { message = "Features updated and matrix synced." });
+            }
+
+            return NotFound(new { message = msg });
+        }
+
+        /// <summary>
+        /// Manually sync group permissions to DepartmentAccessMatrix.
+        /// This copies all group features to the matrix for every staff member in the group.
+        /// </summary>
+        [HasPermission("ACCESS_GROUP_ASSIGN")]
+        [HttpPost("groups/{id:int}/sync")]
+        public async Task<IActionResult> SyncGroupToMatrix(int id)
+        {
+            var (success, message, staffSynced, permissionsSynced) = 
+                await _service.SyncGroupToDeptMatrixAsync(id, CurrentUserId);
+
+            if (!success)
+                return NotFound(new { message });
+
+            return Ok(new 
+            { 
+                success, 
+                message, 
+                staffSynced, 
+                permissionsSynced 
+            });
         }
 
         [HasPermission("ACCESS_GROUP_VIEW")]
