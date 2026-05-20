@@ -114,6 +114,7 @@ namespace Accounts.Services.Services
         /// Menu items linked to a PermissionKey the user doesn't have are removed.
         /// Menu items with no PermissionKey are always shown (public items).
         /// Empty parent groups are also removed.
+        /// Pass Guid.Empty for SuperAdmin — they see everything.
         /// </summary>
         public async Task<List<object>> GetFilteredSidebarAsync(Guid staffId)
         {
@@ -125,6 +126,13 @@ namespace Accounts.Services.Services
                 .OrderBy(m => m.SortOrder)
                 .ToListAsync();
 
+            // SuperAdmin (Guid.Empty) sees ALL menus — no filtering
+            if (staffId == Guid.Empty)
+            {
+                var lookup2 = allMenus.ToLookup(m => m.ParentId);
+                return BuildFullTree(null, lookup2);
+            }
+
             // Load all user permissions in one bulk query
             var userPermissions = (await GetEffectivePermissionsAsync(staffId)).ToHashSet();
 
@@ -132,6 +140,28 @@ namespace Accounts.Services.Services
             var lookup = allMenus.ToLookup(m => m.ParentId);
 
             return BuildFilteredTree(null, lookup, userPermissions);
+        }
+
+        // Full tree for SuperAdmin — no permission filtering
+        private static List<object> BuildFullTree(
+            int? parentId,
+            ILookup<int?, Menu> lookup)
+        {
+            var result = new List<object>();
+            foreach (var menu in lookup[parentId])
+            {
+                var children = BuildFullTree(menu.Id, lookup);
+                result.Add(new
+                {
+                    id        = menu.Id,
+                    title     = menu.Title,
+                    icon      = menu.Icon,
+                    route     = menu.Route,
+                    sortOrder = menu.SortOrder,
+                    children
+                });
+            }
+            return result;
         }
 
         private static List<object> BuildFilteredTree(
@@ -143,16 +173,17 @@ namespace Accounts.Services.Services
 
             foreach (var menu in lookup[parentId])
             {
-                // Check if this menu item requires a permission
                 var requiredRoles = menu.MenuRoles.Select(r => r.RoleName).ToList();
 
-                // If menu has required roles/permissions, check if user has any of them
+                // ── Permission check ──────────────────────────────────────────
+                // If menu has NO required roles → it's a public item, always show
+                // If menu HAS required roles → user must have at least one of them
                 bool canSee = !requiredRoles.Any() ||
                               requiredRoles.Any(r => userPermissions.Contains(r));
 
                 if (!canSee) continue;
 
-                // Recursively build children
+                // Recursively build children (also filtered)
                 var children = BuildFilteredTree(menu.Id, lookup, userPermissions);
 
                 // Skip parent groups that have no visible children
@@ -162,10 +193,10 @@ namespace Accounts.Services.Services
 
                 result.Add(new
                 {
-                    id       = menu.Id,
-                    title    = menu.Title,
-                    icon     = menu.Icon,
-                    route    = menu.Route,
+                    id        = menu.Id,
+                    title     = menu.Title,
+                    icon      = menu.Icon,
+                    route     = menu.Route,
                     sortOrder = menu.SortOrder,
                     children
                 });
