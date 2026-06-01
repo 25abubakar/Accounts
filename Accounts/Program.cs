@@ -91,6 +91,9 @@ builder.Services.AddScoped<Accounts.Services.Interfaces.IAccessService, Accounts
 builder.Services.AddScoped<Accounts.Services.Interfaces.IPermissionFilterService, Accounts.Services.Services.PermissionFilterService>();
 builder.Services.AddScoped<Accounts.Services.Services.RbacService>();
 
+// ── Communication Center ──────────────────────────────────────────────────────
+builder.Services.AddScoped<Accounts.Services.Interfaces.IAppNoteService, Accounts.Services.Services.AppNoteService>();
+
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 

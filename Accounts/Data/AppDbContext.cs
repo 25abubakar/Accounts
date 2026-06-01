@@ -35,6 +35,15 @@ namespace Accounts.Data
         public DbSet<RolePermission>           RolePermissions          => Set<RolePermission>();
         public DbSet<UserPermissionOverride>   UserPermissionOverrides  => Set<UserPermissionOverride>();
 
+        // ── Communication Center ──────────────────────────────────────────────
+        public DbSet<AppLookupType>     AppLookupTypes     => Set<AppLookupType>();
+        public DbSet<AppLookupValue>    AppLookupValues    => Set<AppLookupValue>();
+        public DbSet<AppMenuDefinition> AppMenuDefinitions => Set<AppMenuDefinition>();
+        public DbSet<AppNote>           AppNotes           => Set<AppNote>();
+        public DbSet<AppNoteTarget>     AppNoteTargets     => Set<AppNoteTarget>();
+        public DbSet<AppNoteUserStatus> AppNoteUserStatuses => Set<AppNoteUserStatus>();
+        public DbSet<AppNoteAttachment> AppNoteAttachments => Set<AppNoteAttachment>();
+
         protected override void OnModelCreating(ModelBuilder builder)
         {
             base.OnModelCreating(builder);
@@ -265,6 +274,80 @@ namespace Accounts.Data
                  .WithMany()
                  .HasForeignKey(x => x.FeatureKey)
                  .OnDelete(DeleteBehavior.Cascade);
+            });
+
+            // ── Communication Center: AppLookupTypes ──────────────────────────
+            builder.Entity<AppLookupType>(e =>
+            {
+                e.ToTable("AppLookupTypes");
+                e.HasKey(x => x.LookupTypeId);
+                e.Property(x => x.LookupTypeCode).HasMaxLength(100).IsRequired();
+                e.Property(x => x.LookupTypeName).HasMaxLength(150).IsRequired();
+                e.HasIndex(x => x.LookupTypeCode).IsUnique();
+            });
+
+            // ── Communication Center: AppLookupValues ─────────────────────────
+            builder.Entity<AppLookupValue>(e =>
+            {
+                e.ToTable("AppLookupValues");
+                e.HasKey(x => x.LookupValueId);
+                e.Property(x => x.ValueCode).HasMaxLength(100).IsRequired();
+                e.Property(x => x.DisplayText).HasMaxLength(150).IsRequired();
+                e.HasIndex(x => new { x.LookupTypeId, x.ValueCode }).IsUnique();
+                e.HasOne(x => x.LookupType)
+                 .WithMany(x => x.Values)
+                 .HasForeignKey(x => x.LookupTypeId)
+                 .OnDelete(DeleteBehavior.Cascade);
+            });
+
+            // ── Communication Center: AppMenuDefinitions ──────────────────────
+            builder.Entity<AppMenuDefinition>(e =>
+            {
+                e.ToTable("AppMenuDefinitions");
+                e.HasKey(x => x.MenuDefinitionId);
+                e.Property(x => x.MenuCode).HasMaxLength(150).IsRequired();
+                e.Property(x => x.MenuName).HasMaxLength(200).IsRequired();
+                e.HasIndex(x => x.MenuCode).IsUnique();
+            });
+
+            // ── Communication Center: AppNotes ────────────────────────────────
+            builder.Entity<AppNote>(e =>
+            {
+                e.ToTable("AppNotes");
+                e.HasKey(x => x.NoteId);
+                e.Property(x => x.Title).HasMaxLength(250).IsRequired();
+                e.Property(x => x.NoteTypeCode).HasMaxLength(100).IsRequired();
+                e.Property(x => x.SourceTypeCode).HasMaxLength(100).IsRequired();
+                e.Property(x => x.PriorityCode).HasMaxLength(100).IsRequired();
+                e.Property(x => x.VisibilityTypeCode).HasMaxLength(100).IsRequired();
+                e.HasMany(x => x.Targets).WithOne(x => x.Note).HasForeignKey(x => x.NoteId).OnDelete(DeleteBehavior.Cascade);
+                e.HasMany(x => x.UserStatuses).WithOne(x => x.Note).HasForeignKey(x => x.NoteId).OnDelete(DeleteBehavior.Cascade);
+                e.HasMany(x => x.Attachments).WithOne(x => x.Note).HasForeignKey(x => x.NoteId).OnDelete(DeleteBehavior.Cascade);
+            });
+
+            // ── Communication Center: AppNoteTargets ──────────────────────────
+            builder.Entity<AppNoteTarget>(e =>
+            {
+                e.ToTable("AppNoteTargets");
+                e.HasKey(x => x.NoteTargetId);
+                e.Property(x => x.TargetTypeCode).HasMaxLength(100).IsRequired();
+                e.Property(x => x.TargetValue).HasMaxLength(150).IsRequired();
+            });
+
+            // ── Communication Center: AppNoteUserStatuses ─────────────────────
+            builder.Entity<AppNoteUserStatus>(e =>
+            {
+                e.ToTable("AppNoteUserStatuses");
+                e.HasKey(x => x.NoteUserStatusId);
+                e.Property(x => x.UserId).HasMaxLength(100).IsRequired();
+                e.HasIndex(x => new { x.NoteId, x.UserId }).IsUnique();
+            });
+
+            // ── Communication Center: AppNoteAttachments ──────────────────────
+            builder.Entity<AppNoteAttachment>(e =>
+            {
+                e.ToTable("AppNoteAttachments");
+                e.HasKey(x => x.AttachmentId);
             });
         }
     }

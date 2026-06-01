@@ -70,6 +70,379 @@ namespace Accounts.Migrations
                     b.ToTable("AccessGroupFeatures", (string)null);
                 });
 
+            modelBuilder.Entity("Accounts.Models.AppLookupType", b =>
+                {
+                    b.Property<int>("LookupTypeId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("LookupTypeId"));
+
+                    b.Property<DateTime>("CreatedOn")
+                        .HasColumnType("datetime2");
+
+                    b.Property<bool>("IsActive")
+                        .HasColumnType("bit");
+
+                    b.Property<string>("LookupTypeCode")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<string>("LookupTypeName")
+                        .IsRequired()
+                        .HasMaxLength(150)
+                        .HasColumnType("nvarchar(150)");
+
+                    b.HasKey("LookupTypeId");
+
+                    b.HasIndex("LookupTypeCode")
+                        .IsUnique();
+
+                    b.ToTable("AppLookupTypes", (string)null);
+                });
+
+            modelBuilder.Entity("Accounts.Models.AppLookupValue", b =>
+                {
+                    b.Property<int>("LookupValueId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("LookupValueId"));
+
+                    b.Property<DateTime>("CreatedOn")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("DisplayText")
+                        .IsRequired()
+                        .HasMaxLength(150)
+                        .HasColumnType("nvarchar(150)");
+
+                    b.Property<bool>("IsActive")
+                        .HasColumnType("bit");
+
+                    b.Property<bool>("IsDefault")
+                        .HasColumnType("bit");
+
+                    b.Property<int>("LookupTypeId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("MetadataJson")
+                        .HasMaxLength(2000)
+                        .HasColumnType("nvarchar(2000)");
+
+                    b.Property<int>("SortOrder")
+                        .HasColumnType("int");
+
+                    b.Property<string>("ValueCode")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.HasKey("LookupValueId");
+
+                    b.HasIndex("LookupTypeId", "ValueCode")
+                        .IsUnique();
+
+                    b.ToTable("AppLookupValues", (string)null);
+                });
+
+            modelBuilder.Entity("Accounts.Models.AppMenuDefinition", b =>
+                {
+                    b.Property<int>("MenuDefinitionId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("MenuDefinitionId"));
+
+                    b.Property<DateTime>("CreatedOn")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("IconCss")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<bool>("IsActive")
+                        .HasColumnType("bit");
+
+                    b.Property<string>("MenuCode")
+                        .IsRequired()
+                        .HasMaxLength(150)
+                        .HasColumnType("nvarchar(150)");
+
+                    b.Property<string>("MenuName")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<string>("ModuleName")
+                        .HasMaxLength(150)
+                        .HasColumnType("nvarchar(150)");
+
+                    b.Property<string>("ParentMenuCode")
+                        .HasMaxLength(150)
+                        .HasColumnType("nvarchar(150)");
+
+                    b.Property<string>("RoutePath")
+                        .HasMaxLength(300)
+                        .HasColumnType("nvarchar(300)");
+
+                    b.Property<int>("SortOrder")
+                        .HasColumnType("int");
+
+                    b.HasKey("MenuDefinitionId");
+
+                    b.HasIndex("MenuCode")
+                        .IsUnique();
+
+                    b.ToTable("AppMenuDefinitions", (string)null);
+                });
+
+            modelBuilder.Entity("Accounts.Models.AppNote", b =>
+                {
+                    b.Property<int>("NoteId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("NoteId"));
+
+                    b.Property<bool>("AllowDismiss")
+                        .HasColumnType("bit");
+
+                    b.Property<string>("CategoryCode")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<string>("CreatedBy")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<DateTime>("CreatedOnUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("DeletedBy")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<DateTime?>("DeletedOnUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<DateTime?>("EndDateUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("EntityId")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<string>("EntityType")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<bool>("IsActive")
+                        .HasColumnType("bit");
+
+                    b.Property<bool>("IsDeleted")
+                        .HasColumnType("bit");
+
+                    b.Property<bool>("IsPinned")
+                        .HasColumnType("bit");
+
+                    b.Property<bool>("IsPopup")
+                        .HasColumnType("bit");
+
+                    b.Property<bool>("IsPublished")
+                        .HasColumnType("bit");
+
+                    b.Property<string>("MenuCode")
+                        .HasMaxLength(150)
+                        .HasColumnType("nvarchar(150)");
+
+                    b.Property<string>("ModuleName")
+                        .HasMaxLength(150)
+                        .HasColumnType("nvarchar(150)");
+
+                    b.Property<string>("NoteBody")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("NoteTypeCode")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<int?>("OrgUnitId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("PriorityCode")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<bool>("RequireAcknowledgement")
+                        .HasColumnType("bit");
+
+                    b.Property<string>("SourceTypeCode")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<DateTime?>("StartDateUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<int?>("TenantId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("Title")
+                        .IsRequired()
+                        .HasMaxLength(250)
+                        .HasColumnType("nvarchar(250)");
+
+                    b.Property<string>("UpdatedBy")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<DateTime?>("UpdatedOnUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("VisibilityTypeCode")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.HasKey("NoteId");
+
+                    b.ToTable("AppNotes", (string)null);
+                });
+
+            modelBuilder.Entity("Accounts.Models.AppNoteAttachment", b =>
+                {
+                    b.Property<int>("AttachmentId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("AttachmentId"));
+
+                    b.Property<string>("CreatedBy")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<DateTime>("CreatedOnUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("ExternalUrl")
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)");
+
+                    b.Property<string>("FileName")
+                        .HasMaxLength(250)
+                        .HasColumnType("nvarchar(250)");
+
+                    b.Property<string>("FilePath")
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)");
+
+                    b.Property<long?>("FileSizeBytes")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("FileType")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<bool>("IsActive")
+                        .HasColumnType("bit");
+
+                    b.Property<int>("NoteId")
+                        .HasColumnType("int");
+
+                    b.HasKey("AttachmentId");
+
+                    b.HasIndex("NoteId");
+
+                    b.ToTable("AppNoteAttachments", (string)null);
+                });
+
+            modelBuilder.Entity("Accounts.Models.AppNoteTarget", b =>
+                {
+                    b.Property<int>("NoteTargetId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("NoteTargetId"));
+
+                    b.Property<DateTime>("CreatedOnUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<bool>("IsActive")
+                        .HasColumnType("bit");
+
+                    b.Property<int>("NoteId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("TargetTypeCode")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<string>("TargetValue")
+                        .IsRequired()
+                        .HasMaxLength(150)
+                        .HasColumnType("nvarchar(150)");
+
+                    b.HasKey("NoteTargetId");
+
+                    b.HasIndex("NoteId");
+
+                    b.ToTable("AppNoteTargets", (string)null);
+                });
+
+            modelBuilder.Entity("Accounts.Models.AppNoteUserStatus", b =>
+                {
+                    b.Property<int>("NoteUserStatusId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("NoteUserStatusId"));
+
+                    b.Property<DateTime?>("AcknowledgedOnUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<DateTime>("CreatedOnUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<DateTime?>("DismissedOnUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<bool>("IsAcknowledged")
+                        .HasColumnType("bit");
+
+                    b.Property<bool>("IsDismissed")
+                        .HasColumnType("bit");
+
+                    b.Property<bool>("IsRead")
+                        .HasColumnType("bit");
+
+                    b.Property<int>("NoteId")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime?>("ReadOnUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<DateTime?>("UpdatedOnUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("UserId")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.HasKey("NoteUserStatusId");
+
+                    b.HasIndex("NoteId", "UserId")
+                        .IsUnique();
+
+                    b.ToTable("AppNoteUserStatuses", (string)null);
+                });
+
             modelBuilder.Entity("Accounts.Models.DepartmentAccessMatrix", b =>
                 {
                     b.Property<int>("Id")
@@ -92,7 +465,7 @@ namespace Accounts.Migrations
 
                     b.Property<DateTime>("GrantedDate")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("datetime2")
+                        .HasColumnType("datetime")
                         .HasDefaultValueSql("GETDATE()");
 
                     b.Property<bool>("HasAccess")
@@ -438,7 +811,7 @@ namespace Accounts.Migrations
 
                     b.Property<DateTime>("AssignedDate")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("datetime2")
+                        .HasColumnType("datetime")
                         .HasDefaultValueSql("GETDATE()");
 
                     b.Property<string>("Note")
@@ -465,11 +838,6 @@ namespace Accounts.Migrations
                         .HasMaxLength(100)
                         .HasColumnType("nvarchar(100)");
 
-                    b.Property<bool>("IsAllowed")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("bit")
-                        .HasDefaultValue(false);
-
                     b.Property<string>("Reason")
                         .HasMaxLength(250)
                         .HasColumnType("nvarchar(250)");
@@ -480,11 +848,18 @@ namespace Accounts.Migrations
 
                     b.Property<DateTime>("SetDate")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("datetime2")
+                        .HasColumnType("datetime")
                         .HasDefaultValueSql("GETDATE()");
 
                     b.Property<Guid>("StaffId")
                         .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(10)
+                        .HasColumnType("nvarchar(10)")
+                        .HasDefaultValue("INHERIT");
 
                     b.HasKey("Id");
 
@@ -773,6 +1148,50 @@ namespace Accounts.Migrations
                     b.Navigation("Group");
                 });
 
+            modelBuilder.Entity("Accounts.Models.AppLookupValue", b =>
+                {
+                    b.HasOne("Accounts.Models.AppLookupType", "LookupType")
+                        .WithMany("Values")
+                        .HasForeignKey("LookupTypeId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("LookupType");
+                });
+
+            modelBuilder.Entity("Accounts.Models.AppNoteAttachment", b =>
+                {
+                    b.HasOne("Accounts.Models.AppNote", "Note")
+                        .WithMany("Attachments")
+                        .HasForeignKey("NoteId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Note");
+                });
+
+            modelBuilder.Entity("Accounts.Models.AppNoteTarget", b =>
+                {
+                    b.HasOne("Accounts.Models.AppNote", "Note")
+                        .WithMany("Targets")
+                        .HasForeignKey("NoteId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Note");
+                });
+
+            modelBuilder.Entity("Accounts.Models.AppNoteUserStatus", b =>
+                {
+                    b.HasOne("Accounts.Models.AppNote", "Note")
+                        .WithMany("UserStatuses")
+                        .HasForeignKey("NoteId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Note");
+                });
+
             modelBuilder.Entity("Accounts.Models.DepartmentAccessMatrix", b =>
                 {
                     b.HasOne("Accounts.Models.OrganizationTree", "Department")
@@ -982,6 +1401,20 @@ namespace Accounts.Migrations
                     b.Navigation("Features");
 
                     b.Navigation("Staff");
+                });
+
+            modelBuilder.Entity("Accounts.Models.AppLookupType", b =>
+                {
+                    b.Navigation("Values");
+                });
+
+            modelBuilder.Entity("Accounts.Models.AppNote", b =>
+                {
+                    b.Navigation("Attachments");
+
+                    b.Navigation("Targets");
+
+                    b.Navigation("UserStatuses");
                 });
 
             modelBuilder.Entity("Accounts.Models.Feature", b =>
