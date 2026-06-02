@@ -1,4 +1,4 @@
-﻿using Accounts.Models;
+using Accounts.Models;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Identity.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore;
@@ -20,7 +20,7 @@ namespace Accounts.Data
 
         public DbSet<OrganizationTree>         OrganizationTree         => Set<OrganizationTree>();
         public DbSet<Vacancy>                  Vacancies                => Set<Vacancy>();
-        public DbSet<Staff>                    Staff                    => Set<Staff>();
+        public DbSet<StaffVacancy>            StaffVacancies            => Set<StaffVacancy>();
         public DbSet<Person>                   Persons                  => Set<Person>();
         public DbSet<PersonAddress>            PersonAddresses          => Set<PersonAddress>();
         public DbSet<VacancyCounter>           VacancyCounters          => Set<VacancyCounter>();
@@ -85,23 +85,23 @@ namespace Accounts.Data
 
                 e.HasOne(x => x.Staff)
                  .WithOne(x => x.Vacancy)
-                 .HasForeignKey<Staff>(x => x.VacancyId)
+                 .HasForeignKey<StaffVacancy>(x => x.VacancyId)
                  .OnDelete(DeleteBehavior.SetNull);
             });
 
-            builder.Entity<Staff>(e =>
+            builder.Entity<StaffVacancy>(e =>
             {
-                e.ToTable("Staff");
+                e.ToTable("StaffVacancy");
                 e.HasKey(x => x.StaffId);
                 e.Property(x => x.StaffId).HasDefaultValueSql("NEWID()").ValueGeneratedNever();
-                e.Property(x => x.JoiningDate).HasDefaultValueSql("GETDATE()");
-                e.Property(x => x.PhotoUrl).HasMaxLength(500).IsRequired(false);
 
                 e.HasIndex(x => x.VacancyId).IsUnique();
+                e.HasIndex(x => x.PersonId).IsUnique();
+                e.HasIndex(x => x.LoginId).IsUnique();
 
                 e.HasOne(x => x.Person)
                  .WithOne(x => x.Staff)
-                 .HasForeignKey<Staff>(x => x.PersonId)
+                 .HasForeignKey<StaffVacancy>(x => x.PersonId)
                  .OnDelete(DeleteBehavior.SetNull);
             });
 
@@ -111,12 +111,10 @@ namespace Accounts.Data
                 e.HasKey(x => x.PersonId);
                 e.Property(x => x.PersonId).HasDefaultValueSql("NEWID()").ValueGeneratedNever();
                 e.Property(x => x.CreatedDate).HasDefaultValueSql("GETDATE()");
-                e.Property(x => x.LoginId).HasMaxLength(30).IsRequired();
                 e.Property(x => x.IdentityUserId).HasMaxLength(450).IsRequired();
                 e.Property(x => x.ProfilePhotoUrl).HasMaxLength(500).IsRequired(false);
-                e.Property(x => x.BranchId).IsRequired(false);
+                e.Property(x => x.PersonalEmail).HasMaxLength(256).IsRequired(false);
 
-                e.HasIndex(x => x.LoginId).IsUnique();
                 e.HasIndex(x => x.IdentityUserId).IsUnique();
             });
 
@@ -321,6 +319,12 @@ namespace Accounts.Data
                 e.Property(x => x.SourceTypeCode).HasMaxLength(100).IsRequired();
                 e.Property(x => x.PriorityCode).HasMaxLength(100).IsRequired();
                 e.Property(x => x.VisibilityTypeCode).HasMaxLength(100).IsRequired();
+                e.Property(x => x.OwnerIdentityUserId).HasMaxLength(450).IsRequired(false);
+                e.HasIndex(x => x.OwnerIdentityUserId);
+                e.HasOne<IdentityUser>()
+                 .WithMany()
+                 .HasForeignKey(x => x.OwnerIdentityUserId)
+                 .OnDelete(DeleteBehavior.SetNull);
                 e.HasMany(x => x.Targets).WithOne(x => x.Note).HasForeignKey(x => x.NoteId).OnDelete(DeleteBehavior.Cascade);
                 e.HasMany(x => x.UserStatuses).WithOne(x => x.Note).HasForeignKey(x => x.NoteId).OnDelete(DeleteBehavior.Cascade);
                 e.HasMany(x => x.UserStates).WithOne(x => x.Note).HasForeignKey(x => x.NoteId).OnDelete(DeleteBehavior.Cascade);

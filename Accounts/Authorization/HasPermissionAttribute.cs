@@ -114,7 +114,7 @@ namespace Accounts.Authorization
             {
                 context.Result = new ObjectResult(new
                 {
-                    message = $"'{person.LoginId}' is not yet assigned to a position. Access denied for '{_featureKey}'.",
+                    message = $"User is not yet assigned to a position. Access denied for '{_featureKey}'.",
                     code    = "FORBIDDEN"
                 })
                 { StatusCode = StatusCodes.Status403Forbidden };
@@ -128,7 +128,7 @@ namespace Accounts.Authorization
             {
                 context.Result = new ObjectResult(new
                 {
-                    message = $"Access denied. '{person.LoginId}' does not have permission: '{_featureKey}'.",
+                    message = $"Access denied. User does not have permission: '{_featureKey}'.",
                     code    = "FORBIDDEN"
                 })
                 { StatusCode = StatusCodes.Status403Forbidden };

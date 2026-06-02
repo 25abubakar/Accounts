@@ -61,6 +61,9 @@ namespace Accounts.Models
         public string? CreatedBy { get; set; }
         public DateTime CreatedOnUtc { get; set; } = DateTime.UtcNow;
 
+        [MaxLength(450)]
+        public string? OwnerIdentityUserId { get; set; }
+
         [MaxLength(100)]
         public string? UpdatedBy { get; set; }
         public DateTime? UpdatedOnUtc { get; set; }

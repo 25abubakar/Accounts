@@ -10,12 +10,13 @@ namespace Accounts.Services.Interfaces
         /// </summary>
         Task<List<AppNoteDto>> GetVisibleAsync(
             string staffId,
+            string identityUserId,
             string? menuCode,
             string? entityType,
             string? entityId,
             CancellationToken ct);
 
-        Task<AppNoteDto> GetByIdAsync(int noteId, string staffId, CancellationToken ct);
+        Task<AppNoteDto> GetByIdAsync(int noteId, string staffId, string identityUserId, CancellationToken ct);
 
         Task<AppNoteDto> CreateAsync(CreateAppNoteRequest request, string createdByUserId, CancellationToken ct);
 
@@ -30,6 +31,6 @@ namespace Accounts.Services.Interfaces
         Task DismissAsync(int noteId, string staffId, CancellationToken ct);
 
         /// <summary>Count of unread ADMIN notes visible to this staff member.</summary>
-        Task<int> GetUnreadCountAsync(string staffId, string? menuCode, CancellationToken ct);
+        Task<int> GetUnreadCountAsync(string staffId, string identityUserId, string? menuCode, CancellationToken ct);
     }
 }

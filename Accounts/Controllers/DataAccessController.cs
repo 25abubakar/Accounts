@@ -4,6 +4,9 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using System.Security.Claims;
+using System.Data;
+using Microsoft.Data.SqlClient;
+using System.Collections.Generic;
 
 namespace Accounts.Controllers
 {
@@ -31,7 +34,7 @@ namespace Accounts.Controllers
             // SuperAdmin bypass
             if (User.IsInRole("SuperAdmin"))
             {
-                return (false, null, "SuperAdmin has access to all data. Use specific endpoints instead.");
+                return (true, Guid.Empty, "SuperAdmin access.");
             }
 
             var identityUserId = User.FindFirstValue(ClaimTypes.NameIdentifier);
@@ -163,6 +166,42 @@ namespace Accounts.Controllers
 
             var persons = await _filterService.GetAccessiblePersonsAsync(staffId!.Value);
             return Ok(persons);
+        }
+
+        /// <summary>
+        /// Recursive org query (Country/Company/Branch/Dept subtree) with employees.
+        /// Calls dbo.usp_GetEmployeesByOrgNode.
+        /// </summary>
+        [HttpGet("org/{orgNodeId:int}/employees")]
+        public async Task<IActionResult> GetEmployeesByOrgNode(int orgNodeId)
+        {
+            if (orgNodeId <= 0)
+                return BadRequest(new { message = "orgNodeId is required." });
+
+            var rows = new List<Dictionary<string, object?>>();
+
+            await using var conn = _db.Database.GetDbConnection();
+            if (conn.State != ConnectionState.Open)
+                await conn.OpenAsync();
+
+            await using var cmd = conn.CreateCommand();
+            cmd.CommandText = "dbo.usp_GetEmployeesByOrgNode";
+            cmd.CommandType = CommandType.StoredProcedure;
+            cmd.Parameters.Add(new SqlParameter("@OrgNodeId", SqlDbType.Int) { Value = orgNodeId });
+
+            await using var reader = await cmd.ExecuteReaderAsync();
+            while (await reader.ReadAsync())
+            {
+                var row = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
+                for (int i = 0; i < reader.FieldCount; i++)
+                {
+                    var value = reader.IsDBNull(i) ? null : reader.GetValue(i);
+                    row[reader.GetName(i)] = value;
+                }
+                rows.Add(row);
+            }
+
+            return Ok(rows);
         }
     }
 }

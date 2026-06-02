@@ -20,7 +20,7 @@ namespace Accounts.Models
         public string? Note { get; set; }
 
         [ForeignKey("StaffId")]
-        public Staff? Staff { get; set; }
+        public StaffVacancy? Staff { get; set; }
 
         [ForeignKey("GroupId")]
         public AccessGroup? Group { get; set; }

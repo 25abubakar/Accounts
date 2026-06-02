@@ -174,9 +174,7 @@ namespace Accounts.Services.Services
                 Gender         = dto.Gender?.Trim(),
                 DateOfBirth    = dto.DateOfBirth,
                 MaritalStatus  = dto.MaritalStatus?.Trim(),
-                LoginId        = loginId,
                 IdentityUserId = identityUser.Id,
-                BranchId       = dto.BranchId,
                 CreatedDate    = DateTime.UtcNow
             };
 
@@ -319,7 +317,7 @@ namespace Accounts.Services.Services
 
             // If no password provided, generate one: LoginId@
             var password = string.IsNullOrWhiteSpace(newPassword)
-                ? $"{person.LoginId}@"
+                ? $"{user.UserName}@"
                 : newPassword;
 
             // Remove old password and set new one
@@ -342,7 +340,11 @@ namespace Accounts.Services.Services
             var person = await _db.Persons.FindAsync(personId);
             if (person == null) return (false, $"Person {personId} not found.", null);
 
-            var defaultPassword = $"{person.LoginId}@";
+            var user = await _userManager.FindByIdAsync(person.IdentityUserId);
+            if (user == null || string.IsNullOrWhiteSpace(user.UserName))
+                return (false, "Identity account not found.", null);
+
+            var defaultPassword = $"{user.UserName}@";
             var (success, message, _) = await ResetPasswordAsync(personId, defaultPassword);
 
             return success
@@ -680,7 +682,8 @@ namespace Accounts.Services.Services
 
         private static PersonDto MapToDto(Person p, List<OrganizationTree> org)
         {
-            var branch  = p.BranchId.HasValue ? org.FirstOrDefault(n => n.Id == p.BranchId) : null;
+            var branchId = p.Staff?.Vacancy?.OrganizationId;
+            var branch  = branchId.HasValue ? org.FirstOrDefault(n => n.Id == branchId) : null;
             var company = branch?.ParentId.HasValue == true ? org.FirstOrDefault(n => n.Id == branch.ParentId) : null;
             var country = company?.ParentId.HasValue == true ? org.FirstOrDefault(n => n.Id == company.ParentId) : null;
 
@@ -696,18 +699,19 @@ namespace Accounts.Services.Services
 
             return new PersonDto
             {
-                PersonId = p.PersonId, LoginId = p.LoginId, FullName = p.FullName,
+                PersonId = p.PersonId, LoginId = p.Staff?.LoginId ?? "-", FullName = p.FullName,
                 Gender = p.Gender, DateOfBirth = p.DateOfBirth, MaritalStatus = p.MaritalStatus,
                 Phone = p.Phone, Email = p.Email, PhotoUrl = p.ProfilePhotoUrl,
                 IsHired = p.Staff != null, RegisteredAt = p.CreatedDate.ToString("o"),
-                BranchId = p.BranchId, BranchName = branch?.Name, CompanyName = company?.Name, CountryName = country?.Name,
+                BranchId = branchId, BranchName = branch?.Name, CompanyName = company?.Name, CountryName = country?.Name,
                 CurrentAddress = curDto, PermanentAddress = permDto, SameAddress = same
             };
         }
 
         private static PersonProfileDto MapToProfile(Person p, List<OrganizationTree> org)
         {
-            var branch  = p.BranchId.HasValue ? org.FirstOrDefault(n => n.Id == p.BranchId) : null;
+            var branchId = p.Staff?.Vacancy?.OrganizationId;
+            var branch  = branchId.HasValue ? org.FirstOrDefault(n => n.Id == branchId) : null;
             var company = branch?.ParentId.HasValue == true ? org.FirstOrDefault(n => n.Id == branch.ParentId) : null;
             var country = company?.ParentId.HasValue == true ? org.FirstOrDefault(n => n.Id == company.ParentId) : null;
 
@@ -721,12 +725,12 @@ namespace Accounts.Services.Services
 
             return new PersonProfileDto
             {
-                PersonId = p.PersonId, LoginId = p.LoginId, FullName = p.FullName, Initials = initials,
+                PersonId = p.PersonId, LoginId = p.Staff?.LoginId ?? "-", FullName = p.FullName, Initials = initials,
                 Gender = p.Gender, DateOfBirth = p.DateOfBirth, MaritalStatus = p.MaritalStatus,
                 Phone = p.Phone, UserName = p.Email, PhotoUrl = p.ProfilePhotoUrl, RegisteredAt = p.CreatedDate,
-                BranchId = p.BranchId, BranchName = branch?.Name, CompanyName = company?.Name,
+                BranchId = branchId, BranchName = branch?.Name, CompanyName = company?.Name,
                 CountryName = country?.Name, CountryFlag = country?.FlagUrl,
-                IsHired = p.Staff != null, StaffId = p.Staff?.StaffId, JoiningDate = p.Staff?.JoiningDate,
+                IsHired = p.Staff != null, StaffId = p.Staff?.StaffId, JoiningDate = null,
                 VacancyId = p.Staff?.VacancyId, VacancyCode = p.Staff?.Vacancy?.VacancyCode,
                 JobTitle = p.Staff?.Vacancy?.JobTitle, Department = p.Staff?.Vacancy?.Department,
                 CurrentAddress   = ToAddressResponse(cur),

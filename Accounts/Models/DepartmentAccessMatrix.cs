@@ -25,7 +25,7 @@ namespace Accounts.Models
         public DateTime GrantedDate { get; set; } = DateTime.UtcNow;
 
         [ForeignKey("StaffId")]
-        public Staff? Staff { get; set; }
+        public StaffVacancy? Staff { get; set; }
 
         [ForeignKey("DeptId")]
         public OrganizationTree? Department { get; set; }

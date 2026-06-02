@@ -47,17 +47,15 @@ namespace Accounts.Migrations
                 oldClrType: typeof(Guid),
                 oldType: "uniqueidentifier");
 
-            migrationBuilder.CreateTable(
-                name: "VacancyCounters",
-                columns: table => new
-                {
-                    Prefix = table.Column<string>(type: "nvarchar(200)", maxLength: 200, nullable: false),
-                    LastNumber = table.Column<int>(type: "int", nullable: false, defaultValue: 0)
-                },
-                constraints: table =>
-                {
-                    table.PrimaryKey("PK_VacancyCounters", x => x.Prefix);
-                });
+            migrationBuilder.Sql(@"
+IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = 'VacancyCounters')
+BEGIN
+    CREATE TABLE [VacancyCounters] (
+        [Prefix] nvarchar(200) NOT NULL,
+        [LastNumber] int NOT NULL DEFAULT 0,
+        CONSTRAINT [PK_VacancyCounters] PRIMARY KEY ([Prefix])
+    );
+END");
         }
 
         /// <inheritdoc />

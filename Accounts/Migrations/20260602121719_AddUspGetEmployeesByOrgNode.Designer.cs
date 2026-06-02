@@ -4,6 +4,7 @@ using Accounts.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 #nullable disable
@@ -11,9 +12,11 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace Accounts.Migrations
 {
     [DbContext(typeof(ApplicationDbContext))]
-    partial class ApplicationDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260602121719_AddUspGetEmployeesByOrgNode")]
+    partial class AddUspGetEmployeesByOrgNode
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -273,10 +276,6 @@ namespace Accounts.Migrations
                     b.Property<int?>("OrgUnitId")
                         .HasColumnType("int");
 
-                    b.Property<string>("OwnerIdentityUserId")
-                        .HasMaxLength(450)
-                        .HasColumnType("nvarchar(450)");
-
                     b.Property<string>("PriorityCode")
                         .IsRequired()
                         .HasMaxLength(100)
@@ -314,8 +313,6 @@ namespace Accounts.Migrations
                         .HasColumnType("nvarchar(100)");
 
                     b.HasKey("NoteId");
-
-                    b.HasIndex("OwnerIdentityUserId");
 
                     b.ToTable("AppNotes", (string)null);
                 });
@@ -1184,14 +1181,6 @@ namespace Accounts.Migrations
                         .IsRequired();
 
                     b.Navigation("LookupType");
-                });
-
-            modelBuilder.Entity("Accounts.Models.AppNote", b =>
-                {
-                    b.HasOne("Microsoft.AspNetCore.Identity.IdentityUser", null)
-                        .WithMany()
-                        .HasForeignKey("OwnerIdentityUserId")
-                        .OnDelete(DeleteBehavior.SetNull);
                 });
 
             modelBuilder.Entity("Accounts.Models.AppNoteAttachment", b =>

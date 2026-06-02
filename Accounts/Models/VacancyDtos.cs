@@ -29,7 +29,6 @@ namespace Accounts.Models
     {
         [Required]
         public int OrganizationId { get; set; }
-        public int vaccancycount { get; set; }
         /// <summary>
         /// e.g. "Manager", "Developer", "Head of Department"
         /// VacancyCode is auto-generated from this — do NOT send VacancyCode.

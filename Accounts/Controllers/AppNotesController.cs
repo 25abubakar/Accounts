@@ -84,7 +84,7 @@ namespace Accounts.Controllers
             CancellationToken ct)
         {
             var staffId = await ResolveStaffIdAsync();
-            var data = await _service.GetVisibleAsync(staffId, menuCode, entityType, entityId, ct);
+            var data = await _service.GetVisibleAsync(staffId, CurrentIdentityUserId, menuCode, entityType, entityId, ct);
             return Ok(CommApiResponse<List<AppNoteDto>>.Ok(data));
         }
 
@@ -93,7 +93,15 @@ namespace Accounts.Controllers
         public async Task<IActionResult> GetById(int id, CancellationToken ct)
         {
             var staffId = await ResolveStaffIdAsync();
-            var data = await _service.GetByIdAsync(id, staffId, ct);
+            AppNoteDto data;
+            try
+            {
+                data = await _service.GetByIdAsync(id, staffId, CurrentIdentityUserId, ct);
+            }
+            catch (UnauthorizedAccessException)
+            {
+                return Forbid();
+            }
             return Ok(CommApiResponse<AppNoteDto>.Ok(data));
         }
 
@@ -106,7 +114,7 @@ namespace Accounts.Controllers
             [FromQuery] string? menuCode, CancellationToken ct)
         {
             var staffId = await ResolveStaffIdAsync();
-            var count = await _service.GetUnreadCountAsync(staffId, menuCode, ct);
+            var count = await _service.GetUnreadCountAsync(staffId, CurrentIdentityUserId, menuCode, ct);
             return Ok(CommApiResponse<int>.Ok(count));
         }
 
@@ -174,7 +182,15 @@ namespace Accounts.Controllers
             int id, [FromBody] CreateAppNoteRequest request, CancellationToken ct)
         {
             var staffId  = await ResolveStaffIdAsync();
-            var existing = await _service.GetByIdAsync(id, staffId, ct);
+            AppNoteDto existing;
+            try
+            {
+                existing = await _service.GetByIdAsync(id, staffId, CurrentIdentityUserId, ct);
+            }
+            catch (UnauthorizedAccessException)
+            {
+                return Forbid();
+            }
 
             if (!IsAdmin && existing.CreatedBy != CurrentIdentityUserId)
                 return Forbid();
@@ -188,7 +204,15 @@ namespace Accounts.Controllers
         public async Task<IActionResult> Delete(int id, CancellationToken ct)
         {
             var staffId  = await ResolveStaffIdAsync();
-            var existing = await _service.GetByIdAsync(id, staffId, ct);
+            AppNoteDto existing;
+            try
+            {
+                existing = await _service.GetByIdAsync(id, staffId, CurrentIdentityUserId, ct);
+            }
+            catch (UnauthorizedAccessException)
+            {
+                return Forbid();
+            }
 
             if (!IsAdmin && existing.CreatedBy != CurrentIdentityUserId)
                 return Forbid();

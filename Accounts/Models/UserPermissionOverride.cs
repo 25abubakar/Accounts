@@ -52,7 +52,7 @@ namespace Accounts.Models
 
         // Navigation
         [ForeignKey("StaffId")]
-        public Staff? Staff { get; set; }
+        public StaffVacancy? Staff { get; set; }
 
         [ForeignKey("FeatureKey")]
         public Feature? Feature { get; set; }

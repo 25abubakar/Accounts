@@ -63,9 +63,9 @@ namespace Accounts.Services.Services
                     JobTitle      = v.JobTitle,
                     Department    = v.Department,
                     IsFilled      = v.IsFilled,
-                    EmployeeName  = v.Staff?.FullName,
-                    EmployeeEmail = v.Staff?.Email,
-                    JoiningDate   = v.Staff?.JoiningDate
+                    EmployeeName  = v.Staff?.Person?.FullName,
+                    EmployeeEmail = v.Staff?.Person?.Email,
+                    JoiningDate   = null
                 };
             });
         }
@@ -204,7 +204,7 @@ namespace Accounts.Services.Services
         private IQueryable<Vacancy> WithIncludes() =>
             _db.Vacancies
                .Include(v => v.Organization).ThenInclude(o => o!.Parent).ThenInclude(p => p!.Parent)
-               .Include(v => v.Staff);
+               .Include(v => v.Staff).ThenInclude(s => s!.Person);
 
         private static VacancyDto MapToDto(Vacancy v)
         {
@@ -228,17 +228,17 @@ namespace Accounts.Services.Services
                 Employee       = v.Staff == null ? null : new StaffDto
                 {
                     StaffId     = v.Staff.StaffId,
-                    FullName    = v.Staff.FullName,
-                    Email       = v.Staff.Email,
-                    Phone       = v.Staff.Phone,
-                    PhotoUrl    = v.Staff.PhotoUrl,
+                    FullName    = v.Staff.Person?.FullName ?? "-",
+                    Email       = v.Staff.Person?.Email,
+                    Phone       = v.Staff.Person?.Phone,
+                    PhotoUrl    = v.Staff.Person?.ProfilePhotoUrl,
                     VacancyId   = v.Staff.VacancyId,
                     VacancyCode = v.VacancyCode,
                     JobTitle    = v.JobTitle,
                     BranchName  = node?.Name,
                     CompanyName = p1?.Name,
                     CountryName = p2?.Name,
-                    JoiningDate = v.Staff.JoiningDate
+                    JoiningDate = DateTime.UtcNow
                 }
             };
         }

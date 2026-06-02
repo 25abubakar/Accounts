@@ -74,12 +74,29 @@ namespace Accounts.Services.Services
 
         public async Task<IEnumerable<object>> GetAccessibleDepartmentsAsync(Guid staffId)
         {
+            if (staffId == Guid.Empty)
+            {
+                return await _db.OrganizationTree
+                    .AsNoTracking()
+                    .OrderBy(d => d.Name)
+                    .Select(d => (object)new
+                    {
+                        OrganizationId = d.Id,
+                        OrganizationName = d.Name,
+                        OrganizationType = d.Label,
+                        d.ParentId,
+                        d.Code,
+                        d.FlagUrl
+                    })
+                    .ToListAsync();
+            }
+
             // Check permission first
             if (!await _rbac.HasAccessAsync(staffId, "DEPT_VIEW"))
                 return new List<object>();
 
             // Get user's own department
-            var userStaff = await _db.Staff
+            var userStaff = await _db.StaffVacancies
                 .AsNoTracking()
                 .Include(s => s.Vacancy)
                 .FirstOrDefaultAsync(s => s.StaffId == staffId);
@@ -118,12 +135,40 @@ namespace Accounts.Services.Services
 
         public async Task<IEnumerable<object>> GetAccessibleStaffAsync(Guid staffId)
         {
+            if (staffId == Guid.Empty)
+            {
+                return await _db.StaffVacancies
+                    .AsNoTracking()
+                    .Include(s => s.Person)
+                    .Include(s => s.Vacancy).ThenInclude(v => v!.Organization)
+                    .OrderBy(s => s.Person != null ? s.Person.FullName : "")
+                    .Select(s => (object)new
+                    {
+                        s.StaffId,
+                        FullName = s.Person != null ? s.Person.FullName : "-",
+                        Email = s.Person != null ? s.Person.Email : null,
+                        Phone = s.Person != null ? s.Person.Phone : null,
+                        PhotoUrl = s.Person != null ? s.Person.ProfilePhotoUrl : null,
+                        PersonId = s.PersonId,
+                        LoginId = s.LoginId,
+                        Vacancy = s.Vacancy != null ? new
+                        {
+                            s.Vacancy.VacancyId,
+                            s.Vacancy.VacancyCode,
+                            s.Vacancy.JobTitle,
+                            s.Vacancy.OrganizationId,
+                            OrganizationName = s.Vacancy.Organization != null ? s.Vacancy.Organization.Name : null
+                        } : null
+                    })
+                    .ToListAsync();
+            }
+
             // Check permission first
             if (!await _rbac.HasAccessAsync(staffId, "EMPLOYEE_VIEW"))
                 return new List<object>();
 
             // Get user's own department
-            var userStaff = await _db.Staff
+            var userStaff = await _db.StaffVacancies
                 .AsNoTracking()
                 .Include(s => s.Vacancy)
                 .FirstOrDefaultAsync(s => s.StaffId == staffId);
@@ -136,7 +181,7 @@ namespace Accounts.Services.Services
             // Check if user has permission to view all staff
             bool canViewAll = await _rbac.HasAccessAsync(staffId, "EMPLOYEE_VIEW_ALL");
 
-            IQueryable<Models.Staff> query = _db.Staff
+            IQueryable<Models.StaffVacancy> query = _db.StaffVacancies
                 .AsNoTracking()
                 .Include(s => s.Person)
                 .Include(s => s.Vacancy);
@@ -148,16 +193,16 @@ namespace Accounts.Services.Services
             }
 
             var staff = await query
-                .OrderBy(s => s.FullName)
+                .OrderBy(s => s.Person != null ? s.Person.FullName : "")
                 .Select(s => new
                 {
                     s.StaffId,
-                    s.FullName,
-                    s.Email,
-                    Phone = s.Phone,
-                    s.PhotoUrl,
+                    FullName = s.Person != null ? s.Person.FullName : "-",
+                    Email    = s.Person != null ? s.Person.Email : null,
+                    Phone    = s.Person != null ? s.Person.Phone : null,
+                    PhotoUrl = s.Person != null ? s.Person.ProfilePhotoUrl : null,
                     PersonId = s.PersonId,
-                    LoginId = s.Person != null ? s.Person.LoginId : null,
+                    LoginId = s.LoginId,
                     Vacancy = s.Vacancy != null ? new
                     {
                         s.Vacancy.VacancyId,
@@ -174,12 +219,33 @@ namespace Accounts.Services.Services
 
         public async Task<IEnumerable<object>> GetAccessiblePersonsAsync(Guid staffId)
         {
+            if (staffId == Guid.Empty)
+            {
+                return await _db.Persons
+                    .AsNoTracking()
+                    .Include(p => p.Staff).ThenInclude(s => s!.Vacancy)
+                    .OrderBy(p => p.FullName)
+                    .Select(p => (object)new
+                    {
+                        p.PersonId,
+                        p.FullName,
+                        LoginId = p.Staff != null ? p.Staff.LoginId : null,
+                        p.Email,
+                        Phone = p.Phone,
+                        p.ProfilePhotoUrl,
+                        IsHired = p.Staff != null,
+                        StaffId = p.Staff != null ? p.Staff.StaffId : (Guid?)null,
+                        JobTitle = p.Staff != null && p.Staff.Vacancy != null ? p.Staff.Vacancy.JobTitle : null
+                    })
+                    .ToListAsync();
+            }
+
             // Check permission first
             if (!await _rbac.HasAccessAsync(staffId, "PERSON_VIEW"))
                 return new List<object>();
 
             // Get user's own department
-            var userStaff = await _db.Staff
+            var userStaff = await _db.StaffVacancies
                 .AsNoTracking()
                 .Include(s => s.Vacancy)
                 .FirstOrDefaultAsync(s => s.StaffId == staffId);
@@ -200,7 +266,7 @@ namespace Accounts.Services.Services
             // If user can't view all, only show persons from their department
             if (!canViewAll)
             {
-                query = query.Where(p => p.BranchId == userDeptId);
+                query = query.Where(p => p.Staff != null && p.Staff.Vacancy != null && p.Staff.Vacancy.OrganizationId == userDeptId);
             }
 
             var persons = await query
@@ -209,11 +275,10 @@ namespace Accounts.Services.Services
                 {
                     p.PersonId,
                     p.FullName,
-                    p.LoginId,
+                    LoginId = p.Staff != null ? p.Staff.LoginId : null,
                     p.Email,
                     Phone = p.Phone,
                     p.ProfilePhotoUrl,
-                    p.BranchId,
                     IsHired = p.Staff != null,
                     StaffId = p.Staff != null ? p.Staff.StaffId : (Guid?)null,
                     JobTitle = p.Staff != null && p.Staff.Vacancy != null ? p.Staff.Vacancy.JobTitle : null
@@ -225,12 +290,30 @@ namespace Accounts.Services.Services
 
         private async Task<IEnumerable<object>> GetAccessibleVacanciesAsync(Guid staffId)
         {
+            if (staffId == Guid.Empty)
+            {
+                return await _db.Vacancies
+                    .AsNoTracking()
+                    .Include(v => v.Organization)
+                    .OrderBy(v => v.VacancyCode)
+                    .Select(v => (object)new
+                    {
+                        v.VacancyId,
+                        v.VacancyCode,
+                        v.JobTitle,
+                        v.OrganizationId,
+                        OrganizationName = v.Organization != null ? v.Organization.Name : null,
+                        v.IsFilled
+                    })
+                    .ToListAsync();
+            }
+
             // Check permission first
             if (!await _rbac.HasAccessAsync(staffId, "VACANCY_VIEW"))
                 return new List<object>();
 
             // Get user's own department
-            var userStaff = await _db.Staff
+            var userStaff = await _db.StaffVacancies
                 .AsNoTracking()
                 .Include(s => s.Vacancy)
                 .FirstOrDefaultAsync(s => s.StaffId == staffId);
@@ -271,6 +354,26 @@ namespace Accounts.Services.Services
 
         private async Task<IEnumerable<object>> GetAccessibleGroupsAsync(Guid staffId)
         {
+            if (staffId == Guid.Empty)
+            {
+                return await _db.AccessGroups
+                    .AsNoTracking()
+                    .Include(g => g.Features)
+                    .Where(g => g.IsActive)
+                    .OrderBy(g => g.GroupName)
+                    .Select(g => (object)new
+                    {
+                        g.GroupId,
+                        g.GroupName,
+                        g.Description,
+                        g.IsActive,
+                        g.CreatedDate,
+                        Features = g.Features.Select(f => f.FeatureKey).ToList(),
+                        StaffCount = g.Staff.Count()
+                    })
+                    .ToListAsync();
+            }
+
             // Check permission first
             if (!await _rbac.HasAccessAsync(staffId, "ACCESS_GROUP_VIEW"))
                 return new List<object>();

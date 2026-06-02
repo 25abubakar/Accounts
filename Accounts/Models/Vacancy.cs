@@ -35,6 +35,6 @@ namespace Accounts.Models
         public DateTime CreatedDate { get; set; } = DateTime.UtcNow;
 
         // Navigation — one vacancy has at most one staff
-        public Staff? Staff { get; set; }
+        public StaffVacancy? Staff { get; set; }
     }
 }

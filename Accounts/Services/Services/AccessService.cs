@@ -50,7 +50,7 @@ namespace Accounts.Services.Services
             {
                 g.GroupId, g.GroupName, g.Description, g.IsActive, g.CreatedDate,
                 Features = g.Features.Select(f => f.FeatureKey).ToList(),
-                Staff    = g.Staff.Select(s => new { s.StaffId, s.Staff!.FullName, s.AssignedDate, s.Note }).ToList()
+                Staff    = g.Staff.Select(s => new { s.StaffId, FullName = s.Staff!.Person != null ? s.Staff.Person.FullName : "-", s.AssignedDate, s.Note }).ToList()
             };
         }
 
@@ -115,7 +115,7 @@ namespace Accounts.Services.Services
         public async Task<(bool Success, string Message)> AssignGroupToStaffAsync(
             Guid staffId, int groupId, string? assignedBy, string? note)
         {
-            if (!await _db.Staff.AnyAsync(s => s.StaffId == staffId))
+            if (!await _db.StaffVacancies.AnyAsync(s => s.StaffId == staffId))
                 return (false, $"Staff {staffId} not found.");
             if (!await _db.AccessGroups.AnyAsync(g => g.GroupId == groupId))
                 return (false, $"Group {groupId} not found.");
@@ -159,20 +159,20 @@ namespace Accounts.Services.Services
                 .OrderBy(f => f.Module).ThenBy(f => f.FeatureKey)
                 .ToListAsync();
 
-            // ── 2. Source A: Persons registered in this branch (BranchId) ────
+            // ── 2. Source A: Persons hired into vacancies in this dept ───────
             var personsInDept = await _db.Persons
                 .Include(p => p.Staff).ThenInclude(s => s!.Vacancy)
-                .Where(p => p.BranchId == deptId)
+                .Where(p => p.Staff != null && p.Staff.Vacancy != null && p.Staff.Vacancy.OrganizationId == deptId)
                 .OrderBy(p => p.FullName)
                 .ToListAsync();
 
             // ── 3. Source B: Staff whose vacancy is in this dept ──────────────
             // Load ALL staff for this dept first, then filter in memory
-            var allStaffForDept = await _db.Staff
+            var allStaffForDept = await _db.StaffVacancies
                 .Include(s => s.Person)
                 .Include(s => s.Vacancy)
                 .Where(s => s.Vacancy != null && s.Vacancy.OrganizationId == deptId)
-                .OrderBy(s => s.FullName)
+                .OrderBy(s => s.Person != null ? s.Person.FullName : "")
                 .ToListAsync();
 
             // Filter out staff already covered by Source A (in memory — no EF translation issue)
@@ -198,7 +198,7 @@ namespace Accounts.Services.Services
                     staffId     = sid,
                     personId    = p.PersonId,
                     fullName    = p.FullName,
-                    loginId     = p.LoginId,
+                    loginId     = p.Staff?.LoginId,
                     jobTitle    = p.Staff?.Vacancy?.JobTitle ?? "-",
                     isHired     = p.Staff != null,
                     permissions = features.Select(f => new
@@ -219,8 +219,8 @@ namespace Accounts.Services.Services
             {
                 staffId     = s.StaffId,
                 personId    = s.PersonId,
-                fullName    = s.FullName,
-                loginId     = s.Person?.LoginId ?? "-",
+                fullName    = s.Person?.FullName ?? "-",
+                loginId     = s.LoginId ?? "-",
                 jobTitle    = s.Vacancy?.JobTitle ?? "-",
                 isHired     = true,
                 permissions = features.Select(f => new
@@ -306,7 +306,7 @@ namespace Accounts.Services.Services
         public async Task<(bool Success, string Message)> TogglePermissionAsync(
             Guid staffId, string featureKey, bool hasAccess, string? grantedBy)
         {
-            if (!await _db.Staff.AnyAsync(s => s.StaffId == staffId))
+            if (!await _db.StaffVacancies.AnyAsync(s => s.StaffId == staffId))
                 return (false, $"Staff {staffId} not found.");
             if (!await _db.Features.AnyAsync(f => f.FeatureKey == featureKey))
                 return (false, $"Feature '{featureKey}' not found. Valid keys: use GET /api/access/features.");
@@ -316,7 +316,7 @@ namespace Accounts.Services.Services
 
             if (existing == null)
             {
-                var staff = await _db.Staff.Include(s => s.Vacancy)
+                var staff = await _db.StaffVacancies.Include(s => s.Vacancy)
                     .FirstOrDefaultAsync(s => s.StaffId == staffId);
                 int deptId = staff?.Vacancy?.OrganizationId ?? 0;
 
@@ -347,7 +347,7 @@ namespace Accounts.Services.Services
             // Get staff's dept if deptId not provided
             if (deptId <= 0)
             {
-                var s = await _db.Staff.Include(x => x.Vacancy)
+                var s = await _db.StaffVacancies.Include(x => x.Vacancy)
                     .FirstOrDefaultAsync(x => x.StaffId == staffId);
                 deptId = s?.Vacancy?.OrganizationId ?? 0;
             }
@@ -395,10 +395,10 @@ namespace Accounts.Services.Services
 
         public async Task<IEnumerable<object>> GetDepartmentPersonsAsync(int deptId)
         {
-            // All persons registered in this branch/department
+            // All persons hired into vacancies in this department
             var persons = await _db.Persons
                 .Include(p => p.Staff).ThenInclude(s => s!.Vacancy)
-                .Where(p => p.BranchId == deptId)
+                .Where(p => p.Staff != null && p.Staff.Vacancy != null && p.Staff.Vacancy.OrganizationId == deptId)
                 .OrderBy(p => p.FullName)
                 .ToListAsync();
 
@@ -407,7 +407,7 @@ namespace Accounts.Services.Services
                 personId   = p.PersonId,
                 staffId    = p.Staff?.StaffId,
                 fullName   = p.FullName,
-                loginId    = p.LoginId,
+                loginId    = p.Staff?.LoginId,
                 email      = p.Email,
                 photoUrl   = p.ProfilePhotoUrl,
                 isHired    = p.Staff != null,
@@ -428,8 +428,9 @@ namespace Accounts.Services.Services
         public async Task<EffectiveAccessResult> GetEffectiveAccessAsync(Guid staffId, int groupId)
         {
             // ── 1. Validate staff exists ──────────────────────────────────────
-            var staff = await _db.Staff
+            var staff = await _db.StaffVacancies
                 .AsNoTracking()
+                .Include(s => s.Person)
                 .FirstOrDefaultAsync(s => s.StaffId == staffId)
                 ?? throw new KeyNotFoundException($"Staff {staffId} not found.");
 
@@ -475,7 +476,7 @@ namespace Accounts.Services.Services
             {
                 StaffId   = staffId,
                 GroupId   = groupId,
-                StaffName = staff.FullName,
+                StaffName = staff.Person?.FullName ?? "-",
                 GroupName = group.GroupName,
                 Features  = mergedFeatures
             };
@@ -513,7 +514,7 @@ namespace Accounts.Services.Services
                 .AsNoTracking()
                 .Include(s => s.Staff).ThenInclude(s => s!.Vacancy)
                 .Where(s => s.GroupId == groupId)
-                .Select(s => new { s.StaffId, s.Staff!.FullName, DeptId = s.Staff.Vacancy != null ? s.Staff.Vacancy.OrganizationId : 0 })
+                .Select(s => new { s.StaffId, FullName = s.Staff!.Person != null ? s.Staff.Person.FullName : "-", DeptId = s.Staff.Vacancy != null ? s.Staff.Vacancy.OrganizationId : 0 })
                 .ToListAsync();
 
             if (!groupMembers.Any())

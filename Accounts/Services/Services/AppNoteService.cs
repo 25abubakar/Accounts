@@ -32,6 +32,7 @@ namespace Accounts.Services.Services
 
         public async Task<List<AppNoteDto>> GetVisibleAsync(
             string staffId,
+            string identityUserId,
             string? menuCode,
             string? entityType,
             string? entityId,
@@ -57,7 +58,7 @@ namespace Accounts.Services.Services
                 // ── USER notes — strictly private to creator ──────────────────
                 // Only the person who created it can see it.
                 if (n.SourceTypeCode == "USER")
-                    return n.CreatedBy == staffId;
+                    return n.OwnerIdentityUserId == identityUserId || n.CreatedBy == identityUserId;
 
                 // ── ADMIN notes — filter by VisibilityTypeCode + Targets ──────
                 if (n.SourceTypeCode == "ADMIN")
@@ -127,13 +128,20 @@ namespace Accounts.Services.Services
 
         // ── Get By Id ─────────────────────────────────────────────────────────
 
-        public async Task<AppNoteDto> GetByIdAsync(int noteId, string staffId, CancellationToken ct)
+        public async Task<AppNoteDto> GetByIdAsync(int noteId, string staffId, string identityUserId, CancellationToken ct)
         {
             var note = await _db.AppNotes
                 .AsNoTracking()
                 .Include(n => n.Targets)
                 .FirstOrDefaultAsync(n => n.NoteId == noteId && !n.IsDeleted, ct)
                 ?? throw new KeyNotFoundException($"Note {noteId} not found.");
+
+            if (note.SourceTypeCode == "USER" &&
+                note.OwnerIdentityUserId != identityUserId &&
+                note.CreatedBy != identityUserId)
+            {
+                throw new UnauthorizedAccessException("You are not allowed to view this note.");
+            }
 
             var state = await _db.AppNoteUserStates
                 .AsNoTracking()
@@ -170,11 +178,16 @@ namespace Accounts.Services.Services
                 RequireAcknowledgement = request.RequireAcknowledgement,
                 AllowDismiss           = request.AllowDismiss,
                 CreatedBy              = createdByUserId,
+                OwnerIdentityUserId    = request.SourceTypeCode.Trim() == "USER" ? createdByUserId : null,
                 CreatedOnUtc           = DateTime.UtcNow
             };
 
             // Build targets
-            if (request.Targets != null && request.Targets.Count > 0)
+            if (note.SourceTypeCode == "USER")
+            {
+                // Personal notes are owner-scoped; no broadcast target rows.
+            }
+            else if (request.Targets != null && request.Targets.Count > 0)
             {
                 foreach (var t in request.Targets)
                     note.Targets.Add(new AppNoteTarget
@@ -226,6 +239,8 @@ namespace Accounts.Services.Services
             note.IsPopup                = request.IsPopup;
             note.RequireAcknowledgement = request.RequireAcknowledgement;
             note.AllowDismiss           = request.AllowDismiss;
+            if (note.SourceTypeCode == "USER" && string.IsNullOrWhiteSpace(note.OwnerIdentityUserId))
+                note.OwnerIdentityUserId = updatedByUserId;
             note.UpdatedBy              = updatedByUserId;
             note.UpdatedOnUtc           = DateTime.UtcNow;
 
@@ -233,7 +248,11 @@ namespace Accounts.Services.Services
             var oldTargets = await _db.AppNoteTargets.Where(t => t.NoteId == noteId).ToListAsync(ct);
             _db.AppNoteTargets.RemoveRange(oldTargets);
 
-            if (request.Targets != null && request.Targets.Count > 0)
+            if (note.SourceTypeCode == "USER")
+            {
+                // Personal notes remain owner-scoped only.
+            }
+            else if (request.Targets != null && request.Targets.Count > 0)
             {
                 foreach (var t in request.Targets)
                     note.Targets.Add(new AppNoteTarget
@@ -303,9 +322,9 @@ namespace Accounts.Services.Services
         // ── Unread Count ──────────────────────────────────────────────────────
 
         public async Task<int> GetUnreadCountAsync(
-            string staffId, string? menuCode, CancellationToken ct)
+            string staffId, string identityUserId, string? menuCode, CancellationToken ct)
         {
-            var visible = await GetVisibleAsync(staffId, menuCode, null, null, ct);
+            var visible = await GetVisibleAsync(staffId, identityUserId, menuCode, null, null, ct);
             return visible.Count(n => n.SourceTypeCode == "ADMIN" && !n.IsRead);
         }
 

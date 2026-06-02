@@ -45,7 +45,7 @@ namespace Accounts.Services.Services
             }
 
             // ── 3. Get staff's job title and dept ─────────────────────────────
-            var staff = await _db.Staff
+            var staff = await _db.StaffVacancies
                 .AsNoTracking()
                 .Include(s => s.Vacancy)
                 .FirstOrDefaultAsync(s => s.StaffId == staffId);
@@ -217,18 +217,18 @@ namespace Accounts.Services.Services
             var personsInDept = await _db.Persons
                 .AsNoTracking()
                 .Include(p => p.Staff).ThenInclude(s => s!.Vacancy)
-                .Where(p => p.BranchId == deptId)
+                .Where(p => p.Staff != null && p.Staff.Vacancy != null && p.Staff.Vacancy.OrganizationId == deptId)
                 .OrderBy(p => p.FullName)
                 .ToListAsync();
 
             var coveredPersonIds = personsInDept.Select(p => p.PersonId).ToHashSet();
 
-            var staffViaVacancy = await _db.Staff
+            var staffViaVacancy = await _db.StaffVacancies
                 .AsNoTracking()
                 .Include(s => s.Person)
                 .Include(s => s.Vacancy)
                 .Where(s => s.Vacancy != null && s.Vacancy.OrganizationId == deptId)
-                .OrderBy(s => s.FullName)
+                .OrderBy(s => s.Person != null ? s.Person.FullName : "")
                 .ToListAsync();
 
             var extraStaff = staffViaVacancy
@@ -302,7 +302,7 @@ namespace Accounts.Services.Services
                 return new
                 {
                     staffId = sid, personId = p.PersonId, fullName = p.FullName,
-                    loginId = p.LoginId, jobTitle = jt, isHired = p.Staff != null,
+                    loginId = p.Staff != null ? p.Staff.LoginId : null, jobTitle = jt, isHired = p.Staff != null,
                     permissions = features.Select(f => new
                     {
                         f.FeatureKey, f.FeatureName, f.Module,
@@ -319,8 +319,8 @@ namespace Accounts.Services.Services
                 var dId = s.Vacancy?.OrganizationId;
                 return new
                 {
-                    staffId = s.StaffId, personId = s.PersonId, fullName = s.FullName,
-                    loginId = s.Person?.LoginId ?? "-", jobTitle = jt, isHired = true,
+                    staffId = s.StaffId, personId = s.PersonId, fullName = s.Person?.FullName ?? "-",
+                    loginId = s.LoginId ?? "-", jobTitle = jt, isHired = true,
                     permissions = features.Select(f => new
                     {
                         f.FeatureKey, f.FeatureName, f.Module,
@@ -408,7 +408,7 @@ namespace Accounts.Services.Services
             Guid staffId, string featureKey, PermissionStatus status,
             string? setBy, string? reason)
         {
-            if (!await _db.Staff.AnyAsync(s => s.StaffId == staffId))
+            if (!await _db.StaffVacancies.AnyAsync(s => s.StaffId == staffId))
                 return (false, $"Staff {staffId} not found.");
             if (!await _db.Features.AnyAsync(f => f.FeatureKey == featureKey))
                 return (false, $"Feature '{featureKey}' not found.");
