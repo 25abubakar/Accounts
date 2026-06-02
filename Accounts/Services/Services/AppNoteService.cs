@@ -38,28 +38,63 @@ namespace Accounts.Services.Services
             CancellationToken ct)
         {
             var now = DateTime.UtcNow;
-
             var recordKey = (entityType != null && entityId != null)
                 ? $"{entityType}:{entityId}"
                 : null;
 
-            // Step 1: query notes with targets only — no filtered Include on UserStates
-            var notes = await _db.AppNotes
+            // Step 1: fetch all published, active, non-deleted notes within date range
+            var candidates = await _db.AppNotes
                 .AsNoTracking()
                 .Include(n => n.Targets)
                 .Where(n => n.IsPublished && n.IsActive && !n.IsDeleted)
                 .Where(n => n.StartDateUtc == null || n.StartDateUtc <= now)
                 .Where(n => n.EndDateUtc   == null || n.EndDateUtc   >= now)
-                // Target filter — at least one matching target
-                .Where(n =>
-                    n.Targets.Any(t => t.TargetTypeCode == "ALL"    && t.TargetValue == "*") ||
-                    n.Targets.Any(t => t.TargetTypeCode == "STAFF"  && t.TargetValue == staffId) ||
-                    (menuCode  != null && n.Targets.Any(t => t.TargetTypeCode == "MENU"   && t.TargetValue == menuCode)) ||
-                    (recordKey != null && n.Targets.Any(t => t.TargetTypeCode == "RECORD" && t.TargetValue == recordKey))
-                )
-                .ToListAsync(ct);  // ← fetch first, then sort in memory
+                .ToListAsync(ct);
 
-            // Sort in memory — PriorityRank() cannot be translated to SQL
+            // Step 2: apply privacy rules in memory
+            var notes = candidates.Where(n =>
+            {
+                // ── USER notes — strictly private to creator ──────────────────
+                // Only the person who created it can see it.
+                if (n.SourceTypeCode == "USER")
+                    return n.CreatedBy == staffId;
+
+                // ── ADMIN notes — filter by VisibilityTypeCode + Targets ──────
+                if (n.SourceTypeCode == "ADMIN")
+                {
+                    return (n.VisibilityTypeCode?.ToUpper()) switch
+                    {
+                        // GENERAL / ALL_USERS → everyone sees it
+                        "GENERAL"   => true,
+                        "ALL_USERS" => true,
+
+                        // STAFF → only if staffId is in AppNoteTargets
+                        "STAFF"  => n.Targets.Any(t =>
+                            t.TargetTypeCode == "STAFF" && t.TargetValue == staffId),
+
+                        // MENU → only on that specific menu page
+                        "MENU" => menuCode != null &&
+                                  n.Targets.Any(t =>
+                                      t.TargetTypeCode == "MENU" && t.TargetValue == menuCode),
+
+                        // RECORD → only on that specific record page
+                        "RECORD" => recordKey != null &&
+                                    n.Targets.Any(t =>
+                                        t.TargetTypeCode == "RECORD" && t.TargetValue == recordKey),
+
+                        // Unknown visibility → deny
+                        _ => false
+                    };
+                }
+
+                // Any other source type — use target-based matching (ALL / STAFF / MENU / RECORD)
+                return n.Targets.Any(t => t.TargetTypeCode == "ALL"   && t.TargetValue == "*") ||
+                       n.Targets.Any(t => t.TargetTypeCode == "STAFF" && t.TargetValue == staffId) ||
+                       (menuCode  != null && n.Targets.Any(t => t.TargetTypeCode == "MENU"   && t.TargetValue == menuCode)) ||
+                       (recordKey != null && n.Targets.Any(t => t.TargetTypeCode == "RECORD" && t.TargetValue == recordKey));
+            }).ToList();
+
+            // Sort in memory
             notes = notes
                 .OrderByDescending(n => n.IsPinned)
                 .ThenBy(n => PriorityRank(n.PriorityCode))
@@ -71,7 +106,7 @@ namespace Accounts.Services.Services
 
             var noteIds = notes.Select(n => n.NoteId).ToList();
 
-            // Step 2: load per-staff states separately (avoids filtered-Include EF limitation)
+            // Step 3: load per-staff states
             var states = await _db.AppNoteUserStates
                 .AsNoTracking()
                 .Where(s => noteIds.Contains(s.NoteId) && s.StaffId == staffId)
@@ -79,7 +114,7 @@ namespace Accounts.Services.Services
 
             var stateMap = states.ToDictionary(s => s.NoteId);
 
-            // Step 3: exclude dismissed notes in memory
+            // Step 4: exclude dismissed, map to DTOs
             return notes
                 .Where(n => !stateMap.TryGetValue(n.NoteId, out var st) || !st.IsDismissed)
                 .Select(n =>
