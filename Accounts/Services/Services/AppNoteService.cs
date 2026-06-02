@@ -6,6 +6,17 @@ using Microsoft.EntityFrameworkCore;
 
 namespace Accounts.Services.Services
 {
+    /// <summary>
+    /// Communication Center — targeted notes / instructions.
+    ///
+    /// Visibility is resolved entirely on the backend using AppNoteTargets:
+    ///   ALL    / *                  → visible to every authenticated staff member
+    ///   STAFF  / {staffId}          → visible only to that specific staff member
+    ///   MENU   / {menuCode}         → visible only on that menu page
+    ///   RECORD / {entityType}:{id}  → visible only on that record page
+    ///
+    /// Per-staff read / acknowledge / dismiss state is stored in AppNoteUserStates.
+    /// </summary>
     public class AppNoteService : IAppNoteService
     {
         private readonly ApplicationDbContext _db;
@@ -17,275 +28,303 @@ namespace Accounts.Services.Services
             _logger = logger;
         }
 
-        // ── Get Visible Notes ─────────────────────────────────────────────────
+        // ── Get Visible ───────────────────────────────────────────────────────
+
         public async Task<List<AppNoteDto>> GetVisibleAsync(
-            string userId, IList<string> roles,
-            string? menuCode, string? entityType, string? entityId,
+            string staffId,
+            string? menuCode,
+            string? entityType,
+            string? entityId,
             CancellationToken ct)
         {
             var now = DateTime.UtcNow;
 
+            var recordKey = (entityType != null && entityId != null)
+                ? $"{entityType}:{entityId}"
+                : null;
+
+            // Step 1: query notes with targets only — no filtered Include on UserStates
             var notes = await _db.AppNotes
                 .AsNoTracking()
                 .Include(n => n.Targets)
-                .Include(n => n.UserStatuses)
-                .Where(n => n.IsActive && !n.IsDeleted && n.IsPublished
-                         && (n.StartDateUtc == null || n.StartDateUtc <= now)
-                         && (n.EndDateUtc   == null || n.EndDateUtc   >= now))
-                .ToListAsync(ct);
+                .Where(n => n.IsPublished && n.IsActive && !n.IsDeleted)
+                .Where(n => n.StartDateUtc == null || n.StartDateUtc <= now)
+                .Where(n => n.EndDateUtc   == null || n.EndDateUtc   >= now)
+                // Target filter — at least one matching target
+                .Where(n =>
+                    n.Targets.Any(t => t.TargetTypeCode == "ALL"    && t.TargetValue == "*") ||
+                    n.Targets.Any(t => t.TargetTypeCode == "STAFF"  && t.TargetValue == staffId) ||
+                    (menuCode  != null && n.Targets.Any(t => t.TargetTypeCode == "MENU"   && t.TargetValue == menuCode)) ||
+                    (recordKey != null && n.Targets.Any(t => t.TargetTypeCode == "RECORD" && t.TargetValue == recordKey))
+                )
+                .ToListAsync(ct);  // ← fetch first, then sort in memory
 
-            var visible = notes
-                .Where(n => IsVisible(n, userId, roles, menuCode, entityType, entityId))
-                .Where(n => !IsDismissed(n, userId))
+            // Sort in memory — PriorityRank() cannot be translated to SQL
+            notes = notes
                 .OrderByDescending(n => n.IsPinned)
                 .ThenBy(n => PriorityRank(n.PriorityCode))
                 .ThenByDescending(n => n.CreatedOnUtc)
-                .Select(n => ToDto(n, userId))
                 .ToList();
 
-            return visible;
+            if (!notes.Any())
+                return new List<AppNoteDto>();
+
+            var noteIds = notes.Select(n => n.NoteId).ToList();
+
+            // Step 2: load per-staff states separately (avoids filtered-Include EF limitation)
+            var states = await _db.AppNoteUserStates
+                .AsNoTracking()
+                .Where(s => noteIds.Contains(s.NoteId) && s.StaffId == staffId)
+                .ToListAsync(ct);
+
+            var stateMap = states.ToDictionary(s => s.NoteId);
+
+            // Step 3: exclude dismissed notes in memory
+            return notes
+                .Where(n => !stateMap.TryGetValue(n.NoteId, out var st) || !st.IsDismissed)
+                .Select(n =>
+                {
+                    stateMap.TryGetValue(n.NoteId, out var state);
+                    return ToDto(n, state);
+                })
+                .ToList();
         }
 
         // ── Get By Id ─────────────────────────────────────────────────────────
-        public async Task<AppNoteDto> GetByIdAsync(int noteId, string userId, CancellationToken ct)
+
+        public async Task<AppNoteDto> GetByIdAsync(int noteId, string staffId, CancellationToken ct)
         {
-            var note = await GetNoteOrThrowAsync(noteId, ct);
-            return ToDto(note, userId);
+            var note = await _db.AppNotes
+                .AsNoTracking()
+                .Include(n => n.Targets)
+                .FirstOrDefaultAsync(n => n.NoteId == noteId && !n.IsDeleted, ct)
+                ?? throw new KeyNotFoundException($"Note {noteId} not found.");
+
+            var state = await _db.AppNoteUserStates
+                .AsNoTracking()
+                .FirstOrDefaultAsync(s => s.NoteId == noteId && s.StaffId == staffId, ct);
+
+            return ToDto(note, state);
         }
 
         // ── Create ────────────────────────────────────────────────────────────
+
         public async Task<AppNoteDto> CreateAsync(
-            CreateAppNoteRequest request, string userId, CancellationToken ct)
+            CreateAppNoteRequest request, string createdByUserId, CancellationToken ct)
         {
             Validate(request);
 
             var note = new AppNote
             {
-                Title                 = request.Title.Trim(),
-                NoteBody              = request.NoteBody.Trim(),
-                NoteTypeCode          = request.NoteTypeCode.Trim(),
-                SourceTypeCode        = request.SourceTypeCode.Trim(),
-                CategoryCode          = Norm(request.CategoryCode),
-                PriorityCode          = request.PriorityCode.Trim(),
-                VisibilityTypeCode    = request.VisibilityTypeCode.Trim(),
-                MenuCode              = Norm(request.MenuCode),
-                ModuleName            = Norm(request.ModuleName),
-                EntityType            = Norm(request.EntityType),
-                EntityId              = Norm(request.EntityId),
-                StartDateUtc          = request.StartDateUtc,
-                EndDateUtc            = request.EndDateUtc,
-                IsPublished           = request.IsPublished,
-                IsPinned              = request.IsPinned,
-                IsPopup               = request.IsPopup,
+                Title                  = request.Title.Trim(),
+                NoteBody               = request.NoteBody.Trim(),
+                NoteTypeCode           = request.NoteTypeCode.Trim(),
+                SourceTypeCode         = request.SourceTypeCode.Trim(),
+                CategoryCode           = Norm(request.CategoryCode),
+                PriorityCode           = request.PriorityCode.Trim(),
+                VisibilityTypeCode     = request.VisibilityTypeCode.Trim(),
+                MenuCode               = Norm(request.MenuCode),
+                ModuleName             = Norm(request.ModuleName),
+                EntityType             = Norm(request.EntityType),
+                EntityId               = Norm(request.EntityId),
+                StartDateUtc           = request.StartDateUtc,
+                EndDateUtc             = request.EndDateUtc,
+                IsPublished            = request.IsPublished,
+                IsPinned               = request.IsPinned,
+                IsPopup                = request.IsPopup,
                 RequireAcknowledgement = request.RequireAcknowledgement,
-                AllowDismiss          = request.AllowDismiss,
-                CreatedBy             = userId,
-                CreatedOnUtc          = DateTime.UtcNow
+                AllowDismiss           = request.AllowDismiss,
+                CreatedBy              = createdByUserId,
+                CreatedOnUtc           = DateTime.UtcNow
             };
 
-            foreach (var t in request.Targets)
+            // Build targets
+            if (request.Targets != null && request.Targets.Count > 0)
+            {
+                foreach (var t in request.Targets)
+                    note.Targets.Add(new AppNoteTarget
+                    {
+                        TargetTypeCode = t.TargetTypeCode.Trim(),
+                        TargetValue    = t.TargetValue.Trim()
+                    });
+            }
+            else
+            {
+                // No targets supplied → default to ALL users
                 note.Targets.Add(new AppNoteTarget
                 {
-                    TargetTypeCode = t.TargetTypeCode.Trim(),
-                    TargetValue    = t.TargetValue.Trim(),
-                    CreatedOnUtc   = DateTime.UtcNow
+                    TargetTypeCode = "ALL",
+                    TargetValue    = "*"
                 });
+            }
 
             _db.AppNotes.Add(note);
             await _db.SaveChangesAsync(ct);
 
-            _logger.LogInformation("AppNote created. NoteId={NoteId} By={UserId}", note.NoteId, userId);
-            return ToDto(note, userId);
+            _logger.LogInformation("AppNote created. NoteId={NoteId} By={UserId}", note.NoteId, createdByUserId);
+            return ToDto(note, (AppNoteUserState?)null);
         }
 
         // ── Update ────────────────────────────────────────────────────────────
+
         public async Task<AppNoteDto> UpdateAsync(
-            int noteId, CreateAppNoteRequest request, string userId, CancellationToken ct)
+            int noteId, CreateAppNoteRequest request, string updatedByUserId, CancellationToken ct)
         {
             Validate(request);
-            var note = await GetNoteOrThrowAsync(noteId, ct);
+            var note = await LoadNoteAsync(noteId, ct);
 
-            note.Title                 = request.Title.Trim();
-            note.NoteBody              = request.NoteBody.Trim();
-            note.NoteTypeCode          = request.NoteTypeCode.Trim();
-            note.SourceTypeCode        = request.SourceTypeCode.Trim();
-            note.CategoryCode          = Norm(request.CategoryCode);
-            note.PriorityCode          = request.PriorityCode.Trim();
-            note.VisibilityTypeCode    = request.VisibilityTypeCode.Trim();
-            note.MenuCode              = Norm(request.MenuCode);
-            note.ModuleName            = Norm(request.ModuleName);
-            note.EntityType            = Norm(request.EntityType);
-            note.EntityId              = Norm(request.EntityId);
-            note.StartDateUtc          = request.StartDateUtc;
-            note.EndDateUtc            = request.EndDateUtc;
-            note.IsPublished           = request.IsPublished;
-            note.IsPinned              = request.IsPinned;
-            note.IsPopup               = request.IsPopup;
+            note.Title                  = request.Title.Trim();
+            note.NoteBody               = request.NoteBody.Trim();
+            note.NoteTypeCode           = request.NoteTypeCode.Trim();
+            note.SourceTypeCode         = request.SourceTypeCode.Trim();
+            note.CategoryCode           = Norm(request.CategoryCode);
+            note.PriorityCode           = request.PriorityCode.Trim();
+            note.VisibilityTypeCode     = request.VisibilityTypeCode.Trim();
+            note.MenuCode               = Norm(request.MenuCode);
+            note.ModuleName             = Norm(request.ModuleName);
+            note.EntityType             = Norm(request.EntityType);
+            note.EntityId               = Norm(request.EntityId);
+            note.StartDateUtc           = request.StartDateUtc;
+            note.EndDateUtc             = request.EndDateUtc;
+            note.IsPublished            = request.IsPublished;
+            note.IsPinned               = request.IsPinned;
+            note.IsPopup                = request.IsPopup;
             note.RequireAcknowledgement = request.RequireAcknowledgement;
-            note.AllowDismiss          = request.AllowDismiss;
-            note.UpdatedBy             = userId;
-            note.UpdatedOnUtc          = DateTime.UtcNow;
+            note.AllowDismiss           = request.AllowDismiss;
+            note.UpdatedBy              = updatedByUserId;
+            note.UpdatedOnUtc           = DateTime.UtcNow;
 
             // Replace targets
             var oldTargets = await _db.AppNoteTargets.Where(t => t.NoteId == noteId).ToListAsync(ct);
             _db.AppNoteTargets.RemoveRange(oldTargets);
 
-            foreach (var t in request.Targets)
-                note.Targets.Add(new AppNoteTarget
-                {
-                    TargetTypeCode = t.TargetTypeCode.Trim(),
-                    TargetValue    = t.TargetValue.Trim(),
-                    CreatedOnUtc   = DateTime.UtcNow
-                });
+            if (request.Targets != null && request.Targets.Count > 0)
+            {
+                foreach (var t in request.Targets)
+                    note.Targets.Add(new AppNoteTarget
+                    {
+                        TargetTypeCode = t.TargetTypeCode.Trim(),
+                        TargetValue    = t.TargetValue.Trim()
+                    });
+            }
+            else
+            {
+                note.Targets.Add(new AppNoteTarget { TargetTypeCode = "ALL", TargetValue = "*" });
+            }
 
             await _db.SaveChangesAsync(ct);
-            _logger.LogInformation("AppNote updated. NoteId={NoteId} By={UserId}", noteId, userId);
-            return ToDto(note, userId);
+            _logger.LogInformation("AppNote updated. NoteId={NoteId} By={UserId}", noteId, updatedByUserId);
+            return ToDto(note, (AppNoteUserState?)null);
         }
 
         // ── Delete (soft) ─────────────────────────────────────────────────────
-        public async Task DeleteAsync(int noteId, string userId, CancellationToken ct)
+
+        public async Task DeleteAsync(int noteId, string deletedByUserId, CancellationToken ct)
         {
-            var note = await GetNoteOrThrowAsync(noteId, ct);
+            var note = await LoadNoteAsync(noteId, ct);
             note.IsDeleted    = true;
-            note.DeletedBy    = userId;
+            note.DeletedBy    = deletedByUserId;
             note.DeletedOnUtc = DateTime.UtcNow;
             await _db.SaveChangesAsync(ct);
-            _logger.LogInformation("AppNote deleted. NoteId={NoteId} By={UserId}", noteId, userId);
+            _logger.LogInformation("AppNote deleted. NoteId={NoteId} By={UserId}", noteId, deletedByUserId);
         }
 
         // ── Mark Read ─────────────────────────────────────────────────────────
-        public async Task MarkReadAsync(int noteId, string userId, CancellationToken ct)
+
+        public async Task MarkReadAsync(int noteId, string staffId, CancellationToken ct)
         {
-            var status = await GetOrCreateStatusAsync(noteId, userId, ct);
-            status.IsRead    = true;
-            status.ReadOnUtc ??= DateTime.UtcNow;
-            status.UpdatedOnUtc = DateTime.UtcNow;
+            var state = await GetOrCreateStateAsync(noteId, staffId, ct);
+            state.IsRead    = true;
+            state.ReadOnUtc ??= DateTime.UtcNow;
             await _db.SaveChangesAsync(ct);
         }
 
         // ── Acknowledge ───────────────────────────────────────────────────────
-        public async Task AcknowledgeAsync(int noteId, string userId, CancellationToken ct)
+
+        public async Task AcknowledgeAsync(int noteId, string staffId, CancellationToken ct)
         {
-            var status = await GetOrCreateStatusAsync(noteId, userId, ct);
-            status.IsRead              = true;
-            status.ReadOnUtc           ??= DateTime.UtcNow;
-            status.IsAcknowledged      = true;
-            status.AcknowledgedOnUtc   ??= DateTime.UtcNow;
-            status.UpdatedOnUtc        = DateTime.UtcNow;
+            var state = await GetOrCreateStateAsync(noteId, staffId, ct);
+            state.IsRead             = true;
+            state.ReadOnUtc          ??= DateTime.UtcNow;
+            state.IsAcknowledged     = true;
+            state.AcknowledgedOnUtc  ??= DateTime.UtcNow;
             await _db.SaveChangesAsync(ct);
         }
 
         // ── Dismiss ───────────────────────────────────────────────────────────
-        public async Task DismissAsync(int noteId, string userId, CancellationToken ct)
+
+        public async Task DismissAsync(int noteId, string staffId, CancellationToken ct)
         {
-            var note = await GetNoteOrThrowAsync(noteId, ct);
+            var note = await LoadNoteAsync(noteId, ct);
             if (!note.AllowDismiss)
                 throw new InvalidOperationException("This note cannot be dismissed.");
 
-            var status = await GetOrCreateStatusAsync(noteId, userId, ct);
-            status.IsDismissed    = true;
-            status.DismissedOnUtc ??= DateTime.UtcNow;
-            status.UpdatedOnUtc   = DateTime.UtcNow;
+            var state = await GetOrCreateStateAsync(noteId, staffId, ct);
+            state.IsDismissed    = true;
+            state.DismissedOnUtc ??= DateTime.UtcNow;
             await _db.SaveChangesAsync(ct);
         }
 
         // ── Unread Count ──────────────────────────────────────────────────────
+
         public async Task<int> GetUnreadCountAsync(
-            string userId, IList<string> roles, string? menuCode, CancellationToken ct)
+            string staffId, string? menuCode, CancellationToken ct)
         {
-            var visible = await GetVisibleAsync(userId, roles, menuCode, null, null, ct);
+            var visible = await GetVisibleAsync(staffId, menuCode, null, null, ct);
             return visible.Count(n => n.SourceTypeCode == "ADMIN" && !n.IsRead);
         }
 
-        // ── Helpers ───────────────────────────────────────────────────────────
+        // ── Private helpers ───────────────────────────────────────────────────
 
-        private async Task<AppNote> GetNoteOrThrowAsync(int noteId, CancellationToken ct)
+        /// <summary>Load a note for write operations (includes Targets only).</summary>
+        private async Task<AppNote> LoadNoteAsync(int noteId, CancellationToken ct)
         {
             var note = await _db.AppNotes
                 .Include(n => n.Targets)
-                .Include(n => n.UserStatuses)
-                .Include(n => n.Attachments)
                 .FirstOrDefaultAsync(n => n.NoteId == noteId && !n.IsDeleted, ct);
 
             return note ?? throw new KeyNotFoundException($"Note {noteId} not found.");
         }
 
-        private async Task<AppNoteUserStatus> GetOrCreateStatusAsync(
-            int noteId, string userId, CancellationToken ct)
+        private async Task<AppNoteUserState> GetOrCreateStateAsync(
+            int noteId, string staffId, CancellationToken ct)
         {
-            var status = await _db.AppNoteUserStatuses
-                .FirstOrDefaultAsync(s => s.NoteId == noteId && s.UserId == userId, ct);
+            var state = await _db.AppNoteUserStates
+                .FirstOrDefaultAsync(s => s.NoteId == noteId && s.StaffId == staffId, ct);
 
-            if (status != null) return status;
+            if (state != null) return state;
 
-            status = new AppNoteUserStatus
-            {
-                NoteId       = noteId,
-                UserId       = userId,
-                CreatedOnUtc = DateTime.UtcNow
-            };
-            _db.AppNoteUserStatuses.Add(status);
-            return status;
+            state = new AppNoteUserState { NoteId = noteId, StaffId = staffId };
+            _db.AppNoteUserStates.Add(state);
+            return state;
         }
 
-        private static bool IsVisible(
-            AppNote note, string userId, IList<string> roles,
-            string? menuCode, string? entityType, string? entityId)
+        private static AppNoteDto ToDto(AppNote note, AppNoteUserState? state)
         {
-            // User notes: only visible to creator
-            if (note.SourceTypeCode == "USER" && note.CreatedBy != userId)
-                return false;
-
-            return note.VisibilityTypeCode switch
-            {
-                "GENERAL"  => true,
-                "ALL_USERS" => string.IsNullOrEmpty(note.MenuCode) && string.IsNullOrEmpty(note.EntityType),
-                "MENU"     => string.Equals(note.MenuCode, menuCode, StringComparison.OrdinalIgnoreCase),
-                "RECORD"   => SameRecord(note, entityType, entityId),
-                "PRIVATE"  => note.CreatedBy == userId,
-                "USER"     => note.Targets.Any(t => t.IsActive && t.TargetTypeCode == "USER" && t.TargetValue == userId),
-                "ROLE"     => note.Targets.Any(t => t.IsActive && t.TargetTypeCode == "ROLE" && roles.Contains(t.TargetValue)),
-                _          => true
-            };
-        }
-
-        private static bool SameRecord(AppNote note, string? entityType, string? entityId) =>
-            !string.IsNullOrWhiteSpace(entityType) &&
-            !string.IsNullOrWhiteSpace(entityId) &&
-            string.Equals(note.EntityType, entityType, StringComparison.OrdinalIgnoreCase) &&
-            string.Equals(note.EntityId,   entityId,   StringComparison.OrdinalIgnoreCase);
-
-        private static bool IsDismissed(AppNote note, string userId) =>
-            note.UserStatuses.Any(s => s.UserId == userId && s.IsDismissed);
-
-        private static AppNoteDto ToDto(AppNote note, string userId)
-        {
-            var status = note.UserStatuses.FirstOrDefault(s => s.UserId == userId);
             return new AppNoteDto
             {
-                NoteId                = note.NoteId,
-                Title                 = note.Title,
-                NoteBody              = note.NoteBody,
-                NoteTypeCode          = note.NoteTypeCode,
-                SourceTypeCode        = note.SourceTypeCode,
-                CategoryCode          = note.CategoryCode,
-                PriorityCode          = note.PriorityCode,
-                VisibilityTypeCode    = note.VisibilityTypeCode,
-                MenuCode              = note.MenuCode,
-                ModuleName            = note.ModuleName,
-                EntityType            = note.EntityType,
-                EntityId              = note.EntityId,
-                IsPublished           = note.IsPublished,
-                IsPinned              = note.IsPinned,
-                IsPopup               = note.IsPopup,
+                NoteId                 = note.NoteId,
+                Title                  = note.Title,
+                NoteBody               = note.NoteBody,
+                NoteTypeCode           = note.NoteTypeCode,
+                SourceTypeCode         = note.SourceTypeCode,
+                CategoryCode           = note.CategoryCode,
+                PriorityCode           = note.PriorityCode,
+                VisibilityTypeCode     = note.VisibilityTypeCode,
+                MenuCode               = note.MenuCode,
+                ModuleName             = note.ModuleName,
+                EntityType             = note.EntityType,
+                EntityId               = note.EntityId,
+                IsPublished            = note.IsPublished,
+                IsPinned               = note.IsPinned,
+                IsPopup                = note.IsPopup,
                 RequireAcknowledgement = note.RequireAcknowledgement,
-                AllowDismiss          = note.AllowDismiss,
-                IsRead                = status?.IsRead ?? note.SourceTypeCode == "USER",
-                IsAcknowledged        = status?.IsAcknowledged ?? false,
-                IsDismissed           = status?.IsDismissed ?? false,
-                CreatedBy             = note.CreatedBy,
-                CreatedOnUtc          = note.CreatedOnUtc
+                AllowDismiss           = note.AllowDismiss,
+                IsRead                 = state?.IsRead ?? false,
+                IsAcknowledged         = state?.IsAcknowledged ?? false,
+                IsDismissed            = state?.IsDismissed ?? false,
+                CreatedBy              = note.CreatedBy,
+                CreatedOnUtc           = note.CreatedOnUtc
             };
         }
 
@@ -297,11 +336,11 @@ namespace Accounts.Services.Services
         private static void Validate(CreateAppNoteRequest r)
         {
             var errors = new List<string>();
-            if (string.IsNullOrWhiteSpace(r.Title))          errors.Add("Title is required.");
-            if (string.IsNullOrWhiteSpace(r.NoteBody))       errors.Add("Note body is required.");
-            if (string.IsNullOrWhiteSpace(r.NoteTypeCode))   errors.Add("Note type is required.");
-            if (string.IsNullOrWhiteSpace(r.SourceTypeCode)) errors.Add("Source type is required.");
-            if (string.IsNullOrWhiteSpace(r.PriorityCode))   errors.Add("Priority is required.");
+            if (string.IsNullOrWhiteSpace(r.Title))              errors.Add("Title is required.");
+            if (string.IsNullOrWhiteSpace(r.NoteBody))           errors.Add("Note body is required.");
+            if (string.IsNullOrWhiteSpace(r.NoteTypeCode))       errors.Add("Note type is required.");
+            if (string.IsNullOrWhiteSpace(r.SourceTypeCode))     errors.Add("Source type is required.");
+            if (string.IsNullOrWhiteSpace(r.PriorityCode))       errors.Add("Priority is required.");
             if (string.IsNullOrWhiteSpace(r.VisibilityTypeCode)) errors.Add("Visibility type is required.");
             if (r.StartDateUtc.HasValue && r.EndDateUtc.HasValue && r.EndDateUtc < r.StartDateUtc)
                 errors.Add("End date cannot be before start date.");

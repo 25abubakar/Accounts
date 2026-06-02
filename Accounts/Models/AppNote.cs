@@ -72,6 +72,7 @@ namespace Accounts.Models
         // Navigation
         public ICollection<AppNoteTarget>     Targets      { get; set; } = new List<AppNoteTarget>();
         public ICollection<AppNoteUserStatus> UserStatuses { get; set; } = new List<AppNoteUserStatus>();
+        public ICollection<AppNoteUserState>  UserStates   { get; set; } = new List<AppNoteUserState>();
         public ICollection<AppNoteAttachment> Attachments  { get; set; } = new List<AppNoteAttachment>();
     }
 }

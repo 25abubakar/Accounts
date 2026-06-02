@@ -39,10 +39,11 @@ namespace Accounts.Data
         public DbSet<AppLookupType>     AppLookupTypes     => Set<AppLookupType>();
         public DbSet<AppLookupValue>    AppLookupValues    => Set<AppLookupValue>();
         public DbSet<AppMenuDefinition> AppMenuDefinitions => Set<AppMenuDefinition>();
-        public DbSet<AppNote>           AppNotes           => Set<AppNote>();
-        public DbSet<AppNoteTarget>     AppNoteTargets     => Set<AppNoteTarget>();
+        public DbSet<AppNote>           AppNotes            => Set<AppNote>();
+        public DbSet<AppNoteTarget>     AppNoteTargets      => Set<AppNoteTarget>();
         public DbSet<AppNoteUserStatus> AppNoteUserStatuses => Set<AppNoteUserStatus>();
-        public DbSet<AppNoteAttachment> AppNoteAttachments => Set<AppNoteAttachment>();
+        public DbSet<AppNoteUserState>  AppNoteUserStates   => Set<AppNoteUserState>();
+        public DbSet<AppNoteAttachment> AppNoteAttachments  => Set<AppNoteAttachment>();
 
         protected override void OnModelCreating(ModelBuilder builder)
         {
@@ -322,6 +323,7 @@ namespace Accounts.Data
                 e.Property(x => x.VisibilityTypeCode).HasMaxLength(100).IsRequired();
                 e.HasMany(x => x.Targets).WithOne(x => x.Note).HasForeignKey(x => x.NoteId).OnDelete(DeleteBehavior.Cascade);
                 e.HasMany(x => x.UserStatuses).WithOne(x => x.Note).HasForeignKey(x => x.NoteId).OnDelete(DeleteBehavior.Cascade);
+                e.HasMany(x => x.UserStates).WithOne(x => x.Note).HasForeignKey(x => x.NoteId).OnDelete(DeleteBehavior.Cascade);
                 e.HasMany(x => x.Attachments).WithOne(x => x.Note).HasForeignKey(x => x.NoteId).OnDelete(DeleteBehavior.Cascade);
             });
 
@@ -334,13 +336,23 @@ namespace Accounts.Data
                 e.Property(x => x.TargetValue).HasMaxLength(150).IsRequired();
             });
 
-            // ── Communication Center: AppNoteUserStatuses ─────────────────────
+            // ── Communication Center: AppNoteUserStatuses (legacy) ────────────
             builder.Entity<AppNoteUserStatus>(e =>
             {
                 e.ToTable("AppNoteUserStatuses");
                 e.HasKey(x => x.NoteUserStatusId);
                 e.Property(x => x.UserId).HasMaxLength(100).IsRequired();
                 e.HasIndex(x => new { x.NoteId, x.UserId }).IsUnique();
+            });
+
+            // ── Communication Center: AppNoteUserStates (per-staff) ───────────
+            builder.Entity<AppNoteUserState>(e =>
+            {
+                e.ToTable("AppNoteUserStates");
+                e.HasKey(x => x.AppNoteUserStateId);
+                e.Property(x => x.StaffId).HasMaxLength(100).IsRequired();
+                // One row per (NoteId, StaffId)
+                e.HasIndex(x => new { x.NoteId, x.StaffId }).IsUnique();
             });
 
             // ── Communication Center: AppNoteAttachments ──────────────────────
