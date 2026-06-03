@@ -22,11 +22,16 @@ namespace Accounts.Controllers
     {
         private readonly IPermissionFilterService _filterService;
         private readonly ApplicationDbContext _db;
+        private readonly IOrganizationEmployeeQueryService _orgEmployeeQuery;
 
-        public DataAccessController(IPermissionFilterService filterService, ApplicationDbContext db)
+        public DataAccessController(
+            IPermissionFilterService filterService,
+            ApplicationDbContext db,
+            IOrganizationEmployeeQueryService orgEmployeeQuery)
         {
             _filterService = filterService;
             _db = db;
+            _orgEmployeeQuery = orgEmployeeQuery;
         }
 
         private async Task<(bool Success, Guid? StaffId, string Message)> GetCurrentStaffIdAsync()
@@ -169,7 +174,7 @@ namespace Accounts.Controllers
         }
 
         /// <summary>
-        /// Recursive org query (Country/Company/Branch/Dept subtree) with employees.
+        /// Recursive org query (Country/Company/Branch/Dept subtree) with full detail.
         /// Calls dbo.usp_GetEmployeesByOrgNode.
         /// </summary>
         [HttpGet("org/{orgNodeId:int}/employees")]
@@ -202,6 +207,32 @@ namespace Accounts.Controllers
             }
 
             return Ok(rows);
+        }
+
+        /// <summary>
+        /// Clean vacancy/person rows for org subtree. Optional jobTitle or role filter (filled only when filtered).
+        /// </summary>
+        [HttpGet("org/{orgNodeId:int}/vacancy-persons")]
+        public async Task<IActionResult> GetVacancyPersonsByOrgNode(
+            int orgNodeId,
+            [FromQuery] string? jobTitle,
+            [FromQuery(Name = "role")] string? role,
+            CancellationToken cancellationToken)
+        {
+            if (orgNodeId <= 0)
+                return BadRequest(new { message = "orgNodeId is required." });
+
+            var filter = !string.IsNullOrWhiteSpace(jobTitle) ? jobTitle : role;
+            if (!string.IsNullOrWhiteSpace(filter))
+            {
+                var rows = await _orgEmployeeQuery.GetEmployeesByOrgAndRoleAsync(
+                    orgNodeId, filter, cancellationToken);
+                return Ok(rows);
+            }
+
+            var vacancyPersons = await _orgEmployeeQuery.GetPersonsByOrgNodeCleanAsync(
+                orgNodeId, cancellationToken);
+            return Ok(vacancyPersons);
         }
     }
 }

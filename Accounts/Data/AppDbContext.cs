@@ -1,4 +1,4 @@
-using Accounts.Models;
+﻿using Accounts.Models;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Identity.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore;
@@ -365,6 +365,10 @@ namespace Accounts.Data
                 e.ToTable("AppNoteAttachments");
                 e.HasKey(x => x.AttachmentId);
             });
+
+            // ── Keyless query types (stored procedures / views) ───────────────
+            builder.Entity<OrganizationVacancyPersonDto>().HasNoKey();
+            builder.Entity<EmployeeByOrgAndRoleDto>().HasNoKey();
         }
     }
 }

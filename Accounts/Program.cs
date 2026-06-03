@@ -83,6 +83,7 @@ builder.Services.AddRazorPages();
 builder.Services.AddScoped<VacancyCodeService>();
 builder.Services.AddScoped<Accounts.Services.Interfaces.IAuthService, Accounts.Services.Services.AuthService>();
 builder.Services.AddScoped<Accounts.Services.Interfaces.IOrganizationService, Accounts.Services.Services.OrganizationService>();
+builder.Services.AddScoped<Accounts.Services.Interfaces.IOrganizationEmployeeQueryService, Accounts.Services.Services.OrganizationEmployeeQueryService>();
 builder.Services.AddScoped<Accounts.Services.Interfaces.IVacancyService, Accounts.Services.Services.VacancyService>();
 builder.Services.AddScoped<Accounts.Services.Interfaces.IStaffService, Accounts.Services.Services.StaffService>();
 builder.Services.AddScoped<Accounts.Services.Interfaces.IPersonService, Accounts.Services.Services.PersonService>();
