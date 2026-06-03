@@ -34,10 +34,44 @@ namespace Accounts.Controllers
 
         // ── Identity helpers ──────────────────────────────────────────────────
 
-        private string CurrentIdentityUserId =>
-            User.FindFirst(ClaimTypes.NameIdentifier)?.Value
-            ?? User.FindFirst("sub")?.Value
-            ?? "anonymous";
+        private async Task<string?> ResolveIdentityUserIdAsync()
+        {
+            var idFromClaims = User.FindFirst(ClaimTypes.NameIdentifier)?.Value
+                               ?? User.FindFirst("sub")?.Value;
+
+            if (!string.IsNullOrWhiteSpace(idFromClaims) &&
+                await _db.Users.AsNoTracking().AnyAsync(u => u.Id == idFromClaims))
+            {
+                return idFromClaims;
+            }
+
+            // Fallback 1: map by username claim
+            var userName = User.FindFirst(ClaimTypes.Name)?.Value
+                           ?? User.Identity?.Name;
+            if (!string.IsNullOrWhiteSpace(userName))
+            {
+                var byUserName = await _db.Users.AsNoTracking()
+                    .Where(u => u.UserName == userName)
+                    .Select(u => u.Id)
+                    .FirstOrDefaultAsync();
+                if (!string.IsNullOrWhiteSpace(byUserName))
+                    return byUserName;
+            }
+
+            // Fallback 2: map by email claim
+            var email = User.FindFirst(ClaimTypes.Email)?.Value;
+            if (!string.IsNullOrWhiteSpace(email))
+            {
+                var byEmail = await _db.Users.AsNoTracking()
+                    .Where(u => u.Email == email)
+                    .Select(u => u.Id)
+                    .FirstOrDefaultAsync();
+                if (!string.IsNullOrWhiteSpace(byEmail))
+                    return byEmail;
+            }
+
+            return null;
+        }
 
         private bool IsAdmin =>
             User.IsInRole("SuperAdmin") || User.IsInRole("Admin");
@@ -48,8 +82,8 @@ namespace Accounts.Controllers
         /// </summary>
         private async Task<string?> GetCurrentStaffIdAsync()
         {
-            var identityUserId = CurrentIdentityUserId;
-            if (identityUserId == "anonymous") return null;
+            var identityUserId = await ResolveIdentityUserIdAsync();
+            if (string.IsNullOrWhiteSpace(identityUserId)) return null;
 
             var person = await _db.Persons
                 .AsNoTracking()
@@ -66,7 +100,8 @@ namespace Accounts.Controllers
         private async Task<string> ResolveStaffIdAsync()
         {
             var staffId = await GetCurrentStaffIdAsync();
-            return staffId ?? CurrentIdentityUserId;
+            var identityUserId = await ResolveIdentityUserIdAsync();
+            return staffId ?? identityUserId ?? "anonymous";
         }
 
         // ── Read endpoints ────────────────────────────────────────────────────
@@ -83,24 +118,44 @@ namespace Accounts.Controllers
             [FromQuery] string? entityId,
             CancellationToken ct)
         {
+            var identityUserId = await ResolveIdentityUserIdAsync();
+            if (string.IsNullOrWhiteSpace(identityUserId))
+                return Unauthorized(new { message = "Unable to resolve logged-in user identity." });
+
             var staffId = await ResolveStaffIdAsync();
-            var data = await _service.GetVisibleAsync(staffId, CurrentIdentityUserId, menuCode, entityType, entityId, ct);
-            return Ok(CommApiResponse<List<AppNoteDto>>.Ok(data));
+            try
+            {
+                var data = await _service.GetVisibleAsync(staffId, identityUserId, menuCode, entityType, entityId, ct);
+                return Ok(CommApiResponse<List<AppNoteDto>>.Ok(data));
+            }
+            catch (OperationCanceledException)
+            {
+                // Client canceled request (navigation/re-render). Return safe empty payload.
+                return Ok(CommApiResponse<List<AppNoteDto>>.Ok(new List<AppNoteDto>()));
+            }
         }
 
         /// <summary>Get a single note by ID.</summary>
         [HttpGet("{id:int}")]
         public async Task<IActionResult> GetById(int id, CancellationToken ct)
         {
+            var identityUserId = await ResolveIdentityUserIdAsync();
+            if (string.IsNullOrWhiteSpace(identityUserId))
+                return Unauthorized(new { message = "Unable to resolve logged-in user identity." });
+
             var staffId = await ResolveStaffIdAsync();
             AppNoteDto data;
             try
             {
-                data = await _service.GetByIdAsync(id, staffId, CurrentIdentityUserId, ct);
+                data = await _service.GetByIdAsync(id, staffId, identityUserId, ct);
             }
             catch (UnauthorizedAccessException)
             {
                 return Forbid();
+            }
+            catch (OperationCanceledException)
+            {
+                return Ok(CommApiResponse<AppNoteDto>.Fail("Request cancelled by client."));
             }
             return Ok(CommApiResponse<AppNoteDto>.Ok(data));
         }
@@ -113,9 +168,20 @@ namespace Accounts.Controllers
         public async Task<IActionResult> UnreadCount(
             [FromQuery] string? menuCode, CancellationToken ct)
         {
+            var identityUserId = await ResolveIdentityUserIdAsync();
+            if (string.IsNullOrWhiteSpace(identityUserId))
+                return Unauthorized(new { message = "Unable to resolve logged-in user identity." });
+
             var staffId = await ResolveStaffIdAsync();
-            var count = await _service.GetUnreadCountAsync(staffId, CurrentIdentityUserId, menuCode, ct);
-            return Ok(CommApiResponse<int>.Ok(count));
+            try
+            {
+                var count = await _service.GetUnreadCountAsync(staffId, identityUserId, menuCode, ct);
+                return Ok(CommApiResponse<int>.Ok(count));
+            }
+            catch (OperationCanceledException)
+            {
+                return Ok(CommApiResponse<int>.Ok(0));
+            }
         }
 
         // ── Create ────────────────────────────────────────────────────────────
@@ -133,6 +199,10 @@ namespace Accounts.Controllers
         public async Task<IActionResult> Create(
             [FromBody] CreateAppNoteRequest request, CancellationToken ct)
         {
+            var identityUserId = await ResolveIdentityUserIdAsync();
+            if (string.IsNullOrWhiteSpace(identityUserId))
+                return Unauthorized(new { message = "Unable to resolve logged-in user identity." });
+
             if (!IsAdmin)
             {
                 // Regular users can only create personal notes
@@ -141,7 +211,8 @@ namespace Accounts.Controllers
                 request.Targets            = new List<AppNoteTargetRequest>();
             }
 
-            var data = await _service.CreateAsync(request, CurrentIdentityUserId, ct);
+            // Use CancellationToken.None for writes so notes still save even if client aborts request.
+            var data = await _service.CreateAsync(request, identityUserId, CancellationToken.None);
             return Ok(CommApiResponse<AppNoteDto>.Ok(data, "Note created successfully."));
         }
 
@@ -152,7 +223,7 @@ namespace Accounts.Controllers
         public async Task<IActionResult> MarkRead(int id, CancellationToken ct)
         {
             var staffId = await ResolveStaffIdAsync();
-            await _service.MarkReadAsync(id, staffId, ct);
+            await _service.MarkReadAsync(id, staffId, CancellationToken.None);
             return Ok(CommApiResponse<object>.Ok(null!, "Marked as read."));
         }
 
@@ -161,7 +232,7 @@ namespace Accounts.Controllers
         public async Task<IActionResult> Acknowledge(int id, CancellationToken ct)
         {
             var staffId = await ResolveStaffIdAsync();
-            await _service.AcknowledgeAsync(id, staffId, ct);
+            await _service.AcknowledgeAsync(id, staffId, CancellationToken.None);
             return Ok(CommApiResponse<object>.Ok(null!, "Acknowledged."));
         }
 
@@ -170,7 +241,7 @@ namespace Accounts.Controllers
         public async Task<IActionResult> Dismiss(int id, CancellationToken ct)
         {
             var staffId = await ResolveStaffIdAsync();
-            await _service.DismissAsync(id, staffId, ct);
+            await _service.DismissAsync(id, staffId, CancellationToken.None);
             return Ok(CommApiResponse<object>.Ok(null!, "Dismissed."));
         }
 
@@ -181,21 +252,25 @@ namespace Accounts.Controllers
         public async Task<IActionResult> Update(
             int id, [FromBody] CreateAppNoteRequest request, CancellationToken ct)
         {
+            var identityUserId = await ResolveIdentityUserIdAsync();
+            if (string.IsNullOrWhiteSpace(identityUserId))
+                return Unauthorized(new { message = "Unable to resolve logged-in user identity." });
+
             var staffId  = await ResolveStaffIdAsync();
             AppNoteDto existing;
             try
             {
-                existing = await _service.GetByIdAsync(id, staffId, CurrentIdentityUserId, ct);
+                existing = await _service.GetByIdAsync(id, staffId, identityUserId, ct);
             }
             catch (UnauthorizedAccessException)
             {
                 return Forbid();
             }
 
-            if (!IsAdmin && existing.CreatedBy != CurrentIdentityUserId)
+            if (!IsAdmin && existing.CreatedBy != identityUserId)
                 return Forbid();
 
-            var data = await _service.UpdateAsync(id, request, CurrentIdentityUserId, ct);
+            var data = await _service.UpdateAsync(id, request, identityUserId, CancellationToken.None);
             return Ok(CommApiResponse<AppNoteDto>.Ok(data, "Note updated successfully."));
         }
 
@@ -203,21 +278,25 @@ namespace Accounts.Controllers
         [HttpDelete("{id:int}")]
         public async Task<IActionResult> Delete(int id, CancellationToken ct)
         {
+            var identityUserId = await ResolveIdentityUserIdAsync();
+            if (string.IsNullOrWhiteSpace(identityUserId))
+                return Unauthorized(new { message = "Unable to resolve logged-in user identity." });
+
             var staffId  = await ResolveStaffIdAsync();
             AppNoteDto existing;
             try
             {
-                existing = await _service.GetByIdAsync(id, staffId, CurrentIdentityUserId, ct);
+                existing = await _service.GetByIdAsync(id, staffId, identityUserId, ct);
             }
             catch (UnauthorizedAccessException)
             {
                 return Forbid();
             }
 
-            if (!IsAdmin && existing.CreatedBy != CurrentIdentityUserId)
+            if (!IsAdmin && existing.CreatedBy != identityUserId)
                 return Forbid();
 
-            await _service.DeleteAsync(id, CurrentIdentityUserId, ct);
+            await _service.DeleteAsync(id, identityUserId, CancellationToken.None);
             return Ok(CommApiResponse<object>.Ok(null!, "Note deleted."));
         }
     }

@@ -50,7 +50,7 @@ namespace Accounts.Services.Services
                 .Where(n => n.IsPublished && n.IsActive && !n.IsDeleted)
                 .Where(n => n.StartDateUtc == null || n.StartDateUtc <= now)
                 .Where(n => n.EndDateUtc   == null || n.EndDateUtc   >= now)
-                .ToListAsync(ct);
+                .ToListAsync(CancellationToken.None);
 
             // Step 2: apply privacy rules in memory
             var notes = candidates.Where(n =>
@@ -111,7 +111,7 @@ namespace Accounts.Services.Services
             var states = await _db.AppNoteUserStates
                 .AsNoTracking()
                 .Where(s => noteIds.Contains(s.NoteId) && s.StaffId == staffId)
-                .ToListAsync(ct);
+                .ToListAsync(CancellationToken.None);
 
             var stateMap = states.ToDictionary(s => s.NoteId);
 
@@ -133,7 +133,7 @@ namespace Accounts.Services.Services
             var note = await _db.AppNotes
                 .AsNoTracking()
                 .Include(n => n.Targets)
-                .FirstOrDefaultAsync(n => n.NoteId == noteId && !n.IsDeleted, ct)
+                .FirstOrDefaultAsync(n => n.NoteId == noteId && !n.IsDeleted, CancellationToken.None)
                 ?? throw new KeyNotFoundException($"Note {noteId} not found.");
 
             if (note.SourceTypeCode == "USER" &&
@@ -145,7 +145,7 @@ namespace Accounts.Services.Services
 
             var state = await _db.AppNoteUserStates
                 .AsNoTracking()
-                .FirstOrDefaultAsync(s => s.NoteId == noteId && s.StaffId == staffId, ct);
+                .FirstOrDefaultAsync(s => s.NoteId == noteId && s.StaffId == staffId, CancellationToken.None);
 
             return ToDto(note, state);
         }
