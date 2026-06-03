@@ -1,5 +1,6 @@
 using Accounts.Data;
 using Accounts.DTOs.CommCenter;
+using Accounts.Models;
 using Accounts.Services.Interfaces;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -135,6 +136,40 @@ namespace Accounts.Controllers
             }
         }
 
+        /// <summary>
+        /// Admin instructions shown after login (read-only for recipients).
+        /// Frontend: show popups where isPopup === true; list all in instructions panel.
+        /// </summary>
+        [HttpGet("login-instructions")]
+        public async Task<IActionResult> GetLoginInstructions(CancellationToken ct)
+        {
+            var identityUserId = await ResolveIdentityUserIdAsync();
+            if (string.IsNullOrWhiteSpace(identityUserId))
+                return Unauthorized(new { message = "Unable to resolve logged-in user identity." });
+
+            var staffId = await ResolveStaffIdAsync();
+            try
+            {
+                var data = await _service.GetLoginInstructionsAsync(staffId, identityUserId, ct);
+                return Ok(CommApiResponse<List<AppNoteDto>>.Ok(data));
+            }
+            catch (OperationCanceledException)
+            {
+                return Ok(CommApiResponse<List<AppNoteDto>>.Ok(new List<AppNoteDto>()));
+            }
+        }
+
+        /// <summary>All admin instructions — admin CRUD management only.</summary>
+        [HttpGet("admin/instructions")]
+        public async Task<IActionResult> GetAdminInstructions(CancellationToken ct)
+        {
+            if (!IsAdmin)
+                return Forbid();
+
+            var data = await _service.GetAdminInstructionsAsync(ct);
+            return Ok(CommApiResponse<List<AdminInstructionDto>>.Ok(data));
+        }
+
         /// <summary>Get a single note by ID.</summary>
         [HttpGet("{id:int}")]
         public async Task<IActionResult> GetById(int id, CancellationToken ct)
@@ -210,6 +245,11 @@ namespace Accounts.Controllers
                 request.VisibilityTypeCode = "PRIVATE";
                 request.Targets            = new List<AppNoteTargetRequest>();
             }
+            else if (request.SourceTypeCode.Trim().Equals("ADMIN", StringComparison.OrdinalIgnoreCase))
+            {
+                // Admin broadcast instructions — never USER/PRIVATE
+                request.SourceTypeCode = "ADMIN";
+            }
 
             // Use CancellationToken.None for writes so notes still save even if client aborts request.
             var data = await _service.CreateAsync(request, identityUserId, CancellationToken.None);
@@ -270,6 +310,10 @@ namespace Accounts.Controllers
             if (!IsAdmin && existing.CreatedBy != identityUserId)
                 return Forbid();
 
+            // Admin instructions are read-only for recipients — only admin can edit
+            if (!IsAdmin && existing.SourceTypeCode == "ADMIN")
+                return Forbid();
+
             var data = await _service.UpdateAsync(id, request, identityUserId, CancellationToken.None);
             return Ok(CommApiResponse<AppNoteDto>.Ok(data, "Note updated successfully."));
         }
@@ -294,6 +338,9 @@ namespace Accounts.Controllers
             }
 
             if (!IsAdmin && existing.CreatedBy != identityUserId)
+                return Forbid();
+
+            if (!IsAdmin && existing.SourceTypeCode == "ADMIN")
                 return Forbid();
 
             await _service.DeleteAsync(id, identityUserId, CancellationToken.None);

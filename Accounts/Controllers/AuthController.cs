@@ -2,6 +2,7 @@ using Accounts.Models;
 using Accounts.Services.Interfaces;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using System.Security.Claims;
 
 namespace Accounts.Controllers
 {
@@ -10,9 +11,14 @@ namespace Accounts.Controllers
     [Produces("application/json")]
     public class AuthController : ControllerBase
     {
-        private readonly IAuthService _service;
+        private readonly IAuthService       _service;
+        private readonly IUserSessionService _session;
 
-        public AuthController(IAuthService service) => _service = service;
+        public AuthController(IAuthService service, IUserSessionService session)
+        {
+            _service = service;
+            _session = session;
+        }
 
         /// <summary>Register a new user with a role (Manager / Developer / AssistantManager)</summary>
         [HttpPost("register")]
@@ -46,6 +52,23 @@ namespace Accounts.Controllers
         {
             await _service.LogoutAsync();
             return Ok(new { success = true, message = "Logged out successfully." });
+        }
+
+        /// <summary>
+        /// Post-login bootstrap: filtered sidebar, permissions, and admin instructions.
+        /// Call immediately after successful login.
+        /// </summary>
+        [HttpGet("session")]
+        [Authorize]
+        public async Task<IActionResult> GetSession(CancellationToken ct)
+        {
+            var identityUserId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+            if (string.IsNullOrWhiteSpace(identityUserId))
+                return Unauthorized(new { success = false, message = "Not authenticated." });
+
+            var isFullAccess = User.IsInRole("SuperAdmin") || User.IsInRole("Admin");
+            var session = await _session.GetSessionAsync(identityUserId, isFullAccess, ct);
+            return Ok(new { success = true, data = session });
         }
 
         /// <summary>Assign a role to an existing user</summary>

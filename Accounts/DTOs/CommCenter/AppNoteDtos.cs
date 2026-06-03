@@ -23,6 +23,7 @@ namespace Accounts.DTOs.CommCenter
         public bool    IsRead               { get; set; }
         public bool    IsAcknowledged       { get; set; }
         public bool    IsDismissed          { get; set; }
+        public bool    IsReadOnly           { get; set; }
         public string? CreatedBy            { get; set; }
         public DateTime CreatedOnUtc        { get; set; }
     }

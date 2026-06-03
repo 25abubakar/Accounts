@@ -1,6 +1,7 @@
 using Accounts.Data;
 using Accounts.Models;
 using Accounts.Services.Services;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using System.Security.Claims;
@@ -9,6 +10,7 @@ namespace Accounts.Controllers
 {
     [ApiController]
     [Route("api/rbac")]
+    [Authorize]
     [Produces("application/json")]
     public class RbacController : ControllerBase
     {
@@ -23,6 +25,9 @@ namespace Accounts.Controllers
 
         private string? CurrentUserId =>
             User.FindFirstValue(ClaimTypes.NameIdentifier);
+
+        private bool IsFullAccessUser =>
+            User.IsInRole("SuperAdmin") || User.IsInRole("Admin");
 
         // ── HasAccess check ───────────────────────────────────────────────────
 
@@ -132,11 +137,10 @@ namespace Accounts.Controllers
             if (string.IsNullOrWhiteSpace(identityUserId))
                 return Unauthorized(new { message = "Not authenticated." });
 
-            // SuperAdmin sees everything
-            if (User.IsInRole("SuperAdmin"))
+            // SuperAdmin / Admin sees everything
+            if (IsFullAccessUser)
             {
                 var allMenus = await _rbac.GetFilteredSidebarAsync(Guid.Empty);
-                // For SuperAdmin just return full menu from MenuService
                 return Ok(allMenus);
             }
 
@@ -184,6 +188,54 @@ namespace Accounts.Controllers
             return ok ? Ok(new { message = msg }) : NotFound(new { message = msg });
         }
 
+        // ── Menu bundle access (admin grants sidebar section + child features) ─
+
+        /// <summary>
+        /// Menu tree with all permission keys per item (for admin access UI).
+        /// </summary>
+        [Authorize(Roles = "SuperAdmin,Admin")]
+        [HttpGet("menu-permissions")]
+        public async Task<IActionResult> GetMenuPermissionTree() =>
+            Ok(await _rbac.GetMenuPermissionTreeAsync());
+
+        /// <summary>
+        /// Grant a user access to a sidebar menu and all child feature keys.
+        /// Example: menuId for "Accounts &amp; Groups" grants DEPT_VIEW etc. for all children.
+        /// </summary>
+        [Authorize(Roles = "SuperAdmin,Admin")]
+        [HttpPost("staff/{staffId:guid}/grant-menu/{menuId:int}")]
+        public async Task<IActionResult> GrantMenuAccess(
+            Guid staffId, int menuId, [FromBody] GrantMenuAccessDto? dto)
+        {
+            var (ok, msg, keys) = await _rbac.GrantMenuAccessAsync(
+                staffId, menuId, CurrentUserId, dto?.Reason);
+
+            return ok
+                ? Ok(new { message = msg, grantedKeys = keys, menuId, staffId })
+                : BadRequest(new { message = msg });
+        }
+
+        /// <summary>
+        /// Revoke menu-bundle overrides (reverts to role / matrix defaults).
+        /// </summary>
+        [Authorize(Roles = "SuperAdmin,Admin")]
+        [HttpPost("staff/{staffId:guid}/revoke-menu/{menuId:int}")]
+        public async Task<IActionResult> RevokeMenuAccess(Guid staffId, int menuId)
+        {
+            var (ok, msg, keys) = await _rbac.RevokeMenuAccessAsync(staffId, menuId);
+            return ok
+                ? Ok(new { message = msg, revokedKeys = keys, menuId, staffId })
+                : BadRequest(new { message = msg });
+        }
+
+        /// <summary>
+        /// Preview feature keys that would be granted for a menu subtree.
+        /// </summary>
+        [Authorize(Roles = "SuperAdmin,Admin")]
+        [HttpGet("menus/{menuId:int}/feature-keys")]
+        public async Task<IActionResult> GetMenuFeatureKeys(int menuId) =>
+            Ok(new { menuId, featureKeys = await _rbac.GetMenuFeatureKeysAsync(menuId) });
+
         // ── Seed Features ─────────────────────────────────────────────────────
 
         /// <summary>
@@ -192,6 +244,7 @@ namespace Accounts.Controllers
         /// Safe to call multiple times (idempotent).
         /// </summary>
         [HttpPost("seed-features")]
+        [AllowAnonymous]
         public async Task<IActionResult> SeedFeatures()
         {
             var features = new List<Feature>

@@ -328,6 +328,59 @@ namespace Accounts.Services.Services
             return visible.Count(n => n.SourceTypeCode == "ADMIN" && !n.IsRead);
         }
 
+        public async Task<List<AppNoteDto>> GetLoginInstructionsAsync(
+            string staffId, string identityUserId, CancellationToken ct)
+        {
+            var visible = await GetVisibleAsync(staffId, identityUserId, null, null, null, ct);
+            return visible
+                .Where(n => n.SourceTypeCode == "ADMIN")
+                .OrderByDescending(n => n.IsPinned)
+                .ThenByDescending(n => n.CreatedOnUtc)
+                .ToList();
+        }
+
+        public async Task<List<AdminInstructionDto>> GetAdminInstructionsAsync(CancellationToken ct)
+        {
+            var notes = await _db.AppNotes
+                .AsNoTracking()
+                .Include(n => n.Targets)
+                .Where(n => n.SourceTypeCode == "ADMIN" && !n.IsDeleted)
+                .OrderByDescending(n => n.CreatedOnUtc)
+                .ToListAsync(ct);
+
+            return notes.Select(n => new AdminInstructionDto
+            {
+                NoteId                 = n.NoteId,
+                Title                  = n.Title,
+                NoteBody               = n.NoteBody,
+                NoteTypeCode           = n.NoteTypeCode,
+                SourceTypeCode         = n.SourceTypeCode,
+                CategoryCode           = n.CategoryCode,
+                PriorityCode           = n.PriorityCode,
+                VisibilityTypeCode     = n.VisibilityTypeCode,
+                MenuCode               = n.MenuCode,
+                ModuleName             = n.ModuleName,
+                EntityType             = n.EntityType,
+                EntityId               = n.EntityId,
+                IsPublished            = n.IsPublished,
+                IsPinned               = n.IsPinned,
+                IsPopup                = n.IsPopup,
+                RequireAcknowledgement = n.RequireAcknowledgement,
+                AllowDismiss           = n.AllowDismiss,
+                IsReadOnly             = true,
+                IsActive               = n.IsActive,
+                StartDateUtc           = n.StartDateUtc,
+                EndDateUtc             = n.EndDateUtc,
+                CreatedBy              = n.CreatedBy,
+                CreatedOnUtc           = n.CreatedOnUtc,
+                Targets                = n.Targets.Select(t => new AppNoteTargetRequest
+                {
+                    TargetTypeCode = t.TargetTypeCode,
+                    TargetValue    = t.TargetValue
+                }).ToList()
+            }).ToList();
+        }
+
         // ── Private helpers ───────────────────────────────────────────────────
 
         /// <summary>Load a note for write operations (includes Targets only).</summary>
@@ -377,6 +430,7 @@ namespace Accounts.Services.Services
                 IsRead                 = state?.IsRead ?? false,
                 IsAcknowledged         = state?.IsAcknowledged ?? false,
                 IsDismissed            = state?.IsDismissed ?? false,
+                IsReadOnly             = note.SourceTypeCode == "ADMIN",
                 CreatedBy              = note.CreatedBy,
                 CreatedOnUtc           = note.CreatedOnUtc
             };

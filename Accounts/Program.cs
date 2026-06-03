@@ -94,6 +94,7 @@ builder.Services.AddScoped<Accounts.Services.Services.RbacService>();
 
 // ── Communication Center ──────────────────────────────────────────────────────
 builder.Services.AddScoped<Accounts.Services.Interfaces.IAppNoteService, Accounts.Services.Services.AppNoteService>();
+builder.Services.AddScoped<Accounts.Services.Interfaces.IUserSessionService, Accounts.Services.Services.UserSessionService>();
 
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
@@ -106,7 +107,7 @@ using (var scope = app.Services.CreateScope())
     var roleManager = scope.ServiceProvider.GetRequiredService<RoleManager<IdentityRole>>();
     var userManager = scope.ServiceProvider.GetRequiredService<UserManager<IdentityUser>>();
 
-    string[] roles = { "SuperAdmin", "Manager", "Developer", "AssistantManager" };
+    string[] roles = { "SuperAdmin", "Admin", "Manager", "Developer", "AssistantManager" };
     foreach (var role in roles)
     {
         if (!await roleManager.RoleExistsAsync(role))

@@ -11,7 +11,7 @@ namespace Accounts.Services.Services
         private readonly RoleManager<IdentityRole>  _roleManager;
 
         private static readonly string[] AllowedRoles =
-            ["Manager", "Developer", "AssistantManager", "SuperAdmin"];
+            ["Manager", "Developer", "AssistantManager", "SuperAdmin", "Admin"];
 
         public AuthService(
             UserManager<IdentityUser>  userManager,

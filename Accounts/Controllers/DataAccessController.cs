@@ -36,10 +36,10 @@ namespace Accounts.Controllers
 
         private async Task<(bool Success, Guid? StaffId, string Message)> GetCurrentStaffIdAsync()
         {
-            // SuperAdmin bypass
-            if (User.IsInRole("SuperAdmin"))
+            // SuperAdmin / Admin bypass
+            if (User.IsInRole("SuperAdmin") || User.IsInRole("Admin"))
             {
-                return (true, Guid.Empty, "SuperAdmin access.");
+                return (true, Guid.Empty, "Full admin access.");
             }
 
             var identityUserId = User.FindFirstValue(ClaimTypes.NameIdentifier);

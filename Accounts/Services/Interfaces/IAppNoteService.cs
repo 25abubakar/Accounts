@@ -1,4 +1,5 @@
 using Accounts.DTOs.CommCenter;
+using Accounts.Models;
 
 namespace Accounts.Services.Interfaces
 {
@@ -32,5 +33,12 @@ namespace Accounts.Services.Interfaces
 
         /// <summary>Count of unread ADMIN notes visible to this staff member.</summary>
         Task<int> GetUnreadCountAsync(string staffId, string identityUserId, string? menuCode, CancellationToken ct);
+
+        /// <summary>Admin instructions visible on login (read-only for recipients).</summary>
+        Task<List<AppNoteDto>> GetLoginInstructionsAsync(
+            string staffId, string identityUserId, CancellationToken ct);
+
+        /// <summary>All admin instructions for management UI (admin only).</summary>
+        Task<List<AdminInstructionDto>> GetAdminInstructionsAsync(CancellationToken ct);
     }
 }

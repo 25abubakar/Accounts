@@ -3,6 +3,7 @@ using Accounts.Data;
 using Accounts.DTOs;
 using Accounts.Models;
 using Accounts.Services.Interfaces;
+using Accounts.Services.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -17,11 +18,16 @@ namespace Accounts.Controllers
     {
         private readonly IMenuService         _menuService;
         private readonly ApplicationDbContext _db;
+        private readonly RbacService          _rbac;
 
-        public MenusController(IMenuService menuService, ApplicationDbContext db)
+        public MenusController(
+            IMenuService menuService,
+            ApplicationDbContext db,
+            RbacService rbac)
         {
             _menuService = menuService;
             _db          = db;
+            _rbac        = rbac;
         }
 
         // ── Create ────────────────────────────────────────────────────────────
@@ -37,17 +43,29 @@ namespace Accounts.Controllers
 
         // ── Read ──────────────────────────────────────────────────────────────
 
-        /// <summary>Sidebar tree filtered by user roles (legacy role-based).</summary>
+        /// <summary>
+        /// Sidebar tree filtered by effective feature permissions.
+        /// Prefer GET /api/rbac/sidebar or GET /api/auth/session for new frontend code.
+        /// </summary>
         [HttpGet("sidebar-tree")]
         public async Task<IActionResult> GetSidebarTree()
         {
-            var userRoles = User.Claims
-                .Where(c => c.Type == ClaimTypes.Role)
-                .Select(c => c.Value)
-                .ToList();
+            var identityUserId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+            if (string.IsNullOrWhiteSpace(identityUserId))
+                return Unauthorized(new { message = "Not authenticated." });
 
-            var tree = await _menuService.GetSidebarTreeAsync(userRoles.Count > 0 ? userRoles : null);
-            return Ok(tree);
+            if (User.IsInRole("SuperAdmin") || User.IsInRole("Admin"))
+                return Ok(await _rbac.GetFilteredSidebarAsync(Guid.Empty));
+
+            var person = await _db.Persons
+                .AsNoTracking()
+                .Include(p => p.Staff)
+                .FirstOrDefaultAsync(p => p.IdentityUserId == identityUserId);
+
+            if (person?.Staff == null)
+                return Ok(new List<object>());
+
+            return Ok(await _rbac.GetFilteredSidebarAsync(person.Staff.StaffId));
         }
 
         /// <summary>Flat list of all menus for admin management.</summary>

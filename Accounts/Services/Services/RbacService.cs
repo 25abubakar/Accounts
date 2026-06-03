@@ -88,7 +88,27 @@ namespace Accounts.Services.Services
                 .AsNoTracking()
                 .FirstOrDefaultAsync(m => m.StaffId == staffId && m.FeatureKey == featureKey);
 
-            return matrixRow?.HasAccess ?? false;
+            if (matrixRow?.HasAccess == true)
+                return true;
+
+            // ── 7. Access group features ──────────────────────────────────────
+            var groupIds = await _db.StaffAccessGroups
+                .AsNoTracking()
+                .Where(sag => sag.StaffId == staffId)
+                .Select(sag => sag.GroupId)
+                .ToListAsync();
+
+            if (groupIds.Count > 0)
+            {
+                var hasGroupFeature = await _db.AccessGroupFeatures
+                    .AsNoTracking()
+                    .AnyAsync(agf => groupIds.Contains(agf.GroupId) && agf.FeatureKey == featureKey);
+
+                if (hasGroupFeature)
+                    return true;
+            }
+
+            return false;
         }
 
         // ── GetEffectivePermissions — all allowed features for one staff ──────
@@ -460,5 +480,137 @@ namespace Accounts.Services.Services
                 .OrderBy(u => u.FeatureKey)
                 .Select(u => new { u.Id, u.StaffId, u.FeatureKey, u.Status, u.SetBy, u.SetDate, u.Reason })
                 .ToListAsync<object>();
+
+        // ── Menu bundle access (parent + all child feature keys) ──────────────
+
+        /// <summary>
+        /// Collects all feature keys required by a menu item and its descendants.
+        /// Parent groups with no keys still include keys from visible children.
+        /// </summary>
+        public async Task<IReadOnlyList<string>> GetMenuFeatureKeysAsync(int menuId)
+        {
+            var allMenus = await _db.Menus
+                .AsNoTracking()
+                .Include(m => m.MenuRoles)
+                .Where(m => m.IsActive)
+                .ToListAsync();
+
+            if (!allMenus.Any(m => m.Id == menuId))
+                return Array.Empty<string>();
+
+            var lookup = allMenus.ToLookup(m => m.ParentId);
+            var keys   = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            CollectKeys(menuId);
+
+            return keys.OrderBy(k => k).ToList();
+
+            void CollectKeys(int id)
+            {
+                var menu = allMenus.First(m => m.Id == id);
+                foreach (var role in menu.MenuRoles)
+                    keys.Add(role.RoleName);
+
+                foreach (var child in lookup[id])
+                    CollectKeys(child.Id);
+            }
+        }
+
+        /// <summary>
+        /// Grants ALLOW overrides for every feature key in a menu subtree.
+        /// Use when admin assigns a sidebar section (e.g. Accounts &amp; Groups) to a user.
+        /// </summary>
+        public async Task<(bool Success, string Message, IReadOnlyList<string> GrantedKeys)> GrantMenuAccessAsync(
+            Guid staffId, int menuId, string? setBy, string? reason)
+        {
+            if (!await _db.StaffVacancies.AnyAsync(s => s.StaffId == staffId))
+                return (false, $"Staff {staffId} not found.", Array.Empty<string>());
+
+            var menu = await _db.Menus.AsNoTracking().FirstOrDefaultAsync(m => m.Id == menuId && m.IsActive);
+            if (menu == null)
+                return (false, $"Menu {menuId} not found.", Array.Empty<string>());
+
+            var featureKeys = await GetMenuFeatureKeysAsync(menuId);
+            if (featureKeys.Count == 0)
+                return (false, $"Menu '{menu.Title}' has no permission keys (check child items are seeded).", Array.Empty<string>());
+
+            foreach (var key in featureKeys)
+            {
+                await SetUserOverrideAsync(staffId, key, PermissionStatus.ALLOW, setBy, reason);
+            }
+
+            return (true, $"Granted {featureKeys.Count} feature(s) from menu '{menu.Title}'.", featureKeys);
+        }
+
+        /// <summary>
+        /// Removes user overrides for every feature key in a menu subtree (reverts to role defaults).
+        /// </summary>
+        public async Task<(bool Success, string Message, IReadOnlyList<string> RevokedKeys)> RevokeMenuAccessAsync(
+            Guid staffId, int menuId)
+        {
+            var menu = await _db.Menus.AsNoTracking().FirstOrDefaultAsync(m => m.Id == menuId);
+            if (menu == null)
+                return (false, $"Menu {menuId} not found.", Array.Empty<string>());
+
+            var featureKeys = await GetMenuFeatureKeysAsync(menuId);
+            int removed = 0;
+
+            foreach (var key in featureKeys)
+            {
+                var (ok, _) = await RemoveUserOverrideAsync(staffId, key);
+                if (ok) removed++;
+            }
+
+            return (true, $"Removed {removed} override(s) for menu '{menu.Title}'.", featureKeys);
+        }
+
+        /// <summary>Returns menus with their required feature keys (for admin access UI).</summary>
+        public async Task<IEnumerable<object>> GetMenuPermissionTreeAsync()
+        {
+            var menus = await _db.Menus
+                .AsNoTracking()
+                .Include(m => m.MenuRoles)
+                .Where(m => m.IsActive)
+                .OrderBy(m => m.SortOrder)
+                .ToListAsync();
+
+            var lookup = menus.ToLookup(m => m.ParentId);
+
+            return BuildMenuPermTree(null);
+
+            List<object> BuildMenuPermTree(int? parentId)
+            {
+                var result = new List<object>();
+                foreach (var menu in lookup[parentId])
+                {
+                    var childKeys = CollectDescendantKeys(menu.Id);
+                    result.Add(new
+                    {
+                        menu.Id,
+                        menu.Title,
+                        menu.Icon,
+                        menu.Route,
+                        menu.ParentId,
+                        menu.SortOrder,
+                        directPermissions = menu.MenuRoles.Select(r => r.RoleName).ToList(),
+                        allPermissions    = childKeys.OrderBy(k => k).ToList(),
+                        children          = BuildMenuPermTree(menu.Id)
+                    });
+                }
+                return result;
+            }
+
+            HashSet<string> CollectDescendantKeys(int id)
+            {
+                var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                void Walk(int nodeId)
+                {
+                    var m = menus.First(x => x.Id == nodeId);
+                    foreach (var r in m.MenuRoles) set.Add(r.RoleName);
+                    foreach (var c in lookup[nodeId]) Walk(c.Id);
+                }
+                Walk(id);
+                return set;
+            }
+        }
     }
 }

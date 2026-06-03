@@ -75,8 +75,8 @@ namespace Accounts.Authorization
                 return;
             }
 
-            // ── 2. SuperAdmin bypasses all checks ─────────────────────────────
-            if (user.IsInRole("SuperAdmin"))
+            // ── 2. SuperAdmin / Admin bypasses all checks ───────────────────────
+            if (user.IsInRole("SuperAdmin") || user.IsInRole("Admin"))
                 return;
 
             // ── 3. Get IdentityUser.Id from claims ────────────────────────────
