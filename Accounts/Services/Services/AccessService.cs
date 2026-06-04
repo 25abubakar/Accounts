@@ -27,13 +27,15 @@ namespace Accounts.Services.Services
 
         public async Task<IEnumerable<object>> GetAllGroupsAsync() =>
             await _db.AccessGroups
-                .Include(g => g.Features)
+                .Include(g => g.Features).ThenInclude(f => f.Feature)
                 .Where(g => g.IsActive)
                 .OrderBy(g => g.GroupName)
                 .Select(g => new
                 {
                     g.GroupId, g.GroupName, g.Description, g.IsActive, g.CreatedDate,
-                    Features = g.Features.Select(f => f.FeatureKey).ToList(),
+                    Features = g.Features
+                        .Where(f => f.Feature != null)
+                        .Select(f => f.Feature!.FeatureKey).ToList(),
                     StaffCount = g.Staff.Count()
                 })
                 .ToListAsync<object>();
@@ -41,7 +43,7 @@ namespace Accounts.Services.Services
         public async Task<object?> GetGroupByIdAsync(int groupId)
         {
             var g = await _db.AccessGroups
-                .Include(x => x.Features)
+                .Include(x => x.Features).ThenInclude(f => f.Feature)
                 .Include(x => x.Staff).ThenInclude(s => s.Staff)
                 .FirstOrDefaultAsync(x => x.GroupId == groupId);
             if (g == null) return null;
@@ -49,8 +51,16 @@ namespace Accounts.Services.Services
             return new
             {
                 g.GroupId, g.GroupName, g.Description, g.IsActive, g.CreatedDate,
-                Features = g.Features.Select(f => f.FeatureKey).ToList(),
-                Staff    = g.Staff.Select(s => new { s.StaffId, FullName = s.Staff!.Person != null ? s.Staff.Person.FullName : "-", s.AssignedDate, s.Note }).ToList()
+                Features = g.Features
+                    .Where(f => f.Feature != null)
+                    .Select(f => f.Feature!.FeatureKey).ToList(),
+                Staff = g.Staff.Select(s => new
+                {
+                    s.StaffId,
+                    FullName = s.Staff!.Person != null ? s.Staff.Person.FullName : "-",
+                    s.AssignedDate,
+                    s.Note
+                }).ToList()
             };
         }
 
@@ -88,10 +98,10 @@ namespace Accounts.Services.Services
             var group = await _db.AccessGroups.FindAsync(groupId);
             if (group == null) return (false, $"Group {groupId} not found.");
 
-            // Load valid keys to avoid FK violations
-            var validKeys = await _db.Features
-                .Select(f => f.FeatureKey)
-                .ToHashSetAsync();
+            // Map FeatureKey strings to PermissionId integers
+            var featureMap = await _db.Features
+                .Where(f => featureKeys.Contains(f.FeatureKey))
+                .ToDictionaryAsync(f => f.FeatureKey, f => f.PermissionId);
 
             var existing = await _db.AccessGroupFeatures
                 .Where(x => x.GroupId == groupId).ToListAsync();
@@ -100,9 +110,9 @@ namespace Accounts.Services.Services
             int added = 0;
             foreach (var key in featureKeys.Distinct())
             {
-                if (validKeys.Contains(key))
+                if (featureMap.TryGetValue(key, out int permId))
                 {
-                    _db.AccessGroupFeatures.Add(new AccessGroupFeature { GroupId = groupId, FeatureKey = key });
+                    _db.AccessGroupFeatures.Add(new AccessGroupFeature { GroupId = groupId, PermissionId = permId });
                     added++;
                 }
             }
@@ -167,7 +177,6 @@ namespace Accounts.Services.Services
                 .ToListAsync();
 
             // ── 3. Source B: Staff whose vacancy is in this dept ──────────────
-            // Load ALL staff for this dept first, then filter in memory
             var allStaffForDept = await _db.StaffVacancies
                 .Include(s => s.Person)
                 .Include(s => s.Vacancy)
@@ -175,11 +184,7 @@ namespace Accounts.Services.Services
                 .OrderBy(s => s.Person != null ? s.Person.FullName : "")
                 .ToListAsync();
 
-            // Filter out staff already covered by Source A (in memory — no EF translation issue)
-            var coveredPersonIds = personsInDept
-                .Select(p => p.PersonId)
-                .ToHashSet();
-
+            var coveredPersonIds = personsInDept.Select(p => p.PersonId).ToHashSet();
             var extraStaff = allStaffForDept
                 .Where(s => s.PersonId == null || !coveredPersonIds.Contains(s.PersonId.Value))
                 .ToList();
@@ -208,7 +213,7 @@ namespace Accounts.Services.Services
                         module      = f.Module,
                         hasAccess   = sid != Guid.Empty && matrix.Any(m =>
                                           m.StaffId == sid &&
-                                          m.FeatureKey == f.FeatureKey &&
+                                          m.PermissionId == f.PermissionId &&
                                           m.HasAccess)
                     }).ToList()
                 };
@@ -230,7 +235,7 @@ namespace Accounts.Services.Services
                     module      = f.Module,
                     hasAccess   = matrix.Any(m =>
                                       m.StaffId == s.StaffId &&
-                                      m.FeatureKey == f.FeatureKey &&
+                                      m.PermissionId == f.PermissionId &&
                                       m.HasAccess)
                 }).ToList()
             }).ToList();
@@ -252,33 +257,33 @@ namespace Accounts.Services.Services
         public async Task<(int Updated, string Message)> SaveDepartmentMatrixAsync(
             int deptId, IEnumerable<MatrixUpdateItem> items, string? grantedBy)
         {
-            // Load all valid feature keys once — skip any item whose key doesn't exist
-            var validKeys = await _db.Features
-                .Select(f => f.FeatureKey)
-                .ToHashSetAsync();
+            // Map FeatureKey → PermissionId
+            var featureKeys = items.Select(i => i.FeatureKey).Distinct().ToList();
+            var featureMap = await _db.Features
+                .Where(f => featureKeys.Contains(f.FeatureKey))
+                .ToDictionaryAsync(f => f.FeatureKey, f => f.PermissionId);
 
             int count = 0;
             var skipped = new List<string>();
 
             foreach (var item in items)
             {
-                // Skip invalid feature keys — prevents FK_DAM_Feature violation
-                if (!validKeys.Contains(item.FeatureKey))
+                if (!featureMap.TryGetValue(item.FeatureKey, out int permId))
                 {
                     skipped.Add(item.FeatureKey);
                     continue;
                 }
 
                 var existing = await _db.DepartmentAccessMatrix
-                    .FirstOrDefaultAsync(m => m.StaffId == item.StaffId
-                                           && m.FeatureKey == item.FeatureKey);
+                    .FirstOrDefaultAsync(m => m.StaffId == item.StaffId && m.PermissionId == permId);
+
                 if (existing == null)
                 {
                     _db.DepartmentAccessMatrix.Add(new DepartmentAccessMatrix
                     {
                         StaffId     = item.StaffId,
                         DeptId      = deptId,
-                        FeatureKey  = item.FeatureKey,
+                        PermissionId = permId,
                         HasAccess   = item.HasAccess,
                         GrantedBy   = grantedBy,
                         GrantedDate = DateTime.Now
@@ -308,37 +313,97 @@ namespace Accounts.Services.Services
         {
             if (!await _db.StaffVacancies.AnyAsync(s => s.StaffId == staffId))
                 return (false, $"Staff {staffId} not found.");
-            if (!await _db.Features.AnyAsync(f => f.FeatureKey == featureKey))
-                return (false, $"Feature '{featureKey}' not found. Valid keys: use GET /api/access/features.");
 
-            var existing = await _db.DepartmentAccessMatrix
-                .FirstOrDefaultAsync(m => m.StaffId == staffId && m.FeatureKey == featureKey);
+            // Find or auto-create the feature
+            var feature = await _db.Features.FirstOrDefaultAsync(f => f.FeatureKey == featureKey);
 
-            if (existing == null)
+            if (feature == null)
             {
-                var staff = await _db.StaffVacancies.Include(s => s.Vacancy)
-                    .FirstOrDefaultAsync(s => s.StaffId == staffId);
-                int deptId = staff?.Vacancy?.OrganizationId ?? 0;
-
-                _db.DepartmentAccessMatrix.Add(new DepartmentAccessMatrix
+                // Auto-create MENU_* features
+                if (featureKey.StartsWith("MENU_", StringComparison.OrdinalIgnoreCase))
                 {
-                    StaffId     = staffId,
-                    DeptId      = deptId,
-                    FeatureKey  = featureKey,
-                    HasAccess   = hasAccess,
-                    GrantedBy   = grantedBy,
-                    GrantedDate = DateTime.Now
+                    var parts = featureKey.Split('_');
+                    int.TryParse(parts.Length >= 2 ? parts[1] : "0", out int menuId);
+                    var menu = menuId > 0 ? await _db.Menus.AsNoTracking().FirstOrDefaultAsync(m => m.Id == menuId) : null;
+                    string t = menu?.Title ?? $"Menu {menuId}";
+                    string suf = parts.Length >= 3 ? string.Join("_", parts.Skip(2)) : "";
+                    string name = suf switch
+                    {
+                        "VIEW"   => $"{t} - View",
+                        "ADD"    => $"{t} - Add",
+                        "EDIT"   => $"{t} - Edit",
+                        "DELETE" => $"{t} - Delete",
+                        ""       => t,
+                        _        => $"{t} - {suf}"
+                    };
+                    feature = new Feature { FeatureKey = featureKey, FeatureName = name, Module = "Menu" };
+                    _db.Features.Add(feature);
+                    try { await _db.SaveChangesAsync(); }
+                    catch { /* ignore duplicate key race */ }
+                }
+                else
+                {
+                    return (false, $"Feature '{featureKey}' not found. Use GET /api/access/features.");
+                }
+            }
+
+            // Write to UserPermissionOverrides (primary RBAC table)
+            var status = hasAccess ? PermissionStatus.ALLOW : PermissionStatus.DENY;
+
+            var upo = await _db.UserPermissionOverrides
+                .FirstOrDefaultAsync(u => u.StaffId == staffId && u.PermissionId == feature.PermissionId);
+
+            if (upo == null)
+            {
+                _db.UserPermissionOverrides.Add(new UserPermissionOverride
+                {
+                    StaffId      = staffId,
+                    PermissionId = feature.PermissionId,
+                    Status       = status.ToString(),
+                    SetBy        = grantedBy,
+                    SetDate      = DateTime.Now,
+                    Reason       = "Set via Access Manager"
                 });
             }
             else
             {
-                existing.HasAccess   = hasAccess;
-                existing.GrantedBy   = grantedBy;
-                existing.GrantedDate = DateTime.Now;
+                upo.Status  = status.ToString();
+                upo.SetBy   = grantedBy;
+                upo.SetDate = DateTime.Now;
+            }
+
+            // Also sync to DepartmentAccessMatrix (legacy read path)
+            var staff = await _db.StaffVacancies.Include(s => s.Vacancy)
+                .FirstOrDefaultAsync(s => s.StaffId == staffId);
+            int deptId = staff?.Vacancy?.OrganizationId ?? 0;
+
+            if (deptId > 0)
+            {
+                var matrix = await _db.DepartmentAccessMatrix
+                    .FirstOrDefaultAsync(m => m.StaffId == staffId && m.PermissionId == feature.PermissionId);
+
+                if (matrix == null)
+                {
+                    _db.DepartmentAccessMatrix.Add(new DepartmentAccessMatrix
+                    {
+                        StaffId      = staffId,
+                        DeptId       = deptId,
+                        PermissionId = feature.PermissionId,
+                        HasAccess    = hasAccess,
+                        GrantedBy    = grantedBy,
+                        GrantedDate  = DateTime.Now
+                    });
+                }
+                else
+                {
+                    matrix.HasAccess   = hasAccess;
+                    matrix.GrantedBy   = grantedBy;
+                    matrix.GrantedDate = DateTime.Now;
+                }
             }
 
             await _db.SaveChangesAsync();
-            return (true, $"Permission '{featureKey}' {(hasAccess ? "granted" : "revoked")}.");
+            return (true, $"Permission '{featureKey}' {(hasAccess ? "granted" : "revoked")} for staff {staffId}.");
         }
 
         public async Task<(int Count, string Message)> GrantAllAsync(
@@ -353,7 +418,7 @@ namespace Accounts.Services.Services
             }
 
             var features = await _db.Features.ToListAsync();
-            var items    = features.Select(f => new MatrixUpdateItem
+            var items = features.Select(f => new MatrixUpdateItem
             {
                 StaffId    = staffId,
                 FeatureKey = f.FeatureKey,
@@ -381,13 +446,16 @@ namespace Accounts.Services.Services
         public async Task<IEnumerable<string>> GetStaffPermissionsAsync(Guid staffId)
         {
             var matrixPerms = await _db.DepartmentAccessMatrix
+                .AsNoTracking()
+                .Include(m => m.Feature)
                 .Where(m => m.StaffId == staffId && m.HasAccess)
-                .Select(m => m.FeatureKey)
+                .Select(m => m.Feature!.FeatureKey)
                 .ToListAsync();
 
             var groupPerms = await _db.StaffAccessGroups
+                .AsNoTracking()
                 .Where(s => s.StaffId == staffId)
-                .SelectMany(s => s.Group!.Features.Select(f => f.FeatureKey))
+                .SelectMany(s => s.Group!.Features.Select(f => f.Feature!.FeatureKey))
                 .ToListAsync();
 
             return matrixPerms.Union(groupPerms).Distinct().OrderBy(k => k);
@@ -447,18 +515,17 @@ namespace Accounts.Services.Services
                 .ToListAsync();
 
             // ── 4. Load individual matrix rows for this staff ─────────────────
-            // HashSet for O(1) lookup
             var individualAccess = await _db.DepartmentAccessMatrix
                 .AsNoTracking()
                 .Where(m => m.StaffId == staffId && m.HasAccess)
-                .Select(m => m.FeatureKey)
+                .Select(m => m.PermissionId)
                 .ToHashSetAsync();
 
-            // ── 5. Load group feature keys ────────────────────────────────────
+            // ── 5. Load group feature IDs ──────────────────────────────────────
             var groupAccess = await _db.AccessGroupFeatures
                 .AsNoTracking()
                 .Where(f => f.GroupId == groupId)
-                .Select(f => f.FeatureKey)
+                .Select(f => f.PermissionId)
                 .ToHashSetAsync();
 
             // ── 6. Merge — feature is accessible if EITHER source grants it ───
@@ -467,9 +534,8 @@ namespace Accounts.Services.Services
                 FeatureKey       = f.FeatureKey,
                 FeatureName      = f.FeatureName,
                 Module           = f.Module,
-                IndividualAccess = individualAccess.Contains(f.FeatureKey),
-                GroupAccess      = groupAccess.Contains(f.FeatureKey)
-                // HasAccess and Source are computed properties — no assignment needed
+                IndividualAccess = individualAccess.Contains(f.PermissionId),
+                GroupAccess      = groupAccess.Contains(f.PermissionId)
             }).ToList();
 
             return new EffectiveAccessResult
@@ -500,39 +566,34 @@ namespace Accounts.Services.Services
         {
             // ── 1. Validate group ─────────────────────────────────────────────
             var group = await _db.AccessGroups
-                .Include(g => g.Features)
+                .Include(g => g.Features).ThenInclude(f => f.Feature)
                 .FirstOrDefaultAsync(g => g.GroupId == groupId);
 
             if (group == null)
                 return (false, $"Group {groupId} not found.", 0, 0);
 
-            // ── 2. Load group's current feature keys ──────────────────────────
-            var groupFeatureKeys = group.Features.Select(f => f.FeatureKey).ToHashSet();
+            // ── 2. Load group's current permission IDs ────────────────────────
+            var groupPermissionIds = group.Features.Select(f => f.PermissionId).ToHashSet();
 
             // ── 3. Load all staff who belong to this group ────────────────────
             var groupMembers = await _db.StaffAccessGroups
                 .AsNoTracking()
                 .Include(s => s.Staff).ThenInclude(s => s!.Vacancy)
                 .Where(s => s.GroupId == groupId)
-                .Select(s => new { s.StaffId, FullName = s.Staff!.Person != null ? s.Staff.Person.FullName : "-", DeptId = s.Staff.Vacancy != null ? s.Staff.Vacancy.OrganizationId : 0 })
+                .Select(s => new
+                {
+                    s.StaffId,
+                    FullName = s.Staff!.Person != null ? s.Staff.Person.FullName : "-",
+                    DeptId = s.Staff.Vacancy != null ? s.Staff.Vacancy.OrganizationId : 0
+                })
                 .ToListAsync();
 
             if (!groupMembers.Any())
                 return (true, $"Group '{group.GroupName}' has no members. Nothing to sync.", 0, 0);
 
-            // ── 4. Load all valid feature keys to prevent FK violations ────────
-            var validKeys = await _db.Features
-                .AsNoTracking()
-                .Select(f => f.FeatureKey)
-                .ToHashSetAsync();
-
-            // Only sync keys that actually exist in Features table
-            var keysToSync = groupFeatureKeys.Where(k => validKeys.Contains(k)).ToHashSet();
-
             int staffSynced       = 0;
             int permissionsSynced = 0;
 
-            // ── 5. Wrap everything in a transaction ───────────────────────────
             var strategy = _db.Database.CreateExecutionStrategy();
 
             try
@@ -546,19 +607,17 @@ namespace Accounts.Services.Services
                         {
                             int deptId = member.DeptId;
 
-                            // Load existing matrix rows for this staff member
                             var existingRows = await _db.DepartmentAccessMatrix
                                 .Where(m => m.StaffId == member.StaffId)
                                 .ToListAsync();
 
-                            var existingByKey = existingRows.ToDictionary(r => r.FeatureKey);
+                            var existingByPermId = existingRows.ToDictionary(r => r.PermissionId);
 
-                            // ── Grant: features the group now has ─────────────
-                            foreach (var key in keysToSync)
+                            // Grant: features the group now has
+                            foreach (var permId in groupPermissionIds)
                             {
-                                if (existingByKey.TryGetValue(key, out var row))
+                                if (existingByPermId.TryGetValue(permId, out var row))
                                 {
-                                    // Row exists — update only if currently denied
                                     if (!row.HasAccess)
                                     {
                                         row.HasAccess   = true;
@@ -569,30 +628,24 @@ namespace Accounts.Services.Services
                                 }
                                 else
                                 {
-                                    // Row doesn't exist — create it
                                     _db.DepartmentAccessMatrix.Add(new DepartmentAccessMatrix
                                     {
-                                        StaffId     = member.StaffId,
-                                        DeptId      = deptId,
-                                        FeatureKey  = key,
-                                        HasAccess   = true,
-                                        GrantedBy   = $"GroupSync:{group.GroupName}",
-                                        GrantedDate = DateTime.Now
+                                        StaffId      = member.StaffId,
+                                        DeptId       = deptId,
+                                        PermissionId = permId,
+                                        HasAccess    = true,
+                                        GrantedBy    = $"GroupSync:{group.GroupName}",
+                                        GrantedDate  = DateTime.Now
                                     });
                                     permissionsSynced++;
                                 }
                             }
 
-                            // ── Revoke: features the group no longer has ──────
-                            // Only revoke rows that were granted BY this group sync
-                            // (rows with GrantedBy starting with "GroupSync:")
-                            // This preserves individual overrides set by admins directly
+                            // Revoke: features the group no longer has (only if previously set by group sync)
                             foreach (var row in existingRows)
                             {
-                                if (!keysToSync.Contains(row.FeatureKey) && row.HasAccess)
+                                if (!groupPermissionIds.Contains(row.PermissionId) && row.HasAccess)
                                 {
-                                    // Only revoke if this row was originally set by a group sync
-                                    // (not an individual admin override)
                                     bool wasGroupGranted = row.GrantedBy != null &&
                                         row.GrantedBy.StartsWith("GroupSync:");
 
@@ -615,7 +668,7 @@ namespace Accounts.Services.Services
                     catch
                     {
                         await tx.RollbackAsync();
-                        throw; // re-throw so outer try-catch catches it
+                        throw;
                     }
                 });
 
@@ -628,12 +681,7 @@ namespace Accounts.Services.Services
             }
             catch (Exception ex)
             {
-                return (
-                    false,
-                    $"Sync failed and was rolled back. Error: {ex.Message}",
-                    0,
-                    0
-                );
+                return (false, $"Sync failed and was rolled back. Error: {ex.Message}", 0, 0);
             }
         }
     }

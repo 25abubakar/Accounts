@@ -8,6 +8,7 @@ namespace Accounts.Models
     public class UserSessionDto
     {
         public bool IsFullAccess { get; set; }
+        public Guid? PersonId { get; set; }
         public Guid? StaffId { get; set; }
         public string? IdentityUserId { get; set; }
         public List<object> Sidebar { get; set; } = new();

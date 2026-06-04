@@ -1,3 +1,4 @@
+using System.ComponentModel.DataAnnotations;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
@@ -29,14 +30,88 @@ namespace Accounts.DTOs
 
     public class RegisterPersonDto
     {
+        [Required]
+        public string    FullName      { get; set; } = string.Empty;
+        
+        public string?   Phone         { get; set; }
+        public string?   Email         { get; set; }
+        public string?   Gender        { get; set; }
+        public DateTime? DateOfBirth   { get; set; }
+        public string?   MaritalStatus { get; set; }
+        
+        [Required]
+        [Range(1, int.MaxValue, ErrorMessage = "BranchId is required")]
+        public int       BranchId      { get; set; }
+        
+        // Password is NOT required — auto-generated as LoginId@
+
+        // Use object to accept either JSON object or JSON string from frontend
+        [JsonPropertyName("currentAddress")]
+        public object? CurrentAddressRaw { get; set; }
+
+        [JsonPropertyName("permanentAddress")]
+        public object? PermanentAddressRaw { get; set; }
+
+        [JsonIgnore]
+        public AddressDto? CurrentAddress => ParseAddress(CurrentAddressRaw);
+
+        [JsonIgnore]
+        public AddressDto? PermanentAddress => ParseAddress(PermanentAddressRaw);
+
+        private static AddressDto? ParseAddress(object? raw)
+        {
+            if (raw == null) return null;
+
+            try
+            {
+                // Handle JsonElement (when sent as proper JSON object)
+                if (raw is JsonElement el)
+                {
+                    if (el.ValueKind == JsonValueKind.Null || el.ValueKind == JsonValueKind.Undefined)
+                        return null;
+                        
+                    if (el.ValueKind == JsonValueKind.Object)
+                        return JsonSerializer.Deserialize<AddressDto>(el.GetRawText());
+                        
+                    if (el.ValueKind == JsonValueKind.String)
+                    {
+                        var inner = el.GetString();
+                        if (string.IsNullOrWhiteSpace(inner)) return null;
+                        return JsonSerializer.Deserialize<AddressDto>(inner);
+                    }
+                }
+
+                // Handle string (when sent as double-serialized JSON string)
+                if (raw is string str)
+                {
+                    if (string.IsNullOrWhiteSpace(str)) return null;
+                    return JsonSerializer.Deserialize<AddressDto>(str);
+                }
+
+                // Handle already-deserialized AddressDto (shouldn't happen but just in case)
+                if (raw is AddressDto addr)
+                    return addr;
+
+                // Last resort: try to serialize and deserialize
+                var json = JsonSerializer.Serialize(raw);
+                return JsonSerializer.Deserialize<AddressDto>(json);
+            }
+            catch
+            {
+                // If all parsing attempts fail, return null
+                return null;
+            }
+        }
+    }
+
+    public class UpdatePersonDto
+    {
         public string    FullName      { get; set; } = string.Empty;
         public string?   Phone         { get; set; }
         public string?   Email         { get; set; }
         public string?   Gender        { get; set; }
         public DateTime? DateOfBirth   { get; set; }
         public string?   MaritalStatus { get; set; }
-        public int       BranchId      { get; set; }
-        // Password is NOT required — auto-generated as LoginId@
 
         [JsonPropertyName("currentAddress")]
         public JsonElement? CurrentAddressRaw { get; set; }
@@ -64,18 +139,6 @@ namespace Accounts.DTOs
             }
             return null;
         }
-    }
-
-    public class UpdatePersonDto
-    {
-        public string    FullName      { get; set; } = string.Empty;
-        public string?   Phone         { get; set; }
-        public string?   Email         { get; set; }
-        public string?   Gender        { get; set; }
-        public DateTime? DateOfBirth   { get; set; }
-        public string?   MaritalStatus { get; set; }
-        public AddressDto? CurrentAddress   { get; set; }
-        public AddressDto? PermanentAddress { get; set; }
     }
 
     // ── Response ──────────────────────────────────────────────────────────────

@@ -1,5 +1,6 @@
 using Accounts.Authorization;
 using Accounts.Services.Interfaces;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using System.Security.Claims;
 
@@ -7,6 +8,7 @@ namespace Accounts.Controllers
 {
     [ApiController]
     [Route("api/access")]
+    [Authorize]
     [Produces("application/json")]
     public class AccessController : ControllerBase
     {
@@ -159,12 +161,23 @@ namespace Accounts.Controllers
         }
 
         [HasPermission("ACCESS_GROUP_ASSIGN")]
-        [HttpPut("staff/{staffId:guid}/feature/{featureKey}")]
-        public async Task<IActionResult> TogglePermission(Guid staffId, string featureKey, [FromBody] ToggleDto dto)
+        [HttpPut("staff/{staffId:guid}/feature/{*featureKey}")]
+        [HttpPut("staff/{staffId:guid}/feature")]
+        public async Task<IActionResult> TogglePermission(
+            Guid staffId,
+            string? featureKey,
+            [FromQuery] string? key,
+            [FromBody] ToggleDto dto)
         {
-            (bool ok, string msg) = await _service.TogglePermissionAsync(staffId, featureKey, dto.HasAccess, CurrentUserId);
+            var resolvedKey = string.IsNullOrWhiteSpace(featureKey)
+                ? key
+                : Uri.UnescapeDataString(featureKey.Trim()).Trim('/');
+            if (string.IsNullOrWhiteSpace(resolvedKey))
+                return BadRequest(new { message = "featureKey is required in route or query string." });
+
+            (bool ok, string msg) = await _service.TogglePermissionAsync(staffId, resolvedKey, dto.HasAccess, CurrentUserId);
             if (!ok) return msg.Contains("not found") ? NotFound(new { message = msg }) : BadRequest(new { message = msg });
-            return Ok(new { message = msg });
+            return Ok(new { message = msg, staffId, featureKey = resolvedKey, hasAccess = dto.HasAccess });
         }
 
         [HasPermission("ACCESS_GROUP_ASSIGN")]

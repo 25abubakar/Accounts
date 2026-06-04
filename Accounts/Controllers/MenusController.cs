@@ -1,4 +1,4 @@
-﻿using Accounts.Authorization;
+using Accounts.Authorization;
 using Accounts.Data;
 using Accounts.DTOs;
 using Accounts.Models;
@@ -12,13 +12,13 @@ using System.Security.Claims;
 namespace Accounts.Controllers
 {
     [ApiController]
-    [Route("api/[controller]")]
+    [Route("api/menus")]
     [Authorize]
     public class MenusController : ControllerBase
     {
-        private readonly IMenuService         _menuService;
+        private readonly IMenuService _menuService;
         private readonly ApplicationDbContext _db;
-        private readonly RbacService          _rbac;
+        private readonly RbacService _rbac;
 
         public MenusController(
             IMenuService menuService,
@@ -26,8 +26,8 @@ namespace Accounts.Controllers
             RbacService rbac)
         {
             _menuService = menuService;
-            _db          = db;
-            _rbac        = rbac;
+            _db = db;
+            _rbac = rbac;
         }
 
         // ── Create ────────────────────────────────────────────────────────────
@@ -84,7 +84,7 @@ namespace Accounts.Controllers
         {
             var menus = await _db.Menus
                 .AsNoTracking()
-                .Include(m => m.MenuRoles)
+                .Include(m => m.MenuPermissions).ThenInclude(mp => mp.Feature)
                 .OrderBy(m => m.SortOrder)
                 .Select(m => new
                 {
@@ -95,8 +95,10 @@ namespace Accounts.Controllers
                     m.ParentId,
                     m.SortOrder,
                     m.IsActive,
-                    RequiredPermissions = m.MenuRoles.Select(r => r.RoleName).ToList(),
-                    IsPublic            = !m.MenuRoles.Any()
+                    RequiredPermissions = m.MenuPermissions
+                        .Where(mp => mp.Feature != null)
+                        .Select(mp => mp.Feature!.FeatureKey).ToList(),
+                    IsPublic = !m.MenuPermissions.Any()
                 })
                 .ToListAsync();
 
@@ -124,31 +126,43 @@ namespace Accounts.Controllers
         [HttpPut("{id:int}/permissions")]
         public async Task<IActionResult> SetMenuPermissions(int id, [FromBody] List<string> permissionKeys)
         {
-            var menu = await _db.Menus.Include(m => m.MenuRoles).FirstOrDefaultAsync(m => m.Id == id);
+            var menu = await _db.Menus.Include(m => m.MenuPermissions).FirstOrDefaultAsync(m => m.Id == id);
             if (menu == null) return NotFound(new { message = $"Menu {id} not found." });
 
-            var validKeys   = await _db.Features.Select(f => f.FeatureKey).ToHashSetAsync();
-            var invalidKeys = permissionKeys.Where(k => !validKeys.Contains(k)).ToList();
+            // Map FeatureKey strings to PermissionId integers
+            var featureMap = await _db.Features
+                .Where(f => permissionKeys.Contains(f.FeatureKey))
+                .ToDictionaryAsync(f => f.FeatureKey, f => f.PermissionId);
 
-            _db.MenuRoles.RemoveRange(menu.MenuRoles);
+            var invalidKeys = permissionKeys.Where(k => !featureMap.ContainsKey(k)).ToList();
+
+            _db.MenuPermissions.RemoveRange(menu.MenuPermissions);
 
             var toAdd = permissionKeys
-                .Where(k => validKeys.Contains(k))
+                .Where(k => featureMap.ContainsKey(k))
                 .Distinct()
-                .Select(k => new MenuRole { MenuId = id, RoleName = k })
+                .Select(k => new MenuPermission { MenuId = id, PermissionId = featureMap[k] })
                 .ToList();
 
-            _db.MenuRoles.AddRange(toAdd);
+            _db.MenuPermissions.AddRange(toAdd);
             await _db.SaveChangesAsync();
+
+            // Re-query to get feature keys for response
+            var addedKeys = await _db.MenuPermissions
+                .AsNoTracking()
+                .Include(mp => mp.Feature)
+                .Where(mp => mp.MenuId == id && mp.Feature != null)
+                .Select(mp => mp.Feature!.FeatureKey)
+                .ToListAsync();
 
             return Ok(new
             {
-                menuId      = id,
-                title       = menu.Title,
-                permissions = toAdd.Select(r => r.RoleName).ToList(),
+                menuId = id,
+                title = menu.Title,
+                permissions = addedKeys,
                 invalidKeys = invalidKeys.Any() ? invalidKeys : null,
-                message     = toAdd.Any()
-                    ? $"Menu '{menu.Title}' now requires one of: {string.Join(", ", toAdd.Select(r => r.RoleName))}"
+                message = toAdd.Any()
+                    ? $"Menu '{menu.Title}' now requires one of: {string.Join(", ", addedKeys)}"
                     : $"Menu '{menu.Title}' is now public."
             });
         }
@@ -160,21 +174,26 @@ namespace Accounts.Controllers
             if (items == null || !items.Any())
                 return BadRequest(new { message = "No items provided." });
 
-            var validKeys = await _db.Features.Select(f => f.FeatureKey).ToHashSetAsync();
-            int updated   = 0;
-            var errors    = new List<string>();
+            // Get all unique feature keys from all items
+            var allKeys = items.SelectMany(i => i.PermissionKeys).Distinct().ToList();
+            var featureMap = await _db.Features
+                .Where(f => allKeys.Contains(f.FeatureKey))
+                .ToDictionaryAsync(f => f.FeatureKey, f => f.PermissionId);
+
+            int updated = 0;
+            var errors = new List<string>();
 
             foreach (var item in items)
             {
-                var menu = await _db.Menus.Include(m => m.MenuRoles)
+                var menu = await _db.Menus.Include(m => m.MenuPermissions)
                     .FirstOrDefaultAsync(m => m.Id == item.MenuId);
 
                 if (menu == null) { errors.Add($"Menu {item.MenuId} not found."); continue; }
 
-                _db.MenuRoles.RemoveRange(menu.MenuRoles);
-                _db.MenuRoles.AddRange(item.PermissionKeys
-                    .Where(k => validKeys.Contains(k)).Distinct()
-                    .Select(k => new MenuRole { MenuId = item.MenuId, RoleName = k }));
+                _db.MenuPermissions.RemoveRange(menu.MenuPermissions);
+                _db.MenuPermissions.AddRange(item.PermissionKeys
+                    .Where(k => featureMap.ContainsKey(k)).Distinct()
+                    .Select(k => new MenuPermission { MenuId = item.MenuId, PermissionId = featureMap[k] }));
                 updated++;
             }
 
@@ -210,47 +229,53 @@ namespace Accounts.Controllers
             var definitions = new List<SeedMenuItem>
             {
                 // Root items (no parent)
-                new("Overview",             "LayoutDashboard",    "/dashboard",            null,                 1, new()),
+                new("Overview",             "LayoutDashboard",    "/dashboard",            null,                  1, new()),
 
                 // Accounts & Groups (parent group)
-                new("Accounts & Groups",    "Building2",          null,                    null,                 2, new()),
-                new("Companies & Entities", "Briefcase",          "/groups/companies",     "Accounts & Groups",  1, new() { "DEPT_VIEW" }),
-                new("Organization Chart",   "GitBranch",          "/organization",         "Accounts & Groups",  2, new() { "DEPT_VIEW" }),
-                new("Partner Portals",      "Handshake",          "/groups/partners",      "Accounts & Groups",  3, new() { "DEPT_VIEW" }),
+                new("Accounts & Groups",    "Building2",          null,                    null,                  2, new()),
+                new("Companies & Entities", "Briefcase",          "/groups/companies",     "Accounts & Groups",   1, new() { "DEPT_VIEW" }),
+                new("Organization Chart",   "GitBranch",          "/organization",         "Accounts & Groups",   2, new() { "DEPT_VIEW" }),
+                new("Partner Portals",      "Handshake",          "/groups/partners",      "Accounts & Groups",   3, new() { "DEPT_VIEW" }),
 
                 // HR Management (parent group)
-                new("HR Management",        "Users",              null,                    null,                 3, new()),
-                new("Staff & Persons",      "UserCheck",          "/hr/staff",             "HR Management",      1, new() { "EMPLOYEE_VIEW", "PERSON_VIEW" }),
-                new("Register Person",      "UserPlus",           "/hr/staff/register",    "HR Management",      2, new() { "PERSON_REGISTER" }),
-                new("Positions",            "Briefcase",          "/hr/vacancies",         "HR Management",      3, new() { "VACANCY_VIEW" }),
-                new("Reports",              "BarChart2",          "/hr/reports",           "HR Management",      4, new() { "EMPLOYEE_VIEW" }),
+                new("HR Management",        "Users",              null,                    null,                  3, new()),
+                new("Staff & Persons",      "UserCheck",          "/hr/staff",             "HR Management",       1, new() { "EMPLOYEE_VIEW", "PERSON_VIEW" }),
+                new("Register Person",      "UserPlus",           "/hr/staff/register",    "HR Management",       2, new() { "PERSON_REGISTER" }),
+                new("Positions",            "Briefcase",          "/hr/vacancies",         "HR Management",       3, new() { "VACANCY_VIEW" }),
+                new("Reports",              "BarChart2",          "/hr/reports",           "HR Management",       4, new() { "EMPLOYEE_VIEW" }),
 
                 // Access Control (parent group)
-                new("Access Control",       "Shield",             null,                    null,                 4, new()),
-                new("Access Groups",        "Lock",               "/access/groups",        "Access Control",     1, new() { "ACCESS_GROUP_VIEW" }),
-                new("Group Matrix",         "Grid",               "/access/groups/matrix", "Access Control",     2, new() { "ACCESS_GROUP_VIEW" }),
-                new("Dept Permissions",     "ShieldCheck",        "/access/dept",          "Access Control",     3, new() { "ACCESS_GROUP_VIEW" }),
+                new("Access Control",       "Shield",             null,                    null,                  4, new()),
+                new("Admin Access",         "ShieldCheck",        "/access/admin",         "Access Control",      1, new() { "ACCESS_GROUP_VIEW", "ACCESS_GROUP_ASSIGN" }),
+                new("Access Groups",        "Lock",               "/access/groups",        "Access Control",      2, new() { "ACCESS_GROUP_VIEW" }),
+                new("Group Matrix",         "Grid",               "/access/groups/matrix", "Access Control",      3, new() { "ACCESS_GROUP_VIEW" }),
+                new("Dept Permissions",     "ShieldCheck",        "/access/dept",          "Access Control",      4, new() { "ACCESS_GROUP_VIEW" }),
 
                 // Platform Settings (parent group)
-                new("Platform Settings",    "Settings",           null,                    null,                 5, new()),
-                new("General",              "SlidersHorizontal",  "/settings/general",     "Platform Settings",  1, new() { "ACCESS_GROUP_VIEW" }),
-                new("Branding",             "Palette",            "/settings/branding",    "Platform Settings",  2, new() { "ACCESS_GROUP_VIEW" }),
-                new("Email Templates",      "Mail",               "/settings/emails",      "Platform Settings",  3, new() { "ACCESS_GROUP_VIEW" }),
-                new("Integrations",         "Plug",               "/settings/integrations","Platform Settings",  4, new() { "ACCESS_GROUP_VIEW" }),
-                new("Menu Manager",         "Menu",               "/settings/menus",       "Platform Settings",  5, new() { "ACCESS_GROUP_EDIT" }),
-                new("Seed Menus",           "Database",           "/settings/seed-menus",  "Platform Settings",  6, new() { "ACCESS_GROUP_EDIT" }),
+                new("Platform Settings",    "Settings",           null,                    null,                  5, new()),
+                new("General",              "SlidersHorizontal",  "/settings/general",     "Platform Settings",   1, new() { "ACCESS_GROUP_VIEW" }),
+                new("Branding",             "Palette",            "/settings/branding",    "Platform Settings",   2, new() { "ACCESS_GROUP_VIEW" }),
+                new("Email Templates",      "Mail",               "/settings/emails",      "Platform Settings",   3, new() { "ACCESS_GROUP_VIEW" }),
+                new("Integrations",         "Plug",               "/settings/integrations","Platform Settings",   4, new() { "ACCESS_GROUP_VIEW" }),
+                new("Menu Manager",         "Menu",               "/settings/menus",       "Platform Settings",   5, new() { "ACCESS_GROUP_EDIT" }),
+                new("Seed Menus",           "Database",           "/settings/seed-menus",  "Platform Settings",   6, new() { "ACCESS_GROUP_EDIT" }),
             };
 
             // Valid feature keys (only save permissions that exist in Features table)
             var validKeys = await _db.Features.Select(f => f.FeatureKey).ToHashSetAsync();
+            var featureMap = await _db.Features
+                .Where(f => validKeys.Contains(f.FeatureKey))
+                .ToDictionaryAsync(f => f.FeatureKey, f => f.PermissionId);
 
-            // Existing menus — for idempotency checks
+            // Existing menus — for idempotency checks (Protected against DB duplicates)
             var existingByRoute = await _db.Menus
                 .Where(m => m.Route != null)
-                .ToDictionaryAsync(m => m.Route!, m => m.Id);
+                .GroupBy(m => m.Route!)
+                .ToDictionaryAsync(g => g.Key, g => g.First().Id);
 
             var existingByTitle = await _db.Menus
-                .ToDictionaryAsync(m => m.Title, m => m.Id);
+                .GroupBy(m => m.Title)
+                .ToDictionaryAsync(g => g.Key, g => g.First().Id);
 
             int added = 0, skipped = 0;
 
@@ -261,10 +286,10 @@ namespace Accounts.Controllers
 
                 var menu = new Menu
                 {
-                    Title     = item.Title,
-                    Icon      = item.Icon,
+                    Title = item.Title,
+                    Icon = item.Icon,
                     SortOrder = item.SortOrder,
-                    IsActive  = true
+                    IsActive = true
                 };
                 _db.Menus.Add(menu);
                 await _db.SaveChangesAsync();
@@ -283,17 +308,17 @@ namespace Accounts.Controllers
 
                 var menu = new Menu
                 {
-                    Title     = item.Title,
-                    Icon      = item.Icon,
-                    Route     = item.Route,
-                    ParentId  = parentId,
+                    Title = item.Title,
+                    Icon = item.Icon,
+                    Route = item.Route,
+                    ParentId = parentId,
                     SortOrder = item.SortOrder,
-                    IsActive  = true
+                    IsActive = true
                 };
 
-                // Only attach permissions that actually exist in Features table
-                foreach (var key in item.Permissions.Where(k => validKeys.Contains(k)))
-                    menu.MenuRoles.Add(new MenuRole { RoleName = key });
+                // Only attach permissions that exist in Features table
+                foreach (var key in item.Permissions.Where(k => featureMap.ContainsKey(k)))
+                    menu.MenuPermissions.Add(new MenuPermission { PermissionId = featureMap[key] });
 
                 _db.Menus.Add(menu);
                 await _db.SaveChangesAsync();
@@ -305,7 +330,57 @@ namespace Accounts.Controllers
                 message = $"Seed complete. {added} menus added, {skipped} already existed.",
                 added,
                 skipped,
-                nextStep = "Call GET /api/rbac/sidebar to get the filtered sidebar for the current user."
+                nextStep = "Call POST /api/menus/sync-routes then GET /api/auth/session."
+            });
+        }
+
+        /// <summary>
+        /// Normalizes menu routes to lowercase paths expected by the React frontend.
+        /// Safe to run multiple times.
+        /// </summary>
+        [HttpPost("sync-routes")]
+        [AllowAnonymous]
+        public async Task<IActionResult> SyncMenuRoutes()
+        {
+            var routeMap = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["/ACCESS/GROUPS"] = "/access/groups",
+                ["/Access/Groups"] = "/access/groups",
+                ["/access/group"] = "/access/groups",
+                ["/groups/hierarchy"] = "/organization",
+                ["/groups/registration"] = "/hr/vacancies",
+                ["/groups/staff"] = "/hr/staff",
+                ["/staff/register"] = "/hr/staff/register",
+                ["/hr/positions"] = "/hr/vacancies"
+            };
+
+            var menus = await _db.Menus.Where(m => m.Route != null).ToListAsync();
+            int updated = 0;
+
+            foreach (var menu in menus)
+            {
+                var route = menu.Route!;
+                var normalized = routeMap.TryGetValue(route, out var mapped)
+                    ? mapped
+                    : route.ToLowerInvariant();
+
+                if (!string.Equals(route, normalized, StringComparison.Ordinal))
+                {
+                    menu.Route = normalized;
+                    updated++;
+                }
+            }
+
+            if (updated > 0)
+                await _db.SaveChangesAsync();
+
+            return Ok(new
+            {
+                message = $"Route sync complete. {updated} menu route(s) updated.",
+                updated,
+                routes = menus.Where(m => m.Route != null)
+                    .OrderBy(m => m.SortOrder)
+                    .Select(m => new { m.Id, m.Title, m.Route })
             });
         }
     }
@@ -314,16 +389,16 @@ namespace Accounts.Controllers
 
     public class MenuPermissionDto
     {
-        public int          MenuId         { get; set; }
+        public int MenuId { get; set; }
         public List<string> PermissionKeys { get; set; } = new();
     }
 
     /// <summary>Internal helper — not exposed via API.</summary>
     internal sealed record SeedMenuItem(
-        string       Title,
-        string       Icon,
-        string?      Route,
-        string?      ParentTitle,
-        int          SortOrder,
+        string Title,
+        string Icon,
+        string? Route,
+        string? ParentTitle,
+        int SortOrder,
         List<string> Permissions);
 }

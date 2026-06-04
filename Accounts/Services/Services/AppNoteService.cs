@@ -452,6 +452,19 @@ namespace Accounts.Services.Services
             if (string.IsNullOrWhiteSpace(r.VisibilityTypeCode)) errors.Add("Visibility type is required.");
             if (r.StartDateUtc.HasValue && r.EndDateUtc.HasValue && r.EndDateUtc < r.StartDateUtc)
                 errors.Add("End date cannot be before start date.");
+
+            if (r.SourceTypeCode.Equals("ADMIN", StringComparison.OrdinalIgnoreCase) &&
+                r.VisibilityTypeCode.Equals("STAFF", StringComparison.OrdinalIgnoreCase) &&
+                r.Targets != null)
+            {
+                foreach (var t in r.Targets.Where(t =>
+                    t.TargetTypeCode.Equals("STAFF", StringComparison.OrdinalIgnoreCase)))
+                {
+                    if (!Guid.TryParse(t.TargetValue?.Trim(), out _))
+                        errors.Add($"Invalid staff target '{t.TargetValue}'. Use StaffVacancy.StaffId (GUID), not a numeric id.");
+                }
+            }
+
             if (errors.Any())
                 throw new ArgumentException(string.Join(" | ", errors));
         }

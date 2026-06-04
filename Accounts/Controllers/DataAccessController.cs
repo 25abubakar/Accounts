@@ -107,20 +107,21 @@ namespace Accounts.Controllers
         /// <summary>
         /// Check if current user has access to a specific feature.
         /// </summary>
-        [HttpGet("can-access/{featureKey}")]
+        [HttpGet("can-access/{*featureKey}")]
         public async Task<IActionResult> CanAccessFeature(string featureKey)
         {
+            var key = Uri.UnescapeDataString(featureKey.Trim()).Trim('/');
             var (success, staffId, message) = await GetCurrentStaffIdAsync();
             if (!success)
             {
                 return Unauthorized(new { message });
             }
 
-            var hasAccess = await _filterService.CanAccessFeatureAsync(staffId!.Value, featureKey);
+            var hasAccess = await _filterService.CanAccessFeatureAsync(staffId!.Value, key);
             return Ok(new
             {
                 staffId = staffId.Value,
-                featureKey,
+                featureKey = key,
                 hasAccess
             });
         }

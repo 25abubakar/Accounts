@@ -3,19 +3,23 @@ using System.ComponentModel.DataAnnotations.Schema;
 
 namespace Accounts.Models
 {
-
+    /// <summary>
+    /// Legacy department-level access matrix (keep for backward compatibility).
+    /// Now uses PermissionId (int FK) instead of FeatureKey (string) for optimized joins.
+    /// </summary>
     [Table("DepartmentAccessMatrix")]
     public class DepartmentAccessMatrix
     {
         [Key]
+        [DatabaseGenerated(DatabaseGeneratedOption.Identity)]
         public int Id { get; set; }
 
         public Guid StaffId { get; set; }
 
         public int DeptId { get; set; }
 
-        [MaxLength(100)]
-        public string FeatureKey { get; set; } = string.Empty;
+        /// <summary>FK to Features table (PermissionId)</summary>
+        public int PermissionId { get; set; }
 
         public bool HasAccess { get; set; } = false;
 
@@ -24,13 +28,14 @@ namespace Accounts.Models
 
         public DateTime GrantedDate { get; set; } = DateTime.UtcNow;
 
+        // Navigation properties
         [ForeignKey("StaffId")]
         public StaffVacancy? Staff { get; set; }
 
         [ForeignKey("DeptId")]
         public OrganizationTree? Department { get; set; }
 
-        [ForeignKey("FeatureKey")]
+        [ForeignKey("PermissionId")]
         public Feature? Feature { get; set; }
     }
 }

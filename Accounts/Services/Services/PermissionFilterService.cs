@@ -33,11 +33,60 @@ namespace Accounts.Services.Services
 
         public async Task<IEnumerable<string>> GetAccessibleFeaturesAsync(Guid staffId)
         {
+            if (staffId == Guid.Empty)
+            {
+                return await _db.Features.AsNoTracking()
+                    .Select(f => f.FeatureKey)
+                    .OrderBy(k => k)
+                    .ToListAsync();
+            }
+
+            var personId = await _db.StaffVacancies.AsNoTracking()
+                .Where(s => s.StaffId == staffId)
+                .Select(s => s.PersonId)
+                .FirstOrDefaultAsync();
+
+            if (personId.HasValue)
+            {
+                var hasDirect = await _db.PersonFeatures.AsNoTracking()
+                    .AnyAsync(pf => pf.PersonId == personId.Value);
+
+                if (hasDirect)
+                {
+                    return await _db.PersonFeatures.AsNoTracking()
+                        .Where(pf => pf.PersonId == personId.Value)
+                        .Join(_db.Features.AsNoTracking(), pf => pf.PermissionId, f => f.PermissionId, (_, f) => f.FeatureKey)
+                        .ToListAsync();
+                }
+            }
+
             return await _rbac.GetEffectivePermissionsAsync(staffId);
         }
 
         public async Task<object> GetAccessibleDataAsync(Guid staffId)
         {
+            if (staffId == Guid.Empty)
+            {
+                var allPermissions = await _db.Features.AsNoTracking()
+                    .Select(f => f.FeatureKey)
+                    .OrderBy(k => k)
+                    .ToListAsync();
+
+                return new
+                {
+                    staffId,
+                    permissions = allPermissions,
+                    data = new
+                    {
+                        departments  = await GetAccessibleDepartmentsAsync(staffId),
+                        staff        = await GetAccessibleStaffAsync(staffId),
+                        persons      = await GetAccessiblePersonsAsync(staffId),
+                        vacancies    = await GetAccessibleVacanciesAsync(staffId),
+                        accessGroups = await GetAccessibleGroupsAsync(staffId)
+                    }
+                };
+            }
+
             // Get user's permissions
             var permissions = (await _rbac.GetEffectivePermissionsAsync(staffId)).ToHashSet();
 
@@ -356,22 +405,19 @@ namespace Accounts.Services.Services
         {
             if (staffId == Guid.Empty)
             {
-                return await _db.AccessGroups
+                var allGroups = await _db.AccessGroups
                     .AsNoTracking()
-                    .Include(g => g.Features)
+                    .Include(g => g.Features).ThenInclude(f => f.Feature)
                     .Where(g => g.IsActive)
                     .OrderBy(g => g.GroupName)
-                    .Select(g => (object)new
-                    {
-                        g.GroupId,
-                        g.GroupName,
-                        g.Description,
-                        g.IsActive,
-                        g.CreatedDate,
-                        Features = g.Features.Select(f => f.FeatureKey).ToList(),
-                        StaffCount = g.Staff.Count()
-                    })
                     .ToListAsync();
+
+                return allGroups.Select(g => (object)new
+                {
+                    g.GroupId, g.GroupName, g.Description, g.IsActive, g.CreatedDate,
+                    Features = g.Features.Where(f => f.Feature != null).Select(f => f.Feature!.FeatureKey).ToList(),
+                    StaffCount = g.Staff.Count()
+                }).ToList();
             }
 
             // Check permission first
@@ -380,22 +426,17 @@ namespace Accounts.Services.Services
 
             var groups = await _db.AccessGroups
                 .AsNoTracking()
-                .Include(g => g.Features)
+                .Include(g => g.Features).ThenInclude(f => f.Feature)
                 .Where(g => g.IsActive)
                 .OrderBy(g => g.GroupName)
-                .Select(g => new
-                {
-                    g.GroupId,
-                    g.GroupName,
-                    g.Description,
-                    g.IsActive,
-                    g.CreatedDate,
-                    Features = g.Features.Select(f => f.FeatureKey).ToList(),
-                    StaffCount = g.Staff.Count()
-                })
-                .ToListAsync<object>();
+                .ToListAsync();
 
-            return groups;
+            return groups.Select(g => new
+            {
+                g.GroupId, g.GroupName, g.Description, g.IsActive, g.CreatedDate,
+                Features = g.Features.Where(f => f.Feature != null).Select(f => f.Feature!.FeatureKey).ToList(),
+                StaffCount = g.Staff.Count()
+            }).ToList<object>();
         }
     }
 }

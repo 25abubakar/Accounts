@@ -16,6 +16,7 @@ namespace Accounts.Models
 
     /// <summary>
     /// User-specific permission override for ONE staff member.
+    /// Now uses PermissionId (int FK) instead of FeatureKey (string) for optimized joins.
     ///
     /// Resolution priority (highest first):
     ///   DENY   → immediately return false, no further checks
@@ -26,12 +27,13 @@ namespace Accounts.Models
     public class UserPermissionOverride
     {
         [Key]
+        [DatabaseGenerated(DatabaseGeneratedOption.Identity)]
         public int Id { get; set; }
 
         public Guid StaffId { get; set; }
 
-        [Required, MaxLength(100)]
-        public string FeatureKey { get; set; } = string.Empty;
+        /// <summary>FK to Features table (PermissionId)</summary>
+        public int PermissionId { get; set; }
 
         /// <summary>
         /// ALLOW = explicitly granted
@@ -50,11 +52,11 @@ namespace Accounts.Models
         [MaxLength(250)]
         public string? Reason { get; set; }
 
-        // Navigation
+        // Navigation properties
         [ForeignKey("StaffId")]
         public StaffVacancy? Staff { get; set; }
 
-        [ForeignKey("FeatureKey")]
+        [ForeignKey("PermissionId")]
         public Feature? Feature { get; set; }
     }
 }

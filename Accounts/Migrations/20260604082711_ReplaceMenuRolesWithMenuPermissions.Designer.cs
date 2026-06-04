@@ -4,6 +4,7 @@ using Accounts.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 #nullable disable
@@ -11,9 +12,11 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace Accounts.Migrations
 {
     [DbContext(typeof(ApplicationDbContext))]
-    partial class ApplicationDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260604082711_ReplaceMenuRolesWithMenuPermissions")]
+    partial class ReplaceMenuRolesWithMenuPermissions
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -837,54 +840,6 @@ namespace Accounts.Migrations
                     b.ToTable("PersonAddresses", (string)null);
                 });
 
-            modelBuilder.Entity("Accounts.Models.PersonFeature", b =>
-                {
-                    b.Property<Guid>("PersonId")
-                        .HasColumnType("uniqueidentifier");
-
-                    b.Property<int>("PermissionId")
-                        .HasColumnType("int");
-
-                    b.Property<string>("GrantedBy")
-                        .HasMaxLength(450)
-                        .HasColumnType("nvarchar(450)");
-
-                    b.Property<DateTime>("GrantedOnUtc")
-                        .HasColumnType("datetime2");
-
-                    b.HasKey("PersonId", "PermissionId");
-
-                    b.HasIndex("PermissionId");
-
-                    b.HasIndex("PersonId");
-
-                    b.ToTable("PersonFeatures", (string)null);
-                });
-
-            modelBuilder.Entity("Accounts.Models.PersonMenu", b =>
-                {
-                    b.Property<Guid>("PersonId")
-                        .HasColumnType("uniqueidentifier");
-
-                    b.Property<int>("MenuId")
-                        .HasColumnType("int");
-
-                    b.Property<string>("GrantedBy")
-                        .HasMaxLength(450)
-                        .HasColumnType("nvarchar(450)");
-
-                    b.Property<DateTime>("GrantedOnUtc")
-                        .HasColumnType("datetime2");
-
-                    b.HasKey("PersonId", "MenuId");
-
-                    b.HasIndex("MenuId");
-
-                    b.HasIndex("PersonId");
-
-                    b.ToTable("PersonMenus", (string)null);
-                });
-
             modelBuilder.Entity("Accounts.Models.RolePermission", b =>
                 {
                     b.Property<int>("Id")
@@ -1453,44 +1408,6 @@ namespace Accounts.Migrations
                         .HasForeignKey("PersonId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
-
-                    b.Navigation("Person");
-                });
-
-            modelBuilder.Entity("Accounts.Models.PersonFeature", b =>
-                {
-                    b.HasOne("Accounts.Models.Feature", "Feature")
-                        .WithMany()
-                        .HasForeignKey("PermissionId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
-
-                    b.HasOne("Accounts.Models.Person", "Person")
-                        .WithMany()
-                        .HasForeignKey("PersonId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
-
-                    b.Navigation("Feature");
-
-                    b.Navigation("Person");
-                });
-
-            modelBuilder.Entity("Accounts.Models.PersonMenu", b =>
-                {
-                    b.HasOne("Accounts.Models.Menu", "Menu")
-                        .WithMany()
-                        .HasForeignKey("MenuId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
-
-                    b.HasOne("Accounts.Models.Person", "Person")
-                        .WithMany()
-                        .HasForeignKey("PersonId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
-
-                    b.Navigation("Menu");
 
                     b.Navigation("Person");
                 });

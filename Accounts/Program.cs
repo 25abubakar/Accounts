@@ -76,7 +76,13 @@ builder.Services.AddCors(options =>
               .AllowCredentials());
 });
 
-builder.Services.AddControllers();
+builder.Services.AddControllers()
+    .AddJsonOptions(options =>
+    {
+        // Allow flexible JSON deserialization for address fields
+        options.JsonSerializerOptions.PropertyNameCaseInsensitive = true;
+        options.JsonSerializerOptions.DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull;
+    });
 builder.Services.AddRazorPages();
 
 // ── 4. Dependency Injection Registrations ────────────────────────────────────
@@ -92,9 +98,18 @@ builder.Services.AddScoped<Accounts.Services.Interfaces.IAccessService, Accounts
 builder.Services.AddScoped<Accounts.Services.Interfaces.IPermissionFilterService, Accounts.Services.Services.PermissionFilterService>();
 builder.Services.AddScoped<Accounts.Services.Services.RbacService>();
 
+// ── Optimized RBAC Services (No N+1 Queries) ──────────────────────────────────
+builder.Services.AddScoped<Accounts.Services.Services.OptimizedMenuService>();
+builder.Services.AddHttpContextAccessor();
+
 // ── Communication Center ──────────────────────────────────────────────────────
 builder.Services.AddScoped<Accounts.Services.Interfaces.IAppNoteService, Accounts.Services.Services.AppNoteService>();
 builder.Services.AddScoped<Accounts.Services.Interfaces.IUserSessionService, Accounts.Services.Services.UserSessionService>();
+builder.Services.AddScoped<Accounts.Services.Interfaces.IPersonAccessService, Accounts.Services.Services.PersonAccessService>();
+
+// ── Dynamic Permission-Based Authorization ────────────────────────────────────
+builder.Services.AddSingleton<Microsoft.AspNetCore.Authorization.IAuthorizationPolicyProvider, Accounts.Authorization.PermissionPolicyProvider>();
+builder.Services.AddScoped<Microsoft.AspNetCore.Authorization.IAuthorizationHandler, Accounts.Authorization.PermissionAuthorizationHandler>();
 
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
