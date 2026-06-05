@@ -116,14 +116,14 @@ namespace Accounts.Controllers
             if (overrides == null || overrides.Count == 0)
                 return BadRequest(new { message = "No overrides provided." });
 
-            // Resolve PersonId once (we need it throughout the method)
+            // Resolve PersonId once — needed for PersonMenus and PersonFeatures
             var staffRow = await _db.StaffVacancies.AsNoTracking()
                 .FirstOrDefaultAsync(s => s.StaffId == staffId);
 
             if (staffRow == null)
                 return NotFound(new { message = $"Staff {staffId} not found." });
 
-            var personId = staffRow.PersonId; // Guid? — null if person record missing
+            var personId = staffRow.PersonId;
 
             // Map FeatureKey strings → PermissionId integers (one query)
             var featureKeys = overrides.Keys.ToList();
@@ -131,7 +131,7 @@ namespace Accounts.Controllers
                 .Where(f => featureKeys.Contains(f.FeatureKey))
                 .ToDictionaryAsync(f => f.FeatureKey, f => f.PermissionId);
 
-            // Pre-load existing overrides for this staff (avoid per-row round trips)
+            // Pre-load existing overrides (avoid per-row DB hit)
             var existingOverrides = await _db.UserPermissionOverrides
                 .Where(u => u.StaffId == staffId)
                 .ToDictionaryAsync(u => u.PermissionId);
@@ -147,81 +147,55 @@ namespace Accounts.Controllers
 
                 if (status == PermissionStatus.INHERIT)
                 {
-                    // Remove override — revert to role default
                     if (existing != null) { _db.UserPermissionOverrides.Remove(existing); saved++; }
-
-                    // Also revoke from PersonFeatures + PersonMenus
                     if (personId.HasValue)
                     {
                         await _personAccess.RevokeFeatureAsync(personId.Value, permId);
-
-                        // If this is a bare MENU_{id} key, also revoke PersonMenus row
                         if (TryParseMenuId(featureKey, out int revokeMenuId))
                             await RevokePersonMenuAsync(personId.Value, revokeMenuId);
                     }
                 }
                 else if (status == PermissionStatus.ALLOW)
                 {
-                    // Upsert UserPermissionOverride
                     if (existing == null)
                     {
                         _db.UserPermissionOverrides.Add(new UserPermissionOverride
                         {
-                            StaffId      = staffId,
-                            PermissionId = permId,
-                            Status       = "ALLOW",
-                            SetBy        = CurrentUserId,
-                            SetDate      = DateTime.UtcNow,
-                            Reason       = "Set by admin"
+                            StaffId = staffId, PermissionId = permId,
+                            Status  = "ALLOW", SetBy = CurrentUserId,
+                            SetDate = DateTime.UtcNow, Reason = "Set by admin"
                         });
                     }
-                    else
-                    {
-                        existing.Status  = "ALLOW";
-                        existing.SetBy   = CurrentUserId;
-                        existing.SetDate = DateTime.UtcNow;
-                    }
+                    else { existing.Status = "ALLOW"; existing.SetBy = CurrentUserId; existing.SetDate = DateTime.UtcNow; }
                     saved++;
 
                     if (personId.HasValue)
                     {
-                        // Always grant the feature in PersonFeatures
                         await _personAccess.GrantFeatureAsync(personId.Value, permId, CurrentUserId);
 
-                        // KEY FIX: If this is a bare MENU_{id} key (no _VIEW/_EDIT etc.),
-                        // also write a PersonMenus row so GetGrantedSidebarAsync can find it.
+                        // KEY FIX: if this is a bare MENU_{id} key, also write PersonMenus
+                        // AND grant all operational feature keys (VACANCY_VIEW etc.)
                         if (TryParseMenuId(featureKey, out int grantMenuId))
-                            await GrantPersonMenuAsync(personId.Value, grantMenuId, staffId);
+                            await GrantPersonMenuWithOpKeysAsync(personId.Value, grantMenuId, staffId);
                     }
                 }
                 else if (status == PermissionStatus.DENY)
                 {
-                    // Upsert UserPermissionOverride as DENY
                     if (existing == null)
                     {
                         _db.UserPermissionOverrides.Add(new UserPermissionOverride
                         {
-                            StaffId      = staffId,
-                            PermissionId = permId,
-                            Status       = "DENY",
-                            SetBy        = CurrentUserId,
-                            SetDate      = DateTime.UtcNow,
-                            Reason       = "Set by admin"
+                            StaffId = staffId, PermissionId = permId,
+                            Status  = "DENY", SetBy = CurrentUserId,
+                            SetDate = DateTime.UtcNow, Reason = "Set by admin"
                         });
                     }
-                    else
-                    {
-                        existing.Status  = "DENY";
-                        existing.SetBy   = CurrentUserId;
-                        existing.SetDate = DateTime.UtcNow;
-                    }
+                    else { existing.Status = "DENY"; existing.SetBy = CurrentUserId; existing.SetDate = DateTime.UtcNow; }
                     saved++;
 
                     if (personId.HasValue)
                     {
                         await _personAccess.RevokeFeatureAsync(personId.Value, permId);
-
-                        // Also remove PersonMenus row if denying a menu
                         if (TryParseMenuId(featureKey, out int denyMenuId))
                             await RevokePersonMenuAsync(personId.Value, denyMenuId);
                     }
@@ -233,76 +207,111 @@ namespace Accounts.Controllers
             return Ok(new
             {
                 message = $"{saved} permission(s) saved, {skipped} skipped (invalid keys/status).",
-                staffId,
-                saved,
-                skipped
+                staffId, saved, skipped
             });
         }
 
         // ── Helpers for BulkSetOverrides ──────────────────────────────────────
 
-        /// <summary>
-        /// Returns true and the menu id if featureKey is exactly "MENU_123"
-        /// (bare menu access key, not a CRUD suffix like MENU_123_VIEW).
-        /// </summary>
+        /// Returns true if featureKey is exactly "MENU_{integer}" (no suffix).
         private static bool TryParseMenuId(string featureKey, out int menuId)
         {
             menuId = 0;
             if (!featureKey.StartsWith("MENU_", StringComparison.OrdinalIgnoreCase)) return false;
             var rest = featureKey["MENU_".Length..];
-            return int.TryParse(rest, out menuId); // only pure numeric part = bare MENU_{id}
+            return int.TryParse(rest, out menuId);
         }
 
-        /// <summary>
-        /// Ensures a PersonMenus row exists for personId + menuId,
-        /// also including parent menus in the hierarchy so section headers show.
-        /// Uses _db directly so it participates in the outer SaveChanges.
-        /// </summary>
-        private async Task GrantPersonMenuAsync(Guid personId, int menuId, Guid staffId)
+        /// Writes PersonMenus row + parent chain + ALL linked operational features.
+        private async Task GrantPersonMenuWithOpKeysAsync(Guid personId, int menuId, Guid staffId)
         {
-            // Collect this menu and all its ancestors (so parent groups show in sidebar)
-            var allMenus = await _db.Menus.AsNoTracking()
-                .Where(m => m.IsActive).ToListAsync();
-
+            var allMenus = await _db.Menus.AsNoTracking().Where(m => m.IsActive).ToListAsync();
             var byId = allMenus.ToDictionary(m => m.Id);
+
+            // Collect menu + ancestors
             var toGrant = new HashSet<int> { menuId };
+            var cur = byId.GetValueOrDefault(menuId);
+            while (cur?.ParentId != null && byId.TryGetValue(cur.ParentId.Value, out var par))
+            { toGrant.Add(par.Id); cur = par; }
 
-            // Walk up the parent chain
-            var current = byId.GetValueOrDefault(menuId);
-            while (current?.ParentId != null && byId.TryGetValue(current.ParentId.Value, out var parent))
-            {
-                toGrant.Add(parent.Id);
-                current = parent;
-            }
-
-            // Get already-existing PersonMenus rows to avoid duplicate inserts
-            var existing = await _db.PersonMenus
+            var existingMenus = await _db.PersonMenus
                 .Where(pm => pm.PersonId == personId && toGrant.Contains(pm.MenuId))
-                .Select(pm => pm.MenuId)
-                .ToHashSetAsync();
+                .Select(pm => pm.MenuId).ToHashSetAsync();
 
-            foreach (var mid in toGrant.Where(id => !existing.Contains(id)))
+            foreach (var mid in toGrant.Where(id => !existingMenus.Contains(id)))
             {
                 _db.PersonMenus.Add(new PersonMenu
                 {
-                    PersonId     = personId,
-                    MenuId       = mid,
-                    GrantedBy    = CurrentUserId,
-                    GrantedOnUtc = DateTime.UtcNow
+                    PersonId = personId, MenuId = mid,
+                    GrantedBy = CurrentUserId, GrantedOnUtc = DateTime.UtcNow
                 });
+            }
+
+            // Collect ALL operational permission IDs for this menu
+            // Source 1: MenuPermissions table (what seed-menu-feature-links populated)
+            var linkedPermIds = await _db.MenuPermissions.AsNoTracking()
+                .Where(mp => mp.MenuId == menuId)
+                .Select(mp => mp.PermissionId).ToListAsync();
+
+            // Source 2: static map fallback (if MenuPermissions not yet seeded)
+            if (byId.TryGetValue(menuId, out var grantMenu))
+            {
+                var opKeys = GetOperationalKeysForMenu(grantMenu.Route, grantMenu.Title);
+                if (opKeys.Length > 0)
+                {
+                    var opPermIds = await _db.Features.AsNoTracking()
+                        .Where(f => opKeys.Contains(f.FeatureKey))
+                        .Select(f => f.PermissionId).ToListAsync();
+                    linkedPermIds = linkedPermIds.Concat(opPermIds).Distinct().ToList();
+                }
+            }
+
+            // Write PersonFeatures for all linked permissions
+            var existingFeatures = await _db.PersonFeatures
+                .Where(pf => pf.PersonId == personId && linkedPermIds.Contains(pf.PermissionId))
+                .Select(pf => pf.PermissionId).ToHashSetAsync();
+
+            foreach (var pid in linkedPermIds.Where(id => !existingFeatures.Contains(id)))
+            {
+                _db.PersonFeatures.Add(new PersonFeature
+                {
+                    PersonId = personId, PermissionId = pid,
+                    GrantedBy = CurrentUserId, GrantedOnUtc = DateTime.UtcNow
+                });
+            }
+
+            // Also write UserPermissionOverrides ALLOW for operational keys (belt + suspenders)
+            if (staffId != Guid.Empty && linkedPermIds.Count > 0)
+            {
+                var existingUpo = await _db.UserPermissionOverrides
+                    .Where(uo => uo.StaffId == staffId && linkedPermIds.Contains(uo.PermissionId))
+                    .ToDictionaryAsync(uo => uo.PermissionId);
+
+                foreach (var pid in linkedPermIds)
+                {
+                    if (existingUpo.TryGetValue(pid, out var ov))
+                    {
+                        if (ov.Status != "ALLOW") { ov.Status = "ALLOW"; ov.SetBy = CurrentUserId; ov.SetDate = DateTime.UtcNow; }
+                    }
+                    else
+                    {
+                        _db.UserPermissionOverrides.Add(new UserPermissionOverride
+                        {
+                            StaffId = staffId, PermissionId = pid,
+                            Status  = "ALLOW", SetBy = CurrentUserId,
+                            SetDate = DateTime.UtcNow, Reason = "Auto-granted via menu access"
+                        });
+                    }
+                }
             }
         }
 
-        /// <summary>
         /// Removes the PersonMenus row for personId + menuId.
-        /// Uses _db directly so it participates in the outer SaveChanges.
-        /// </summary>
         private async Task RevokePersonMenuAsync(Guid personId, int menuId)
         {
             var row = await _db.PersonMenus
                 .FirstOrDefaultAsync(pm => pm.PersonId == personId && pm.MenuId == menuId);
-            if (row != null)
-                _db.PersonMenus.Remove(row);
+            if (row != null) _db.PersonMenus.Remove(row);
         }
 
         // ── HasAccess check ───────────────────────────────────────────────────
@@ -687,147 +696,167 @@ namespace Accounts.Controllers
         /// Helper method to link menus to features via MenuPermissions table.
         /// Ensures that when admin grants MENU_{id} permission, the menu actually appears.
         /// </summary>
-        private async Task<int> LinkMenusToFeaturesAsync()
+        // ── Menu → Operational Feature Keys mapping ───────────────────────────
+        // This defines which API-level permission keys each menu grants.
+        // When admin grants a user access to a menu, these operational keys
+        // are ALSO granted in PersonFeatures so [HasPermission] guards pass.
+        //
+        // KEY: route pattern OR menu title fragment (case-insensitive)
+        // VALUE: array of operational feature keys to grant alongside MENU_*
+        //
+        // NOTE: This map is authoritative. When you add a new menu, add its
+        //       operational keys here too. The seed-menu-feature-links endpoint
+        //       uses this same map to populate MenuPermissions.
+        private static readonly Dictionary<string, string[]> _menuOperationalKeys
+            = new(StringComparer.OrdinalIgnoreCase)
         {
-            // Get all active menus
-            var activeMenus = await _db.Menus
-                .Where(m => m.IsActive)
-                .Select(m => m.Id)
-                .ToListAsync();
+            // Positions / Vacancies
+            ["/hr/vacancies"]           = new[] { "VACANCY_VIEW", "VACANCY_CREATE", "VACANCY_EDIT", "VACANCY_DELETE", "VACANCY_ASSIGN" },
+            ["positions"]               = new[] { "VACANCY_VIEW", "VACANCY_CREATE", "VACANCY_EDIT", "VACANCY_DELETE", "VACANCY_ASSIGN" },
+            ["vacancies"]               = new[] { "VACANCY_VIEW", "VACANCY_CREATE", "VACANCY_EDIT", "VACANCY_DELETE", "VACANCY_ASSIGN" },
+            // Staff / Employees
+            ["/hr/staff"]               = new[] { "EMPLOYEE_VIEW", "EMPLOYEE_VIEW_ALL", "EMPLOYEE_EDIT", "EMPLOYEE_DELETE", "EMPLOYEE_TRANSFER" },
+            ["/staff"]                  = new[] { "EMPLOYEE_VIEW", "EMPLOYEE_VIEW_ALL", "EMPLOYEE_EDIT", "EMPLOYEE_DELETE", "EMPLOYEE_TRANSFER" },
+            ["staff members"]           = new[] { "EMPLOYEE_VIEW", "EMPLOYEE_VIEW_ALL", "EMPLOYEE_EDIT", "EMPLOYEE_DELETE", "EMPLOYEE_TRANSFER" },
+            ["employees"]               = new[] { "EMPLOYEE_VIEW", "EMPLOYEE_VIEW_ALL", "EMPLOYEE_EDIT", "EMPLOYEE_DELETE", "EMPLOYEE_TRANSFER" },
+            // Register Person
+            ["/hr/register"]            = new[] { "PERSON_REGISTER", "VACANCY_VIEW", "VACANCY_ASSIGN", "PERSON_VIEW" },
+            ["register person"]         = new[] { "PERSON_REGISTER", "VACANCY_VIEW", "VACANCY_ASSIGN", "PERSON_VIEW" },
+            ["user registration"]       = new[] { "PERSON_REGISTER", "VACANCY_VIEW", "VACANCY_ASSIGN", "PERSON_VIEW" },
+            // Persons
+            ["/persons"]                = new[] { "PERSON_VIEW", "PERSON_VIEW_ALL", "PERSON_REGISTER", "PERSON_EDIT", "PERSON_DELETE" },
+            ["persons"]                 = new[] { "PERSON_VIEW", "PERSON_VIEW_ALL", "PERSON_REGISTER", "PERSON_EDIT", "PERSON_DELETE" },
+            // Organization / Org Chart
+            ["/org"]                    = new[] { "DEPT_VIEW", "DEPT_VIEW_ALL" },
+            ["organization"]            = new[] { "DEPT_VIEW", "DEPT_VIEW_ALL", "DEPT_CREATE", "DEPT_EDIT", "DEPT_DELETE" },
+            ["org chart"]               = new[] { "DEPT_VIEW", "DEPT_VIEW_ALL" },
+            ["graphical hierarchy"]     = new[] { "DEPT_VIEW", "DEPT_VIEW_ALL" },
+            ["companies"]               = new[] { "DEPT_VIEW", "DEPT_CREATE", "DEPT_EDIT", "DEPT_DELETE" },
+            ["companies & entities"]    = new[] { "DEPT_VIEW", "DEPT_CREATE", "DEPT_EDIT", "DEPT_DELETE" },
+            // Access / Security
+            ["/access"]                 = new[] { "ACCESS_GROUP_VIEW", "ACCESS_GROUP_CREATE", "ACCESS_GROUP_EDIT", "ACCESS_GROUP_DELETE", "ACCESS_GROUP_ASSIGN" },
+            ["security & access"]       = new[] { "ACCESS_GROUP_VIEW", "ACCESS_GROUP_CREATE", "ACCESS_GROUP_EDIT", "ACCESS_GROUP_DELETE", "ACCESS_GROUP_ASSIGN" },
+            ["access control"]          = new[] { "ACCESS_GROUP_VIEW", "ACCESS_GROUP_CREATE", "ACCESS_GROUP_EDIT", "ACCESS_GROUP_DELETE", "ACCESS_GROUP_ASSIGN" },
+            // Locations
+            ["/locations"]              = new[] { "LOCATION_VIEW", "LOCATION_MANAGE" },
+            ["locations"]               = new[] { "LOCATION_VIEW", "LOCATION_MANAGE" },
+            // HR Management (parent group)
+            ["hr management"]           = new[] { "EMPLOYEE_VIEW", "VACANCY_VIEW", "PERSON_VIEW" },
+            ["accounts & groups"]       = new[] { "DEPT_VIEW" },
+            // Platform / System
+            ["platform settings"]       = new[] { "LOCATION_VIEW", "LOCATION_MANAGE" },
+            ["system analytics"]        = new[] { "EMPLOYEE_VIEW", "DEPT_VIEW", "VACANCY_VIEW" },
+        };
 
-            // Get Features table lookup: MENU_id → PermissionId
-            var menuFeatures = await _db.Features
-                .Where(f => f.FeatureKey.StartsWith("MENU_") && !f.FeatureKey.Contains("_VIEW") 
-                         && !f.FeatureKey.Contains("_ADD") && !f.FeatureKey.Contains("_EDIT") 
-                         && !f.FeatureKey.Contains("_DELETE"))
+        /// <summary>
+        /// Returns the operational feature keys for a menu based on its route or title.
+        /// Matches by route first, then by title (case-insensitive contains).
+        /// </summary>
+        private static string[] GetOperationalKeysForMenu(string? route, string? title)
+        {
+            if (!string.IsNullOrWhiteSpace(route))
+            {
+                foreach (var (pattern, keys) in _menuOperationalKeys)
+                    if (route.Contains(pattern, StringComparison.OrdinalIgnoreCase))
+                        return keys;
+            }
+            if (!string.IsNullOrWhiteSpace(title))
+            {
+                // Exact match first
+                if (_menuOperationalKeys.TryGetValue(title, out var exact)) return exact;
+                // Contains match
+                foreach (var (pattern, keys) in _menuOperationalKeys)
+                    if (title.Contains(pattern, StringComparison.OrdinalIgnoreCase))
+                        return keys;
+            }
+            return Array.Empty<string>();
+        }
+
+        /// <summary>
+        /// Seeds MenuPermissions table with BOTH the MENU_{id} key AND operational keys
+        /// (VACANCY_VIEW, EMPLOYEE_VIEW etc.) based on menu route/title.
+        ///
+        /// This is the critical link: when a menu is granted, both the sidebar key
+        /// AND the API-level keys are attached, so HasPermission checks pass.
+        ///
+        /// Safe to call multiple times — idempotent.
+        /// POST /api/rbac/seed-menu-feature-links
+        /// </summary>
+        [HttpPost("seed-menu-feature-links")]
+        [AllowAnonymous]
+        public async Task<IActionResult> SeedMenuFeatureLinks()
+        {
+            var added = await SeedMenuFeatureLinksInternalAsync();
+            return Ok(new
+            {
+                message = $"Menu feature links seeded. {added} MenuPermissions rows added.",
+                added,
+                nextStep = "Re-run POST /api/rbac/repair-person-menus to backfill any affected users."
+            });
+        }
+
+        private async Task<int> SeedMenuFeatureLinksInternalAsync()
+        {
+            var allMenus = await _db.Menus.AsNoTracking()
+                .Where(m => m.IsActive).ToListAsync();
+
+            // All feature keys → PermissionId map
+            var featureMap = await _db.Features.AsNoTracking()
                 .ToDictionaryAsync(f => f.FeatureKey, f => f.PermissionId);
 
-            // Get existing MenuPermissions to avoid duplicates
+            // All existing MenuPermissions
             var existingLinks = await _db.MenuPermissions
                 .Select(mp => new { mp.MenuId, mp.PermissionId })
                 .ToHashSetAsync();
 
-            var added = 0;
-            foreach (var menuId in activeMenus)
+            int added = 0;
+
+            foreach (var menu in allMenus)
             {
-                var featureKey = $"MENU_{menuId}";
-                if (menuFeatures.TryGetValue(featureKey, out int permissionId))
+                // 1. Link MENU_{id} key (for sidebar visibility)
+                var menuKey = $"MENU_{menu.Id}";
+                if (featureMap.TryGetValue(menuKey, out int menuPermId))
                 {
-                    // Check if link already exists
-                    if (!existingLinks.Contains(new { MenuId = menuId, PermissionId = permissionId }))
+                    var link1 = new { MenuId = menu.Id, PermissionId = menuPermId };
+                    if (!existingLinks.Contains(link1))
                     {
                         _db.MenuPermissions.Add(new MenuPermission
                         {
-                            MenuId = menuId,
-                            PermissionId = permissionId
+                            MenuId = menu.Id,
+                            PermissionId = menuPermId
                         });
+                        existingLinks.Add(link1);
+                        added++;
+                    }
+                }
+
+                // 2. Link operational keys (VACANCY_VIEW, EMPLOYEE_VIEW etc.)
+                var opKeys = GetOperationalKeysForMenu(menu.Route, menu.Title);
+                foreach (var opKey in opKeys)
+                {
+                    if (!featureMap.TryGetValue(opKey, out int opPermId)) continue;
+                    var link2 = new { MenuId = menu.Id, PermissionId = opPermId };
+                    if (!existingLinks.Contains(link2))
+                    {
+                        _db.MenuPermissions.Add(new MenuPermission
+                        {
+                            MenuId = menu.Id,
+                            PermissionId = opPermId
+                        });
+                        existingLinks.Add(link2);
                         added++;
                     }
                 }
             }
 
-            if (added > 0)
-            {
-                await _db.SaveChangesAsync();
-            }
-
+            if (added > 0) await _db.SaveChangesAsync();
             return added;
         }
 
-        // ── Repair endpoint ───────────────────────────────────────────────────
-
-        /// <summary>
-        /// One-time repair: backfill PersonMenus rows from existing PersonFeatures rows.
-        ///
-        /// The problem:  Old saves via bulk-overrides wrote PersonFeatures (MENU_* entries)
-        ///               but never wrote PersonMenus.  So HasPersonGrantsAsync() returns true
-        ///               (because PersonFeatures exist) but GetGrantedSidebarAsync() returns
-        ///               empty (because PersonMenus is empty) → user sees no sidebar.
-        ///
-        /// This endpoint iterates every person that has PersonFeatures rows containing
-        /// MENU_{id} keys, and creates the missing PersonMenus row for each one.
-        ///
-        /// Safe to call multiple times — idempotent.
-        /// POST /api/rbac/repair-person-menus
-        /// </summary>
-        [HttpPost("repair-person-menus")]
-        [AllowAnonymous]   // ← AllowAnonymous so it can be called during setup even before auth is configured
-        public async Task<IActionResult> RepairPersonMenus()
+        private async Task<int> LinkMenusToFeaturesAsync()
         {
-            // 1. Find all PersonFeatures rows whose feature is a bare MENU_{id}
-            var menuFeatureRows = await _db.PersonFeatures.AsNoTracking()
-                .Join(_db.Features.AsNoTracking(),
-                      pf => pf.PermissionId,
-                      f  => f.PermissionId,
-                      (pf, f) => new { pf.PersonId, f.FeatureKey, pf.PermissionId })
-                .Where(x => x.FeatureKey.StartsWith("MENU_"))
-                .ToListAsync();
-
-            // Filter to bare MENU_{id} only (exclude MENU_{id}_VIEW etc.)
-            var bareMenuGrants = menuFeatureRows
-                .Where(x => TryParseMenuId(x.FeatureKey, out _))
-                .ToList();
-
-            if (bareMenuGrants.Count == 0)
-                return Ok(new { message = "Nothing to repair — no MENU_* PersonFeatures found.", added = 0 });
-
-            // 2. Load all active menus once (for parent-chain walking)
-            var allMenus = await _db.Menus.AsNoTracking()
-                .Where(m => m.IsActive).ToListAsync();
-            var byId = allMenus.ToDictionary(m => m.Id);
-
-            // 3. Load existing PersonMenus to avoid duplicate inserts
-            var personIds = bareMenuGrants.Select(x => x.PersonId).Distinct().ToList();
-            var existingPersonMenus = await _db.PersonMenus
-                .Where(pm => personIds.Contains(pm.PersonId))
-                .Select(pm => new { pm.PersonId, pm.MenuId })
-                .ToHashSetAsync();
-
-            int added = 0;
-
-            foreach (var grant in bareMenuGrants)
-            {
-                if (!TryParseMenuId(grant.FeatureKey, out int menuId)) continue;
-                if (!byId.ContainsKey(menuId)) continue; // menu no longer exists
-
-                // Collect the menu + all its ancestors
-                var toAdd = new HashSet<int> { menuId };
-                var cur = byId.GetValueOrDefault(menuId);
-                while (cur?.ParentId != null && byId.TryGetValue(cur.ParentId.Value, out var par))
-                {
-                    toAdd.Add(par.Id);
-                    cur = par;
-                }
-
-                foreach (var mid in toAdd)
-                {
-                    var key = new { PersonId = grant.PersonId, MenuId = mid };
-                    if (!existingPersonMenus.Contains(key))
-                    {
-                        _db.PersonMenus.Add(new PersonMenu
-                        {
-                            PersonId     = grant.PersonId,
-                            MenuId       = mid,
-                            GrantedBy    = "repair-endpoint",
-                            GrantedOnUtc = DateTime.UtcNow
-                        });
-                        existingPersonMenus.Add(key); // prevent double-add within same batch
-                        added++;
-                    }
-                }
-            }
-
-            if (added > 0)
-                await _db.SaveChangesAsync();
-
-            return Ok(new
-            {
-                message  = $"Repair complete. Added {added} PersonMenus row(s).",
-                added,
-                nextStep = added > 0
-                    ? "Users should now see their granted menus after next login."
-                    : "All PersonMenus rows already exist."
-            });
+            // Delegate to the comprehensive version
+            return await SeedMenuFeatureLinksInternalAsync();
         }
     }
 

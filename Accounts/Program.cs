@@ -1,4 +1,4 @@
-﻿using Accounts.Data;
+using Accounts.Data;
 using Accounts.Services;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
