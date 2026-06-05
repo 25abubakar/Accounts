@@ -431,9 +431,9 @@ curl -X POST https://localhost:7015/api/rbac/seed-features
 
 ## 📞 Support
 
-**Technical Issues:** dev-team@example.com  
-**Business Logic:** product-team@example.com  
-**Deployment:** devops-team@example.com
+**Technical Issues:** abubakar.devv@gmail.com  
+**Business Logic:** abubakar.devv@gmail.com 
+**Deployment:** abubakar.devv@gmail.com
 
 ---
 
