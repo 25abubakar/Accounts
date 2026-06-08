@@ -1,11 +1,14 @@
+using Accounts.Authorization;
 using Accounts.Models;
 using Accounts.Services.Interfaces;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
 namespace Accounts.Controllers
 {
     [ApiController]
     [Route("api/organization")]
+    [Authorize]                      // All endpoints require login
     [Produces("application/json")]
     public class OrganizationTreeController : ControllerBase
     {
@@ -13,9 +16,8 @@ namespace Accounts.Controllers
 
         public OrganizationTreeController(IOrganizationService service) => _service = service;
 
-        // ── Country Lookup ────────────────────────────────────────────────────
+        // ── Country Lookup — needed by forms for all authenticated users ──────
 
-        /// <summary>Lookup country info (flag, code, capital) before creating a Country node</summary>
         [HttpGet("country-lookup")]
         public async Task<IActionResult> CountryLookup([FromQuery] string name)
         {
@@ -24,7 +26,6 @@ namespace Accounts.Controllers
             return result == null ? NotFound(new { message = $"Country '{name}' not found." }) : Ok(result);
         }
 
-        /// <summary>Search countries by name — for autocomplete dropdown</summary>
         [HttpGet("country-search")]
         public async Task<IActionResult> CountrySearch([FromQuery] string q)
         {
@@ -32,14 +33,14 @@ namespace Accounts.Controllers
             return Ok(await _service.CountrySearchAsync(q));
         }
 
-        // ── Tree ──────────────────────────────────────────────────────────────
+        // ── READ endpoints — require DEPT_VIEW ───────────────────────────────
 
-        /// <summary>Full hierarchy as nested JSON tree</summary>
+        [HasPermission("DEPT_VIEW")]
         [HttpGet("tree")]
         public async Task<IActionResult> GetTree() =>
             Ok(await _service.GetTreeAsync());
 
-        /// <summary>Subtree from any node (e.g. /tree/2 = TechSoft and all children)</summary>
+        [HasPermission("DEPT_VIEW")]
         [HttpGet("tree/{startId:int}")]
         public async Task<IActionResult> GetSubTree(int startId)
         {
@@ -47,19 +48,17 @@ namespace Accounts.Controllers
             return result == null ? NotFound(new { message = $"Node {startId} not found." }) : Ok(result);
         }
 
-        /// <summary>Flat list with Level, TreePath and indented TreeStructure</summary>
+        [HasPermission("DEPT_VIEW")]
         [HttpGet("flat-tree")]
         public async Task<IActionResult> GetFlatTree() =>
             Ok(await _service.GetFlatTreeAsync());
 
-        // ── CRUD ──────────────────────────────────────────────────────────────
-
-        /// <summary>Get all nodes as flat list</summary>
+        [HasPermission("DEPT_VIEW")]
         [HttpGet]
         public async Task<IActionResult> GetAll() =>
             Ok(await _service.GetAllAsync());
 
-        /// <summary>Get a single node by ID</summary>
+        [HasPermission("DEPT_VIEW")]
         [HttpGet("{id:int}")]
         public async Task<IActionResult> GetById(int id)
         {
@@ -67,12 +66,12 @@ namespace Accounts.Controllers
             return node == null ? NotFound(new { message = $"Node {id} not found." }) : Ok(node);
         }
 
-        /// <summary>Filter nodes by label (Country / Company / Branch / Group / etc.)</summary>
+        [HasPermission("DEPT_VIEW")]
         [HttpGet("by-label/{label}")]
         public async Task<IActionResult> GetByLabel(string label) =>
             Ok(await _service.GetByLabelAsync(label));
 
-        /// <summary>Get direct children of a node</summary>
+        [HasPermission("DEPT_VIEW")]
         [HttpGet("{id:int}/children")]
         public async Task<IActionResult> GetChildren(int id)
         {
@@ -80,7 +79,7 @@ namespace Accounts.Controllers
             return children == null ? NotFound(new { message = $"Node {id} not found." }) : Ok(children);
         }
 
-        /// <summary>Search nodes by name (partial, case-insensitive)</summary>
+        [HasPermission("DEPT_VIEW")]
         [HttpGet("search")]
         public async Task<IActionResult> Search([FromQuery] string q)
         {
@@ -88,10 +87,9 @@ namespace Accounts.Controllers
             return Ok(await _service.SearchAsync(q));
         }
 
-        /// <summary>
-        /// Create any node with any label (Country, Group, Company, Branch, Department, etc.).
-        /// For Country nodes, flag and code are auto-fetched if not provided.
-        /// </summary>
+        // ── WRITE endpoints — require specific CRUD permissions ───────────────
+
+        [HasPermission("DEPT_CREATE")]
         [HttpPost]
         public async Task<IActionResult> Create([FromBody] CreateOrgNodeDto dto)
         {
@@ -107,7 +105,7 @@ namespace Accounts.Controllers
             return CreatedAtAction(nameof(GetById), new { id = node.Id }, node);
         }
 
-        /// <summary>Update a node — name, code, label, parent, flagUrl</summary>
+        [HasPermission("DEPT_EDIT")]
         [HttpPut("{id:int}")]
         public async Task<IActionResult> Update(int id, [FromBody] UpdateOrgNodeDto dto)
         {
@@ -124,7 +122,7 @@ namespace Accounts.Controllers
             return node == null ? NotFound(new { message = $"Node {id} not found." }) : Ok(node);
         }
 
-        /// <summary>Delete a node — blocked if it has children or vacancies</summary>
+        [HasPermission("DEPT_DELETE")]
         [HttpDelete("{id:int}")]
         public async Task<IActionResult> Delete(int id)
         {

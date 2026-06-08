@@ -14,16 +14,12 @@ namespace Accounts.Controllers
 
         public PersonsController(IPersonService service) => _service = service;
 
-        // ── Queries ───────────────────────────────────────────────────────────
-
-        /// <summary>Get all person profiles with full org + employment info</summary>
-        [HasPermission("PERSON_VIEW")]
+        [HasPermission("MENU_8_VIEW")]
         [HttpGet("profiles")]
         public async Task<IActionResult> GetProfiles() =>
             Ok(await _service.GetProfilesAsync());
 
-        /// <summary>Get a single person's full profile</summary>
-        [HasPermission("PERSON_VIEW")]
+        [HasPermission("MENU_8_VIEW")]
         [HttpGet("{id:guid}/profile")]
         public async Task<IActionResult> GetProfile(Guid id)
         {
@@ -31,12 +27,10 @@ namespace Accounts.Controllers
             return profile == null ? NotFound(new { message = $"Person {id} not found." }) : Ok(profile);
         }
 
-        /// <summary>Get org tree for registration form dropdowns</summary>
         [HttpGet("org-tree")]   // public — needed for registration form
         public async Task<IActionResult> GetOrgTree() =>
             Ok(await _service.GetOrgTreeAsync());
 
-        /// <summary>Preview login ID before registering</summary>
         [HttpGet("preview-login-id")]   // public — needed for registration form
         public async Task<IActionResult> PreviewLoginId([FromQuery] int branchId)
         {
@@ -45,7 +39,6 @@ namespace Accounts.Controllers
             return result == null ? NotFound(new { message = $"Branch {branchId} not found." }) : Ok(result);
         }
 
-        /// <summary>Preview email before registering</summary>
         [HttpGet("preview-email")]   // public — needed for registration form
         public async Task<IActionResult> PreviewEmail([FromQuery] int branchId, [FromQuery] string fullName)
         {
@@ -55,20 +48,17 @@ namespace Accounts.Controllers
             return result == null ? NotFound(new { message = $"Branch {branchId} not found." }) : Ok(result);
         }
 
-        /// <summary>Get all persons</summary>
-        [HasPermission("PERSON_VIEW")]
+        [HasPermission("MENU_8_VIEW")]
         [HttpGet]
         public async Task<IActionResult> GetAll() =>
             Ok(await _service.GetAllAsync());
 
-        /// <summary>Get persons not yet assigned to any vacancy</summary>
-        [HasPermission("PERSON_VIEW")]
+        [HasPermission("MENU_8_VIEW")]
         [HttpGet("unassigned")]
         public async Task<IActionResult> GetUnassigned() =>
             Ok(await _service.GetUnassignedAsync());
 
-        /// <summary>Get a single person by ID</summary>
-        [HasPermission("PERSON_VIEW")]
+        [HasPermission("MENU_8_VIEW")]
         [HttpGet("{id:guid}")]
         public async Task<IActionResult> GetById(Guid id)
         {
@@ -76,9 +66,6 @@ namespace Accounts.Controllers
             return person == null ? NotFound(new { message = $"Person {id} not found." }) : Ok(person);
         }
 
-        // ── Commands ──────────────────────────────────────────────────────────
-
-        /// <summary>Debug endpoint — returns raw request body</summary>
         [HttpPost("register-raw")]
         public async Task<IActionResult> RegisterRaw()
         {
@@ -86,8 +73,7 @@ namespace Accounts.Controllers
             return Ok(new { received = await reader.ReadToEndAsync() });
         }
 
-        /// <summary>Register a new person — requires PERSON_REGISTER permission</summary>
-        [HasPermission("PERSON_REGISTER")]
+        [HasPermission("MENU_10_ADD")]
         [HttpPost("register")]
         public async Task<IActionResult> Register([FromBody] RegisterPersonDto? dto)
         {
@@ -98,15 +84,14 @@ namespace Accounts.Controllers
             return CreatedAtAction(nameof(GetById), new { id = person!.PersonId }, new
             {
                 person,
-                generatedLoginId  = loginId,
+                generatedLoginId = loginId,
                 generatedPassword = password,
-                generatedEmail    = person.Email,
+                generatedEmail = person.Email,
                 note = "Save these credentials — the password cannot be retrieved again."
             });
         }
 
-        /// <summary>Update person info — requires PERSON_EDIT permission</summary>
-        [HasPermission("PERSON_EDIT")]
+        [HasPermission("MENU_8_EDIT")]
         [HttpPut("{id:guid}")]
         public async Task<IActionResult> Update(Guid id, [FromBody] UpdatePersonDto? dto)
         {
@@ -116,7 +101,6 @@ namespace Accounts.Controllers
             return Ok(person);
         }
 
-        /// <summary>Upload person profile photo (multipart/form-data, field: photo, max 5MB)</summary>
         [HttpPost("{id:guid}/upload-photo")]
         [Consumes("multipart/form-data")]
         public async Task<IActionResult> UploadPhoto(Guid id, IFormFile photo)
@@ -127,8 +111,7 @@ namespace Accounts.Controllers
             return Ok(new { photoUrl, fullUrl });
         }
 
-        /// <summary>Delete a person — requires PERSON_DELETE permission</summary>
-        [HasPermission("PERSON_DELETE")]
+        [HasPermission("MENU_8_DELETE")]
         [HttpDelete("{id:guid}")]
         public async Task<IActionResult> Delete(Guid id)
         {
@@ -137,11 +120,6 @@ namespace Accounts.Controllers
             return Ok(new { message });
         }
 
-        // ── Password Management ───────────────────────────────────────────────
-
-        /// <summary>
-        /// Employee changes their own password (requires current password).
-        /// </summary>
         [HttpPost("{id:guid}/change-password")]
         public async Task<IActionResult> ChangePassword(Guid id, [FromBody] ChangePasswordDto dto)
         {
@@ -155,8 +133,7 @@ namespace Accounts.Controllers
             return Ok(new { message });
         }
 
-        /// <summary>Admin resets password — requires PERSON_RESET_PASSWORD permission</summary>
-        [HasPermission("PERSON_RESET_PASSWORD")]
+        [HasPermission("MENU_8_EDIT")]
         [HttpPost("{id:guid}/reset-password")]
         public async Task<IActionResult> ResetPassword(Guid id, [FromBody] ResetPasswordDto? dto)
         {
@@ -165,8 +142,7 @@ namespace Accounts.Controllers
             return Ok(new { message, newPassword, note = "Share this password with the employee securely." });
         }
 
-        /// <summary>Reset to default password — requires PERSON_RESET_PASSWORD permission</summary>
-        [HasPermission("PERSON_RESET_PASSWORD")]
+        [HasPermission("MENU_8_EDIT")]
         [HttpPost("{id:guid}/reset-to-default-password")]
         public async Task<IActionResult> ResetToDefaultPassword(Guid id)
         {

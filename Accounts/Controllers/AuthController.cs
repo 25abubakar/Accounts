@@ -15,30 +15,27 @@ namespace Accounts.Controllers
     [Produces("application/json")]
     public class AuthController : ControllerBase
     {
-        private readonly IAuthService           _service;
-        private readonly IUserSessionService    _session;
-        private readonly RbacService            _rbac;
-        private readonly IPersonAccessService   _personAccess;
-        private readonly ApplicationDbContext   _db;
+        private readonly IAuthService _service;
+        private readonly IUserSessionService _session;
+        private readonly RbacService _rbac;
+        private readonly ApplicationDbContext _db;
         private readonly UserManager<IdentityUser> _userManager;
 
         public AuthController(
             IAuthService service,
             IUserSessionService session,
             RbacService rbac,
-            IPersonAccessService personAccess,
             ApplicationDbContext db,
             UserManager<IdentityUser> userManager)
         {
-            _service       = service;
-            _session       = session;
-            _rbac          = rbac;
-            _personAccess  = personAccess;
-            _db            = db;
-            _userManager   = userManager;
+            _service = service;
+            _session = session;
+            _rbac = rbac;
+            _db = db;
+            _userManager = userManager;
         }
 
-        /// <summary>Register a new user with a role (Manager / Developer / AssistantManager)</summary>
+        /// <summary>Register a new user with a role</summary>
         [HttpPost("register")]
         [AllowAnonymous]
         public async Task<IActionResult> Register([FromBody] RegisterDto dto)
@@ -53,7 +50,7 @@ namespace Accounts.Controllers
             return Ok(response);
         }
 
-        /// <summary>Login with email and password</summary>
+        /// <summary>Login with username or email</summary>
         [HttpPost("login")]
         [AllowAnonymous]
         public async Task<IActionResult> Login([FromBody] LoginDto dto)
@@ -63,7 +60,6 @@ namespace Accounts.Controllers
             if (!success)
                 return StatusCode(statusCode, response);
 
-            // Cookie is set; load session using the user we just authenticated
             var user = await _userManager.FindByNameAsync(response.Username ?? dto.Username)
                       ?? await _userManager.FindByEmailAsync(dto.Username);
 
@@ -95,8 +91,8 @@ namespace Accounts.Controllers
         }
 
         /// <summary>
-        /// Post-login bootstrap: filtered sidebar, permissions, and admin instructions.
-        /// Call immediately after successful login.
+        /// Post-login bootstrap: sidebar, permissions, and login instructions.
+        /// GET /api/auth/session
         /// </summary>
         [HttpGet("session")]
         [Authorize]
@@ -132,21 +128,13 @@ namespace Accounts.Controllers
         public async Task<IActionResult> GetUsers() =>
             Ok(await _service.GetUsersAsync());
 
-        // ── /api/auth/my-menus ────────────────────────────────────────────────
-
         /// <summary>
-        /// Returns the filtered sidebar menu tree and allowed feature keys
-        /// for the currently authenticated user — optimized for sub-0.5s response.
+        /// Filtered sidebar + allowed permissions for the current user.
         ///
-        /// How it works (fixed number of queries, no loops):
-        ///   1. Resolve Person → StaffId (1 query)
-        ///   2. Bulk-load user overrides, role permissions, matrix rows,
-        ///      group features all at once (4–5 queries)
-        ///   3. Resolve permissions 100% in-memory via HashSet lookups
-        ///   4. Filter the Menus tree in-memory, return only visible items
-        ///
-        /// SuperAdmin / Admin bypass: see every menu, every feature key.
-        /// Regular user: sees only what the admin has granted them.
+        /// Resolution path (3 layers only):
+        ///   1. SuperAdmin / Admin → all menus, all features
+        ///   2. Staff with a role  → RolePermissions + UserPermissionOverrides
+        ///   3. Person with no staff record → empty (no access granted yet)
         ///
         /// GET /api/auth/my-menus
         /// </summary>
@@ -158,12 +146,11 @@ namespace Accounts.Controllers
             if (string.IsNullOrWhiteSpace(identityUserId))
                 return Unauthorized(new { status = false, message = "Invalid token" });
 
-            // ── SuperAdmin / Admin gets everything without any permission checks ──
             bool isFullAccess = User.IsInRole("SuperAdmin") || User.IsInRole("Admin");
 
             if (isFullAccess)
             {
-                var allSidebar  = await _rbac.GetFilteredSidebarAsync(Guid.Empty);
+                var allSidebar = await _rbac.GetFilteredSidebarAsync(Guid.Empty);
                 var allFeatures = await _db.Features.AsNoTracking()
                     .OrderBy(f => f.Module).ThenBy(f => f.FeatureKey)
                     .Select(f => new { f.PermissionId, f.FeatureKey, f.FeatureName, f.Module })
@@ -171,75 +158,50 @@ namespace Accounts.Controllers
 
                 return Ok(new
                 {
-                    status       = true,
+                    status = true,
                     isFullAccess = true,
-                    staffId      = (Guid?)null,
-                    menus        = allSidebar,
-                    permissions  = allFeatures.Select(f => f.FeatureKey).ToList(),
+                    staffId = (Guid?)null,
+                    menus = allSidebar,
+                    permissions = allFeatures.Select(f => f.FeatureKey).ToList(),
                     permissionDetails = allFeatures
                 });
             }
 
-            // ── Regular user — look up their Staff record ─────────────────────
             var person = await _db.Persons
                 .AsNoTracking()
                 .Include(p => p.Staff)
                 .FirstOrDefaultAsync(p => p.IdentityUserId == identityUserId, ct);
 
-            // Not registered as a person at all (edge case)
             if (person == null)
                 return Ok(new
                 {
-                    status       = true,
+                    status = true,
                     isFullAccess = false,
-                    staffId      = (Guid?)null,
-                    menus        = new List<object>(),
-                    permissions  = new List<string>(),
+                    staffId = (Guid?)null,
+                    menus = new List<object>(),
+                    permissions = new List<string>(),
                     permissionDetails = new List<object>()
                 });
-
-            // Direct admin grants (PersonMenus + PersonFeatures) — primary model
-            if (await _personAccess.HasPersonGrantsAsync(person.PersonId, ct))
-            {
-                var sidebar = await _personAccess.GetGrantedSidebarAsync(person.PersonId, ct);
-                var keys    = await _personAccess.GetGrantedFeatureKeysAsync(person.PersonId, ct);
-                var allowedIds = await _personAccess.GetGrantedPermissionIdsAsync(person.PersonId, ct);
-                var allowedFeatures = await _db.Features.AsNoTracking()
-                    .Where(f => allowedIds.Contains(f.PermissionId))
-                    .OrderBy(f => f.Module).ThenBy(f => f.FeatureKey)
-                    .Select(f => new { f.PermissionId, f.FeatureKey, f.FeatureName, f.Module })
-                    .ToListAsync(ct);
-
-                return Ok(new
-                {
-                    status       = true,
-                    isFullAccess = false,
-                    personId     = person.PersonId,
-                    staffId      = person.Staff?.StaffId,
-                    menus        = sidebar,
-                    permissions  = keys,
-                    permissionDetails = allowedFeatures,
-                    accessSource = "PersonMenus"
-                });
-            }
 
             if (person.Staff == null)
                 return Ok(new
                 {
-                    status       = true,
+                    status = true,
                     isFullAccess = false,
-                    personId     = person.PersonId,
-                    staffId      = (Guid?)null,
-                    menus        = new List<object>(),
-                    permissions  = new List<string>(),
-                    message      = "No access granted yet. Ask admin to assign menu permissions.",
+                    personId = person.PersonId,
+                    staffId = (Guid?)null,
+                    menus = new List<object>(),
+                    permissions = new List<string>(),
+                    message = "No staff record found. Ask admin to assign a position.",
                     permissionDetails = new List<object>()
                 });
 
+            // 3-layer RBAC: RolePermissions → UserOverrides → deny
             var staffId = person.Staff.StaffId;
-            var legacyAllowedIds = await _rbac.GetEffectivePermissionIdsAsync(staffId);
-            var legacyFeatures = await _db.Features.AsNoTracking()
-                .Where(f => legacyAllowedIds.Contains(f.PermissionId))
+            var allowedIds = await _rbac.GetEffectivePermissionIdsAsync(staffId);
+
+            var features = await _db.Features.AsNoTracking()
+                .Where(f => allowedIds.Contains(f.PermissionId))
                 .OrderBy(f => f.Module).ThenBy(f => f.FeatureKey)
                 .Select(f => new { f.PermissionId, f.FeatureKey, f.FeatureName, f.Module })
                 .ToListAsync(ct);
@@ -250,31 +212,25 @@ namespace Accounts.Controllers
                 .OrderBy(m => m.SortOrder)
                 .ToListAsync(ct);
 
-            var lookup  = allMenus.ToLookup(m => m.ParentId);
-            var legacySidebar = BuildFilteredMenuTree(null, lookup, legacyAllowedIds);
+            var lookup = allMenus.ToLookup(m => m.ParentId);
+            var sidebar = BuildFilteredMenuTree(null, lookup, allowedIds);
 
             return Ok(new
             {
-                status       = true,
+                status = true,
                 isFullAccess = false,
-                personId     = person.PersonId,
+                personId = person.PersonId,
                 staffId,
-                menus        = legacySidebar,
-                permissions  = legacyFeatures.Select(f => f.FeatureKey).ToList(),
-                permissionDetails = legacyFeatures,
-                accessSource = "StaffRbac"
+                menus = sidebar,
+                permissions = features.Select(f => f.FeatureKey).ToList(),
+                permissionDetails = features,
+                accessSource = "RolePermissions"
             });
         }
 
-        /// <summary>
-        /// Recursively builds sidebar tree, keeping only menus the user can see.
-        /// Public menus (no MenuPermissions) are always included.
-        /// Restricted menus require at least one matching PermissionId.
-        /// Empty parent groups with no visible children are pruned.
-        /// </summary>
         private static List<object> BuildFilteredMenuTree(
             int? parentId,
-            ILookup<int?, Accounts.Models.Menu> lookup,
+            ILookup<int?, Menu> lookup,
             HashSet<int> allowedIds)
         {
             var result = new List<object>();
@@ -282,22 +238,27 @@ namespace Accounts.Controllers
             {
                 var requiredIds = menu.MenuPermissions.Select(mp => mp.PermissionId).ToList();
 
-                // Public = no permissions required; restricted = user needs ≥1 match
-                bool canSee = !requiredIds.Any() || requiredIds.Any(id => allowedIds.Contains(id));
+                bool hasRequiredPermissions = requiredIds.Any();
+                bool userHasAccess = hasRequiredPermissions && requiredIds.Any(id => allowedIds.Contains(id));
+                bool isFolder = string.IsNullOrWhiteSpace(menu.Route);
+
+                // Default Deny logic: Unmapped pages are hidden. Folders are checked based on children.
+                bool canSee = userHasAccess || (isFolder && !hasRequiredPermissions);
+
                 if (!canSee) continue;
 
                 var children = BuildFilteredMenuTree(menu.Id, lookup, allowedIds);
 
-                // Prune empty parent groups
-                if (!children.Any() && string.IsNullOrWhiteSpace(menu.Route) && lookup[menu.Id].Any())
+                // Hide empty folders
+                if (!children.Any() && isFolder)
                     continue;
 
                 result.Add(new
                 {
-                    id        = menu.Id,
-                    title     = menu.Title,
-                    icon      = menu.Icon,
-                    route     = menu.Route,
+                    id = menu.Id,
+                    title = menu.Title,
+                    icon = menu.Icon,
+                    route = menu.Route,
                     sortOrder = menu.SortOrder,
                     children
                 });

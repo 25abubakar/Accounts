@@ -13,11 +13,11 @@ namespace Accounts.Controllers
         private readonly IVacancyService _service;
         public VacanciesController(IVacancyService service) => _service = service;
 
-        [HasPermission("VACANCY_VIEW")]
+        [HasPermission("MENU_11_VIEW")]
         [HttpGet]
         public async Task<IActionResult> GetAll() => Ok(await _service.GetAllAsync());
 
-        [HasPermission("VACANCY_VIEW")]
+        [HasPermission("MENU_11_VIEW")]
         [HttpGet("{id:guid}")]
         public async Task<IActionResult> GetById(Guid id)
         {
@@ -25,23 +25,22 @@ namespace Accounts.Controllers
             return v == null ? NotFound(new { message = $"Position {id} not found." }) : Ok(v);
         }
 
-        [HasPermission("VACANCY_VIEW")]
+        [HasPermission("MENU_11_VIEW")]
         [HttpGet("vacant")]
         public async Task<IActionResult> GetVacant() => Ok(await _service.GetVacantAsync());
 
-        [HasPermission("VACANCY_VIEW")]
+        [HasPermission("MENU_11_VIEW")]
         [HttpGet("filled")]
         public async Task<IActionResult> GetFilled() => Ok(await _service.GetFilledAsync());
 
-        [HasPermission("VACANCY_VIEW")]
+        [HasPermission("MENU_11_VIEW")]
         [HttpGet("by-node/{orgId:int}")]
         public async Task<IActionResult> GetByNode(int orgId) => Ok(await _service.GetByNodeAsync(orgId));
 
-        [HasPermission("VACANCY_VIEW")]
+        [HasPermission("MENU_11_VIEW")]
         [HttpGet("report")]
         public async Task<IActionResult> GetReport() => Ok(await _service.GetReportAsync());
 
-        /// <summary>Preview code — no permission needed (used in form)</summary>
         [HttpGet("preview-code")]
         public async Task<IActionResult> PreviewCode([FromQuery] int organizationId, [FromQuery] string jobTitle)
         {
@@ -53,8 +52,7 @@ namespace Accounts.Controllers
                 : Ok(new { vacancyCode = code });
         }
 
-        /// <summary>Create one or more positions — VacancyCount=1 single, N=bulk</summary>
-        [HasPermission("VACANCY_CREATE")]
+        [HasPermission("MENU_11_ADD")]
         [HttpPost]
         public async Task<IActionResult> Create([FromBody] CreateVacancyDto dto)
         {
@@ -71,7 +69,7 @@ namespace Accounts.Controllers
             return Ok(new { requested = dto.VacancyCount, created = list.Count, failed = errors.Count(), vacancies = list, errors = errors.Any() ? errors : null });
         }
 
-        [HasPermission("VACANCY_CREATE")]
+        [HasPermission("MENU_11_ADD")]
         [HttpPost("bulk")]
         public async Task<IActionResult> CreateBulk([FromBody] CreateVacancyDto dto)
         {
@@ -82,7 +80,7 @@ namespace Accounts.Controllers
             return Ok(new { requested = dto.VacancyCount, created = list.Count, failed = errors.Count(), vacancies = list, errors = errors.Any() ? errors : null });
         }
 
-        [HasPermission("VACANCY_EDIT")]
+        [HasPermission("MENU_11_EDIT")]
         [HttpPut("{id:guid}")]
         public async Task<IActionResult> Update(Guid id, [FromBody] UpdateVacancyDto dto)
         {
@@ -92,7 +90,7 @@ namespace Accounts.Controllers
             return Ok(vacancy);
         }
 
-        [HasPermission("VACANCY_DELETE")]
+        [HasPermission("MENU_11_DELETE")]
         [HttpDelete("{id:guid}")]
         public async Task<IActionResult> Delete(Guid id)
         {

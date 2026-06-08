@@ -30,8 +30,6 @@ namespace Accounts.Models
         public DateTime CreatedDate { get; set; } = DateTime.UtcNow;
 
         // Navigation properties
-        public ICollection<AccessGroupFeature>       AccessGroupFeatures       { get; set; } = new List<AccessGroupFeature>();
-        public ICollection<DepartmentAccessMatrix>   DepartmentAccessMatrix    { get; set; } = new List<DepartmentAccessMatrix>();
         public ICollection<RolePermission>           RolePermissions           { get; set; } = new List<RolePermission>();
         public ICollection<UserPermissionOverride>   UserPermissionOverrides   { get; set; } = new List<UserPermissionOverride>();
     }

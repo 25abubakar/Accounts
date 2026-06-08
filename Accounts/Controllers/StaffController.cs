@@ -13,11 +13,11 @@ namespace Accounts.Controllers
         private readonly IStaffService _service;
         public StaffController(IStaffService service) => _service = service;
 
-        [HasPermission("EMPLOYEE_VIEW")]
+        [HasPermission("MENU_8_VIEW")]
         [HttpGet]
         public async Task<IActionResult> GetAll() => Ok(await _service.GetAllAsync());
 
-        [HasPermission("EMPLOYEE_VIEW")]
+        [HasPermission("MENU_8_VIEW")]
         [HttpGet("{id:guid}")]
         public async Task<IActionResult> GetById(Guid id)
         {
@@ -25,7 +25,7 @@ namespace Accounts.Controllers
             return s == null ? NotFound(new { message = $"Employee {id} not found." }) : Ok(s);
         }
 
-        [HasPermission("EMPLOYEE_VIEW")]
+        [HasPermission("MENU_8_VIEW")]
         [HttpGet("search")]
         public async Task<IActionResult> Search([FromQuery] string q)
         {
@@ -33,7 +33,7 @@ namespace Accounts.Controllers
             return Ok(await _service.SearchAsync(q));
         }
 
-        [HasPermission("VACANCY_ASSIGN")]
+        [HasPermission("MENU_8_ADD")]
         [HttpPost("hire/{vacancyId:guid}")]
         public async Task<IActionResult> Hire(Guid vacancyId, [FromBody] HireStaffDto dto)
         {
@@ -43,7 +43,7 @@ namespace Accounts.Controllers
             return CreatedAtAction(nameof(GetById), new { id = staff!.StaffId }, staff);
         }
 
-        [HasPermission("VACANCY_ASSIGN")]
+        [HasPermission("MENU_8_ADD")]
         [HttpPost("hire-person/{vacancyId:guid}")]
         public async Task<IActionResult> HirePerson(Guid vacancyId, [FromQuery] Guid personId)
         {
@@ -52,7 +52,7 @@ namespace Accounts.Controllers
             return CreatedAtAction(nameof(GetById), new { id = staff!.StaffId }, staff);
         }
 
-        [HasPermission("EMPLOYEE_EDIT")]
+        [HasPermission("MENU_8_EDIT")]
         [HttpPut("{id:guid}")]
         public async Task<IActionResult> Update(Guid id, [FromBody] UpdateStaffDto dto)
         {
@@ -62,7 +62,7 @@ namespace Accounts.Controllers
             return Ok(staff);
         }
 
-        [HasPermission("EMPLOYEE_EDIT")]
+        [HasPermission("MENU_8_EDIT")]
         [HttpPost("{id:guid}/upload-photo")]
         [Consumes("multipart/form-data")]
         public async Task<IActionResult> UploadPhoto(Guid id, IFormFile photo)
@@ -73,7 +73,7 @@ namespace Accounts.Controllers
             return Ok(new { message = "Photo uploaded successfully.", photoUrl, fullUrl });
         }
 
-        [HasPermission("EMPLOYEE_EDIT")]
+        [HasPermission("MENU_8_EDIT")]
         [HttpDelete("{id:guid}/photo")]
         public async Task<IActionResult> DeletePhoto(Guid id)
         {
@@ -82,7 +82,7 @@ namespace Accounts.Controllers
             return Ok(new { message });
         }
 
-        [HasPermission("EMPLOYEE_TRANSFER")]
+        [HasPermission("MENU_8_EDIT")]
         [HttpPut("{id:guid}/transfer")]
         public async Task<IActionResult> Transfer(Guid id, [FromBody] TransferStaffDto dto)
         {
@@ -92,7 +92,7 @@ namespace Accounts.Controllers
             return Ok(staff);
         }
 
-        [HasPermission("EMPLOYEE_DELETE")]
+        [HasPermission("MENU_8_DELETE")]
         [HttpDelete("{id:guid}")]
         public async Task<IActionResult> Delete(Guid id)
         {

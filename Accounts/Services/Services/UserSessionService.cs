@@ -9,19 +9,16 @@ namespace Accounts.Services.Services
     {
         private readonly ApplicationDbContext _db;
         private readonly RbacService          _rbac;
-        private readonly IPersonAccessService _personAccess;
         private readonly IAppNoteService      _notes;
 
         public UserSessionService(
             ApplicationDbContext db,
             RbacService rbac,
-            IPersonAccessService personAccess,
             IAppNoteService notes)
         {
-            _db            = db;
-            _rbac          = rbac;
-            _personAccess  = personAccess;
-            _notes         = notes;
+            _db    = db;
+            _rbac  = rbac;
+            _notes = notes;
         }
 
         public async Task<UserSessionDto> GetSessionAsync(
@@ -37,15 +34,18 @@ namespace Accounts.Services.Services
 
             if (isFullAccess)
             {
+                // SuperAdmin / Admin sees every menu and every feature key
                 session.Sidebar     = await _rbac.GetFilteredSidebarAsync(Guid.Empty);
                 session.Permissions = await _db.Features.AsNoTracking()
-                    .Select(f => f.FeatureKey).ToListAsync(cancellationToken);
+                    .Select(f => f.FeatureKey)
+                    .ToListAsync(cancellationToken);
 
-                var staffForAdmin = await _db.Persons.AsNoTracking()
+                var adminPerson = await _db.Persons.AsNoTracking()
                     .Include(p => p.Staff)
                     .FirstOrDefaultAsync(p => p.IdentityUserId == identityUserId, cancellationToken);
-                session.StaffId  = staffForAdmin?.Staff?.StaffId;
-                session.PersonId = staffForAdmin?.PersonId;
+
+                session.StaffId  = adminPerson?.Staff?.StaffId;
+                session.PersonId = adminPerson?.PersonId;
 
                 var adminStaffId = session.StaffId?.ToString() ?? identityUserId;
                 session.LoginInstructions = await _notes.GetLoginInstructionsAsync(
@@ -54,6 +54,7 @@ namespace Accounts.Services.Services
                 return session;
             }
 
+            // Regular user — resolve via 3-layer RBAC (RolePermissions → UserOverrides → deny)
             var person = await _db.Persons.AsNoTracking()
                 .Include(p => p.Staff)
                 .FirstOrDefaultAsync(p => p.IdentityUserId == identityUserId, cancellationToken);
@@ -68,22 +69,14 @@ namespace Accounts.Services.Services
                 session.PersonId = person.PersonId;
                 session.StaffId  = person.Staff?.StaffId;
 
-                // Primary: direct PersonMenus + PersonFeatures (admin grants)
-                var hasDirectGrants = await _personAccess.HasPersonGrantsAsync(person.PersonId, cancellationToken);
-
-                if (hasDirectGrants)
+                if (person.Staff != null)
                 {
-                    session.Sidebar     = await _personAccess.GetGrantedSidebarAsync(person.PersonId, cancellationToken);
-                    session.Permissions = (await _personAccess.GetGrantedFeatureKeysAsync(person.PersonId, cancellationToken)).ToList();
-                }
-                else if (person.Staff != null)
-                {
-                    // Fallback: legacy staff-based RBAC (matrix, groups, overrides)
                     session.Sidebar     = await _rbac.GetFilteredSidebarAsync(person.Staff.StaffId);
                     session.Permissions = (await _rbac.GetEffectivePermissionsAsync(person.Staff.StaffId)).ToList();
                 }
                 else
                 {
+                    // Person exists but has no staff record — no permissions yet
                     session.Sidebar     = new List<object>();
                     session.Permissions = new List<string>();
                 }

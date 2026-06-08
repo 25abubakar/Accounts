@@ -96,16 +96,18 @@ builder.Services.AddScoped<Accounts.Services.Interfaces.IPersonService, Accounts
 builder.Services.AddScoped<Accounts.Services.Interfaces.IMenuService, Accounts.Services.Services.MenuService>();
 builder.Services.AddScoped<Accounts.Services.Interfaces.IAccessService, Accounts.Services.Services.AccessService>();
 builder.Services.AddScoped<Accounts.Services.Interfaces.IPermissionFilterService, Accounts.Services.Services.PermissionFilterService>();
+// ── 3-Layer RBAC Engine (RolePermissions → UserOverrides → deny) ──────────────
 builder.Services.AddScoped<Accounts.Services.Services.RbacService>();
-
-// ── Optimized RBAC Services (No N+1 Queries) ──────────────────────────────────
 builder.Services.AddScoped<Accounts.Services.Services.OptimizedMenuService>();
 builder.Services.AddHttpContextAccessor();
 
 // ── Communication Center ──────────────────────────────────────────────────────
 builder.Services.AddScoped<Accounts.Services.Interfaces.IAppNoteService, Accounts.Services.Services.AppNoteService>();
 builder.Services.AddScoped<Accounts.Services.Interfaces.IUserSessionService, Accounts.Services.Services.UserSessionService>();
+// IPersonAccessService: deprecated no-op stub — always returns empty so callers fall through to RbacService
+#pragma warning disable CS0618
 builder.Services.AddScoped<Accounts.Services.Interfaces.IPersonAccessService, Accounts.Services.Services.PersonAccessService>();
+#pragma warning restore CS0618
 
 // ── Dynamic Permission-Based Authorization ────────────────────────────────────
 builder.Services.AddSingleton<Microsoft.AspNetCore.Authorization.IAuthorizationPolicyProvider, Accounts.Authorization.PermissionPolicyProvider>();
