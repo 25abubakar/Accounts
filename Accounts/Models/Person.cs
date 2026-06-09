@@ -13,13 +13,23 @@ namespace Accounts.Models
         [MaxLength(150)]
         public string FullName { get; set; } = string.Empty;
 
+        // ── Split name fields (now live in DB) ────────────────────────────
+        [Required]
+        [MaxLength(60)]
+        public string FirstName { get; set; } = string.Empty;
+
+        [MaxLength(60)]
+        public string? MiddleName { get; set; }
+
+        [MaxLength(60)]
+        public string? LastName { get; set; }
+
         [MaxLength(50)]
         public string? Phone { get; set; }
 
         [MaxLength(150)]
         public string? Email { get; set; }
 
-        /// <summary>Personal email (non-company). Optional.</summary>
         [MaxLength(256)]
         public string? PersonalEmail { get; set; }
 
@@ -30,8 +40,6 @@ namespace Accounts.Models
 
         [MaxLength(50)]
         public string? MaritalStatus { get; set; }
-
-        /// <summary>Profile picture URL — stored in wwwroot/uploads/persons/</summary>
         [MaxLength(500)]
         public string? ProfilePhotoUrl { get; set; }
 
@@ -42,8 +50,13 @@ namespace Accounts.Models
 
         public DateTime CreatedDate { get; set; } = DateTime.UtcNow;
 
-        // Navigation
-        public ICollection<PersonAddress> Addresses { get; set; } = new List<PersonAddress>();
-        public StaffVacancy? Staff { get; set; }
+        public ICollection<PersonAddress>  Addresses     { get; set; } = new List<PersonAddress>();
+        public ICollection<PersonContact>  Contacts      { get; set; } = new List<PersonContact>();
+        public StaffVacancy?               Staff         { get; set; }
+
+        [NotMapped]
+        public string ComputedFullName =>
+            string.Join(" ", new[] { FirstName, MiddleName, LastName }
+                .Where(s => !string.IsNullOrWhiteSpace(s)));
     }
 }

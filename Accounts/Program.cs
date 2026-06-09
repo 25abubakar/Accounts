@@ -81,7 +81,11 @@ builder.Services.AddControllers()
     {
         // Allow flexible JSON deserialization for address fields
         options.JsonSerializerOptions.PropertyNameCaseInsensitive = true;
-        options.JsonSerializerOptions.DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull;
+        options.JsonSerializerOptions.DefaultIgnoreCondition =
+            System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull;
+        // Fix: break EF Core circular reference cycles (e.g. StaffMenuAccess ↔ AccessFeatures)
+        options.JsonSerializerOptions.ReferenceHandler =
+            System.Text.Json.Serialization.ReferenceHandler.IgnoreCycles;
     });
 builder.Services.AddRazorPages();
 
@@ -106,6 +110,10 @@ builder.Services.AddHttpContextAccessor();
 builder.Services.AddScoped<Accounts.Services.Interfaces.IAppNoteService, Accounts.Services.Services.AppNoteService>();
 builder.Services.AddScoped<Accounts.Services.Interfaces.IUserSessionService, Accounts.Services.Services.UserSessionService>();
 builder.Services.AddScoped<Accounts.Services.Interfaces.IPersonAccessService, Accounts.Services.Services.PersonAccessService>();
+
+// ── New normalized domain services ───────────────────────────────────────────
+builder.Services.AddScoped<Accounts.Services.Services.StaffMenuAccessService>();
+builder.Services.AddScoped<Accounts.Services.Services.JobTitleService>();
 
 // ── Dynamic Permission-Based Authorization ────────────────────────────────────
 builder.Services.AddSingleton<Microsoft.AspNetCore.Authorization.IAuthorizationPolicyProvider, Accounts.Authorization.PermissionPolicyProvider>();

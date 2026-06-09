@@ -65,37 +65,60 @@ namespace Accounts.Controllers
         }
 
         /// <summary>
-        /// Get all current ALLOW overrides saved for a staff member, with feature details.
-        /// Used by admin UI to show which permissions a user currently has.
+        /// Get all current permissions for a staff member, with feature details.
+        /// Reads from the new 2-tier RBAC (StaffMenuAccess + AccessFeatures).
         /// GET /api/rbac/staff/{staffId}/permissions-summary
         /// </summary>
         [HttpGet("staff/{staffId:guid}/permissions-summary")]
         [Authorize(Roles = "SuperAdmin,Admin")]
         public async Task<IActionResult> GetPermissionsSummary(Guid staffId)
         {
-            // All features in the system
             var allFeatures = await _db.Features.AsNoTracking()
                 .OrderBy(f => f.Module).ThenBy(f => f.FeatureKey)
                 .ToListAsync();
 
-            // This user's explicit overrides
-            var overrides = await _db.UserPermissionOverrides.AsNoTracking()
-                .Include(u => u.Feature)
-                .Where(u => u.StaffId == staffId)
-                .ToDictionaryAsync(u => u.PermissionId, u => u);
+            // Load menu grants and their feature overrides
+            var menuGrants = await _db.StaffMenuAccesses
+                .AsNoTracking()
+                .Include(ma => ma.AccessFeatures)
+                .Include(ma => ma.Menu)
+                .Where(ma => ma.StaffId == staffId)
+                .ToListAsync();
+
+            // Build permission status map
+            var allowSet = new HashSet<int>();
+            var denySet  = new HashSet<int>();
+
+            foreach (var grant in menuGrants.Where(g => g.IsAllow))
+            {
+                if (!grant.AccessFeatures.Any())
+                {
+                    // No feature rows → all features allowed
+                    foreach (var f in allFeatures)
+                        allowSet.Add(f.PermissionId);
+                }
+                else
+                {
+                    foreach (var af in grant.AccessFeatures)
+                    {
+                        if (af.IsAllow) allowSet.Add(af.PermissionId);
+                        else            denySet.Add(af.PermissionId);
+                    }
+                }
+            }
 
             var result = allFeatures.Select(f =>
             {
-                overrides.TryGetValue(f.PermissionId, out var ov);
+                string status = denySet.Contains(f.PermissionId) ? "DENY"
+                              : allowSet.Contains(f.PermissionId) ? "ALLOW"
+                              : "INHERIT";
                 return new
                 {
                     featureKey  = f.FeatureKey,
                     featureName = f.FeatureName,
                     module      = f.Module,
-                    status      = ov?.Status ?? "INHERIT",
-                    reason      = ov?.Reason,
-                    updatedAt   = ov?.SetDate,
-                    hasOverride = ov != null
+                    status,
+                    hasOverride = status != "INHERIT"
                 };
             });
 
@@ -158,10 +181,94 @@ namespace Accounts.Controllers
             });
         }
 
-        /// <summary>Get all effective permissions for a staff member</summary>
+        /// <summary>
+        /// Get all effective permissions for a staff member.
+        /// Returns both a flat list of allowed featureKeys (for UI checkbox hydration)
+        /// and a detailed breakdown per feature (for admin/debug view).
+        /// GET /api/rbac/staff/{staffId}/effective-permissions
+        /// </summary>
         [HttpGet("staff/{staffId:guid}/effective-permissions")]
-        public async Task<IActionResult> GetEffectivePermissions(Guid staffId) =>
-            Ok(await _rbac.GetEffectivePermissionsDetailedAsync(staffId));
+        public async Task<IActionResult> GetEffectivePermissions(Guid staffId)
+        {
+            // Load all menu grants with their feature-level flags
+            var menuGrants = await _db.StaffMenuAccesses
+                .AsNoTracking()
+                .Include(ma => ma.AccessFeatures)
+                .ThenInclude(af => af.Feature)
+                .Where(ma => ma.StaffId == staffId && ma.IsAllow)
+                .ToListAsync();
+
+            // Compute the allowed PermissionId set in-memory (same logic as RbacService)
+            var allowedPermIds = new HashSet<int>();
+            var allFeatureIds  = await _db.Features.AsNoTracking()
+                .Select(f => f.PermissionId).ToListAsync();
+
+            foreach (var grant in menuGrants)
+            {
+                if (!grant.AccessFeatures.Any())
+                {
+                    // No feature-level rows → all features allowed for this grant
+                    foreach (var pid in allFeatureIds)
+                        allowedPermIds.Add(pid);
+                }
+                else
+                {
+                    foreach (var af in grant.AccessFeatures.Where(af => af.IsAllow))
+                        allowedPermIds.Add(af.PermissionId);
+                    // IsAllow=false rows are explicit denies — do not add
+                }
+            }
+
+            // Map PermissionIds back to FeatureKeys for the UI
+            var allowedFeatureKeys = allowedPermIds.Count == 0
+                ? new List<string>()
+                : await _db.Features.AsNoTracking()
+                    .Where(f => allowedPermIds.Contains(f.PermissionId))
+                    .Select(f => f.FeatureKey)
+                    .ToListAsync();
+
+            // Build detailed view for admin display
+            var allFeatures = await _db.Features.AsNoTracking()
+                .OrderBy(f => f.Module).ThenBy(f => f.FeatureKey)
+                .ToListAsync();
+
+            var grantedMenuIds = menuGrants.Select(ma => ma.MenuId).ToHashSet();
+            var denySet = menuGrants
+                .SelectMany(ma => ma.AccessFeatures)
+                .Where(af => !af.IsAllow)
+                .Select(af => af.PermissionId)
+                .ToHashSet();
+
+            var detailed = allFeatures.Select(f =>
+            {
+                bool hasAccess = allowedPermIds.Contains(f.PermissionId);
+                string source  = denySet.Contains(f.PermissionId)    ? "MenuFeatureDeny"
+                               : (hasAccess && menuGrants.Count > 0) ? "MenuGrant"
+                               : hasAccess                            ? "RoleDefault"
+                               :                                        "Denied";
+                return new
+                {
+                    featureKey  = f.FeatureKey,
+                    featureName = f.FeatureName,
+                    module      = f.Module,
+                    hasAccess,
+                    source
+                };
+            }).ToList();
+
+            return Ok(new
+            {
+                staffId,
+                // Flat list → used by the frontend to hydrate checkboxes
+                allowedFeatureKeys,
+                // Detailed list → used by admin UI to show per-feature status
+                detailed,
+                // Summary counts
+                totalAllowed = allowedFeatureKeys.Count,
+                totalDenied  = denySet.Count,
+                hasAnyGrant  = menuGrants.Count > 0
+            });
+        }
 
         // ── Department Matrix ─────────────────────────────────────────────────
 
@@ -231,27 +338,36 @@ namespace Accounts.Controllers
 
         // ── User Overrides ────────────────────────────────────────────────────
 
-        /// <summary>Get all user-specific overrides for a staff member (flat DTO — no EF cycles).</summary>
+        /// <summary>
+        /// Get all menu grants and feature overrides for a staff member.
+        /// Reads from StaffMenuAccess + AccessFeatures (2-tier RBAC).
+        /// </summary>
         [HttpGet("staff/{staffId:guid}/overrides")]
         public async Task<IActionResult> GetOverrides(Guid staffId)
         {
-            var safeOverrides = await _db.UserPermissionOverrides
+            var grants = await _db.StaffMenuAccesses
                 .AsNoTracking()
-                .Include(u => u.Feature)
-                .Where(u => u.StaffId == staffId)
-                .Select(u => new
+                .Include(ma => ma.Menu)
+                .Include(ma => ma.AccessFeatures).ThenInclude(af => af.Feature)
+                .Where(ma => ma.StaffId == staffId)
+                .Select(ma => new
                 {
-                    permissionId = u.PermissionId,
-                    featureKey   = u.Feature != null ? u.Feature.FeatureKey : string.Empty,
-                    featureName  = u.Feature != null ? u.Feature.FeatureName : string.Empty,
-                    module       = u.Feature != null ? u.Feature.Module : string.Empty,
-                    status       = u.Status,
-                    reason       = u.Reason,
-                    setDate      = u.SetDate
+                    menuId      = ma.MenuId,
+                    menuTitle   = ma.Menu != null ? ma.Menu.Title : $"Menu {ma.MenuId}",
+                    isAllow     = ma.IsAllow,
+                    grantedDate = ma.GrantedDate,
+                    features    = ma.AccessFeatures.Select(af => new
+                    {
+                        permissionId = af.PermissionId,
+                        featureKey   = af.Feature != null ? af.Feature.FeatureKey : string.Empty,
+                        featureName  = af.Feature != null ? af.Feature.FeatureName : string.Empty,
+                        module       = af.Feature != null ? af.Feature.Module : string.Empty,
+                        isAllow      = af.IsAllow
+                    }).ToList()
                 })
                 .ToListAsync();
 
-            return Ok(safeOverrides);
+            return Ok(grants);
         }
 
         /// <summary>

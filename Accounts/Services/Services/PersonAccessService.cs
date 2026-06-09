@@ -6,8 +6,10 @@ using Microsoft.EntityFrameworkCore;
 namespace Accounts.Services.Services
 {
     /// <summary>
-    /// Person-scoped access helpers. All grants are persisted via UserPermissionOverrides (StaffId).
-    /// PersonMenus / PersonFeatures tables are deprecated.
+    /// Person-scoped access helpers.
+    /// All grants are persisted via the 2-tier RBAC system:
+    ///   StaffMenuAccess (menu-level grant) + AccessFeature (feature-level flags).
+    /// UserPermissionOverrides was dropped in V2 migration.
     /// </summary>
     public class PersonAccessService : IPersonAccessService
     {
@@ -51,21 +53,51 @@ namespace Accounts.Services.Services
 
             var menuIds = await CollectMenuIdsInSubtreeAsync(menuId, ct);
 
-            foreach (var mid in menuIds)
-                await _rbac.EnsureMenuFeatureExistsPublicAsync(mid);
+            // Ensure a StaffMenuAccess row exists for each menu in the subtree
+            var existingGrants = await _db.StaffMenuAccesses
+                .Where(ma => ma.StaffId == staff.StaffId && menuIds.Contains(ma.MenuId))
+                .ToListAsync(ct);
 
+            var existingMenuIds = existingGrants.Select(g => g.MenuId).ToHashSet();
+            var now = DateTime.UtcNow;
+
+            foreach (var mid in menuIds)
+            {
+                if (existingMenuIds.Contains(mid))
+                {
+                    // Ensure it's an ALLOW grant
+                    var existing = existingGrants.First(g => g.MenuId == mid);
+                    existing.IsAllow     = true;
+                    existing.GrantedBy   = grantedBy;
+                    existing.GrantedDate = now;
+                }
+                else
+                {
+                    _db.StaffMenuAccesses.Add(new StaffMenuAccess
+                    {
+                        StaffId     = staff.StaffId,
+                        MenuId      = mid,
+                        IsAllow     = true,
+                        GrantedBy   = grantedBy,
+                        GrantedDate = now
+                    });
+                }
+            }
+
+            await _db.SaveChangesAsync(ct);
+
+            // Collect feature keys for return value
             var permissionIds = await CollectPermissionIdsForMenusAsync(menuIds, ct);
             var featureKeys = await _db.Features.AsNoTracking()
                 .Where(f => permissionIds.Contains(f.PermissionId))
                 .Select(f => f.FeatureKey)
                 .ToListAsync(ct);
 
-            await UpsertStaffOverridesAsync(staff.StaffId, permissionIds, PermissionStatus.ALLOW, grantedBy, reason ?? "Menu grant", ct);
-
-            return (true, $"Granted menu '{menu.Title}' and {permissionIds.Count} feature(s) via UserPermissionOverrides.", menuIds, featureKeys);
+            return (true, $"Granted menu '{menu.Title}' and {menuIds.Count} sub-menu(s) via StaffMenuAccess.", menuIds, featureKeys);
         }
 
-        public async Task<(bool Success, string Message)> RevokeMenuAsync(Guid personId, int menuId, CancellationToken ct = default)
+        public async Task<(bool Success, string Message)> RevokeMenuAsync(
+            Guid personId, int menuId, CancellationToken ct = default)
         {
             var staff = await _db.StaffVacancies
                 .AsNoTracking()
@@ -75,52 +107,54 @@ namespace Accounts.Services.Services
                 return (false, "Person is not linked to a staff record.");
 
             var menuIds = await CollectMenuIdsInSubtreeAsync(menuId, ct);
-            var permissionIds = await CollectPermissionIdsForMenusAsync(menuIds, ct);
 
-            var rows = await _db.UserPermissionOverrides
-                .Where(u => u.StaffId == staff.StaffId && permissionIds.Contains(u.PermissionId))
+            var grants = await _db.StaffMenuAccesses
+                .Where(ma => ma.StaffId == staff.StaffId && menuIds.Contains(ma.MenuId))
                 .ToListAsync(ct);
 
-            if (rows.Count > 0)
+            if (grants.Count > 0)
             {
-                _db.UserPermissionOverrides.RemoveRange(rows);
+                _db.StaffMenuAccesses.RemoveRange(grants);
                 await _db.SaveChangesAsync(ct);
             }
 
-            return (true, $"Revoked {rows.Count} feature override(s) for menu subtree.");
+            return (true, $"Revoked {grants.Count} menu grant(s) for menu subtree.");
         }
 
-        public async Task GrantFeatureAsync(Guid personId, int permissionId, string? grantedBy, CancellationToken ct = default)
+        public async Task GrantFeatureAsync(
+            Guid personId, int permissionId, string? grantedBy, CancellationToken ct = default)
         {
             var staffId = await ResolveStaffIdAsync(personId, ct);
             if (staffId == null) return;
 
-            var key = await _db.Features.AsNoTracking()
+            var featureKey = await _db.Features.AsNoTracking()
                 .Where(f => f.PermissionId == permissionId)
                 .Select(f => f.FeatureKey)
                 .FirstOrDefaultAsync(ct);
 
-            if (key == null) return;
+            if (featureKey == null) return;
 
-            await _rbac.SetUserOverrideAsync(staffId.Value, key, PermissionStatus.ALLOW, grantedBy, "Person feature grant");
+            await _rbac.SetUserOverrideAsync(staffId.Value, featureKey, PermissionStatus.ALLOW, grantedBy, "Person feature grant");
         }
 
-        public async Task RevokeFeatureAsync(Guid personId, int permissionId, CancellationToken ct = default)
+        public async Task RevokeFeatureAsync(
+            Guid personId, int permissionId, CancellationToken ct = default)
         {
             var staffId = await ResolveStaffIdAsync(personId, ct);
             if (staffId == null) return;
 
-            var key = await _db.Features.AsNoTracking()
+            var featureKey = await _db.Features.AsNoTracking()
                 .Where(f => f.PermissionId == permissionId)
                 .Select(f => f.FeatureKey)
                 .FirstOrDefaultAsync(ct);
 
-            if (key == null) return;
+            if (featureKey == null) return;
 
-            await _rbac.RemoveUserOverrideAsync(staffId.Value, key);
+            await _rbac.RemoveUserOverrideAsync(staffId.Value, featureKey);
         }
 
-        public async Task<object> GetPersonAccessSummaryAsync(Guid personId, CancellationToken ct = default)
+        public async Task<object> GetPersonAccessSummaryAsync(
+            Guid personId, CancellationToken ct = default)
         {
             var staff = await _db.StaffVacancies.AsNoTracking()
                 .FirstOrDefaultAsync(s => s.PersonId == personId, ct);
@@ -128,84 +162,67 @@ namespace Accounts.Services.Services
             if (staff == null)
                 return new { personId, menus = Array.Empty<object>(), features = Array.Empty<object>() };
 
-            var features = await _db.UserPermissionOverrides.AsNoTracking()
-                .Where(u => u.StaffId == staff.StaffId && u.Status == nameof(PermissionStatus.ALLOW))
-                .Join(_db.Features.AsNoTracking(), u => u.PermissionId, f => f.PermissionId, (_, f) => new
-                {
-                    f.PermissionId,
-                    f.FeatureKey,
-                    f.FeatureName,
-                    f.Module
-                })
+            // Load all menu grants with their feature-level flags from the 2-tier system
+            var menuGrants = await _db.StaffMenuAccesses
+                .AsNoTracking()
+                .Include(ma => ma.AccessFeatures)
+                .Where(ma => ma.StaffId == staff.StaffId && ma.IsAllow)
                 .ToListAsync(ct);
 
-            var menuKeys = features
-                .Select(f => f.FeatureKey)
-                .Where(k => k.StartsWith("MENU_", StringComparison.OrdinalIgnoreCase))
-                .Select(k => k.Split('_').ElementAtOrDefault(1))
-                .Where(s => int.TryParse(s, out _))
-                .Select(int.Parse)
-                .Distinct()
-                .ToList();
+            var grantedMenuIds = menuGrants.Select(ma => ma.MenuId).Distinct().ToList();
 
-            var menus = menuKeys.Count == 0
+            var menus = grantedMenuIds.Count == 0
                 ? new List<object>()
                 : await _db.Menus.AsNoTracking()
-                    .Where(m => menuKeys.Contains(m.Id))
-                    .Select(m => new { m.Id, m.Title, m.Route })
-                    .Cast<object>()
+                    .Where(m => grantedMenuIds.Contains(m.Id))
+                    .Select(m => (object)new { m.Id, m.Title, m.Route })
+                    .ToListAsync(ct);
+
+            // Collect allowed feature permission IDs from the 2-tier grants
+            var allowedPermIds = new HashSet<int>();
+            var allFeatureIds = await _db.Features.AsNoTracking()
+                .Select(f => f.PermissionId)
+                .ToListAsync(ct);
+
+            foreach (var grant in menuGrants)
+            {
+                if (!grant.AccessFeatures.Any())
+                {
+                    foreach (var pid in allFeatureIds)
+                        allowedPermIds.Add(pid);
+                }
+                else
+                {
+                    foreach (var af in grant.AccessFeatures.Where(af => af.IsAllow))
+                        allowedPermIds.Add(af.PermissionId);
+                }
+            }
+
+            var features = allowedPermIds.Count == 0
+                ? new List<object>()
+                : await _db.Features.AsNoTracking()
+                    .Where(f => allowedPermIds.Contains(f.PermissionId))
+                    .Select(f => (object)new
+                    {
+                        f.PermissionId,
+                        f.FeatureKey,
+                        f.FeatureName,
+                        f.Module
+                    })
                     .ToListAsync(ct);
 
             return new { personId, staffId = staff.StaffId, menus, features };
         }
+
+        // ─────────────────────────────────────────────────────────────────────
+        // PRIVATE HELPERS
+        // ─────────────────────────────────────────────────────────────────────
 
         private async Task<Guid?> ResolveStaffIdAsync(Guid personId, CancellationToken ct) =>
             await _db.StaffVacancies.AsNoTracking()
                 .Where(s => s.PersonId == personId)
                 .Select(s => (Guid?)s.StaffId)
                 .FirstOrDefaultAsync(ct);
-
-        private async Task UpsertStaffOverridesAsync(
-            Guid staffId,
-            IEnumerable<int> permissionIds,
-            PermissionStatus status,
-            string? grantedBy,
-            string reason,
-            CancellationToken ct)
-        {
-            var idList = permissionIds.ToList();
-            var existing = await _db.UserPermissionOverrides
-                .Where(u => u.StaffId == staffId && idList.Contains(u.PermissionId))
-                .ToDictionaryAsync(u => u.PermissionId, ct);
-
-            var now = DateTime.UtcNow;
-            var statusStr = status.ToString().ToUpperInvariant();
-
-            foreach (var permId in idList)
-            {
-                if (!existing.TryGetValue(permId, out var row))
-                {
-                    _db.UserPermissionOverrides.Add(new UserPermissionOverride
-                    {
-                        StaffId      = staffId,
-                        PermissionId = permId,
-                        Status       = statusStr,
-                        SetBy        = grantedBy,
-                        SetDate      = now,
-                        Reason       = reason
-                    });
-                }
-                else
-                {
-                    row.Status  = statusStr;
-                    row.SetBy   = grantedBy;
-                    row.SetDate = now;
-                    row.Reason  = reason;
-                }
-            }
-
-            await _db.SaveChangesAsync(ct);
-        }
 
         private async Task<List<int>> CollectMenuIdsInSubtreeAsync(int menuId, CancellationToken ct)
         {
@@ -224,9 +241,11 @@ namespace Accounts.Services.Services
             return ids;
         }
 
-        private async Task<HashSet<int>> CollectPermissionIdsForMenusAsync(IEnumerable<int> menuIds, CancellationToken ct)
+        private async Task<HashSet<int>> CollectPermissionIdsForMenusAsync(
+            IEnumerable<int> menuIds, CancellationToken ct)
         {
             var idList = menuIds.ToList();
+
             var fromLinks = await _db.MenuPermissions.AsNoTracking()
                 .Where(mp => idList.Contains(mp.MenuId))
                 .Select(mp => mp.PermissionId)

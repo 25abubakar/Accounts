@@ -5,20 +5,17 @@ using Microsoft.EntityFrameworkCore;
 namespace Accounts.Services.Services
 {
     /// <summary>
-    /// Hierarchical RBAC Engine — fully optimized, using integer PermissionId FKs.
+    /// Hierarchical RBAC Engine — uses the 2-tier StaffMenuAccess + AccessFeatures system.
     ///
     /// Permission resolution order (highest priority first):
-    ///   1. UserPermissionOverride.Status == DENY   → FALSE (hard-stop, no further checks)
-    ///   2. UserPermissionOverride.Status == ALLOW  → TRUE
-    ///   3. UserPermissionOverride.Status == INHERIT → fall through
-    ///   4. RolePermission (dept-specific)          → IsAllowed value
-    ///   5. RolePermission (global, DeptId = null)  → IsAllowed value
-    ///   6. DepartmentAccessMatrix                  → HasAccess value
-    ///   (Access groups deprecated — UserPermissionOverrides + role defaults only)
-    ///   8. false                                   → deny by default
-    ///
-    /// DENY always wins — even if a role says ALLOW.
-    /// All bulk methods load data in ONE query per table, resolve in-memory.
+    ///   1. StaffMenuAccess (IsAllow=false)  → menu explicitly denied → all features denied
+    ///   2. AccessFeature   (IsAllow=false)  → feature explicitly denied for this menu grant
+    ///   3. AccessFeature   (IsAllow=true)   → feature explicitly allowed
+    ///   4. StaffMenuAccess (IsAllow=true, no AccessFeature row) → all menu features allowed
+    ///   5. RolePermission (dept-specific)   → IsAllowed value (legacy fallback)
+    ///   6. RolePermission (global)          → IsAllowed value (legacy fallback)
+    ///   7. DepartmentAccessMatrix           → HasAccess value (legacy fallback)
+    ///   8. false                            → deny by default
     /// </summary>
     public class RbacService
     {
@@ -31,7 +28,8 @@ namespace Accounts.Services.Services
 
         /// <summary>
         /// Check if a staff member has access to ONE feature by its string key.
-        /// For checking many features at once prefer GetEffectivePermissionsAsync.
+        /// Checks new 2-tier RBAC (StaffMenuAccess + AccessFeatures) first,
+        /// then falls back to legacy RolePermissions / DepartmentAccessMatrix.
         /// </summary>
         public async Task<bool> HasAccessAsync(Guid staffId, string featureKey)
         {
@@ -42,23 +40,26 @@ namespace Accounts.Services.Services
                 .Select(f => (int?)f.PermissionId)
                 .FirstOrDefaultAsync();
 
-            if (permissionId == null) return false; // Feature doesn't exist
+            if (permissionId == null) return false;
 
-            // Check user-level override first
-            var userOverride = await _db.UserPermissionOverrides
+            // ── Check new 2-tier RBAC ─────────────────────────────────────────
+            // Load all menu grants for this staff + their feature rows
+            var menuGrants = await _db.StaffMenuAccesses
                 .AsNoTracking()
-                .Where(u => u.StaffId == staffId && u.PermissionId == permissionId)
-                .Select(u => u.Status)
-                .FirstOrDefaultAsync();
+                .Include(ma => ma.AccessFeatures)
+                .Where(ma => ma.StaffId == staffId && ma.IsAllow)
+                .ToListAsync();
 
-            if (userOverride != null)
+            foreach (var grant in menuGrants)
             {
-                if (userOverride == nameof(PermissionStatus.DENY))  return false;
-                if (userOverride == nameof(PermissionStatus.ALLOW)) return true;
-                // INHERIT → fall through
+                var featureRow = grant.AccessFeatures.FirstOrDefault(af => af.PermissionId == permissionId);
+                if (featureRow != null)
+                    return featureRow.IsAllow;
+                // Grant exists with no specific feature row → all features allowed for this menu
+                return true;
             }
 
-            // Load staff role/dept
+            // ── Legacy fallback: RolePermissions + DepartmentAccessMatrix ─────
             var staff = await _db.StaffVacancies
                 .AsNoTracking()
                 .Include(s => s.Vacancy)
@@ -66,12 +67,11 @@ namespace Accounts.Services.Services
 
             if (staff == null) return false;
 
-            var jobTitle = staff.Vacancy?.JobTitle;
+            var jobTitle = staff.Vacancy?.ResolvedJobTitle;
             var deptId   = staff.Vacancy?.OrganizationId;
 
             if (!string.IsNullOrWhiteSpace(jobTitle))
             {
-                // Dept-specific role permission
                 if (deptId.HasValue)
                 {
                     var deptRolePerm = await _db.RolePermissions
@@ -80,29 +80,23 @@ namespace Accounts.Services.Services
                             r.JobTitle == jobTitle &&
                             r.DeptId   == deptId   &&
                             r.PermissionId == permissionId);
-
                     if (deptRolePerm != null) return deptRolePerm.IsAllowed;
                 }
 
-                // Global role permission (DeptId = null)
                 var globalRolePerm = await _db.RolePermissions
                     .AsNoTracking()
                     .FirstOrDefaultAsync(r =>
                         r.JobTitle    == jobTitle &&
                         r.DeptId      == null     &&
                         r.PermissionId == permissionId);
-
                 if (globalRolePerm != null) return globalRolePerm.IsAllowed;
             }
 
-            // Legacy DepartmentAccessMatrix
             var matrixRow = await _db.DepartmentAccessMatrix
                 .AsNoTracking()
                 .FirstOrDefaultAsync(m => m.StaffId == staffId && m.PermissionId == permissionId);
 
-            if (matrixRow?.HasAccess == true) return true;
-
-            return false;
+            return matrixRow?.HasAccess == true;
         }
 
         // ─────────────────────────────────────────────────────────────────────
@@ -129,11 +123,45 @@ namespace Accounts.Services.Services
 
         /// <summary>
         /// Returns the HashSet of int PermissionIds the user is allowed to access.
-        /// This is the core optimized resolution — load once, resolve in memory.
+        ///
+        /// 2-tier RBAC resolution (StaffMenuAccess + AccessFeatures):
+        ///   Grant with NO AccessFeature rows  → user can open that menu, but no
+        ///     specific feature PermissionIds are granted via that path.  The menu
+        ///     will still be visible because GetFilteredSidebarAsync checks grantedMenuIds
+        ///     directly (not via PermissionIds).
+        ///   Grant WITH AccessFeature rows    → only the explicitly-allowed PermissionIds
+        ///     are added to the result set.
+        ///
+        /// Falls back to legacy RolePermissions + DepartmentAccessMatrix when no
+        /// StaffMenuAccess rows exist.
         /// </summary>
         public async Task<HashSet<int>> GetEffectivePermissionIdsAsync(Guid staffId)
         {
-            // ── Load staff role / dept ─────────────────────────────────────────
+            // ── 1. New 2-tier RBAC (StaffMenuAccess + AccessFeatures) ─────────
+            var menuGrants = await _db.StaffMenuAccesses
+                .AsNoTracking()
+                .Include(ma => ma.AccessFeatures)
+                .Where(ma => ma.StaffId == staffId && ma.IsAllow)
+                .ToListAsync();
+
+            if (menuGrants.Count > 0)
+            {
+                var result2Tier = new HashSet<int>();
+
+                foreach (var grant in menuGrants)
+                {
+                    // Only add PermissionIds that were explicitly granted at the
+                    // feature level.  A grant with NO AccessFeature rows gives menu
+                    // visibility (handled in GetFilteredSidebarAsync by checking
+                    // grantedMenuIds directly) but does not bulk-unlock every feature.
+                    foreach (var af in grant.AccessFeatures.Where(af => af.IsAllow))
+                        result2Tier.Add(af.PermissionId);
+                }
+
+                return result2Tier;
+            }
+
+            // ── 2. Legacy fallback: RolePermissions + DepartmentAccessMatrix ──
             var staff = await _db.StaffVacancies
                 .AsNoTracking()
                 .Include(s => s.Vacancy)
@@ -141,19 +169,9 @@ namespace Accounts.Services.Services
 
             if (staff == null) return new HashSet<int>();
 
-            var jobTitle = staff.Vacancy?.JobTitle;
+            var jobTitle = staff.Vacancy?.ResolvedJobTitle;
             var deptId   = staff.Vacancy?.OrganizationId;
 
-            // ── Bulk load all relevant data (one query per table) ─────────────
-
-            // 1. User-level overrides
-            var userOverrides = await _db.UserPermissionOverrides
-                .AsNoTracking()
-                .Where(u => u.StaffId == staffId)
-                .Select(u => new { u.PermissionId, u.Status })
-                .ToListAsync();
-
-            // 2. Role permissions for this job title
             var rolePermissions = string.IsNullOrWhiteSpace(jobTitle)
                 ? new List<RolePermission>()
                 : await _db.RolePermissions
@@ -162,36 +180,17 @@ namespace Accounts.Services.Services
                                 (r.DeptId == null || r.DeptId == deptId))
                     .ToListAsync();
 
-            // 3. Legacy matrix
             var matrixAllowed = await _db.DepartmentAccessMatrix
                 .AsNoTracking()
                 .Where(m => m.StaffId == staffId && m.HasAccess)
                 .Select(m => m.PermissionId)
                 .ToHashSetAsync();
 
-            // 4. All features (to iterate)
             var allFeatures = await _db.Features
                 .AsNoTracking()
                 .Select(f => new { f.PermissionId })
                 .ToListAsync();
 
-            // ── Build override lookup dictionaries ─────────────────────────────
-            var denySet  = userOverrides
-                .Where(o => o.Status == nameof(PermissionStatus.DENY))
-                .Select(o => o.PermissionId)
-                .ToHashSet();
-
-            var allowSet = userOverrides
-                .Where(o => o.Status == nameof(PermissionStatus.ALLOW))
-                .Select(o => o.PermissionId)
-                .ToHashSet();
-
-            var inheritSet = userOverrides
-                .Where(o => o.Status == nameof(PermissionStatus.INHERIT))
-                .Select(o => o.PermissionId)
-                .ToHashSet();
-
-            // Role permission lookup: permissionId → (deptSpecific?, isAllowed)
             var roleDeptLookup   = rolePermissions
                 .Where(r => r.DeptId != null)
                 .ToDictionary(r => r.PermissionId, r => r.IsAllowed);
@@ -200,40 +199,26 @@ namespace Accounts.Services.Services
                 .Where(r => r.DeptId == null)
                 .ToDictionary(r => r.PermissionId, r => r.IsAllowed);
 
-            // ── In-memory resolution ───────────────────────────────────────────
-            var result = new HashSet<int>();
-
+            var legacyResult = new HashSet<int>();
             foreach (var f in allFeatures)
             {
                 var pid = f.PermissionId;
-
-                // 1. Hard DENY → skip
-                if (denySet.Contains(pid)) continue;
-
-                // 2. Explicit ALLOW → include
-                if (allowSet.Contains(pid)) { result.Add(pid); continue; }
-
-                // 3. INHERIT → fall through (same as no override)
-                // 4 & 5. Role permission
                 if (!string.IsNullOrWhiteSpace(jobTitle))
                 {
                     if (roleDeptLookup.TryGetValue(pid, out var deptAllowed))
                     {
-                        if (deptAllowed) result.Add(pid);
-                        continue; // dept rule is definitive
+                        if (deptAllowed) legacyResult.Add(pid);
+                        continue;
                     }
                     if (roleGlobalLookup.TryGetValue(pid, out var globalAllowed))
                     {
-                        if (globalAllowed) result.Add(pid);
-                        continue; // global role rule is definitive
+                        if (globalAllowed) legacyResult.Add(pid);
+                        continue;
                     }
                 }
-
-                // 6. Legacy matrix
-                if (matrixAllowed.Contains(pid)) { result.Add(pid); }
+                if (matrixAllowed.Contains(pid)) legacyResult.Add(pid);
             }
-
-            return result;
+            return legacyResult;
         }
 
         // ─────────────────────────────────────────────────────────────────────
@@ -254,23 +239,55 @@ namespace Accounts.Services.Services
             if (staff == null)
                 return features.Select(f => new { f.FeatureKey, f.FeatureName, f.Module, hasAccess = false, source = "StaffNotFound" }).ToList<object>();
 
-            var jobTitle = staff.Vacancy?.JobTitle;
+            var jobTitle = staff.Vacancy?.ResolvedJobTitle;
             var deptId   = staff.Vacancy?.OrganizationId;
 
-            var userOverrides = await _db.UserPermissionOverrides.AsNoTracking()
-                .Where(u => u.StaffId == staffId)
-                .ToDictionaryAsync(u => u.PermissionId, u => u.Status);
+            // ── New 2-tier RBAC grants ─────────────────────────────────────────
+            var menuGrants = await _db.StaffMenuAccesses
+                .AsNoTracking()
+                .Include(ma => ma.AccessFeatures)
+                .Where(ma => ma.StaffId == staffId && ma.IsAllow)
+                .ToListAsync();
 
-            var rolePermissions = string.IsNullOrWhiteSpace(jobTitle)
-                ? new List<RolePermission>()
-                : await _db.RolePermissions.AsNoTracking()
+            // Build per-permissionId access map from new system
+            var newSystemAllow = new HashSet<int>();
+            var newSystemDeny  = new HashSet<int>();
+            bool hasAnyGrant   = menuGrants.Count > 0;
+
+            if (hasAnyGrant)
+            {
+                var allFeatureIds = features.Select(f => f.PermissionId).ToHashSet();
+                foreach (var grant in menuGrants)
+                {
+                    if (!grant.AccessFeatures.Any())
+                    {
+                        foreach (var pid in allFeatureIds)
+                            newSystemAllow.Add(pid);
+                    }
+                    else
+                    {
+                        foreach (var af in grant.AccessFeatures)
+                        {
+                            if (af.IsAllow) newSystemAllow.Add(af.PermissionId);
+                            else            newSystemDeny.Add(af.PermissionId);
+                        }
+                    }
+                }
+            }
+
+            // ── Legacy fallback ────────────────────────────────────────────────
+            var rolePermissions = (!hasAnyGrant && !string.IsNullOrWhiteSpace(jobTitle))
+                ? await _db.RolePermissions.AsNoTracking()
                     .Where(r => r.JobTitle == jobTitle && (r.DeptId == null || r.DeptId == deptId))
-                    .ToListAsync();
+                    .ToListAsync()
+                : new List<RolePermission>();
 
-            var matrixAllowed = await _db.DepartmentAccessMatrix.AsNoTracking()
-                .Where(m => m.StaffId == staffId && m.HasAccess)
-                .Select(m => m.PermissionId)
-                .ToHashSetAsync();
+            var matrixAllowed = !hasAnyGrant
+                ? await _db.DepartmentAccessMatrix.AsNoTracking()
+                    .Where(m => m.StaffId == staffId && m.HasAccess)
+                    .Select(m => m.PermissionId)
+                    .ToHashSetAsync()
+                : new HashSet<int>();
 
             var roleDeptLookup   = rolePermissions.Where(r => r.DeptId != null).ToDictionary(r => r.PermissionId, r => r.IsAllowed);
             var roleGlobalLookup = rolePermissions.Where(r => r.DeptId == null).ToDictionary(r => r.PermissionId, r => r.IsAllowed);
@@ -281,11 +298,14 @@ namespace Accounts.Services.Services
                 bool hasAccess;
                 string source;
 
-                if (userOverrides.TryGetValue(f.PermissionId, out var status))
+                if (hasAnyGrant)
                 {
-                    if      (status == nameof(PermissionStatus.DENY))    { hasAccess = false; source = "UserDeny"; }
-                    else if (status == nameof(PermissionStatus.ALLOW))   { hasAccess = true;  source = "UserAllow"; }
-                    else (hasAccess, source) = ResolveFromRole(f.PermissionId, jobTitle, roleDeptLookup, roleGlobalLookup, matrixAllowed);
+                    if (newSystemDeny.Contains(f.PermissionId))
+                        (hasAccess, source) = (false, "MenuFeatureDeny");
+                    else if (newSystemAllow.Contains(f.PermissionId))
+                        (hasAccess, source) = (true, "MenuFeatureAllow");
+                    else
+                        (hasAccess, source) = (false, "NoGrant");
                 }
                 else
                 {
@@ -319,28 +339,65 @@ namespace Accounts.Services.Services
 
         /// <summary>
         /// Returns the sidebar menu tree visible to this user.
-        /// Pass Guid.Empty for SuperAdmin — they see everything.
-        /// All filtering is done in-memory after a fixed set of queries.
+        ///
+        /// Pass Guid.Empty for SuperAdmin — they see every menu.
+        ///
+        /// For regular users the method works directly from StaffMenuAccess:
+        ///   1. Load the MenuIds the user was explicitly granted (IsAllow = true).
+        ///   2. Walk up the tree to include all ancestor (parent/grandparent) menus
+        ///      so the tree structure is never broken.
+        ///   3. Build a tree containing only those visible MenuIds.
+        ///
+        /// This approach is immune to the "no AccessFeature rows → unlock everything"
+        /// bug because it never touches MenuPermissions or PermissionIds.
         /// </summary>
         public async Task<List<object>> GetFilteredSidebarAsync(Guid staffId)
         {
+            // Load all active menus once (no MenuPermissions join needed)
             var allMenus = await _db.Menus
                 .AsNoTracking()
-                .Include(m => m.MenuPermissions)
                 .Where(m => m.IsActive)
                 .OrderBy(m => m.SortOrder)
                 .ToListAsync();
 
             var lookup = allMenus.ToLookup(m => m.ParentId);
+            var byId   = allMenus.ToDictionary(m => m.Id);
 
-            // SuperAdmin sees everything
+            // SuperAdmin bypass — show everything
             if (staffId == Guid.Empty)
                 return BuildFullTree(null, lookup);
 
-            // Load user's allowed permission IDs in one optimized pass
-            var allowedIds = await GetEffectivePermissionIdsAsync(staffId);
+            // ── Load explicitly granted menu IDs from StaffMenuAccess ─────────
+            var grantedMenuIds = await _db.StaffMenuAccesses
+                .AsNoTracking()
+                .Where(ma => ma.StaffId == staffId && ma.IsAllow)
+                .Select(ma => ma.MenuId)
+                .ToHashSetAsync();
 
-            return BuildFilteredTree(null, lookup, allowedIds);
+            // No grants at all — return empty sidebar
+            if (grantedMenuIds.Count == 0)
+                return new List<object>();
+
+            // ── Bubble up: include every ancestor so tree structure is intact ─
+            // e.g. if MENU_8 (Staff) is granted, its parent "HR Management" must
+            // also appear even if it wasn't explicitly granted.
+            var visibleIds = new HashSet<int>(grantedMenuIds);
+            foreach (var menuId in grantedMenuIds)
+            {
+                var current = byId.GetValueOrDefault(menuId);
+                while (current?.ParentId != null && byId.TryGetValue(current.ParentId.Value, out var parent))
+                {
+                    visibleIds.Add(parent.Id);
+                    current = parent;
+                }
+            }
+
+            // ── Build the filtered tree from only visible IDs ─────────────────
+            var filteredLookup = allMenus
+                .Where(m => visibleIds.Contains(m.Id))
+                .ToLookup(m => m.ParentId);
+
+            return BuildFullTree(null, filteredLookup);
         }
 
         private static List<object> BuildSidebarFromGrantedMenus(List<Menu> allMenus, HashSet<int> grantedMenuIds)
@@ -444,8 +501,11 @@ namespace Accounts.Services.Services
                 .Concat(extraStaff.Select(s => s.StaffId))
                 .ToHashSet();
 
-            var allOverrides = await _db.UserPermissionOverrides.AsNoTracking()
-                .Where(u => allStaffIds.Contains(u.StaffId))
+            // ── New 2-tier RBAC: load StaffMenuAccess + AccessFeatures ────────
+            var allMenuGrants = await _db.StaffMenuAccesses
+                .AsNoTracking()
+                .Include(ma => ma.AccessFeatures)
+                .Where(ma => allStaffIds.Contains(ma.StaffId) && ma.IsAllow)
                 .ToListAsync();
 
             var jobTitles = personsInDept.Select(p => p.Staff?.Vacancy?.JobTitle)
@@ -462,22 +522,28 @@ namespace Accounts.Services.Services
 
             object ResolveCell(Guid sid, string jt, int? sDeptId, int permId)
             {
-                var uo = allOverrides.FirstOrDefault(u => u.StaffId == sid && u.PermissionId == permId);
-                if (uo != null)
+                // Check new 2-tier RBAC first
+                var grants = allMenuGrants.Where(ma => ma.StaffId == sid).ToList();
+                if (grants.Count > 0)
                 {
-                    if (uo.Status == nameof(PermissionStatus.DENY))  return new { effectiveAccess = false, source = "UserDeny",   hasUserOverride = true };
-                    if (uo.Status == nameof(PermissionStatus.ALLOW)) return new { effectiveAccess = true,  source = "UserAllow",  hasUserOverride = true };
+                    bool deny  = grants.Any(ma => ma.AccessFeatures.Any(af => af.PermissionId == permId && !af.IsAllow));
+                    bool allow = grants.Any(ma => !ma.AccessFeatures.Any() ||
+                                                  ma.AccessFeatures.Any(af => af.PermissionId == permId && af.IsAllow));
+                    if (deny)  return new { effectiveAccess = false, source = "MenuFeatureDeny",  hasOverride = true };
+                    if (allow) return new { effectiveAccess = true,  source = "MenuFeatureAllow", hasOverride = true };
                 }
+
+                // Legacy fallback
                 var rp = allRolePerms.FirstOrDefault(r => r.JobTitle == jt && r.DeptId == sDeptId && r.PermissionId == permId);
-                if (rp != null) return new { effectiveAccess = rp.IsAllowed, source = "RoleDefault", hasUserOverride = false };
+                if (rp != null) return new { effectiveAccess = rp.IsAllowed, source = "RoleDefault", hasOverride = false };
 
                 var rpG = allRolePerms.FirstOrDefault(r => r.JobTitle == jt && r.DeptId == null && r.PermissionId == permId);
-                if (rpG != null) return new { effectiveAccess = rpG.IsAllowed, source = "RoleDefault", hasUserOverride = false };
+                if (rpG != null) return new { effectiveAccess = rpG.IsAllowed, source = "RoleDefault", hasOverride = false };
 
                 var mx = allMatrixRows.FirstOrDefault(m => m.StaffId == sid && m.PermissionId == permId);
-                if (mx != null) return new { effectiveAccess = mx.HasAccess, source = "Matrix", hasUserOverride = false };
+                if (mx != null) return new { effectiveAccess = mx.HasAccess, source = "Matrix", hasOverride = false };
 
-                return new { effectiveAccess = false, source = "Denied", hasUserOverride = false };
+                return new { effectiveAccess = false, source = "Denied", hasOverride = false };
             }
 
             var gridFromPersons = personsInDept.Select(p =>
@@ -581,8 +647,20 @@ namespace Accounts.Services.Services
         // ─────────────────────────────────────────────────────────────────────
 
         /// <summary>
-        /// Bulk apply overrides in memory — 3 DB round-trips total (features, existing rows, save).
-        /// Auto-creates missing MENU_* feature rows before applying.
+        /// Bulk-replace the full permission set for a staff member.
+        ///
+        /// Uses a CLEAR-THEN-REBUILD pattern:
+        ///   1. Delete every existing StaffMenuAccess row for this staff (cascades to AccessFeatures).
+        ///   2. Loop the incoming payload; for every key with status == "ALLOW":
+        ///        • MENU_{id}        → create a StaffMenuAccess row (IsAllow = true).
+        ///        • MENU_{id}_SUFFIX → create an AccessFeature row under the parent grant.
+        ///   3. INHERIT / DENY / anything else → skip entirely (do not insert).
+        ///   4. Single SaveChangesAsync at the end.
+        ///
+        /// Safety rules:
+        ///   - staffId must not be Guid.Empty
+        ///   - MenuId must be > 0 AND present in the Menus table (FK guard)
+        ///   - Non-MENU keys (e.g. "ACCESS_GROUP_ASSIGN") are silently skipped
         /// </summary>
         public async Task<(int Saved, int Skipped, string Message)> BulkApplyOverridesAsync(
             Guid staffId,
@@ -593,182 +671,341 @@ namespace Accounts.Services.Services
             if (overrides == null || overrides.Count == 0)
                 return (0, 0, "No overrides provided.");
 
+            if (staffId == Guid.Empty)
+                return (0, 0, "Invalid staffId (empty GUID).");
+
             if (!await _db.StaffVacancies.AsNoTracking().AnyAsync(s => s.StaffId == staffId))
                 return (0, 0, "Staff not found.");
 
-            foreach (var key in overrides.Keys
-                         .Select(k => k.Trim())
-                         .Where(k => k.StartsWith("MENU_", StringComparison.OrdinalIgnoreCase))
-                         .Distinct(StringComparer.OrdinalIgnoreCase))
+            // ── Step 1: Wipe all existing grants (cascade deletes AccessFeatures) ──
+            var existingGrants = await _db.StaffMenuAccesses
+                .Where(ma => ma.StaffId == staffId)
+                .ToListAsync();
+
+            if (existingGrants.Count > 0)
+                _db.StaffMenuAccesses.RemoveRange(existingGrants);
+
+            // ── Step 2: Pre-load valid menu IDs (FK guard) ────────────────────
+            var validMenuIds = await _db.Menus.AsNoTracking()
+                .Select(m => m.Id)
+                .ToHashSetAsync();
+
+            // Seed Feature rows for MENU_* keys that are ALLOW and reference real menus
+            var allowedMenuKeys = overrides
+                .Where(kv => kv.Value.Trim().Equals("ALLOW", StringComparison.OrdinalIgnoreCase))
+                .Select(kv => kv.Key.Trim())
+                .Where(k => k.StartsWith("MENU_", StringComparison.OrdinalIgnoreCase))
+                .Distinct(StringComparer.OrdinalIgnoreCase);
+
+            foreach (var key in allowedMenuKeys)
             {
-                await EnsureFeatureExistsAsync(key);
+                var p = key.Split('_');
+                if (p.Length >= 2 && int.TryParse(p[1], out int kid) && kid > 0 && validMenuIds.Contains(kid))
+                    await EnsureFeatureExistsAsync(key);
             }
 
+            // Feature lookup (after seeding)
             var featureLookup = await _db.Features.AsNoTracking()
-                .ToDictionaryAsync(f => f.FeatureKey.Trim(), f => f.PermissionId, StringComparer.OrdinalIgnoreCase);
+                .ToDictionaryAsync(f => f.FeatureKey.Trim(), f => f, StringComparer.OrdinalIgnoreCase);
 
-            var existingByPermId = await _db.UserPermissionOverrides
-                .Where(u => u.StaffId == staffId)
-                .ToDictionaryAsync(u => u.PermissionId);
-
-            var now = DateTime.UtcNow;
-            int saved = 0, skipped = 0;
+            // ── Step 3: Rebuild — only insert explicit ALLOW entries ──────────
+            // In-memory map: menuId → new StaffMenuAccess (not yet saved)
+            var newGrantsByMenuId = new Dictionary<int, StaffMenuAccess>();
+            var now     = DateTime.UtcNow;
+            int saved   = 0;
+            int skipped = 0;
 
             foreach (var (rawKey, statusStr) in overrides)
             {
-                var trimmedKey = rawKey.Trim();
-                if (!featureLookup.TryGetValue(trimmedKey, out int permId))
-                {
-                    skipped++;
-                    continue;
-                }
-
+                var trimmedKey  = rawKey.Trim();
                 var upperStatus = statusStr.Trim().ToUpperInvariant();
-                var isInherit = upperStatus is "INHERIT" or "";
 
-                existingByPermId.TryGetValue(permId, out var existing);
+                // Only process explicit ALLOW entries — skip INHERIT, DENY, empty
+                if (upperStatus != "ALLOW") { skipped++; continue; }
 
-                if (isInherit)
+                // Only handle MENU_* keys — non-MENU semantic keys are not stored
+                // in StaffMenuAccess and can safely be ignored here
+                if (!trimmedKey.StartsWith("MENU_", StringComparison.OrdinalIgnoreCase))
                 {
-                    if (existing != null)
-                    {
-                        _db.UserPermissionOverrides.Remove(existing);
-                        existingByPermId.Remove(permId);
-                        saved++;
-                    }
+                    skipped++; continue;
                 }
-                else if (upperStatus is "ALLOW" or "DENY")
+
+                var parts = trimmedKey.Split('_');
+                // parts[0]="MENU", parts[1]=menuId, parts[2..]=optional suffix
+                if (parts.Length < 2 || !int.TryParse(parts[1], out int menuId) || menuId <= 0)
                 {
-                    if (existing == null)
+                    skipped++; continue;
+                }
+
+                // FK guard: menuId must exist in the Menus table
+                if (!validMenuIds.Contains(menuId))
+                {
+                    skipped++; continue;
+                }
+
+                if (!featureLookup.TryGetValue(trimmedKey, out var feature))
+                {
+                    skipped++; continue;
+                }
+
+                bool isTopLevel = parts.Length == 2; // "MENU_8" (no suffix)
+
+                if (isTopLevel)
+                {
+                    // Create the parent menu grant if it doesn't already exist in our map
+                    if (!newGrantsByMenuId.ContainsKey(menuId))
                     {
-                        var row = new UserPermissionOverride
+                        var grant = new StaffMenuAccess
                         {
-                            StaffId      = staffId,
-                            PermissionId = permId,
-                            Status       = upperStatus,
-                            SetBy        = setBy,
-                            SetDate      = now,
-                            Reason       = reason
+                            StaffId     = staffId,
+                            MenuId      = menuId,
+                            IsAllow     = true,
+                            GrantedDate = now
                         };
-                        _db.UserPermissionOverrides.Add(row);
-                        existingByPermId[permId] = row;
-                    }
-                    else
-                    {
-                        existing.Status  = upperStatus;
-                        existing.SetBy   = setBy;
-                        existing.SetDate = now;
-                        existing.Reason  = reason;
+                        _db.StaffMenuAccesses.Add(grant);
+                        newGrantsByMenuId[menuId] = grant;
                     }
                     saved++;
                 }
                 else
                 {
-                    skipped++;
+                    // Feature-level key (e.g. "MENU_8_VIEW")
+                    // Ensure the parent grant exists first
+                    if (!newGrantsByMenuId.TryGetValue(menuId, out var grant))
+                    {
+                        grant = new StaffMenuAccess
+                        {
+                            StaffId     = staffId,
+                            MenuId      = menuId,
+                            IsAllow     = true,
+                            GrantedDate = now
+                        };
+                        _db.StaffMenuAccesses.Add(grant);
+                        newGrantsByMenuId[menuId] = grant;
+                    }
+
+                    // Add the AccessFeature row (IsAllow = true — DENY rows are never inserted)
+                    grant.AccessFeatures.Add(new AccessFeature
+                    {
+                        PermissionId = feature.PermissionId,
+                        IsAllow      = true
+                    });
+                    saved++;
                 }
             }
 
+            // ── Step 4: Persist everything in one round-trip ─────────────────
             await _db.SaveChangesAsync();
             return (saved, skipped, $"{saved} permission(s) saved, {skipped} skipped.");
         }
 
-        /// <summary>Remove every UserPermissionOverride row for a staff member (one query + one save).</summary>
+        /// <summary>Remove every StaffMenuAccess row for a staff member (one query + one save).</summary>
         public async Task<int> ClearStaffOverridesAsync(Guid staffId)
         {
-            var rows = await _db.UserPermissionOverrides
-                .Where(u => u.StaffId == staffId)
+            var rows = await _db.StaffMenuAccesses
+                .Where(ma => ma.StaffId == staffId)
                 .ToListAsync();
 
             if (rows.Count == 0) return 0;
 
-            _db.UserPermissionOverrides.RemoveRange(rows);
+            _db.StaffMenuAccesses.RemoveRange(rows); // CASCADE deletes AccessFeatures
             await _db.SaveChangesAsync();
             return rows.Count;
         }
 
         /// <summary>
-        /// Set a user override by FeatureKey string.
-        /// Auto-creates MENU_* feature records if needed.
+        /// Set a single permission override by FeatureKey string.
+        /// MENU_{id} keys control the menu grant; MENU_{id}_* keys control features within a grant.
+        /// Non-MENU keys (e.g. ACCESS_GROUP_ASSIGN) are attached as AccessFeature rows on an
+        /// existing menu grant, or rejected if no grant exists.
+        ///
+        /// Safety:
+        ///   - staffId must not be Guid.Empty
+        ///   - For MENU_* keys, menuId must be > 0 AND exist in the Menus table
         /// </summary>
         public async Task<(bool Success, string Message)> SetUserOverrideAsync(
             Guid staffId, string featureKey, PermissionStatus status, string? setBy, string? reason)
         {
+            if (staffId == Guid.Empty)
+                return (false, "Invalid staffId (empty GUID).");
+
             if (!await _db.StaffVacancies.AnyAsync(s => s.StaffId == staffId))
                 return (false, $"Staff {staffId} not found.");
 
-            await EnsureFeatureExistsAsync(featureKey);
+            bool isMenuKey = featureKey.StartsWith("MENU_", StringComparison.OrdinalIgnoreCase);
 
-            var feature = await _db.Features.AsNoTracking()
-                .FirstOrDefaultAsync(f => f.FeatureKey == featureKey);
-
-            if (feature == null)
-                return (false, $"Feature '{featureKey}' not found. Use GET /api/access/features for valid keys.");
-
-            var existing = await _db.UserPermissionOverrides
-                .FirstOrDefaultAsync(u => u.StaffId == staffId && u.PermissionId == feature.PermissionId);
-
-            if (status == PermissionStatus.INHERIT)
+            if (isMenuKey)
             {
-                // INHERIT = remove the override row entirely
-                if (existing != null)
+                // Parse MENU_{menuId} or MENU_{menuId}_SUFFIX
+                var parts = featureKey.Split('_');
+                if (parts.Length < 2 || !int.TryParse(parts[1], out int menuId) || menuId <= 0)
+                    return (false, $"Invalid feature key format: '{featureKey}'. Expected MENU_{{id}} or MENU_{{id}}_SUFFIX.");
+
+                // Guard: MenuId must exist in the Menus table
+                if (!await _db.Menus.AnyAsync(m => m.Id == menuId))
+                    return (false, $"Menu {menuId} does not exist. Cannot create a menu grant for a non-existent menu.");
+
+                await EnsureFeatureExistsAsync(featureKey);
+
+                var feature = await _db.Features.AsNoTracking()
+                    .FirstOrDefaultAsync(f => f.FeatureKey == featureKey);
+
+                if (feature == null)
+                    return (false, $"Feature '{featureKey}' could not be created or found.");
+
+                bool isTopLevel = parts.Length == 2;
+
+                var grant = await _db.StaffMenuAccesses
+                    .Include(ma => ma.AccessFeatures)
+                    .FirstOrDefaultAsync(ma => ma.StaffId == staffId && ma.MenuId == menuId);
+
+                if (isTopLevel)
                 {
-                    _db.UserPermissionOverrides.Remove(existing);
+                    if (status == PermissionStatus.INHERIT)
+                    {
+                        if (grant != null)
+                        {
+                            _db.StaffMenuAccesses.Remove(grant); // CASCADE deletes AccessFeatures
+                            await _db.SaveChangesAsync();
+                        }
+                        return (true, $"Menu grant removed — '{featureKey}' reverted to no access.");
+                    }
+
+                    bool isAllow = status == PermissionStatus.ALLOW;
+                    if (grant == null)
+                    {
+                        _db.StaffMenuAccesses.Add(new StaffMenuAccess
+                        {
+                            StaffId = staffId, MenuId = menuId, IsAllow = isAllow, GrantedDate = DateTime.UtcNow
+                        });
+                    }
+                    else
+                    {
+                        grant.IsAllow = isAllow;
+                    }
                     await _db.SaveChangesAsync();
+                    return (true, $"Menu grant set: '{featureKey}' = {status} for staff {staffId}.");
                 }
-                return (true, $"Override removed — '{featureKey}' now uses role default.");
-            }
-
-            if (existing == null)
-            {
-                _db.UserPermissionOverrides.Add(new UserPermissionOverride
+                else
                 {
-                    StaffId      = staffId,
-                    PermissionId = feature.PermissionId,
-                    Status       = status.ToString(),
-                    SetBy        = setBy,
-                    SetDate      = DateTime.Now,
-                    Reason       = reason
-                });
+                    // Feature-level override within a menu grant
+                    if (grant == null)
+                    {
+                        if (status == PermissionStatus.INHERIT)
+                            return (true, "No grant exists; nothing to remove.");
+
+                        grant = new StaffMenuAccess
+                        {
+                            StaffId = staffId, MenuId = menuId, IsAllow = true, GrantedDate = DateTime.UtcNow
+                        };
+                        _db.StaffMenuAccesses.Add(grant);
+                    }
+
+                    var af = grant.AccessFeatures.FirstOrDefault(x => x.PermissionId == feature.PermissionId);
+                    if (status == PermissionStatus.INHERIT)
+                    {
+                        if (af != null) { _db.AccessFeatures.Remove(af); grant.AccessFeatures.Remove(af); }
+                    }
+                    else
+                    {
+                        bool isAllow = status == PermissionStatus.ALLOW;
+                        if (af == null)
+                            grant.AccessFeatures.Add(new AccessFeature { PermissionId = feature.PermissionId, IsAllow = isAllow });
+                        else
+                            af.IsAllow = isAllow;
+                    }
+                    await _db.SaveChangesAsync();
+                    return (true, $"Feature override set: '{featureKey}' = {status} for staff {staffId}.");
+                }
             }
             else
             {
-                existing.Status  = status.ToString();
-                existing.SetBy   = setBy;
-                existing.SetDate = DateTime.Now;
-                existing.Reason  = reason;
-            }
+                // Non-MENU system feature key (e.g. "ACCESS_GROUP_ASSIGN")
+                var feature = await _db.Features.AsNoTracking()
+                    .FirstOrDefaultAsync(f => f.FeatureKey == featureKey);
 
-            await _db.SaveChangesAsync();
-            return (true, $"Override set: '{featureKey}' = {status} for staff {staffId}.");
+                if (feature == null)
+                    return (false, $"Feature '{featureKey}' not found. Use GET /api/access/features to see valid keys.");
+
+                // Attach to an existing active menu grant
+                var parentGrant = await _db.StaffMenuAccesses
+                    .Include(ma => ma.AccessFeatures)
+                    .Where(ma => ma.StaffId == staffId && ma.IsAllow)
+                    .FirstOrDefaultAsync(ma => ma.AccessFeatures.Any(af => af.PermissionId == feature.PermissionId))
+                    ?? await _db.StaffMenuAccesses
+                        .Include(ma => ma.AccessFeatures)
+                        .FirstOrDefaultAsync(ma => ma.StaffId == staffId && ma.IsAllow);
+
+                if (parentGrant == null)
+                    return (false, $"No active menu grant found for staff {staffId}. Grant at least one menu first.");
+
+                var af = parentGrant.AccessFeatures.FirstOrDefault(x => x.PermissionId == feature.PermissionId);
+                if (status == PermissionStatus.INHERIT)
+                {
+                    if (af != null) { _db.AccessFeatures.Remove(af); parentGrant.AccessFeatures.Remove(af); }
+                }
+                else
+                {
+                    bool isAllow = status == PermissionStatus.ALLOW;
+                    if (af == null)
+                        parentGrant.AccessFeatures.Add(new AccessFeature { PermissionId = feature.PermissionId, IsAllow = isAllow });
+                    else
+                        af.IsAllow = isAllow;
+                }
+                await _db.SaveChangesAsync();
+                return (true, $"Feature override set: '{featureKey}' = {status} for staff {staffId}.");
+            }
         }
 
         public async Task<(bool Success, string Message)> RemoveUserOverrideAsync(Guid staffId, string featureKey)
         {
-            var feature = await _db.Features.AsNoTracking()
-                .FirstOrDefaultAsync(f => f.FeatureKey == featureKey);
-            if (feature == null) return (false, "Feature not found.");
+            var parts = featureKey.Split('_');
+            if (parts.Length < 2 || !int.TryParse(parts[1], out int menuId))
+                return (false, $"Invalid key '{featureKey}'.");
 
-            var existing = await _db.UserPermissionOverrides
-                .FirstOrDefaultAsync(u => u.StaffId == staffId && u.PermissionId == feature.PermissionId);
+            bool isTopLevel = parts.Length == 2;
+            var grant = await _db.StaffMenuAccesses
+                .Include(ma => ma.AccessFeatures)
+                .FirstOrDefaultAsync(ma => ma.StaffId == staffId && ma.MenuId == menuId);
 
-            if (existing == null) return (false, "Override not found.");
+            if (grant == null) return (false, "No access grant found for this menu.");
 
-            _db.UserPermissionOverrides.Remove(existing);
+            if (isTopLevel)
+            {
+                _db.StaffMenuAccesses.Remove(grant);
+            }
+            else
+            {
+                var feature = await _db.Features.AsNoTracking()
+                    .FirstOrDefaultAsync(f => f.FeatureKey == featureKey);
+                if (feature == null) return (false, "Feature not found.");
+                var af = grant.AccessFeatures.FirstOrDefault(x => x.PermissionId == feature.PermissionId);
+                if (af == null) return (false, "Feature override not found.");
+                _db.AccessFeatures.Remove(af);
+            }
             await _db.SaveChangesAsync();
-            return (true, $"Override removed — '{featureKey}' now uses role default.");
+            return (true, $"Override removed — '{featureKey}' reverted.");
         }
 
         public async Task<IEnumerable<object>> GetUserOverridesAsync(Guid staffId) =>
-            await _db.UserPermissionOverrides.AsNoTracking()
-                .Include(u => u.Feature)
-                .Where(u => u.StaffId == staffId)
-                .OrderBy(u => u.Feature!.FeatureKey)
-                .Select(u => new
+            await _db.StaffMenuAccesses.AsNoTracking()
+                .Include(ma => ma.AccessFeatures).ThenInclude(af => af.Feature)
+                .Include(ma => ma.Menu)
+                .Where(ma => ma.StaffId == staffId)
+                .OrderBy(ma => ma.MenuId)
+                .Select(ma => new
                 {
-                    u.Id, u.StaffId, u.PermissionId,
-                    FeatureKey  = u.Feature!.FeatureKey,
-                    FeatureName = u.Feature.FeatureName,
-                    u.Status, u.SetBy, u.SetDate, u.Reason
+                    menuId      = ma.MenuId,
+                    menuTitle   = ma.Menu != null ? ma.Menu.Title : $"Menu {ma.MenuId}",
+                    isAllow     = ma.IsAllow,
+                    grantedDate = ma.GrantedDate,
+                    features    = ma.AccessFeatures.Select(af => new
+                    {
+                        permissionId = af.PermissionId,
+                        featureKey   = af.Feature != null ? af.Feature.FeatureKey   : string.Empty,
+                        featureName  = af.Feature != null ? af.Feature.FeatureName  : string.Empty,
+                        af.IsAllow
+                    }).ToList()
                 })
                 .ToListAsync<object>();
 
@@ -937,22 +1174,28 @@ namespace Accounts.Services.Services
         private async Task EnsureFeatureExistsAsync(string featureKey)
         {
             if (await _db.Features.AnyAsync(f => f.FeatureKey == featureKey)) return;
+
+            // Only auto-create Feature rows for MENU_* keys
             if (!featureKey.StartsWith("MENU_", StringComparison.OrdinalIgnoreCase)) return;
 
             var parts = featureKey.Split('_');
-            if (parts.Length < 2 || !int.TryParse(parts[1], out int menuId)) return;
+            if (parts.Length < 2 || !int.TryParse(parts[1], out int menuId) || menuId <= 0) return;
 
+            // ── Guard: only create Feature rows for menus that actually exist ──
+            // If the menu doesn't exist in the Menus table we would later try to
+            // insert a StaffMenuAccess row with that MenuId and hit the FK constraint.
             var menu = await _db.Menus.AsNoTracking().FirstOrDefaultAsync(m => m.Id == menuId);
-            string menuTitle = menu?.Title ?? $"Menu {menuId}";
-            string suffix    = parts.Length >= 3 ? string.Join("_", parts.Skip(2)) : "";
-            string name      = suffix switch
+            if (menu == null) return; // menu doesn't exist — do not create the Feature row
+
+            string suffix = parts.Length >= 3 ? string.Join("_", parts.Skip(2)) : "";
+            string name   = suffix switch
             {
-                "VIEW"   => $"{menuTitle} - View",
-                "ADD"    => $"{menuTitle} - Add",
-                "EDIT"   => $"{menuTitle} - Edit",
-                "DELETE" => $"{menuTitle} - Delete",
-                ""       => menuTitle,
-                _        => $"{menuTitle} - {suffix}"
+                "VIEW"   => $"{menu.Title} - View",
+                "ADD"    => $"{menu.Title} - Add",
+                "EDIT"   => $"{menu.Title} - Edit",
+                "DELETE" => $"{menu.Title} - Delete",
+                ""       => menu.Title,
+                _        => $"{menu.Title} - {suffix}"
             };
 
             _db.Features.Add(new Feature { FeatureKey = featureKey, FeatureName = name, Module = "Menu" });

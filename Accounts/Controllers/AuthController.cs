@@ -237,21 +237,19 @@ namespace Accounts.Controllers
                 });
 
             var staffId = person.Staff.StaffId;
+
+            // Build the sidebar directly from StaffMenuAccess grants (the canonical path).
+            // This avoids the "no AccessFeature rows → unlock all" bug that would occur
+            // if we went through GetEffectivePermissionIdsAsync → BuildFilteredMenuTree.
+            var legacySidebar = await _rbac.GetFilteredSidebarAsync(staffId);
+
+            // Collect allowed feature keys from explicit AccessFeature rows only
             var legacyAllowedIds = await _rbac.GetEffectivePermissionIdsAsync(staffId);
             var legacyFeatures = await _db.Features.AsNoTracking()
                 .Where(f => legacyAllowedIds.Contains(f.PermissionId))
                 .OrderBy(f => f.Module).ThenBy(f => f.FeatureKey)
                 .Select(f => new { f.PermissionId, f.FeatureKey, f.FeatureName, f.Module })
                 .ToListAsync(ct);
-
-            var allMenus = await _db.Menus.AsNoTracking()
-                .Include(m => m.MenuPermissions)
-                .Where(m => m.IsActive)
-                .OrderBy(m => m.SortOrder)
-                .ToListAsync(ct);
-
-            var lookup  = allMenus.ToLookup(m => m.ParentId);
-            var legacySidebar = BuildFilteredMenuTree(null, lookup, legacyAllowedIds);
 
             return Ok(new
             {

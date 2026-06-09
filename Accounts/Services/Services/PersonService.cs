@@ -165,12 +165,18 @@ namespace Accounts.Services.Services
             if (!createResult.Succeeded)
                 return (null, null, null, string.Join("; ", createResult.Errors.Select(e => e.Description)), 400);
 
+            // ── Split FullName into FirstName, MiddleName, LastName ────────────
+            var (firstName, middleName, lastName) = SplitFullName(dto.FullName);
+
             var person = new Person
             {
                 PersonId       = Guid.NewGuid(),
-                FullName       = dto.FullName.Trim(),
-                Phone          = dto.Phone?.Trim(),
-                Email          = email,                // always store the final email
+                FirstName      = firstName,
+                MiddleName     = middleName,
+                LastName       = lastName,
+                FullName       = dto.FullName.Trim(), // Keep for backward compat
+                Phone          = dto.Phone?.Trim(),   // Keep for backward compat (will sync from Contacts)
+                Email          = email,               // Keep for backward compat (will sync from Contacts)
                 Gender         = dto.Gender?.Trim(),
                 DateOfBirth    = dto.DateOfBirth,
                 MaritalStatus  = dto.MaritalStatus?.Trim(),
@@ -182,6 +188,31 @@ namespace Accounts.Services.Services
             var pa = dto.PermanentAddress;
             if (ca != null) person.Addresses.Add(BuildAddress(ca, "Current", person.PersonId));
             if (pa != null && !AddressesAreEqual(ca, pa)) person.Addresses.Add(BuildAddress(pa, "Permanent", person.PersonId));
+
+            // ── Insert into PersonContacts (normalized) ────────────────────────
+            if (!string.IsNullOrWhiteSpace(email))
+            {
+                person.Contacts.Add(new PersonContact
+                {
+                    PersonId     = person.PersonId,
+                    ContactType  = "Email",
+                    ContactValue = email,
+                    IsPrimary    = true,
+                    CreatedDate  = DateTime.UtcNow
+                });
+            }
+
+            if (!string.IsNullOrWhiteSpace(dto.Phone))
+            {
+                person.Contacts.Add(new PersonContact
+                {
+                    PersonId     = person.PersonId,
+                    ContactType  = "Phone",
+                    ContactValue = dto.Phone.Trim(),
+                    IsPrimary    = true,
+                    CreatedDate  = DateTime.UtcNow
+                });
+            }
 
             _db.Persons.Add(person);
             try { await _db.SaveChangesAsync(); }
@@ -197,19 +228,47 @@ namespace Accounts.Services.Services
         {
             if (string.IsNullOrWhiteSpace(dto.FullName)) return (null, "FullName is required.");
 
-            var person = await _db.Persons.Include(p => p.Addresses).Include(p => p.Staff)
+            var person = await _db.Persons
+                .Include(p => p.Addresses)
+                .Include(p => p.Contacts)
+                .Include(p => p.Staff)
                 .FirstOrDefaultAsync(p => p.PersonId == id);
             if (person == null) return (null, $"Person {id} not found.");
 
-            person.FullName      = dto.FullName.Trim();
-            person.Phone         = dto.Phone?.Trim();
-            person.Email         = dto.Email?.Trim();
+            // ── Split FullName into FirstName, MiddleName, LastName ────────────
+            var (firstName, middleName, lastName) = SplitFullName(dto.FullName);
+
+            person.FirstName     = firstName;
+            person.MiddleName    = middleName;
+            person.LastName      = lastName;
+            person.FullName      = dto.FullName.Trim(); // Keep for backward compat
             person.Gender        = dto.Gender?.Trim();
             person.DateOfBirth   = dto.DateOfBirth;
             person.MaritalStatus = dto.MaritalStatus?.Trim();
 
+            // ── Upsert Email in PersonContacts ─────────────────────────────────
             if (!string.IsNullOrWhiteSpace(dto.Email))
             {
+                var primaryEmail = person.Contacts.FirstOrDefault(c => c.ContactType == "Email" && c.IsPrimary);
+                if (primaryEmail != null)
+                {
+                    primaryEmail.ContactValue = dto.Email.Trim();
+                }
+                else
+                {
+                    person.Contacts.Add(new PersonContact
+                    {
+                        PersonId     = person.PersonId,
+                        ContactType  = "Email",
+                        ContactValue = dto.Email.Trim(),
+                        IsPrimary    = true,
+                        CreatedDate  = DateTime.UtcNow
+                    });
+                }
+                // Sync legacy Email column for backward compat
+                person.Email = dto.Email.Trim();
+
+                // Update Identity email
                 var iu = await _userManager.FindByIdAsync(person.IdentityUserId);
                 if (iu != null && !string.Equals(iu.Email, dto.Email.Trim(), StringComparison.OrdinalIgnoreCase))
                 {
@@ -217,6 +276,29 @@ namespace Accounts.Services.Services
                     iu.NormalizedEmail = dto.Email.Trim().ToUpperInvariant();
                     await _userManager.UpdateAsync(iu);
                 }
+            }
+
+            // ── Upsert Phone in PersonContacts ─────────────────────────────────
+            if (!string.IsNullOrWhiteSpace(dto.Phone))
+            {
+                var primaryPhone = person.Contacts.FirstOrDefault(c => c.ContactType == "Phone" && c.IsPrimary);
+                if (primaryPhone != null)
+                {
+                    primaryPhone.ContactValue = dto.Phone.Trim();
+                }
+                else
+                {
+                    person.Contacts.Add(new PersonContact
+                    {
+                        PersonId     = person.PersonId,
+                        ContactType  = "Phone",
+                        ContactValue = dto.Phone.Trim(),
+                        IsPrimary    = true,
+                        CreatedDate  = DateTime.UtcNow
+                    });
+                }
+                // Sync legacy Phone column for backward compat
+                person.Phone = dto.Phone.Trim();
             }
 
             UpsertAddress(person, "Current",   dto.CurrentAddress);
@@ -661,6 +743,23 @@ namespace Accounts.Services.Services
             }
         }
 
+        /// <summary>
+        /// Splits a full name string into (FirstName, MiddleName, LastName).
+        /// "Ali"              → ("Ali",  null,  null)
+        /// "Ali Khan"         → ("Ali",  null,  "Khan")
+        /// "Ali Hassan Khan"  → ("Ali",  "Hassan", "Khan")
+        /// "Ali Raza Hassan Khan" → ("Ali", "Raza Hassan", "Khan")
+        /// </summary>
+        private static (string First, string? Middle, string? Last) SplitFullName(string fullName)
+        {
+            var parts = fullName.Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length == 0) return (fullName.Trim(), null, null);
+            if (parts.Length == 1) return (parts[0], null, null);
+            if (parts.Length == 2) return (parts[0], null, parts[1]);
+            // 3+ parts: first, last, everything in between is middle
+            return (parts[0], string.Join(" ", parts[1..^1]), parts[^1]);
+        }
+
         private static bool AddressesAreEqual(AddressDto? a, AddressDto? b)
         {
             if (a == null && b == null) return true;
@@ -732,7 +831,7 @@ namespace Accounts.Services.Services
                 CountryName = country?.Name, CountryFlag = country?.FlagUrl,
                 IsHired = p.Staff != null, StaffId = p.Staff?.StaffId, JoiningDate = null,
                 VacancyId = p.Staff?.VacancyId, VacancyCode = p.Staff?.Vacancy?.VacancyCode,
-                JobTitle = p.Staff?.Vacancy?.JobTitle, Department = p.Staff?.Vacancy?.Department,
+                JobTitle = p.Staff?.Vacancy?.ResolvedJobTitle, Department = p.Staff?.Vacancy?.Department,
                 CurrentAddress   = ToAddressResponse(cur),
                 PermanentAddress = ToAddressResponse(perm ?? cur)
             };

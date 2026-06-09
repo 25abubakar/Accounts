@@ -9,32 +9,57 @@ namespace Accounts.Models
         [Key]
         public Guid VacancyId { get; set; } = Guid.NewGuid();
 
-        /// <summary>Links to a Branch node in OrganizationTree</summary>
+        /// <summary>Links to a Branch/Department node in OrganizationTree</summary>
         [Required]
         public int OrganizationId { get; set; }
 
-        [ForeignKey("OrganizationId")]
+        [ForeignKey(nameof(OrganizationId))]
         public OrganizationTree? Organization { get; set; }
 
-        /// <summary>e.g. LT-RWP-DEV-01</summary>
+        /// <summary>
+        /// FK to normalized JobTitles table.
+        /// Nullable — will be made required after all rows are backfilled.
+        /// </summary>
+        public int? JobTitleId { get; set; }
+
+        [ForeignKey(nameof(JobTitleId))]
+        public JobTitle? JobTitleNav { get; set; }
+
+        /// <summary>
+        /// Legacy string column — kept for backward compat until all code
+        /// migrates to JobTitleId. Do NOT use in new write paths.
+        /// </summary>
+        [MaxLength(100)]
+        public string? JobTitle { get; set; }
+
+        /// <summary>
+        /// Legacy department string — replaced by OrganizationId (FK).
+        /// Kept for backward compat; will be dropped after migration.
+        /// </summary>
+        [MaxLength(100)]
+        public string? Department { get; set; }
+
+        /// <summary>e.g. LT-RWP-DEV-01 — auto-generated, never edited</summary>
         [Required]
         [MaxLength(50)]
         public string VacancyCode { get; set; } = string.Empty;
-
-        /// <summary>e.g. Developer / Manager / HR Officer</summary>
-        [Required]
-        [MaxLength(100)]
-        public string JobTitle { get; set; } = string.Empty;
-
-        [MaxLength(100)]
-        public string? Department { get; set; }
 
         /// <summary>false = Empty seat, true = Employee assigned</summary>
         public bool IsFilled { get; set; } = false;
 
         public DateTime CreatedDate { get; set; } = DateTime.UtcNow;
 
-        // Navigation — one vacancy has at most one staff
+        // ── Navigation ────────────────────────────────────────────────────
+        /// <summary>One vacancy has at most one staff member.</summary>
         public StaffVacancy? Staff { get; set; }
+
+        // ── Computed helper ───────────────────────────────────────────────
+        /// <summary>
+        /// Returns the resolved job title string from the normalized FK first,
+        /// falling back to the legacy string column.
+        /// </summary>
+        [NotMapped]
+        public string ResolvedJobTitle =>
+            JobTitleNav?.TitleName ?? JobTitle ?? string.Empty;
     }
 }

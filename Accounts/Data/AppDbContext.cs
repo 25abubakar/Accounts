@@ -23,20 +23,26 @@ namespace Accounts.Data
         public DbSet<StaffVacancy>            StaffVacancies            => Set<StaffVacancy>();
         public DbSet<Person>                   Persons                  => Set<Person>();
         public DbSet<PersonAddress>            PersonAddresses          => Set<PersonAddress>();
+        public DbSet<PersonContact>            PersonContacts           => Set<PersonContact>();
+        public DbSet<JobTitle>                 JobTitles                => Set<JobTitle>();
         public DbSet<VacancyCounter>           VacancyCounters          => Set<VacancyCounter>();
         public DbSet<Menu>                     Menus                    => Set<Menu>();
         public DbSet<MenuPermission>           MenuPermissions          => Set<MenuPermission>();
         public DbSet<Feature>                  Features                 => Set<Feature>();
         public DbSet<StaffAccessGroup>         StaffAccessGroups        => Set<StaffAccessGroup>();
         public DbSet<DepartmentAccessMatrix>   DepartmentAccessMatrix   => Set<DepartmentAccessMatrix>();
-        // ── Hierarchical RBAC ─────────────────────────────────────────────────
+        // ── Hierarchical RBAC (legacy — kept during migration) ───────────────
         public DbSet<RolePermission>           RolePermissions          => Set<RolePermission>();
-        public DbSet<UserPermissionOverride>   UserPermissionOverrides  => Set<UserPermissionOverride>();
+        // NOTE: UserPermissionOverrides table was dropped in V2 migration.
+        //       All permission writes now go through StaffMenuAccess + AccessFeatures.
+        // ── New 2-Tier RBAC ───────────────────────────────────────────────────
+        public DbSet<StaffMenuAccess>          StaffMenuAccesses        => Set<StaffMenuAccess>();
+        public DbSet<AccessFeature>            AccessFeatures           => Set<AccessFeature>();
 
         // ── Communication Center ──────────────────────────────────────────────
         public DbSet<AppLookupType>     AppLookupTypes     => Set<AppLookupType>();
         public DbSet<AppLookupValue>    AppLookupValues    => Set<AppLookupValue>();
-        public DbSet<AppMenuDefinition> AppMenuDefinitions => Set<AppMenuDefinition>();
+        // NOTE: AppMenuDefinitions table dropped in V2 migration. Use Menus table instead.
         public DbSet<AppNote>           AppNotes            => Set<AppNote>();
         public DbSet<AppNoteTarget>     AppNoteTargets      => Set<AppNoteTarget>();
         public DbSet<AppNoteUserStatus> AppNoteUserStatuses => Set<AppNoteUserStatus>();
@@ -251,38 +257,8 @@ namespace Accounts.Data
                  .OnDelete(DeleteBehavior.Cascade);
             });
 
-            // ── UserPermissionOverride (Optimized) ────────────────────────────
-            builder.Entity<UserPermissionOverride>(e =>
-            {
-                e.ToTable("UserPermissionOverrides");
-                e.HasKey(x => x.Id);
-                e.Property(x => x.Id).ValueGeneratedOnAdd();
-                e.Property(x => x.Status)
-                 .HasMaxLength(10)
-                 .IsRequired()
-                 .HasDefaultValue(nameof(PermissionStatus.INHERIT));
-                e.Property(x => x.SetDate)
-                 .HasColumnType("datetime")
-                 .HasDefaultValueSql("GETDATE()");
-
-                // Unique composite: one override per StaffId + PermissionId
-                e.HasIndex(x => new { x.StaffId, x.PermissionId }).IsUnique();
-
-                // Optimized covering indexes for fast user override lookups
-                e.HasIndex(x => x.StaffId);
-                e.HasIndex(x => x.PermissionId);
-                e.HasIndex(x => new { x.StaffId, x.Status });
-
-                e.HasOne(x => x.Staff)
-                 .WithMany()
-                 .HasForeignKey(x => x.StaffId)
-                 .OnDelete(DeleteBehavior.Cascade);
-
-                e.HasOne(x => x.Feature)
-                 .WithMany(x => x.UserPermissionOverrides)
-                 .HasForeignKey(x => x.PermissionId)
-                 .OnDelete(DeleteBehavior.Cascade);
-            });
+            // NOTE: UserPermissionOverrides table dropped in V2 migration.
+            //       All permission writes now go through StaffMenuAccess + AccessFeatures.
 
             // ── Communication Center: AppLookupTypes ──────────────────────────
             builder.Entity<AppLookupType>(e =>
@@ -306,16 +282,6 @@ namespace Accounts.Data
                  .WithMany(x => x.Values)
                  .HasForeignKey(x => x.LookupTypeId)
                  .OnDelete(DeleteBehavior.Cascade);
-            });
-
-            // ── Communication Center: AppMenuDefinitions ──────────────────────
-            builder.Entity<AppMenuDefinition>(e =>
-            {
-                e.ToTable("AppMenuDefinitions");
-                e.HasKey(x => x.MenuDefinitionId);
-                e.Property(x => x.MenuCode).HasMaxLength(150).IsRequired();
-                e.Property(x => x.MenuName).HasMaxLength(200).IsRequired();
-                e.HasIndex(x => x.MenuCode).IsUnique();
             });
 
             // ── Communication Center: AppNotes ────────────────────────────────
@@ -378,6 +344,94 @@ namespace Accounts.Data
             // ── Keyless query types (stored procedures / views) ───────────────
             builder.Entity<OrganizationVacancyPersonDto>().HasNoKey();
             builder.Entity<EmployeeByOrgAndRoleDto>().HasNoKey();
+
+            // ── JobTitles (normalized lookup) ─────────────────────────────────
+            builder.Entity<JobTitle>(e =>
+            {
+                e.ToTable("JobTitles");
+                e.HasKey(x => x.Id);
+                e.Property(x => x.Id).ValueGeneratedOnAdd();
+                e.Property(x => x.TitleName).HasMaxLength(100).IsRequired();
+                e.HasIndex(x => x.TitleName).IsUnique();
+            });
+
+            // ── PersonContacts (one-to-many contacts per person) ──────────────
+            builder.Entity<PersonContact>(e =>
+            {
+                e.ToTable("PersonContacts");
+                e.HasKey(x => x.Id);
+                e.Property(x => x.Id).ValueGeneratedOnAdd();
+                e.Property(x => x.ContactType).HasMaxLength(20).IsRequired();
+                e.Property(x => x.ContactValue).HasMaxLength(256).IsRequired();
+                e.Property(x => x.IsPrimary).HasDefaultValue(false);
+                e.Property(x => x.CreatedDate).HasDefaultValueSql("SYSUTCDATETIME()");
+                e.HasIndex(x => x.PersonId);
+                e.HasOne(x => x.Person)
+                 .WithMany(x => x.Contacts)
+                 .HasForeignKey(x => x.PersonId)
+                 .OnDelete(DeleteBehavior.Cascade);
+            });
+
+            // ── Vacancy: JobTitleId FK ─────────────────────────────────────────
+            builder.Entity<Vacancy>(e =>
+            {
+                e.HasOne(x => x.JobTitleNav)
+                 .WithMany(x => x.Vacancies)
+                 .HasForeignKey(x => x.JobTitleId)
+                 .OnDelete(DeleteBehavior.Restrict)
+                 .IsRequired(false);
+                e.HasIndex(x => x.JobTitleId);
+            });
+
+            // ── StaffMenuAccess (RBAC Tier-1) ─────────────────────────────────
+            builder.Entity<StaffMenuAccess>(e =>
+            {
+                e.ToTable("StaffMenuAccess");
+                e.HasKey(x => x.Id);
+                e.Property(x => x.Id).ValueGeneratedOnAdd();
+                e.Property(x => x.IsAllow).HasDefaultValue(true);
+                e.Property(x => x.GrantedDate).HasDefaultValueSql("SYSUTCDATETIME()");
+
+                // One row per (staff + menu)
+                e.HasIndex(x => new { x.StaffId, x.MenuId }).IsUnique();
+                e.HasIndex(x => x.StaffId);
+                e.HasIndex(x => x.MenuId);
+
+                e.HasOne(x => x.Staff)
+                 .WithMany()
+                 .HasForeignKey(x => x.StaffId)
+                 .OnDelete(DeleteBehavior.Cascade);
+
+                e.HasOne(x => x.Menu)
+                 .WithMany()
+                 .HasForeignKey(x => x.MenuId)
+                 .OnDelete(DeleteBehavior.Cascade);
+
+                e.HasMany(x => x.AccessFeatures)
+                 .WithOne(x => x.StaffMenuAccess)
+                 .HasForeignKey(x => x.StaffMenuAccessId)
+                 .OnDelete(DeleteBehavior.Cascade);
+            });
+
+            // ── AccessFeatures (RBAC Tier-2) ──────────────────────────────────
+            builder.Entity<AccessFeature>(e =>
+            {
+                e.ToTable("AccessFeatures");
+                e.HasKey(x => x.Id);
+                e.Property(x => x.Id).ValueGeneratedOnAdd();
+                e.Property(x => x.IsAllow).HasDefaultValue(true);
+
+                // One row per (menuAccess + permission)
+                e.HasIndex(x => new { x.StaffMenuAccessId, x.PermissionId }).IsUnique();
+                e.HasIndex(x => x.StaffMenuAccessId);
+                e.HasIndex(x => x.PermissionId);
+
+                e.HasOne(x => x.Feature)
+                 .WithMany()
+                 .HasForeignKey(x => x.PermissionId)
+                 .OnDelete(DeleteBehavior.Cascade);
+                // StaffMenuAccess → AccessFeatures cascade is configured on the parent side above
+            });
         }
     }
 }

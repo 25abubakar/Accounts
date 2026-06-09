@@ -29,12 +29,27 @@ namespace Accounts.Models
     {
         [Required]
         public int OrganizationId { get; set; }
+
         /// <summary>
-        /// e.g. "Manager", "Developer", "Head of Department"
-        /// VacancyCode is auto-generated from this — do NOT send VacancyCode.
+        /// ID-first: send the normalized JobTitles.Id if the user picks an existing title.
+        /// Mutually exclusive with JobTitleName — send one or the other, not both.
         /// </summary>
-        [Required, MaxLength(100)]
-        public string JobTitle { get; set; } = string.Empty;
+        public int? JobTitleId { get; set; }
+
+        /// <summary>
+        /// Name-fallback: send a new string if the user types a brand-new title.
+        /// The backend will upsert JobTitles and use the generated Id.
+        /// Mutually exclusive with JobTitleId.
+        /// </summary>
+        [MaxLength(100)]
+        public string? JobTitleName { get; set; }
+
+        /// <summary>
+        /// Legacy support: still accepted but internally resolved to JobTitleId via upsert.
+        /// Prefer JobTitleId or JobTitleName in new integrations.
+        /// </summary>
+        [MaxLength(100)]
+        public string? JobTitle { get; set; }
 
         [MaxLength(100)]
         public string? Department { get; set; }
@@ -42,8 +57,6 @@ namespace Accounts.Models
         /// <summary>
         /// How many vacancies to create in one request.
         /// Default = 1. Max = 100.
-        /// If Count = 5, the backend creates 5 vacancies with codes:
-        /// Pakistan-LalGroup-LT-1, Pakistan-LalGroup-LT-2, ... Pakistan-LalGroup-LT-5
         /// </summary>
         [Range(1, 100, ErrorMessage = "VacancyCount must be between 1 and 100.")]
         public int VacancyCount { get; set; } = 1;
@@ -51,14 +64,22 @@ namespace Accounts.Models
 
     public class UpdateVacancyDto
     {
-        [Required, MaxLength(100)]
-        public string JobTitle { get; set; } = string.Empty;
+        [Required]
+        public int OrganizationId { get; set; }
+
+        /// <summary>ID-first: pick an existing title from the dropdown.</summary>
+        public int? JobTitleId { get; set; }
+
+        /// <summary>Name-fallback: type a new title string.</summary>
+        [MaxLength(100)]
+        public string? JobTitleName { get; set; }
+
+        /// <summary>Legacy string — still accepted, resolved to Id internally.</summary>
+        [MaxLength(100)]
+        public string? JobTitle { get; set; }
 
         [MaxLength(100)]
         public string? Department { get; set; }
-
-        [Required]
-        public int OrganizationId { get; set; }
     }
 
     // ── STAFF RESPONSE ───────────────────────────────────────────────
