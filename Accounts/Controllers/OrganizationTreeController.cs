@@ -33,14 +33,14 @@ namespace Accounts.Controllers
             return Ok(await _service.CountrySearchAsync(q));
         }
 
-        // ── READ endpoints — require DEPT_VIEW ───────────────────────────────
+        // ── READ endpoints — require MENU_2017_VIEW (Master Directory menu) ──
 
-        [HasPermission("DEPT_VIEW")]
+        [HasPermission("MENU_2017_VIEW")]
         [HttpGet("tree")]
         public async Task<IActionResult> GetTree() =>
             Ok(await _service.GetTreeAsync());
 
-        [HasPermission("DEPT_VIEW")]
+        [HasPermission("MENU_2017_VIEW")]
         [HttpGet("tree/{startId:int}")]
         public async Task<IActionResult> GetSubTree(int startId)
         {
@@ -48,17 +48,17 @@ namespace Accounts.Controllers
             return result == null ? NotFound(new { message = $"Node {startId} not found." }) : Ok(result);
         }
 
-        [HasPermission("DEPT_VIEW")]
+        [HasPermission("MENU_2017_VIEW")]
         [HttpGet("flat-tree")]
         public async Task<IActionResult> GetFlatTree() =>
             Ok(await _service.GetFlatTreeAsync());
 
-        [HasPermission("DEPT_VIEW")]
+        [HasPermission("MENU_2017_VIEW")]
         [HttpGet]
         public async Task<IActionResult> GetAll() =>
             Ok(await _service.GetAllAsync());
 
-        [HasPermission("DEPT_VIEW")]
+        [HasPermission("MENU_2017_VIEW")]
         [HttpGet("{id:int}")]
         public async Task<IActionResult> GetById(int id)
         {
@@ -66,12 +66,12 @@ namespace Accounts.Controllers
             return node == null ? NotFound(new { message = $"Node {id} not found." }) : Ok(node);
         }
 
-        [HasPermission("DEPT_VIEW")]
+        [HasPermission("MENU_2017_VIEW")]
         [HttpGet("by-label/{label}")]
         public async Task<IActionResult> GetByLabel(string label) =>
             Ok(await _service.GetByLabelAsync(label));
 
-        [HasPermission("DEPT_VIEW")]
+        [HasPermission("MENU_2017_VIEW")]
         [HttpGet("{id:int}/children")]
         public async Task<IActionResult> GetChildren(int id)
         {
@@ -79,7 +79,7 @@ namespace Accounts.Controllers
             return children == null ? NotFound(new { message = $"Node {id} not found." }) : Ok(children);
         }
 
-        [HasPermission("DEPT_VIEW")]
+        [HasPermission("MENU_2017_VIEW")]
         [HttpGet("search")]
         public async Task<IActionResult> Search([FromQuery] string q)
         {
@@ -89,7 +89,7 @@ namespace Accounts.Controllers
 
         // ── WRITE endpoints — require specific CRUD permissions ───────────────
 
-        [HasPermission("DEPT_CREATE")]
+        [HasPermission("MENU_2017_ADD")]
         [HttpPost]
         public async Task<IActionResult> Create([FromBody] CreateOrgNodeDto dto)
         {
@@ -105,7 +105,7 @@ namespace Accounts.Controllers
             return CreatedAtAction(nameof(GetById), new { id = node.Id }, node);
         }
 
-        [HasPermission("DEPT_EDIT")]
+        [HasPermission("MENU_2017_EDIT")]
         [HttpPut("{id:int}")]
         public async Task<IActionResult> Update(int id, [FromBody] UpdateOrgNodeDto dto)
         {
@@ -122,7 +122,7 @@ namespace Accounts.Controllers
             return node == null ? NotFound(new { message = $"Node {id} not found." }) : Ok(node);
         }
 
-        [HasPermission("DEPT_DELETE")]
+        [HasPermission("MENU_2017_DELETE")]
         [HttpDelete("{id:int}")]
         public async Task<IActionResult> Delete(int id)
         {

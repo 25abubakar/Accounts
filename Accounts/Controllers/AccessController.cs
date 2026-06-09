@@ -17,8 +17,6 @@ namespace Accounts.Controllers
 
         private string? CurrentUserId => User.FindFirstValue(ClaimTypes.NameIdentifier);
 
-        // ── Features ──────────────────────────────────────────────────────────
-
         [HttpGet("features")]
         public async Task<IActionResult> GetFeatures() =>
             Ok(await _service.GetAllFeaturesAsync());
@@ -27,13 +25,14 @@ namespace Accounts.Controllers
         public async Task<IActionResult> GetFeaturesByModule(string module) =>
             Ok(await _service.GetFeaturesByModuleAsync(module));
 
-        // ── Staff permissions ─────────────────────────────────────────────────
-
         [HttpGet("staff/{staffId:guid}/permissions")]
         public async Task<IActionResult> GetStaffPermissions(Guid staffId) =>
             Ok(await _service.GetStaffPermissionsAsync(staffId));
 
-        // ── Toggle / Grant / Revoke (write to UserPermissionOverrides) ─────────
+        [HasPermission("ACCESS_GROUP_VIEW")]
+        [HttpGet("department/{deptId:int}/persons")]
+        public async Task<IActionResult> GetDepartmentPersons(int deptId) =>
+            Ok(await _service.GetDepartmentPersonsAsync(deptId));
 
         [HasPermission("ACCESS_GROUP_ASSIGN")]
         [HttpPut("staff/{staffId:guid}/feature/{*featureKey}")]
@@ -47,15 +46,11 @@ namespace Accounts.Controllers
             var resolvedKey = string.IsNullOrWhiteSpace(featureKey)
                 ? key
                 : Uri.UnescapeDataString(featureKey.Trim()).Trim('/');
-
             if (string.IsNullOrWhiteSpace(resolvedKey))
                 return BadRequest(new { message = "featureKey is required in route or query string." });
 
-            var (ok, msg) = await _service.TogglePermissionAsync(staffId, resolvedKey, dto.HasAccess, CurrentUserId);
-            if (!ok) return msg.Contains("not found")
-                ? NotFound(new { message = msg })
-                : BadRequest(new { message = msg });
-
+            (bool ok, string msg) = await _service.TogglePermissionAsync(staffId, resolvedKey, dto.HasAccess, CurrentUserId);
+            if (!ok) return msg.Contains("not found") ? NotFound(new { message = msg }) : BadRequest(new { message = msg });
             return Ok(new { message = msg, staffId, featureKey = resolvedKey, hasAccess = dto.HasAccess });
         }
 
@@ -63,7 +58,7 @@ namespace Accounts.Controllers
         [HttpPost("staff/{staffId:guid}/grant-all")]
         public async Task<IActionResult> GrantAll(Guid staffId, [FromQuery] int deptId = 0)
         {
-            var (count, msg) = await _service.GrantAllAsync(staffId, deptId, CurrentUserId);
+            (int count, string msg) = await _service.GrantAllAsync(staffId, deptId, CurrentUserId);
             return Ok(new { granted = count, message = msg });
         }
 
@@ -71,18 +66,10 @@ namespace Accounts.Controllers
         [HttpDelete("staff/{staffId:guid}/revoke-all")]
         public async Task<IActionResult> RevokeAll(Guid staffId)
         {
-            var (count, msg) = await _service.RevokeAllAsync(staffId, CurrentUserId);
+            (int count, string msg) = await _service.RevokeAllAsync(staffId, CurrentUserId);
             return Ok(new { revoked = count, message = msg });
         }
-
-        // ── Department persons (read-only) ────────────────────────────────────
-
-        [HasPermission("ACCESS_GROUP_VIEW")]
-        [HttpGet("department/{deptId:int}/persons")]
-        public async Task<IActionResult> GetDepartmentPersons(int deptId) =>
-            Ok(await _service.GetDepartmentPersonsAsync(deptId));
     }
 
-    // ── DTOs ──────────────────────────────────────────────────────────────────
     public class ToggleDto { public bool HasAccess { get; set; } }
 }

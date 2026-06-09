@@ -27,6 +27,8 @@ namespace Accounts.Data
         public DbSet<Menu>                     Menus                    => Set<Menu>();
         public DbSet<MenuPermission>           MenuPermissions          => Set<MenuPermission>();
         public DbSet<Feature>                  Features                 => Set<Feature>();
+        public DbSet<StaffAccessGroup>         StaffAccessGroups        => Set<StaffAccessGroup>();
+        public DbSet<DepartmentAccessMatrix>   DepartmentAccessMatrix   => Set<DepartmentAccessMatrix>();
         // ── Hierarchical RBAC ─────────────────────────────────────────────────
         public DbSet<RolePermission>           RolePermissions          => Set<RolePermission>();
         public DbSet<UserPermissionOverride>   UserPermissionOverrides  => Set<UserPermissionOverride>();
@@ -170,6 +172,54 @@ namespace Accounts.Data
                 e.HasIndex(x => x.FeatureKey).IsUnique();
             });
 
+            builder.Entity<StaffAccessGroup>(e =>
+            {
+                e.ToTable("StaffAccessGroups");
+                e.HasKey(x => new { x.StaffId, x.GroupId });
+                e.Property(x => x.AssignedDate)
+                 .HasColumnType("datetime")
+                 .HasDefaultValueSql("GETDATE()");
+
+                e.HasOne(x => x.Staff)
+                 .WithMany()
+                 .HasForeignKey(x => x.StaffId)
+                 .OnDelete(DeleteBehavior.Cascade);
+            });
+
+            // ── DepartmentAccessMatrix (Legacy) ───────────────────────────────
+            builder.Entity<DepartmentAccessMatrix>(e =>
+            {
+                e.ToTable("DepartmentAccessMatrix");
+                e.HasKey(x => x.Id);
+                e.Property(x => x.Id).ValueGeneratedOnAdd();
+                e.Property(x => x.GrantedDate)
+                 .HasColumnType("datetime")
+                 .HasDefaultValueSql("GETDATE()");
+                e.Property(x => x.HasAccess).HasDefaultValue(false);
+
+                // Unique composite index: one entry per StaffId + PermissionId
+                e.HasIndex(x => new { x.StaffId, x.PermissionId }).IsUnique();
+
+                // Optimized covering indexes for common query patterns
+                e.HasIndex(x => x.StaffId);
+                e.HasIndex(x => x.DeptId);
+                e.HasIndex(x => x.PermissionId);
+
+                e.HasOne(x => x.Staff)
+                 .WithMany()
+                 .HasForeignKey(x => x.StaffId)
+                 .OnDelete(DeleteBehavior.Cascade);
+
+                e.HasOne(x => x.Department)
+                 .WithMany()
+                 .HasForeignKey(x => x.DeptId)
+                 .OnDelete(DeleteBehavior.Restrict);
+
+                e.HasOne(x => x.Feature)
+                 .WithMany()
+                 .HasForeignKey(x => x.PermissionId)
+                 .OnDelete(DeleteBehavior.Cascade);
+            });
 
             // ── RolePermission (Optimized) ────────────────────────────────────
             builder.Entity<RolePermission>(e =>
