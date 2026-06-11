@@ -6,11 +6,6 @@ namespace Accounts.Controllers
 {
     /// <summary>
     /// Manages the normalized JobTitles lookup table.
-    ///
-    /// Creatable-select contract (frontend):
-    ///   - If the user selects an existing title, send JobTitleId.
-    ///   - If the user types a new title, send JobTitleName.
-    ///   - The backend upserts and returns the stable Id.
     /// </summary>
     [ApiController]
     [Route("api/job-titles")]
@@ -22,18 +17,15 @@ namespace Accounts.Controllers
         public JobTitlesController(JobTitleService service) => _service = service;
 
         /// <summary>
-        /// Returns all job titles for dropdown population.
+        /// Returns all job titles with their active vacancy count for UI.
         /// GET /api/job-titles
         /// </summary>
         [HttpGet]
         public async Task<IActionResult> GetAll() =>
-            Ok(await _service.GetAllAsync());
+            Ok(await _service.GetAllWithCountAsync()); // 🌟 Ab Count bhi aayega!
 
         /// <summary>
         /// Upsert by name — finds existing (case-insensitive) or inserts new.
-        /// Returns { id, titleName }.
-        ///
-        /// Used by frontend creatable-select when user types a brand-new title.
         /// POST /api/job-titles/upsert
         /// </summary>
         [HttpPost("upsert")]
@@ -46,6 +38,48 @@ namespace Accounts.Controllers
             var id = await _service.UpsertByNameAsync(dto.TitleName.Trim());
             var title = await _service.GetByIdAsync(id);
             return Ok(new { id, titleName = title?.TitleName });
+        }
+
+        /// <summary>
+        /// Updates an existing job title.
+        /// PUT /api/job-titles/{id}
+        /// </summary>
+        [HttpPut("{id}")]
+        [Authorize(Roles = "SuperAdmin,Admin")]
+        public async Task<IActionResult> Update(int id, [FromBody] UpsertJobTitleDto dto)
+        {
+            if (string.IsNullOrWhiteSpace(dto.TitleName))
+                return BadRequest(new { message = "TitleName is required." });
+
+            var success = await _service.UpdateAsync(id, dto.TitleName.Trim());
+
+            if (!success)
+                return NotFound(new { message = "Job Title not found." });
+
+            return Ok(new { id, titleName = dto.TitleName.Trim() });
+        }
+
+        /// <summary>
+        /// Deletes a job title ONLY if it's not in use.
+        /// DELETE /api/job-titles/{id}
+        /// </summary>
+        [HttpDelete("{id}")]
+        [Authorize(Roles = "SuperAdmin,Admin")]
+        public async Task<IActionResult> Delete(int id)
+        {
+            try
+            {
+                var success = await _service.DeleteAsync(id);
+
+                if (!success)
+                    return NotFound(new { message = "Job Title not found." });
+
+                return Ok(new { message = "Job Title deleted successfully." });
+            }
+            catch (InvalidOperationException ex)
+            {
+                return BadRequest(new { message = ex.Message }); // 🌟 Agar Delete nai ho sakta to error dega
+            }
         }
     }
 
