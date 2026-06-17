@@ -20,7 +20,7 @@ namespace Accounts.Controllers
         private readonly RbacService            _rbac;
         private readonly IPersonAccessService   _personAccess;
         private readonly ApplicationDbContext   _db;
-        private readonly UserManager<IdentityUser> _userManager;
+        private readonly UserManager<ApplicationUser> _userManager;
 
         public AuthController(
             IAuthService service,
@@ -28,7 +28,7 @@ namespace Accounts.Controllers
             RbacService rbac,
             IPersonAccessService personAccess,
             ApplicationDbContext db,
-            UserManager<IdentityUser> userManager)
+            UserManager<ApplicationUser> userManager)
         {
             _service       = service;
             _session       = session;
@@ -81,7 +81,10 @@ namespace Accounts.Controllers
                 response.Username,
                 response.Email,
                 roles,
-                session = sessionData
+                tenantId      = user.TenantId,
+                isSuperAdmin  = user.IsSuperAdmin,
+                isTenantAdmin = user.IsTenantAdmin,
+                session       = sessionData
             });
         }
 
@@ -160,6 +163,43 @@ namespace Accounts.Controllers
 
             // ── SuperAdmin / Admin gets everything without any permission checks ──
             bool isFullAccess = User.IsInRole("SuperAdmin") || User.IsInRole("Admin");
+            var appUser = await _userManager.FindByIdAsync(identityUserId);
+
+            if (appUser?.IsSuperAdmin == true)
+            {
+                // Super Admin sees the FULL menu catalog.
+                // They need to see every menu so they can:
+                //   (a) know what features exist in the system
+                //   (b) delegate any of them to Tenant Admins via TenantMenuPermissions
+                //
+                // Data privacy is enforced at the API layer (StaffController,
+                // PersonsController, VacanciesController all return 403 for Super Admin),
+                // NOT by hiding sidebar entries.  The sidebar shows the routes; the
+                // controllers decide what data comes back when those routes call the API.
+                var allMenus = await _db.Menus.AsNoTracking()
+                    .Where(m => m.IsActive)
+                    .OrderBy(m => m.SortOrder)
+                    .ToListAsync(ct);
+
+                var allLookup = allMenus.ToLookup(m => m.ParentId);
+                var saMenus   = BuildFullTreeStatic(null, allLookup);
+
+                var allFeatureKeys = await _db.Features.AsNoTracking()
+                    .Select(f => f.FeatureKey).ToListAsync(ct);
+
+                return Ok(new
+                {
+                    status        = true,
+                    isFullAccess  = true,
+                    isSuperAdmin  = true,
+                    isTenantAdmin = false,
+                    tenantId      = (int?)null,
+                    staffId       = (Guid?)null,
+                    menus         = saMenus,
+                    permissions   = allFeatureKeys,
+                    permissionDetails = new List<object>()
+                });
+            }
 
             if (isFullAccess)
             {
@@ -171,12 +211,102 @@ namespace Accounts.Controllers
 
                 return Ok(new
                 {
-                    status       = true,
-                    isFullAccess = true,
-                    staffId      = (Guid?)null,
-                    menus        = allSidebar,
-                    permissions  = allFeatures.Select(f => f.FeatureKey).ToList(),
+                    status        = true,
+                    isFullAccess  = true,
+                    isSuperAdmin  = false,
+                    isTenantAdmin = appUser?.IsTenantAdmin ?? false,
+                    tenantId      = appUser?.TenantId,
+                    staffId       = (Guid?)null,
+                    menus         = allSidebar,
+                    permissions   = allFeatures.Select(f => f.FeatureKey).ToList(),
                     permissionDetails = allFeatures
+                });
+            }
+
+            // ── Tenant Admin path — check BEFORE requiring a Person record ──
+            // Tenant Admins are Identity users created by TenantController.Create.
+            // They may NOT have a Person record in the Persons table.
+            // They must still see the menus granted to their tenant.
+            if (appUser?.IsTenantAdmin == true && appUser.TenantId.HasValue)
+            {
+                var tenantGrantedMenuIds = await _db.TenantMenuPermissions
+                    .AsNoTracking()
+                    .Where(tmp => tmp.TenantId == appUser.TenantId.Value && tmp.IsAllow)
+                    .Select(tmp => tmp.MenuId)
+                    .ToHashSetAsync(ct);
+
+                var allMenus = await _db.Menus.AsNoTracking()
+                    .Where(m => m.IsActive)
+                    .OrderBy(m => m.SortOrder)
+                    .ToListAsync(ct);
+
+                var byId       = allMenus.ToDictionary(m => m.Id);
+                var visibleIds = new HashSet<int>(tenantGrantedMenuIds);
+
+                // Bubble up ancestors so tree structure is preserved
+                foreach (var menuId in tenantGrantedMenuIds)
+                {
+                    var current = byId.GetValueOrDefault(menuId);
+                    while (current?.ParentId != null && byId.TryGetValue(current.ParentId.Value, out var parent))
+                    {
+                        visibleIds.Add(parent.Id);
+                        current = parent;
+                    }
+                }
+
+                var filteredLookup = allMenus
+                    .Where(m => visibleIds.Contains(m.Id))
+                    .ToLookup(m => m.ParentId);
+
+                var tenantSidebar = BuildFullTreeStatic(null, filteredLookup);
+
+                // Auto-grant ALL CRUD feature keys for every granted menu.
+                // Build the key sets in memory (string.Format can't be translated to SQL).
+                var menuIdList = tenantGrantedMenuIds.ToList();
+                var allCrudSuffixes = new[] { "", "_VIEW", "_ADD", "_EDIT", "_DELETE" };
+                var autoKeys = menuIdList
+                    .SelectMany(mid => allCrudSuffixes.Select(s => $"MENU_{mid}{s}"))
+                    .ToHashSet();
+
+                // Also pull any explicitly defined Feature rows linked to these menus
+                // — fetch all Features first, then filter in memory
+                var dbFeatureKeys = await _db.Features
+                    .AsNoTracking()
+                    .Select(f => f.FeatureKey)
+                    .ToListAsync(ct);
+
+                var allGrantedKeys = autoKeys
+                    .Union(dbFeatureKeys.Where(k =>
+                        menuIdList.Any(mid =>
+                            k == $"MENU_{mid}" || k.StartsWith($"MENU_{mid}_"))))
+                    .Distinct()
+                    .ToList();
+
+                // Resolve the person record if it exists (for staffId)
+                var taPersonId  = (Guid?)null;
+                var taStaffId   = (Guid?)null;
+                var taPerson    = await _db.Persons.AsNoTracking()
+                    .Include(p => p.Staff)
+                    .FirstOrDefaultAsync(p => p.IdentityUserId == identityUserId, ct);
+                if (taPerson != null)
+                {
+                    taPersonId = taPerson.PersonId;
+                    taStaffId  = taPerson.Staff?.StaffId;
+                }
+
+                return Ok(new
+                {
+                    status        = true,
+                    isFullAccess  = false,
+                    isSuperAdmin  = false,
+                    isTenantAdmin = true,
+                    tenantId      = appUser.TenantId,
+                    personId      = taPersonId,
+                    staffId       = taStaffId,
+                    menus         = tenantSidebar,
+                    permissions   = allGrantedKeys,
+                    permissionDetails = new List<object>(),
+                    accessSource  = "TenantMenuPermissions"
                 });
             }
 
@@ -190,11 +320,14 @@ namespace Accounts.Controllers
             if (person == null)
                 return Ok(new
                 {
-                    status       = true,
-                    isFullAccess = false,
-                    staffId      = (Guid?)null,
-                    menus        = new List<object>(),
-                    permissions  = new List<string>(),
+                    status        = true,
+                    isFullAccess  = false,
+                    isSuperAdmin  = false,
+                    isTenantAdmin = appUser?.IsTenantAdmin ?? false,
+                    tenantId      = appUser?.TenantId,
+                    staffId       = (Guid?)null,
+                    menus         = new List<object>(),
+                    permissions   = new List<string>(),
                     permissionDetails = new List<object>()
                 });
 
@@ -212,38 +345,39 @@ namespace Accounts.Controllers
 
                 return Ok(new
                 {
-                    status       = true,
-                    isFullAccess = false,
-                    personId     = person.PersonId,
-                    staffId      = person.Staff?.StaffId,
-                    menus        = sidebar,
-                    permissions  = keys,
+                    status        = true,
+                    isFullAccess  = false,
+                    isSuperAdmin  = false,
+                    isTenantAdmin = appUser?.IsTenantAdmin ?? false,
+                    tenantId      = appUser?.TenantId,
+                    personId      = person.PersonId,
+                    staffId       = person.Staff?.StaffId,
+                    menus         = sidebar,
+                    permissions   = keys,
                     permissionDetails = allowedFeatures,
-                    accessSource = "PersonMenus"
+                    accessSource  = "PersonMenus"
                 });
             }
 
             if (person.Staff == null)
                 return Ok(new
                 {
-                    status       = true,
-                    isFullAccess = false,
-                    personId     = person.PersonId,
-                    staffId      = (Guid?)null,
-                    menus        = new List<object>(),
-                    permissions  = new List<string>(),
-                    message      = "No access granted yet. Ask admin to assign menu permissions.",
+                    status        = true,
+                    isFullAccess  = false,
+                    isSuperAdmin  = false,
+                    isTenantAdmin = appUser?.IsTenantAdmin ?? false,
+                    tenantId      = appUser?.TenantId,
+                    personId      = person.PersonId,
+                    staffId       = (Guid?)null,
+                    menus         = new List<object>(),
+                    permissions   = new List<string>(),
+                    message       = "No access granted yet. Ask admin to assign menu permissions.",
                     permissionDetails = new List<object>()
                 });
 
             var staffId = person.Staff.StaffId;
 
-            // Build the sidebar directly from StaffMenuAccess grants (the canonical path).
-            // This avoids the "no AccessFeature rows → unlock all" bug that would occur
-            // if we went through GetEffectivePermissionIdsAsync → BuildFilteredMenuTree.
             var legacySidebar = await _rbac.GetFilteredSidebarAsync(staffId);
-
-            // Collect allowed feature keys from explicit AccessFeature rows only
             var legacyAllowedIds = await _rbac.GetEffectivePermissionIdsAsync(staffId);
             var legacyFeatures = await _db.Features.AsNoTracking()
                 .Where(f => legacyAllowedIds.Contains(f.PermissionId))
@@ -253,22 +387,22 @@ namespace Accounts.Controllers
 
             return Ok(new
             {
-                status       = true,
-                isFullAccess = false,
-                personId     = person.PersonId,
+                status        = true,
+                isFullAccess  = false,
+                isSuperAdmin  = false,
+                isTenantAdmin = appUser?.IsTenantAdmin ?? false,
+                tenantId      = appUser?.TenantId,
+                personId      = person.PersonId,
                 staffId,
-                menus        = legacySidebar,
-                permissions  = legacyFeatures.Select(f => f.FeatureKey).ToList(),
+                menus         = legacySidebar,
+                permissions   = legacyFeatures.Select(f => f.FeatureKey).ToList(),
                 permissionDetails = legacyFeatures,
-                accessSource = "StaffRbac"
+                accessSource  = "StaffRbac"
             });
         }
 
         /// <summary>
         /// Recursively builds sidebar tree, keeping only menus the user can see.
-        /// Public menus (no MenuPermissions) are always included.
-        /// Restricted menus require at least one matching PermissionId.
-        /// Empty parent groups with no visible children are pruned.
         /// </summary>
         private static List<object> BuildFilteredMenuTree(
             int? parentId,
@@ -279,17 +413,11 @@ namespace Accounts.Controllers
             foreach (var menu in lookup[parentId])
             {
                 var requiredIds = menu.MenuPermissions.Select(mp => mp.PermissionId).ToList();
-
-                // Public = no permissions required; restricted = user needs ≥1 match
                 bool canSee = !requiredIds.Any() || requiredIds.Any(id => allowedIds.Contains(id));
                 if (!canSee) continue;
-
                 var children = BuildFilteredMenuTree(menu.Id, lookup, allowedIds);
-
-                // Prune empty parent groups
                 if (!children.Any() && string.IsNullOrWhiteSpace(menu.Route) && lookup[menu.Id].Any())
                     continue;
-
                 result.Add(new
                 {
                     id        = menu.Id,
@@ -301,6 +429,19 @@ namespace Accounts.Controllers
                 });
             }
             return result;
+        }
+
+        private static List<object> BuildFullTreeStatic(int? parentId, ILookup<int?, Accounts.Models.Menu> lookup)
+        {
+            return lookup[parentId].Select(menu => (object)new
+            {
+                id        = menu.Id,
+                title     = menu.Title,
+                icon      = menu.Icon,
+                route     = menu.Route,
+                sortOrder = menu.SortOrder,
+                children  = BuildFullTreeStatic(menu.Id, lookup)
+            }).ToList();
         }
     }
 }

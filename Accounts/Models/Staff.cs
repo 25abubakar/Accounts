@@ -4,10 +4,14 @@ using System.ComponentModel.DataAnnotations.Schema;
 namespace Accounts.Models
 {
     [Table("StaffVacancy")]
-    public class StaffVacancy
+    public class StaffVacancy : ITenantEntity
     {
         [Key]
         public Guid StaffId { get; set; } = Guid.NewGuid();
+
+        // ── ITenantEntity ─────────────────────────────────────────────────
+        /// <summary>FK to Tenants.Id — copied from the vacancy at hire time.</summary>
+        public int TenantId { get; set; }
 
         /// <summary>One vacancy = one person (UNIQUE enforced in DB)</summary>
         public Guid? VacancyId { get; set; }

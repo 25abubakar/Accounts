@@ -1,22 +1,23 @@
 using Accounts.Models;
 using Accounts.Services.Interfaces;
 using Microsoft.AspNetCore.Identity;
+using System.Security.Claims;
 
 namespace Accounts.Services.Services
 {
     public class AuthService : IAuthService
     {
-        private readonly UserManager<IdentityUser>  _userManager;
-        private readonly SignInManager<IdentityUser> _signInManager;
-        private readonly RoleManager<IdentityRole>  _roleManager;
+        private readonly UserManager<ApplicationUser>  _userManager;
+        private readonly SignInManager<ApplicationUser> _signInManager;
+        private readonly RoleManager<IdentityRole>      _roleManager;
 
         private static readonly string[] AllowedRoles =
-            ["Manager", "Developer", "AssistantManager", "SuperAdmin", "Admin"];
+            ["Manager", "Developer", "AssistantManager", "SuperAdmin", "Admin", "TenantAdmin"];
 
         public AuthService(
-            UserManager<IdentityUser>  userManager,
-            SignInManager<IdentityUser> signInManager,
-            RoleManager<IdentityRole>  roleManager)
+            UserManager<ApplicationUser>  userManager,
+            SignInManager<ApplicationUser> signInManager,
+            RoleManager<IdentityRole>      roleManager)
         {
             _userManager   = userManager;
             _signInManager = signInManager;
@@ -35,11 +36,12 @@ namespace Accounts.Services.Services
                 return (false, "Email is already registered.",
                     new AuthResponseDto { Success = false });
 
-            var user = new IdentityUser
+            var user = new ApplicationUser
             {
                 UserName       = dto.Email,
                 Email          = dto.Email,
-                EmailConfirmed = true
+                EmailConfirmed = true,
+                IsSuperAdmin   = dto.Role == "SuperAdmin"
             };
 
             var result = await _userManager.CreateAsync(user, dto.Password);
@@ -51,6 +53,10 @@ namespace Accounts.Services.Services
                 await _roleManager.CreateAsync(new IdentityRole(dto.Role));
 
             await _userManager.AddToRoleAsync(user, dto.Role);
+
+            // Stamp tenant claims as persistent user claims so they survive re-login
+            await StampTenantClaimsAsync(user);
+
             var roles = await _userManager.GetRolesAsync(user);
 
             return (true, "User registered successfully.", new AuthResponseDto
@@ -67,13 +73,11 @@ namespace Accounts.Services.Services
 
         public async Task<(bool Success, int StatusCode, AuthResponseDto Response)> LoginAsync(LoginDto dto)
         {
-            // Step 1: Resolve the IdentityUser by username or email
-            IdentityUser? user = null;
+            // Step 1: Resolve the ApplicationUser by username or email
+            ApplicationUser? user = null;
 
-            // Try username first (e.g. LT10001, admin)
             user = await _userManager.FindByNameAsync(dto.Username);
 
-            // Fallback: try email (e.g. abubakar@laltechnologies.com)
             if (user == null && dto.Username.Contains('@'))
                 user = await _userManager.FindByEmailAsync(dto.Username);
 
@@ -84,7 +88,10 @@ namespace Accounts.Services.Services
                     Message = "Invalid username or password."
                 });
 
-            // Step 2: Sign in using the resolved username
+            // Step 2: Ensure tenant claims are up-to-date before signing in
+            await StampTenantClaimsAsync(user);
+
+            // Step 3: Sign in — cookie will carry the claims stamped above
             var result = await _signInManager.PasswordSignInAsync(
                 user.UserName!, dto.Password, dto.RememberMe, lockoutOnFailure: false);
 
@@ -93,11 +100,14 @@ namespace Accounts.Services.Services
                 var roles = await _userManager.GetRolesAsync(user);
                 return (true, 200, new AuthResponseDto
                 {
-                    Success  = true,
-                    Message  = "Login successful.",
-                    Username = user.UserName,
-                    Email    = user.Email,
-                    Roles    = roles
+                    Success      = true,
+                    Message      = "Login successful.",
+                    Username     = user.UserName,
+                    Email        = user.Email,
+                    Roles        = roles,
+                    TenantId     = user.TenantId,
+                    IsSuperAdmin = user.IsSuperAdmin,
+                    IsTenantAdmin = user.IsTenantAdmin
                 });
             }
 
@@ -120,7 +130,7 @@ namespace Accounts.Services.Services
         public async Task LogoutAsync() =>
             await _signInManager.SignOutAsync();
 
-        // ── Assign Role — accepts Username OR Email ───────────────────────────
+        // ── Assign Role ───────────────────────────────────────────────────────
 
         public async Task<(bool Success, string Message, AuthResponseDto Response)> AssignRoleAsync(AssignRoleDto dto)
         {
@@ -128,7 +138,6 @@ namespace Accounts.Services.Services
                 return (false, $"Invalid role. Allowed: {string.Join(", ", AllowedRoles)}",
                     new AuthResponseDto { Success = false });
 
-            // Try username first, then email
             var user = await _userManager.FindByNameAsync(dto.Username)
                     ?? await _userManager.FindByEmailAsync(dto.Username);
 
@@ -141,6 +150,11 @@ namespace Accounts.Services.Services
             var current = await _userManager.GetRolesAsync(user);
             await _userManager.RemoveFromRolesAsync(user, current);
             await _userManager.AddToRoleAsync(user, dto.Role);
+
+            // Update IsSuperAdmin flag when role changes
+            user.IsSuperAdmin = dto.Role == "SuperAdmin";
+            await _userManager.UpdateAsync(user);
+            await StampTenantClaimsAsync(user);
 
             var updated = await _userManager.GetRolesAsync(user);
             return (true, $"Role '{dto.Role}' assigned to {user.UserName}.", new AuthResponseDto
@@ -163,9 +177,53 @@ namespace Accounts.Services.Services
                 u.Id,
                 u.UserName,
                 u.Email,
+                u.TenantId,
+                u.IsSuperAdmin,
+                u.IsTenantAdmin,
                 Roles = _userManager.GetRolesAsync(u).Result
             });
             return Task.FromResult(result);
+        }
+
+        // ── Private: stamp tenant claims as persistent user claims ────────────
+
+        /// <summary>
+        /// Writes tenant_id, is_super_admin, and is_tenant_admin as persistent
+        /// user claims (stored in AspNetUserClaims) so they are automatically
+        /// included in every cookie/session without a DB lookup on each request.
+        ///
+        /// Called on registration, login, and role assignment to keep claims
+        /// in sync with the ApplicationUser flags.
+        /// </summary>
+        private async Task StampTenantClaimsAsync(ApplicationUser user)
+        {
+            // Remove stale tenant claims before re-stamping
+            var existingClaims = await _userManager.GetClaimsAsync(user);
+            var tenantClaimTypes = new[]
+            {
+                ITenantService.ClaimTenantId,
+                ITenantService.ClaimIsSuperAdmin,
+                ITenantService.ClaimIsTenantAdmin
+            };
+
+            var stale = existingClaims
+                .Where(c => tenantClaimTypes.Contains(c.Type))
+                .ToList();
+
+            if (stale.Any())
+                await _userManager.RemoveClaimsAsync(user, stale);
+
+            // Write fresh claims
+            var fresh = new List<Claim>
+            {
+                new(ITenantService.ClaimIsSuperAdmin,  user.IsSuperAdmin.ToString().ToLower()),
+                new(ITenantService.ClaimIsTenantAdmin, user.IsTenantAdmin.ToString().ToLower()),
+            };
+
+            if (user.TenantId.HasValue)
+                fresh.Add(new Claim(ITenantService.ClaimTenantId, user.TenantId.Value.ToString()));
+
+            await _userManager.AddClaimsAsync(user, fresh);
         }
     }
 }

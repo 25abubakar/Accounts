@@ -33,7 +33,6 @@ namespace Accounts.Authorization
 
         public IFilterMetadata CreateInstance(IServiceProvider serviceProvider)
         {
-            // Resolve dependencies from DI, pass featureKey manually
             var db   = serviceProvider.GetRequiredService<ApplicationDbContext>();
             var rbac = serviceProvider.GetRequiredService<RbacService>();
             return new PermissionFilter(_featureKey, db, rbac);
@@ -75,8 +74,9 @@ namespace Accounts.Authorization
                 return;
             }
 
-            // ── 2. SuperAdmin / Admin bypasses all checks ───────────────────────
-            if (user.IsInRole("SuperAdmin") || user.IsInRole("Admin"))
+            // ── 2. SuperAdmin / Admin / TenantAdmin bypasses all permission checks ──
+            // TenantAdmin access is controlled by TenantMenuPermissions, not RBAC
+            if (user.IsInRole("SuperAdmin") || user.IsInRole("Admin") || user.IsInRole("TenantAdmin"))
                 return;
 
             // ── 3. Get IdentityUser.Id from claims ────────────────────────────

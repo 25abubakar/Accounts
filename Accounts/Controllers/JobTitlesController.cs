@@ -29,7 +29,7 @@ namespace Accounts.Controllers
         /// POST /api/job-titles/upsert
         /// </summary>
         [HttpPost("upsert")]
-        [Authorize(Roles = "SuperAdmin,Admin")]
+        [Authorize(Roles = "SuperAdmin,Admin,TenantAdmin")]
         public async Task<IActionResult> Upsert([FromBody] UpsertJobTitleDto dto)
         {
             if (string.IsNullOrWhiteSpace(dto.TitleName))
@@ -45,7 +45,7 @@ namespace Accounts.Controllers
         /// PUT /api/job-titles/{id}
         /// </summary>
         [HttpPut("{id}")]
-        [Authorize(Roles = "SuperAdmin,Admin")]
+        [Authorize(Roles = "SuperAdmin,Admin,TenantAdmin")]
         public async Task<IActionResult> Update(int id, [FromBody] UpsertJobTitleDto dto)
         {
             if (string.IsNullOrWhiteSpace(dto.TitleName))
@@ -64,7 +64,7 @@ namespace Accounts.Controllers
         /// DELETE /api/job-titles/{id}
         /// </summary>
         [HttpDelete("{id}")]
-        [Authorize(Roles = "SuperAdmin,Admin")]
+        [Authorize(Roles = "SuperAdmin,Admin,TenantAdmin")]
         public async Task<IActionResult> Delete(int id)
         {
             try

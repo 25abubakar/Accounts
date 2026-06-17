@@ -56,5 +56,10 @@ namespace Accounts.Models
         public string? Username { get; set; }
         public string? Email    { get; set; }
         public IList<string>? Roles { get; set; }
+
+        // ── Multi-Tenant SaaS fields ──────────────────────────────────────
+        public int?  TenantId      { get; set; }
+        public bool  IsSuperAdmin  { get; set; }
+        public bool  IsTenantAdmin { get; set; }
     }
 }

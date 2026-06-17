@@ -4,10 +4,14 @@ using System.ComponentModel.DataAnnotations.Schema;
 namespace Accounts.Models
 {
     [Table("Persons")]
-    public class Person
+    public class Person : ITenantEntity
     {
         [Key]
         public Guid PersonId { get; set; } = Guid.NewGuid();
+
+        // ── ITenantEntity ─────────────────────────────────────────────────
+        /// <summary>FK to Tenants.Id — set on registration, never changed.</summary>
+        public int TenantId { get; set; }
 
         [Required]
         [MaxLength(150)]

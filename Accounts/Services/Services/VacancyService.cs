@@ -10,12 +10,18 @@ namespace Accounts.Services.Services
         private readonly ApplicationDbContext _db;
         private readonly VacancyCodeService   _codeService;
         private readonly JobTitleService      _jobTitleService;
+        private readonly ITenantService       _tenantService;
 
-        public VacancyService(ApplicationDbContext db, VacancyCodeService codeService, JobTitleService jobTitleService)
+        public VacancyService(
+            ApplicationDbContext db,
+            VacancyCodeService   codeService,
+            JobTitleService      jobTitleService,
+            ITenantService       tenantService)
         {
             _db              = db;
             _codeService     = codeService;
             _jobTitleService = jobTitleService;
+            _tenantService   = tenantService;
         }
 
         public async Task<IEnumerable<VacancyDto>> GetAllAsync()
@@ -123,6 +129,7 @@ namespace Accounts.Services.Services
             var vacancy = new Vacancy
             {
                 VacancyId      = Guid.NewGuid(),
+                TenantId       = _tenantService.RequiredTenantId,   // ← stamp tenant
                 OrganizationId = dto.OrganizationId,
                 VacancyCode    = vacancyCode,
                 JobTitleId     = jobTitleId,
@@ -205,6 +212,7 @@ namespace Accounts.Services.Services
                     var vacancy = new Vacancy
                     {
                         VacancyId      = Guid.NewGuid(),
+                        TenantId       = _tenantService.RequiredTenantId,   // ← stamp tenant
                         OrganizationId = dto.OrganizationId,
                         VacancyCode    = vacancyCode,
                         JobTitleId     = jobTitleId,

@@ -10,17 +10,20 @@ namespace Accounts.Services.Services
     public class PersonService : IPersonService
     {
         private readonly ApplicationDbContext      _db;
-        private readonly UserManager<IdentityUser> _userManager;
+        private readonly UserManager<ApplicationUser> _userManager;
         private readonly IWebHostEnvironment       _env;
+        private readonly ITenantService            _tenantService;
 
         public PersonService(
-            ApplicationDbContext      db,
-            UserManager<IdentityUser> userManager,
-            IWebHostEnvironment       env)
+            ApplicationDbContext         db,
+            UserManager<ApplicationUser> userManager,
+            IWebHostEnvironment          env,
+            ITenantService               tenantService)
         {
-            _db          = db;
-            _userManager = userManager;
-            _env         = env;
+            _db            = db;
+            _userManager   = userManager;
+            _env           = env;
+            _tenantService = tenantService;
         }
 
         public async Task<IEnumerable<PersonDto>> GetAllAsync()
@@ -153,11 +156,12 @@ namespace Accounts.Services.Services
                 email = await GenerateEmailAsync(dto.FullName, companyNode);
             }
 
-            var identityUser = new IdentityUser
+            var identityUser = new ApplicationUser
             {
                 UserName       = loginId,
                 Email          = email,
-                EmailConfirmed = true
+                EmailConfirmed = true,
+                TenantId       = _tenantService.TenantId   // stamp tenant on the Identity user too
             };
 
             // Always use auto-generated password — ignore any password sent from frontend
@@ -165,18 +169,30 @@ namespace Accounts.Services.Services
             if (!createResult.Succeeded)
                 return (null, null, null, string.Join("; ", createResult.Errors.Select(e => e.Description)), 400);
 
+            // ── Stamp tenant claims on the new user so they work on first login ──
+            if (_tenantService.TenantId.HasValue)
+            {
+                await _userManager.AddClaimsAsync(identityUser, new[]
+                {
+                    new System.Security.Claims.Claim(ITenantService.ClaimTenantId,      _tenantService.TenantId.Value.ToString()),
+                    new System.Security.Claims.Claim(ITenantService.ClaimIsSuperAdmin,  "false"),
+                    new System.Security.Claims.Claim(ITenantService.ClaimIsTenantAdmin, "false"),
+                });
+            }
+
             // ── Split FullName into FirstName, MiddleName, LastName ────────────
             var (firstName, middleName, lastName) = SplitFullName(dto.FullName);
 
             var person = new Person
             {
                 PersonId       = Guid.NewGuid(),
+                TenantId       = _tenantService.RequiredTenantId,  // ← stamp tenant
                 FirstName      = firstName,
                 MiddleName     = middleName,
                 LastName       = lastName,
-                FullName       = dto.FullName.Trim(), // Keep for backward compat
-                Phone          = dto.Phone?.Trim(),   // Keep for backward compat (will sync from Contacts)
-                Email          = email,               // Keep for backward compat (will sync from Contacts)
+                FullName       = dto.FullName.Trim(),
+                Phone          = dto.Phone?.Trim(),
+                Email          = email,
                 Gender         = dto.Gender?.Trim(),
                 DateOfBirth    = dto.DateOfBirth,
                 MaritalStatus  = dto.MaritalStatus?.Trim(),
@@ -272,7 +288,7 @@ namespace Accounts.Services.Services
                 var iu = await _userManager.FindByIdAsync(person.IdentityUserId);
                 if (iu != null && !string.Equals(iu.Email, dto.Email.Trim(), StringComparison.OrdinalIgnoreCase))
                 {
-                    iu.Email = dto.Email.Trim();
+                    iu.Email           = dto.Email.Trim();
                     iu.NormalizedEmail = dto.Email.Trim().ToUpperInvariant();
                     await _userManager.UpdateAsync(iu);
                 }

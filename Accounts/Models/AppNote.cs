@@ -13,6 +13,10 @@ namespace Accounts.Models
         public int? TenantId { get; set; }
         public int? OrgUnitId { get; set; }
 
+        // ── Navigation ─────────────────────────────────────────────────────
+        [ForeignKey(nameof(TenantId))]
+        public Tenant? Tenant { get; set; }
+
         [Required, MaxLength(250)]
         public string Title { get; set; } = string.Empty;
 

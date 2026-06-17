@@ -13,11 +13,15 @@ namespace Accounts.Models
     /// No duplicates are allowed (TitleName has a UNIQUE constraint).
     /// </summary>
     [Table("JobTitles")]
-    public class JobTitle
+    public class JobTitle : ITenantEntity
     {
         [Key]
         [DatabaseGenerated(DatabaseGeneratedOption.Identity)]
         public int Id { get; set; }
+
+        // ── ITenantEntity ─────────────────────────────────────────────────
+        /// <summary>FK to Tenants.Id — job titles are tenant-scoped.</summary>
+        public int TenantId { get; set; }
 
         [Required]
         [MaxLength(100)]

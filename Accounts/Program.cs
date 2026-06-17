@@ -1,5 +1,8 @@
 using Accounts.Data;
+using Accounts.Models;
 using Accounts.Services;
+using Accounts.Services.Interfaces;
+using Accounts.Services.Services;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 
@@ -16,11 +19,11 @@ builder.Services.AddDbContext<ApplicationDbContext>(options =>
                 maxRetryDelay: TimeSpan.FromSeconds(10),
                 errorNumbersToAdd: null);
         })
-    .EnableDetailedErrors()          // shows full column/value info in exceptions
-    .EnableSensitiveDataLogging());  // shows parameter values in logs
+    .EnableDetailedErrors()
+    .EnableSensitiveDataLogging());
 
-// ── 2. Identity Configuration ────────────────────────────────────────────────
-builder.Services.AddDefaultIdentity<IdentityUser>(options =>
+// ── 2. Identity Configuration (ApplicationUser, not IdentityUser) ────────────
+builder.Services.AddIdentity<ApplicationUser, IdentityRole>(options =>
 {
     options.SignIn.RequireConfirmedAccount = false;
     options.Password.RequiredLength = 6;
@@ -29,19 +32,17 @@ builder.Services.AddDefaultIdentity<IdentityUser>(options =>
     options.Password.RequireUppercase = true;
     options.Password.RequireNonAlphanumeric = true;
 })
-.AddRoles<IdentityRole>()
-.AddEntityFrameworkStores<ApplicationDbContext>();
+.AddEntityFrameworkStores<ApplicationDbContext>()
+.AddDefaultTokenProviders();
 
-// 🔥 FIX 1: Configure Application Cookies for Cross-Origin Cookie Sharing
+// ── 3. Cookie Configuration ──────────────────────────────────────────────────
 builder.Services.ConfigureApplicationCookie(options =>
 {
-    options.Cookie.SameSite    = SameSiteMode.None;
-    // SameAsRequest = works on both HTTP and HTTPS (not Always which requires HTTPS)
+    options.Cookie.SameSite     = SameSiteMode.None;
     options.Cookie.SecurePolicy = CookieSecurePolicy.SameAsRequest;
-    options.Cookie.HttpOnly    = true;
-    options.Cookie.Name        = ".AspNetCore.Identity.Application";
+    options.Cookie.HttpOnly     = true;
+    options.Cookie.Name         = ".AspNetCore.Identity.Application";
 
-    // Return 401 instead of redirecting to login page (API behaviour)
     options.Events.OnRedirectToLogin = context =>
     {
         context.Response.StatusCode = StatusCodes.Status401Unauthorized;
@@ -54,15 +55,13 @@ builder.Services.ConfigureApplicationCookie(options =>
     };
 });
 
-// ── 3. HttpClients ───────────────────────────────────────────────────────────
-builder.Services.AddHttpClient("CountryApi", client => {
-    client.BaseAddress = new Uri("https://restcountries.com/v3.1/");
-});
-builder.Services.AddHttpClient("CountriesNow", client => {
-    client.BaseAddress = new Uri("https://countriesnow.space/api/v0.1/");
-});
+// ── 4. HttpClients ───────────────────────────────────────────────────────────
+builder.Services.AddHttpClient("CountryApi", client =>
+    client.BaseAddress = new Uri("https://restcountries.com/v3.1/"));
+builder.Services.AddHttpClient("CountriesNow", client =>
+    client.BaseAddress = new Uri("https://countriesnow.space/api/v0.1/"));
 
-// 🔥 FIX 2: Explicit CORS policy targeting your React frontend (No Wildcards)
+// ── 5. CORS ──────────────────────────────────────────────────────────────────
 builder.Services.AddCors(options =>
 {
     options.AddPolicy("AllowReactApp", policy =>
@@ -76,78 +75,65 @@ builder.Services.AddCors(options =>
               .AllowCredentials());
 });
 
+// ── 6. Controllers + JSON ────────────────────────────────────────────────────
 builder.Services.AddControllers()
     .AddJsonOptions(options =>
     {
-        // Allow flexible JSON deserialization for address fields
         options.JsonSerializerOptions.PropertyNameCaseInsensitive = true;
         options.JsonSerializerOptions.DefaultIgnoreCondition =
             System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull;
-        // Fix: break EF Core circular reference cycles (e.g. StaffMenuAccess ↔ AccessFeatures)
         options.JsonSerializerOptions.ReferenceHandler =
             System.Text.Json.Serialization.ReferenceHandler.IgnoreCycles;
     });
 builder.Services.AddRazorPages();
 
-// ── 4. Dependency Injection Registrations ────────────────────────────────────
-builder.Services.AddScoped<VacancyCodeService>();
-builder.Services.AddScoped<Accounts.Services.Interfaces.IAuthService, Accounts.Services.Services.AuthService>();
-builder.Services.AddScoped<Accounts.Services.Interfaces.IOrganizationService, Accounts.Services.Services.OrganizationService>();
-builder.Services.AddScoped<Accounts.Services.Interfaces.IOrganizationEmployeeQueryService, Accounts.Services.Services.OrganizationEmployeeQueryService>();
-builder.Services.AddScoped<Accounts.Services.Interfaces.IVacancyService, Accounts.Services.Services.VacancyService>();
-builder.Services.AddScoped<Accounts.Services.Interfaces.IStaffService, Accounts.Services.Services.StaffService>();
-builder.Services.AddScoped<Accounts.Services.Interfaces.IPersonService, Accounts.Services.Services.PersonService>();
-builder.Services.AddScoped<Accounts.Services.Interfaces.IMenuService, Accounts.Services.Services.MenuService>();
-builder.Services.AddScoped<Accounts.Services.Interfaces.IAccessService, Accounts.Services.Services.AccessService>();
-builder.Services.AddScoped<Accounts.Services.Interfaces.IPermissionFilterService, Accounts.Services.Services.PermissionFilterService>();
-builder.Services.AddScoped<Accounts.Services.Services.RbacService>();
-
-// ── Optimized RBAC Services (No N+1 Queries) ──────────────────────────────────
-builder.Services.AddScoped<Accounts.Services.Services.OptimizedMenuService>();
+// ── 7. Dependency Injection ──────────────────────────────────────────────────
 builder.Services.AddHttpContextAccessor();
 
-// ── Communication Center ──────────────────────────────────────────────────────
-builder.Services.AddScoped<Accounts.Services.Interfaces.IAppNoteService, Accounts.Services.Services.AppNoteService>();
-builder.Services.AddScoped<Accounts.Services.Interfaces.IUserSessionService, Accounts.Services.Services.UserSessionService>();
-builder.Services.AddScoped<Accounts.Services.Interfaces.IPersonAccessService, Accounts.Services.Services.PersonAccessService>();
+// ── Multi-Tenant: ITenantService reads TenantId from HttpContext.User claims ─
+builder.Services.AddScoped<ITenantService, TenantService>();
 
-// ── New normalized domain services ───────────────────────────────────────────
-builder.Services.AddScoped<Accounts.Services.Services.StaffMenuAccessService>();
-builder.Services.AddScoped<Accounts.Services.Services.JobTitleService>();
+// ── Core domain services ──────────────────────────────────────────────────────
+builder.Services.AddScoped<VacancyCodeService>();
+builder.Services.AddScoped<IAuthService, AuthService>();
+builder.Services.AddScoped<IOrganizationService, OrganizationService>();
+builder.Services.AddScoped<IOrganizationEmployeeQueryService, OrganizationEmployeeQueryService>();
+builder.Services.AddScoped<IVacancyService, VacancyService>();
+builder.Services.AddScoped<IStaffService, StaffService>();
+builder.Services.AddScoped<IPersonService, PersonService>();
+builder.Services.AddScoped<IMenuService, MenuService>();
+builder.Services.AddScoped<IAccessService, AccessService>();
+builder.Services.AddScoped<IPermissionFilterService, PermissionFilterService>();
+builder.Services.AddScoped<RbacService>();
+builder.Services.AddScoped<OptimizedMenuService>();
+
+// ── Communication Center ──────────────────────────────────────────────────────
+builder.Services.AddScoped<IAppNoteService, AppNoteService>();
+builder.Services.AddScoped<IUserSessionService, UserSessionService>();
+builder.Services.AddScoped<IPersonAccessService, PersonAccessService>();
+
+// ── Normalized domain services ────────────────────────────────────────────────
+builder.Services.AddScoped<StaffMenuAccessService>();
+builder.Services.AddScoped<JobTitleService>();
 
 // ── Dynamic Permission-Based Authorization ────────────────────────────────────
-builder.Services.AddSingleton<Microsoft.AspNetCore.Authorization.IAuthorizationPolicyProvider, Accounts.Authorization.PermissionPolicyProvider>();
-builder.Services.AddScoped<Microsoft.AspNetCore.Authorization.IAuthorizationHandler, Accounts.Authorization.PermissionAuthorizationHandler>();
+builder.Services.AddSingleton<Microsoft.AspNetCore.Authorization.IAuthorizationPolicyProvider,
+    Accounts.Authorization.PermissionPolicyProvider>();
+builder.Services.AddScoped<Microsoft.AspNetCore.Authorization.IAuthorizationHandler,
+    Accounts.Authorization.PermissionAuthorizationHandler>();
 
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 
 var app = builder.Build();
 
-// ── 5. Seed Logic ────────────────────────────────────────────────────────────
+// ── 8. Seed Roles + Super Admin ──────────────────────────────────────────────
 using (var scope = app.Services.CreateScope())
 {
-    var roleManager = scope.ServiceProvider.GetRequiredService<RoleManager<IdentityRole>>();
-    var userManager = scope.ServiceProvider.GetRequiredService<UserManager<IdentityUser>>();
-
-    string[] roles = { "SuperAdmin", "Admin", "Manager", "Developer", "AssistantManager" };
-    foreach (var role in roles)
-    {
-        if (!await roleManager.RoleExistsAsync(role))
-            await roleManager.CreateAsync(new IdentityRole(role));
-    }
-
-    const string adminUsername = "admin";
-    var existingAdmin = await userManager.FindByNameAsync(adminUsername);
-    if (existingAdmin == null)
-    {
-        var adminUser = new IdentityUser { UserName = adminUsername, Email = "admin@laltechnologies.com", EmailConfirmed = true };
-        var result = await userManager.CreateAsync(adminUser, "Admin@123");
-        if (result.Succeeded) await userManager.AddToRoleAsync(adminUser, "SuperAdmin");
-    }
+    await DbSeeder.SeedAsync(scope.ServiceProvider);
 }
 
-// ── 6. Middleware Pipeline ───────────────────────────────────────────────────
+// ── 9. Middleware Pipeline ────────────────────────────────────────────────────
 if (app.Environment.IsDevelopment())
 {
     app.UseSwagger();
@@ -158,7 +144,6 @@ app.UseHttpsRedirection();
 app.UseStaticFiles();
 app.UseRouting();
 
-// CORS policy MUST be executed after UseRouting but before Authorization engines
 app.UseCors("AllowReactApp");
 
 app.UseAuthentication();

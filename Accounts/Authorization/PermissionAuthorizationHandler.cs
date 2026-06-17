@@ -45,8 +45,9 @@ namespace Accounts.Authorization
                 return;
             }
 
-            // SuperAdmin/Admin bypass
-            if (user.IsInRole("SuperAdmin") || user.IsInRole("Admin"))
+            // SuperAdmin/Admin/TenantAdmin bypass
+            // TenantAdmin uses TenantMenuPermissions, not RBAC overrides
+            if (user.IsInRole("SuperAdmin") || user.IsInRole("Admin") || user.IsInRole("TenantAdmin"))
             {
                 context.Succeed(requirement);
                 return;

@@ -9,11 +9,16 @@ namespace Accounts.Services.Services
     {
         private readonly ApplicationDbContext _db;
         private readonly IWebHostEnvironment  _env;
+        private readonly ITenantService       _tenantService;
 
-        public StaffService(ApplicationDbContext db, IWebHostEnvironment env)
+        public StaffService(
+            ApplicationDbContext db,
+            IWebHostEnvironment  env,
+            ITenantService       tenantService)
         {
-            _db  = db;
-            _env = env;
+            _db            = db;
+            _env           = env;
+            _tenantService = tenantService;
         }
 
         public async Task<IEnumerable<StaffDto>> GetAllAsync()
@@ -62,10 +67,11 @@ namespace Accounts.Services.Services
 
             var staff = new StaffVacancy
             {
-                StaffId     = Guid.NewGuid(),
-                VacancyId   = vacancyId,
-                PersonId    = personId,
-                LoginId     = identityUser?.UserName
+                StaffId    = Guid.NewGuid(),
+                VacancyId  = vacancyId,
+                PersonId   = personId,
+                LoginId    = identityUser?.UserName,
+                TenantId   = vacancy.TenantId   // inherit TenantId from the vacancy
             };
 
             _db.StaffVacancies.Add(staff);

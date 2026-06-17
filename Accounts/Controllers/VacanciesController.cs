@@ -1,45 +1,83 @@
-using Accounts.Authorization;
 using Accounts.Models;
 using Accounts.Services.Interfaces;
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc;
+using System.Security.Claims;
 
 namespace Accounts.Controllers
 {
+    /// <summary>
+    /// Positions/Vacancies API — accessible to Tenant Admins and Staff.
+    /// Super Admin is blocked (no operational data access).
+    /// Data is automatically scoped per tenant via EF Core Global Query Filters.
+    /// </summary>
     [ApiController]
     [Route("api/positions")]
+    [Authorize]
     [Produces("application/json")]
     public class VacanciesController : ControllerBase
     {
-        private readonly IVacancyService _service;
-        public VacanciesController(IVacancyService service) => _service = service;
+        private readonly IVacancyService              _service;
+        private readonly UserManager<ApplicationUser> _userManager;
 
-        [HasPermission("MENU_11_VIEW")]
+        public VacanciesController(
+            IVacancyService              service,
+            UserManager<ApplicationUser> userManager)
+        {
+            _service     = service;
+            _userManager = userManager;
+        }
+
+        private async Task<bool> CallerIsSuperAdminAsync()
+        {
+            var uid  = User.FindFirstValue(ClaimTypes.NameIdentifier);
+            var user = uid != null ? await _userManager.FindByIdAsync(uid) : null;
+            return user?.IsSuperAdmin == true;
+        }
+
         [HttpGet]
-        public async Task<IActionResult> GetAll() => Ok(await _service.GetAllAsync());
+        public async Task<IActionResult> GetAll()
+        {
+            if (await CallerIsSuperAdminAsync()) return Forbid();
+            return Ok(await _service.GetAllAsync());
+        }
 
-        [HasPermission("MENU_11_VIEW")]
         [HttpGet("{id:guid}")]
         public async Task<IActionResult> GetById(Guid id)
         {
+            if (await CallerIsSuperAdminAsync()) return Forbid();
             var v = await _service.GetByIdAsync(id);
             return v == null ? NotFound(new { message = $"Position {id} not found." }) : Ok(v);
         }
 
-        [HasPermission("MENU_11_VIEW")]
         [HttpGet("vacant")]
-        public async Task<IActionResult> GetVacant() => Ok(await _service.GetVacantAsync());
+        public async Task<IActionResult> GetVacant()
+        {
+            if (await CallerIsSuperAdminAsync()) return Forbid();
+            return Ok(await _service.GetVacantAsync());
+        }
 
-        [HasPermission("MENU_11_VIEW")]
         [HttpGet("filled")]
-        public async Task<IActionResult> GetFilled() => Ok(await _service.GetFilledAsync());
+        public async Task<IActionResult> GetFilled()
+        {
+            if (await CallerIsSuperAdminAsync()) return Forbid();
+            return Ok(await _service.GetFilledAsync());
+        }
 
-        [HasPermission("MENU_11_VIEW")]
         [HttpGet("by-node/{orgId:int}")]
-        public async Task<IActionResult> GetByNode(int orgId) => Ok(await _service.GetByNodeAsync(orgId));
+        public async Task<IActionResult> GetByNode(int orgId)
+        {
+            if (await CallerIsSuperAdminAsync()) return Forbid();
+            return Ok(await _service.GetByNodeAsync(orgId));
+        }
 
-        [HasPermission("MENU_11_VIEW")]
         [HttpGet("report")]
-        public async Task<IActionResult> GetReport() => Ok(await _service.GetReportAsync());
+        public async Task<IActionResult> GetReport()
+        {
+            if (await CallerIsSuperAdminAsync()) return Forbid();
+            return Ok(await _service.GetReportAsync());
+        }
 
         [HttpGet("preview-code")]
         public async Task<IActionResult> PreviewCode([FromQuery] int organizationId, [FromQuery] string jobTitle)
@@ -52,10 +90,10 @@ namespace Accounts.Controllers
                 : Ok(new { vacancyCode = code });
         }
 
-        [HasPermission("MENU_11_ADD")]
         [HttpPost]
         public async Task<IActionResult> Create([FromBody] CreateVacancyDto dto)
         {
+            if (await CallerIsSuperAdminAsync()) return Forbid();
             if (!ModelState.IsValid) return BadRequest(ModelState);
             if (dto.VacancyCount <= 1)
             {
@@ -69,10 +107,10 @@ namespace Accounts.Controllers
             return Ok(new { requested = dto.VacancyCount, created = list.Count, failed = errors.Count(), vacancies = list, errors = errors.Any() ? errors : null });
         }
 
-        [HasPermission("MENU_11_ADD")]
         [HttpPost("bulk")]
         public async Task<IActionResult> CreateBulk([FromBody] CreateVacancyDto dto)
         {
+            if (await CallerIsSuperAdminAsync()) return Forbid();
             if (!ModelState.IsValid) return BadRequest(ModelState);
             if (dto.VacancyCount < 1) return BadRequest(new { message = "VacancyCount must be at least 1." });
             var (created, errors) = await _service.CreateBulkAsync(dto);
@@ -80,20 +118,20 @@ namespace Accounts.Controllers
             return Ok(new { requested = dto.VacancyCount, created = list.Count, failed = errors.Count(), vacancies = list, errors = errors.Any() ? errors : null });
         }
 
-        [HasPermission("MENU_11_EDIT")]
         [HttpPut("{id:guid}")]
         public async Task<IActionResult> Update(Guid id, [FromBody] UpdateVacancyDto dto)
         {
+            if (await CallerIsSuperAdminAsync()) return Forbid();
             if (!ModelState.IsValid) return BadRequest(ModelState);
             var (vacancy, error) = await _service.UpdateAsync(id, dto);
             if (error != null) return error.Contains("not found") ? NotFound(new { message = error }) : BadRequest(new { message = error });
             return Ok(vacancy);
         }
 
-        [HasPermission("MENU_11_DELETE")]
         [HttpDelete("{id:guid}")]
         public async Task<IActionResult> Delete(Guid id)
         {
+            if (await CallerIsSuperAdminAsync()) return Forbid();
             var (success, message) = await _service.DeleteAsync(id);
             if (!success) return message.Contains("not found") ? NotFound(new { message }) : BadRequest(new { message });
             return Ok(new { message });

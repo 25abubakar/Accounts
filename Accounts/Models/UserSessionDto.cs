@@ -11,6 +11,12 @@ namespace Accounts.Models
         public Guid? PersonId { get; set; }
         public Guid? StaffId { get; set; }
         public string? IdentityUserId { get; set; }
+
+        // ── Multi-tenant fields ───────────────────────────────────────────────
+        public int?  TenantId      { get; set; }
+        public bool  IsSuperAdmin  { get; set; }
+        public bool  IsTenantAdmin { get; set; }
+
         public List<object> Sidebar { get; set; } = new();
         public List<string> Permissions { get; set; } = new();
         public List<AppNoteDto> LoginInstructions { get; set; } = new();

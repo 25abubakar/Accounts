@@ -13,11 +13,16 @@ namespace Accounts.Services.Services
     {
         private readonly ApplicationDbContext _db;
         private readonly ILogger<AppNoteService> _logger;
+        private readonly ITenantService _tenantService;
 
-        public AppNoteService(ApplicationDbContext db, ILogger<AppNoteService> logger)
+        public AppNoteService(
+            ApplicationDbContext db,
+            ILogger<AppNoteService> logger,
+            ITenantService tenantService)
         {
             _db = db;
             _logger = logger;
+            _tenantService = tenantService;
         }
 
         // ── Get Visible ───────────────────────────────────────────────────────
@@ -43,7 +48,8 @@ namespace Accounts.Services.Services
             string userName = string.Empty;
             string email = string.Empty;
 
-            // ── STEP 1: Safe AspNetUsers Fields Fetch ──
+            // ── STEP 1: Read UserName + Email from AspNetUsers ──
+            // ApplicationUser extends IdentityUser — same table, same columns for UserName/Email.
             try
             {
                 var connection = _db.Database.GetDbConnection();
@@ -52,11 +58,11 @@ namespace Accounts.Services.Services
 
                 using (var command = connection.CreateCommand())
                 {
-                    command.CommandText = "SELECT UserName, Email FROM dbo.AspNetUsers WHERE CAST(Id AS VARCHAR(100)) = @uid";
-
+                    command.CommandText =
+                        "SELECT UserName, Email FROM dbo.AspNetUsers WHERE Id = @uid";
                     var parameter = command.CreateParameter();
                     parameter.ParameterName = "@uid";
-                    parameter.Value = identityUserId.Trim().ToLower();
+                    parameter.Value = identityUserId.Trim();
                     command.Parameters.Add(parameter);
 
                     using (var reader = await command.ExecuteReaderAsync(ct))
@@ -64,7 +70,7 @@ namespace Accounts.Services.Services
                         if (await reader.ReadAsync(ct))
                         {
                             userName = reader.IsDBNull(0) ? string.Empty : reader.GetString(0);
-                            email = reader.IsDBNull(1) ? string.Empty : reader.GetString(1);
+                            email    = reader.IsDBNull(1) ? string.Empty : reader.GetString(1);
                         }
                     }
                 }
@@ -75,7 +81,7 @@ namespace Accounts.Services.Services
                 _logger.LogWarning("AspNetUsers look up bypassed safely: {Message}", ex.Message);
             }
 
-            // ── STEP 2: Bulletproof Loose-Matching StaffVacancy Multi-ID Hunter ──
+            // ── STEP 2: Resolve all user identifiers from StaffVacancy ──
             try
             {
                 var connection = _db.Database.GetDbConnection();
@@ -84,22 +90,23 @@ namespace Accounts.Services.Services
 
                 using (var command = connection.CreateCommand())
                 {
+                    // Match by LoginId = UserName (exact, case-insensitive)
                     command.CommandText = @"
-                        SELECT 
-                            CAST(StaffId AS VARCHAR(100)),
+                        SELECT
+                            CAST(StaffId   AS VARCHAR(100)),
                             CAST(VacancyId AS VARCHAR(100)),
-                            CAST(PersonId AS VARCHAR(100))
+                            CAST(PersonId  AS VARCHAR(100))
                         FROM dbo.StaffVacancy
-                        WHERE StaffId IS NOT NULL AND LoginId IS NOT NULL AND LoginId <> '' AND (
-                            @uid LIKE '%' + LOWER(LoginId) + '%'
-                            OR LOWER(LoginId) LIKE '%' + @uid + '%'
-                            OR (@uname <> '' AND (LOWER(@uname) LIKE '%' + LOWER(LoginId) + '%' OR LOWER(LoginId) LIKE '%' + LOWER(@uname) + '%'))
-                            OR (@email <> '' AND (LOWER(@email) LIKE '%' + LOWER(LoginId) + '%' OR LOWER(LoginId) LIKE '%' + LOWER(@email) + '%'))
-                        )";
+                        WHERE StaffId IS NOT NULL
+                          AND LoginId IS NOT NULL
+                          AND LoginId <> ''
+                          AND (
+                               LOWER(LoginId) = LOWER(@uname)
+                            OR LOWER(LoginId) = LOWER(@email)
+                          )";
 
-                    var pUid = command.CreateParameter(); pUid.ParameterName = "@uid"; pUid.Value = identityUserId.Trim().ToLower(); command.Parameters.Add(pUid);
-                    var pUname = command.CreateParameter(); pUname.ParameterName = "@uname"; pUname.Value = userName; command.Parameters.Add(pUname);
-                    var pEmail = command.CreateParameter(); pEmail.ParameterName = "@email"; pEmail.Value = email; command.Parameters.Add(pEmail);
+                    var pUname = command.CreateParameter(); pUname.ParameterName = "@uname"; pUname.Value = userName.Length > 0 ? userName : "___NO_MATCH___"; command.Parameters.Add(pUname);
+                    var pEmail = command.CreateParameter(); pEmail.ParameterName = "@email"; pEmail.Value = email.Length  > 0 ? email  : "___NO_MATCH___"; command.Parameters.Add(pEmail);
 
                     using (var reader = await command.ExecuteReaderAsync(ct))
                     {
@@ -109,9 +116,7 @@ namespace Accounts.Services.Services
                             {
                                 var val = reader.GetValue(i)?.ToString()?.Trim()?.ToLower();
                                 if (!string.IsNullOrWhiteSpace(val) && !userIdentifiers.Contains(val))
-                                {
                                     userIdentifiers.Add(val);
-                                }
                             }
                         }
                     }
@@ -239,6 +244,7 @@ namespace Accounts.Services.Services
 
             var note = new AppNote
             {
+                TenantId = _tenantService.IsSuperAdmin ? null : _tenantService.TenantId,
                 Title = request.Title.Trim(),
                 NoteBody = request.NoteBody.Trim(),
                 NoteTypeCode = request.NoteTypeCode.Trim(),

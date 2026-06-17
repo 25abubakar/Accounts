@@ -35,14 +35,52 @@ namespace Accounts.Controllers
         // ── Admin: list all users with StaffId (for permission assignment UI) ─
 
         /// <summary>
-        /// Returns all registered persons with their StaffId, name, email, loginId.
-        /// Admin uses this to pick a user and then call PUT /overrides/{featureKey}.
+        /// Returns registered persons with their StaffId.
+        ///
+        /// Business rule:
+        ///   - Super Admin → returns ONLY Tenant Admin accounts (IsTenantAdmin=true)
+        ///   - Admin / Tenant Admin → returns persons within their tenant scope
+        ///   - Regular staff → forbidden (handled by [Authorize(Roles)])
+        ///
         /// GET /api/rbac/users
         /// </summary>
         [HttpGet("users")]
-        [Authorize(Roles = "SuperAdmin,Admin")]
+        [Authorize(Roles = "SuperAdmin,Admin,TenantAdmin")]
         public async Task<IActionResult> GetAllUsers()
         {
+            var identityUserId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+            var appUser = await _db.Users
+                .AsNoTracking()
+                .OfType<ApplicationUser>()
+                .FirstOrDefaultAsync(u => u.Id == identityUserId);
+
+            // ── Super Admin: return only Tenant Admin accounts ────────────────
+            if (appUser?.IsSuperAdmin == true)
+            {
+                var tenantAdmins = await _db.Users
+                    .AsNoTracking()
+                    .OfType<ApplicationUser>()
+                    .Where(u => u.IsTenantAdmin)
+                    .OrderBy(u => u.UserName)
+                    .Select(u => new
+                    {
+                        identityUserId = u.Id,
+                        userName       = u.UserName,
+                        email          = u.Email,
+                        tenantId       = u.TenantId,
+                        isTenantAdmin  = u.IsTenantAdmin,
+                        isSuperAdmin   = u.IsSuperAdmin,
+                        isHired        = false,
+                        staffId        = (Guid?)null,
+                        fullName       = u.UserName,
+                        loginId        = u.UserName
+                    })
+                    .ToListAsync();
+
+                return Ok(tenantAdmins);
+            }
+
+            // ── Admin / Tenant Admin: return persons in their tenant scope ─────
             var persons = await _db.Persons
                 .AsNoTracking()
                 .Include(p => p.Staff).ThenInclude(s => s!.Vacancy)
@@ -70,7 +108,7 @@ namespace Accounts.Controllers
         /// GET /api/rbac/staff/{staffId}/permissions-summary
         /// </summary>
         [HttpGet("staff/{staffId:guid}/permissions-summary")]
-        [Authorize(Roles = "SuperAdmin,Admin")]
+        [Authorize(Roles = "SuperAdmin,Admin,TenantAdmin")]
         public async Task<IActionResult> GetPermissionsSummary(Guid staffId)
         {
             var allFeatures = await _db.Features.AsNoTracking()
@@ -131,7 +169,7 @@ namespace Accounts.Controllers
         /// POST /api/rbac/staff/{staffId}/bulk-overrides
         /// </summary>
         [HttpPost("staff/{staffId:guid}/bulk-overrides")]
-        [Authorize(Roles = "SuperAdmin,Admin")]
+        [Authorize(Roles = "SuperAdmin,Admin,TenantAdmin")]
         public async Task<IActionResult> BulkSetOverrides(
             Guid staffId,
             [FromBody] Dictionary<string, string> overrides)
@@ -153,7 +191,7 @@ namespace Accounts.Controllers
         /// POST /api/rbac/staff/{staffId}/clear-overrides
         /// </summary>
         [HttpPost("staff/{staffId:guid}/clear-overrides")]
-        [Authorize(Roles = "SuperAdmin,Admin")]
+        [Authorize(Roles = "SuperAdmin,Admin,TenantAdmin")]
         public async Task<IActionResult> ClearStaffOverrides(Guid staffId)
         {
             if (!await _db.StaffVacancies.AsNoTracking().AnyAsync(s => s.StaffId == staffId))
@@ -466,16 +504,12 @@ namespace Accounts.Controllers
         /// <summary>
         /// Menu tree with all permission keys per item (for admin access UI).
         /// </summary>
-        [Authorize(Roles = "SuperAdmin,Admin")]
+        [Authorize(Roles = "SuperAdmin,Admin,TenantAdmin")]
         [HttpGet("menu-permissions")]
         public async Task<IActionResult> GetMenuPermissionTree() =>
             Ok(await _rbac.GetMenuPermissionTreeAsync());
 
-        /// <summary>
-        /// Grant a user access to a sidebar menu and all child feature keys.
-        /// Example: menuId for "Accounts &amp; Groups" grants DEPT_VIEW etc. for all children.
-        /// </summary>
-        [Authorize(Roles = "SuperAdmin,Admin")]
+        [Authorize(Roles = "SuperAdmin,Admin,TenantAdmin")]
         [HttpPost("staff/{staffId:guid}/grant-menu/{menuId:int}")]
         public async Task<IActionResult> GrantMenuAccess(
             Guid staffId, int menuId, [FromBody] GrantMenuAccessDto? dto)
@@ -497,7 +531,7 @@ namespace Accounts.Controllers
         }
 
         /// <summary>Grant menu + features by PersonId (preferred — saves PersonMenus + PersonFeatures).</summary>
-        [Authorize(Roles = "SuperAdmin,Admin")]
+        [Authorize(Roles = "SuperAdmin,Admin,TenantAdmin")]
         [HttpPost("persons/{personId:guid}/grant-menu/{menuId:int}")]
         public async Task<IActionResult> GrantMenuToPerson(
             Guid personId, int menuId, [FromBody] GrantMenuAccessDto? dto)
@@ -511,7 +545,7 @@ namespace Accounts.Controllers
         }
 
         /// <summary>View menus and features granted to a person.</summary>
-        [Authorize(Roles = "SuperAdmin,Admin")]
+        [Authorize(Roles = "SuperAdmin,Admin,TenantAdmin")]
         [HttpGet("persons/{personId:guid}/access")]
         public async Task<IActionResult> GetPersonAccess(Guid personId) =>
             Ok(await _personAccess.GetPersonAccessSummaryAsync(personId));
@@ -519,7 +553,7 @@ namespace Accounts.Controllers
         /// <summary>
         /// Revoke menu-bundle (PersonMenus + PersonFeatures).
         /// </summary>
-        [Authorize(Roles = "SuperAdmin,Admin")]
+        [Authorize(Roles = "SuperAdmin,Admin,TenantAdmin")]
         [HttpPost("staff/{staffId:guid}/revoke-menu/{menuId:int}")]
         public async Task<IActionResult> RevokeMenuAccess(Guid staffId, int menuId)
         {
@@ -537,7 +571,7 @@ namespace Accounts.Controllers
                 : BadRequest(new { message = msg });
         }
 
-        [Authorize(Roles = "SuperAdmin,Admin")]
+        [Authorize(Roles = "SuperAdmin,Admin,TenantAdmin")]
         [HttpPost("persons/{personId:guid}/revoke-menu/{menuId:int}")]
         public async Task<IActionResult> RevokeMenuFromPerson(Guid personId, int menuId)
         {
@@ -548,7 +582,7 @@ namespace Accounts.Controllers
         /// <summary>
         /// Preview feature keys that would be granted for a menu subtree.
         /// </summary>
-        [Authorize(Roles = "SuperAdmin,Admin")]
+        [Authorize(Roles = "SuperAdmin,Admin,TenantAdmin")]
         [HttpGet("menus/{menuId:int}/feature-keys")]
         public async Task<IActionResult> GetMenuFeatureKeys(int menuId) =>
             Ok(new { menuId, featureKeys = await _rbac.GetMenuFeatureKeysAsync(menuId) });

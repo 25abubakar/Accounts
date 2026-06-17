@@ -4,10 +4,14 @@ using System.ComponentModel.DataAnnotations.Schema;
 namespace Accounts.Models
 {
     [Table("Vacancies")]
-    public class Vacancy
+    public class Vacancy : ITenantEntity
     {
         [Key]
         public Guid VacancyId { get; set; } = Guid.NewGuid();
+
+        // ── ITenantEntity ─────────────────────────────────────────────────
+        /// <summary>FK to Tenants.Id — set on creation, never changed.</summary>
+        public int TenantId { get; set; }
 
         /// <summary>Links to a Branch/Department node in OrganizationTree</summary>
         [Required]

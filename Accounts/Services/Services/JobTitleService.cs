@@ -1,5 +1,6 @@
 using Accounts.Data;
 using Accounts.Models;
+using Accounts.Services.Interfaces;
 using Microsoft.EntityFrameworkCore;
 
 namespace Accounts.Services.Services
@@ -10,7 +11,13 @@ namespace Accounts.Services.Services
     public class JobTitleService
     {
         private readonly ApplicationDbContext _db;
-        public JobTitleService(ApplicationDbContext db) => _db = db;
+        private readonly ITenantService _tenantService;
+
+        public JobTitleService(ApplicationDbContext db, ITenantService tenantService)
+        {
+            _db = db;
+            _tenantService = tenantService;
+        }
 
         /// <summary>Get all job titles (for dropdown population).</summary>
         public async Task<IReadOnlyList<JobTitle>> GetAllAsync() =>
@@ -49,7 +56,11 @@ namespace Accounts.Services.Services
             if (existing != null)
                 return existing.Id;
 
-            var newTitle = new JobTitle { TitleName = normalized };
+            var newTitle = new JobTitle
+            {
+                TitleName = normalized,
+                TenantId  = _tenantService.RequiredTenantId
+            };
             _db.JobTitles.Add(newTitle);
 
             try

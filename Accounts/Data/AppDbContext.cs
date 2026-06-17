@@ -1,15 +1,22 @@
 using Accounts.Models;
+using Accounts.Services.Interfaces;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Identity.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore;
 
 namespace Accounts.Data
 {
-    public class ApplicationDbContext : IdentityDbContext<IdentityUser>
+    public class ApplicationDbContext : IdentityDbContext<ApplicationUser>
     {
-        public ApplicationDbContext(DbContextOptions<ApplicationDbContext> options)
+        private readonly ITenantService? _tenantService;
+
+        // Constructor used by the DI container (with tenant service)
+        public ApplicationDbContext(
+            DbContextOptions<ApplicationDbContext> options,
+            ITenantService? tenantService = null)
             : base(options)
         {
+            _tenantService = tenantService;
         }
 
         protected override void OnConfiguring(DbContextOptionsBuilder optionsBuilder)
@@ -39,6 +46,11 @@ namespace Accounts.Data
         public DbSet<StaffMenuAccess>          StaffMenuAccesses        => Set<StaffMenuAccess>();
         public DbSet<AccessFeature>            AccessFeatures           => Set<AccessFeature>();
 
+        // ── Multi-Tenant SaaS ─────────────────────────────────────────────────
+        public DbSet<Tenant>                   Tenants                  => Set<Tenant>();
+        public DbSet<TenantMenuPermission>     TenantMenuPermissions    => Set<TenantMenuPermission>();
+        public DbSet<TenantRolePermission>     TenantRolePermissions    => Set<TenantRolePermission>();
+
         // ── Communication Center ──────────────────────────────────────────────
         public DbSet<AppLookupType>     AppLookupTypes     => Set<AppLookupType>();
         public DbSet<AppLookupValue>    AppLookupValues    => Set<AppLookupValue>();
@@ -52,6 +64,199 @@ namespace Accounts.Data
         protected override void OnModelCreating(ModelBuilder builder)
         {
             base.OnModelCreating(builder);
+
+            // ── Global Query Filters — Multi-Tenant Data Isolation ────────────
+            //
+            // IMPORTANT: Must use lazy evaluation (lambda calling _tenantService each time)
+            // NOT captured values — OnModelCreating runs once but filters run per query.
+            //
+            // Rules:
+            //   - _tenantService == null  → tooling/migrations context, bypass all filters
+            //   - IsSuperAdmin == true    → bypass (Super Admin never queries operational tables)
+            //   - TenantId == null        → bypass (unauthenticated or Super Admin)
+            //   - Otherwise              → scope to the current request's TenantId
+
+            builder.Entity<Person>()
+                .HasQueryFilter(p =>
+                    _tenantService == null ||
+                    _tenantService.IsSuperAdmin ||
+                    _tenantService.TenantId == null ||
+                    p.TenantId == _tenantService.TenantId);
+
+            builder.Entity<Vacancy>()
+                .HasQueryFilter(v =>
+                    _tenantService == null ||
+                    _tenantService.IsSuperAdmin ||
+                    _tenantService.TenantId == null ||
+                    v.TenantId == _tenantService.TenantId);
+
+            builder.Entity<StaffVacancy>()
+                .HasQueryFilter(s =>
+                    _tenantService == null ||
+                    _tenantService.IsSuperAdmin ||
+                    _tenantService.TenantId == null ||
+                    s.TenantId == _tenantService.TenantId);
+
+            builder.Entity<JobTitle>()
+                .HasQueryFilter(j =>
+                    _tenantService == null ||
+                    _tenantService.IsSuperAdmin ||
+                    _tenantService.TenantId == null ||
+                    j.TenantId == _tenantService.TenantId);
+
+            builder.Entity<AppNote>()
+                .HasQueryFilter(n =>
+                    _tenantService == null ||
+                    _tenantService.IsSuperAdmin ||
+                    _tenantService.TenantId == null ||
+                    n.TenantId == null ||
+                    n.TenantId == _tenantService.TenantId);
+
+            // ── ApplicationUser (AspNetUsers) — multi-tenant columns ──────────
+            builder.Entity<ApplicationUser>(e =>
+            {
+                e.Property(u => u.TenantId).IsRequired(false);
+                e.Property(u => u.IsSuperAdmin).HasDefaultValue(false);
+                e.Property(u => u.IsTenantAdmin).HasDefaultValue(false);
+                e.HasIndex(u => u.TenantId);
+            });
+
+            // ── Tenants table ─────────────────────────────────────────────────
+            builder.Entity<Tenant>(e =>
+            {
+                e.ToTable("Tenants");
+                e.HasKey(x => x.Id);
+                e.Property(x => x.Id).ValueGeneratedOnAdd();
+                e.Property(x => x.TenantName).HasMaxLength(150).IsRequired();
+                e.Property(x => x.TenantCode).HasMaxLength(20).IsRequired();
+                e.Property(x => x.IsActive).HasDefaultValue(true);
+                e.Property(x => x.CreatedOnUtc).HasDefaultValueSql("SYSUTCDATETIME()");
+                e.Property(x => x.CreatedByUserId).HasMaxLength(450).IsRequired(false);
+
+                // One org node = one tenant
+                e.HasIndex(x => x.OrganizationTreeId).IsUnique();
+                e.HasIndex(x => x.TenantCode).IsUnique();
+
+                e.HasOne(x => x.OrganizationNode)
+                 .WithMany()
+                 .HasForeignKey(x => x.OrganizationTreeId)
+                 .OnDelete(DeleteBehavior.Restrict);
+            });
+
+            // ── TenantMenuPermissions ─────────────────────────────────────────
+            builder.Entity<TenantMenuPermission>(e =>
+            {
+                e.ToTable("TenantMenuPermissions");
+                e.HasKey(x => new { x.TenantId, x.MenuId });
+                e.Property(x => x.IsAllow).HasDefaultValue(true);
+                e.Property(x => x.GrantedOnUtc).HasDefaultValueSql("SYSUTCDATETIME()");
+                e.Property(x => x.GrantedByUserId).HasMaxLength(450).IsRequired(false);
+
+                e.HasOne(x => x.Tenant)
+                 .WithMany(t => t.MenuPermissions)
+                 .HasForeignKey(x => x.TenantId)
+                 .OnDelete(DeleteBehavior.Cascade);
+
+                e.HasOne(x => x.Menu)
+                 .WithMany()
+                 .HasForeignKey(x => x.MenuId)
+                 .OnDelete(DeleteBehavior.Cascade);
+
+                e.HasIndex(x => x.TenantId);
+                e.HasIndex(x => x.MenuId);
+            });
+
+            // ── TenantRolePermissions ─────────────────────────────────────────
+            builder.Entity<TenantRolePermission>(e =>
+            {
+                e.ToTable("TenantRolePermissions");
+                e.HasKey(x => x.Id);
+                e.Property(x => x.Id).ValueGeneratedOnAdd();
+                e.Property(x => x.JobTitle).HasMaxLength(100).IsRequired();
+                e.Property(x => x.IsAllowed).HasDefaultValue(false);
+                e.Property(x => x.CreatedOnUtc).HasDefaultValueSql("SYSUTCDATETIME()");
+                e.Property(x => x.SetByUserId).HasMaxLength(450).IsRequired(false);
+
+                // Unique: one row per (TenantId + JobTitle + DeptId + PermissionId)
+                e.HasIndex(x => new { x.TenantId, x.JobTitle, x.DeptId, x.PermissionId }).IsUnique();
+                e.HasIndex(x => x.TenantId);
+                e.HasIndex(x => new { x.TenantId, x.JobTitle });
+
+                e.HasOne(x => x.Tenant)
+                 .WithMany()
+                 .HasForeignKey(x => x.TenantId)
+                 .OnDelete(DeleteBehavior.Cascade);
+
+                e.HasOne(x => x.Feature)
+                 .WithMany()
+                 .HasForeignKey(x => x.PermissionId)
+                 .OnDelete(DeleteBehavior.Cascade);
+
+                e.HasOne(x => x.Department)
+                 .WithMany()
+                 .HasForeignKey(x => x.DeptId)
+                 .OnDelete(DeleteBehavior.Restrict)
+                 .IsRequired(false);
+            });
+
+            // ── Person: TenantId FK ───────────────────────────────────────────
+            builder.Entity<Person>(e =>
+            {
+                e.Property(x => x.TenantId).IsRequired();
+                e.HasIndex(x => x.TenantId);
+                e.HasOne<Tenant>()
+                 .WithMany()
+                 .HasForeignKey(x => x.TenantId)
+                 .OnDelete(DeleteBehavior.Restrict);
+            });
+
+            // ── Vacancy: TenantId FK ──────────────────────────────────────────
+            builder.Entity<Vacancy>(e =>
+            {
+                e.Property(x => x.TenantId).IsRequired();
+                e.HasIndex(x => x.TenantId);
+                e.HasOne<Tenant>()
+                 .WithMany()
+                 .HasForeignKey(x => x.TenantId)
+                 .OnDelete(DeleteBehavior.Restrict);
+            });
+
+            // ── StaffVacancy: TenantId FK ─────────────────────────────────────
+            builder.Entity<StaffVacancy>(e =>
+            {
+                e.Property(x => x.TenantId).IsRequired();
+                e.HasIndex(x => x.TenantId);
+                e.HasOne<Tenant>()
+                 .WithMany()
+                 .HasForeignKey(x => x.TenantId)
+                 .OnDelete(DeleteBehavior.Restrict);
+            });
+
+            // ── JobTitle: TenantId FK ─────────────────────────────────────────
+            builder.Entity<JobTitle>(e =>
+            {
+                e.Property(x => x.TenantId).IsRequired();
+                e.HasIndex(x => x.TenantId);
+                e.HasOne<Tenant>()
+                 .WithMany()
+                 .HasForeignKey(x => x.TenantId)
+                 .OnDelete(DeleteBehavior.Restrict);
+                // UNIQUE constraint now scoped per tenant
+                // (old global unique on TitleName is replaced by tenant-scoped unique)
+                e.HasIndex(x => new { x.TenantId, x.TitleName }).IsUnique();
+            });
+
+            // ── AppNote: optional TenantId FK ────────────────────────────────
+            builder.Entity<AppNote>(e =>
+            {
+                e.Property(x => x.TenantId).IsRequired(false);
+                e.HasIndex(x => x.TenantId);
+                e.HasOne(x => x.Tenant)
+                 .WithMany()
+                 .HasForeignKey(x => x.TenantId)
+                 .OnDelete(DeleteBehavior.Restrict)
+                 .IsRequired(false);
+            });
 
             // ── Menu and MenuPermissions ──────────────────────────────────────
             builder.Entity<Menu>()
@@ -296,7 +501,7 @@ namespace Accounts.Data
                 e.Property(x => x.VisibilityTypeCode).HasMaxLength(100).IsRequired();
                 e.Property(x => x.OwnerIdentityUserId).HasMaxLength(450).IsRequired(false);
                 e.HasIndex(x => x.OwnerIdentityUserId);
-                e.HasOne<IdentityUser>()
+                e.HasOne<ApplicationUser>()
                  .WithMany()
                  .HasForeignKey(x => x.OwnerIdentityUserId)
                  .OnDelete(DeleteBehavior.SetNull);
@@ -345,14 +550,14 @@ namespace Accounts.Data
             builder.Entity<OrganizationVacancyPersonDto>().HasNoKey();
             builder.Entity<EmployeeByOrgAndRoleDto>().HasNoKey();
 
-            // ── JobTitles (normalized lookup) ─────────────────────────────────
+            // ── JobTitles (normalized lookup — now tenant-scoped) ─────────────
             builder.Entity<JobTitle>(e =>
             {
                 e.ToTable("JobTitles");
                 e.HasKey(x => x.Id);
                 e.Property(x => x.Id).ValueGeneratedOnAdd();
                 e.Property(x => x.TitleName).HasMaxLength(100).IsRequired();
-                e.HasIndex(x => x.TitleName).IsUnique();
+                // Unique index is now (TenantId, TitleName) — configured above in tenant section
             });
 
             // ── PersonContacts (one-to-many contacts per person) ──────────────
