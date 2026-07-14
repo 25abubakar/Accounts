@@ -100,6 +100,8 @@ namespace Accounts.Controllers
                 .AsNoTracking()
                 .Include(s => s.Person)
                 .Include(s => s.Vacancy)
+                    .ThenInclude(v => v!.JobTitleNav)
+                .Include(s => s.Vacancy)
                     .ThenInclude(v => v!.Organization)
                     .ThenInclude(o => o!.Parent)
                     .ThenInclude(p => p!.Parent)
@@ -121,8 +123,8 @@ namespace Accounts.Controllers
                 photoUrl    = staff.Person?.ProfilePhotoUrl,
                 vacancyId   = staff.VacancyId,
                 vacancyCode = staff.Vacancy?.VacancyCode,
-                jobTitle    = staff.Vacancy?.JobTitle,
-                department  = staff.Vacancy?.Department,
+                jobTitle    = staff.Vacancy?.ResolvedJobTitle,
+                department  = staff.Vacancy?.Department ?? branch?.Name,
                 branchName  = branch?.Name,
                 companyName = company?.Name,
                 countryName = country?.Name,

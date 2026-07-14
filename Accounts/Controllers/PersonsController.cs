@@ -126,6 +126,17 @@ namespace Accounts.Controllers
             return Ok(await _service.GetUnassignedAsync());
         }
 
+        [HttpGet("me")]
+        public async Task<IActionResult> GetMe()
+        {
+            var identityUserId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+            if (string.IsNullOrWhiteSpace(identityUserId)) return Unauthorized();
+            var person = await _service.GetByIdentityUserIdAsync(identityUserId);
+            return person == null
+                ? NotFound(new { message = "No person profile is linked to this account." })
+                : Ok(person);
+        }
+
         [HttpGet("{id:guid}")]
         public async Task<IActionResult> GetById(Guid id)
         {

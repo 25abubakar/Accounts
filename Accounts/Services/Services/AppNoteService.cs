@@ -147,6 +147,29 @@ namespace Accounts.Services.Services
                 // ── ADMIN notes — filter by VisibilityTypeCode + Targets ──────
                 if (n.SourceTypeCode == "ADMIN")
                 {
+                    var audienceTargets = n.Targets.Where(t =>
+                        t.TargetTypeCode.Equals("ALL", StringComparison.OrdinalIgnoreCase) ||
+                        t.TargetTypeCode.Equals("STAFF", StringComparison.OrdinalIgnoreCase)).ToList();
+                    var menuTargets = n.Targets.Where(t =>
+                        t.TargetTypeCode.Equals("MENU", StringComparison.OrdinalIgnoreCase)).ToList();
+                    var recordTargets = n.Targets.Where(t =>
+                        t.TargetTypeCode.Equals("RECORD", StringComparison.OrdinalIgnoreCase)).ToList();
+
+                    if (audienceTargets.Count > 0 || menuTargets.Count > 0 || recordTargets.Count > 0)
+                    {
+                        var audienceMatches = audienceTargets.Count == 0 || audienceTargets.Any(t =>
+                            t.TargetTypeCode.Equals("ALL", StringComparison.OrdinalIgnoreCase) ||
+                            userIdentifiers.Contains((t.TargetValue ?? "").Trim().ToLower()));
+                        var menuMatches = menuTargets.Count == 0 ||
+                            (!string.IsNullOrWhiteSpace(menuCode) && menuTargets.Any(t =>
+                                string.Equals(t.TargetValue, menuCode, StringComparison.OrdinalIgnoreCase)));
+                        var recordMatches = recordTargets.Count == 0 ||
+                            (!string.IsNullOrWhiteSpace(recordKey) && recordTargets.Any(t =>
+                                string.Equals(t.TargetValue, recordKey, StringComparison.OrdinalIgnoreCase)));
+
+                        return audienceMatches && menuMatches && recordMatches;
+                    }
+
                     return (n.VisibilityTypeCode?.ToUpper()) switch
                     {
                         "GENERAL" => true,
@@ -261,6 +284,7 @@ namespace Accounts.Services.Services
                 IsPublished = request.IsPublished,
                 IsPinned = request.IsPinned,
                 IsPopup = request.IsPopup,
+                IsBanner = request.IsBanner,
                 RequireAcknowledgement = request.RequireAcknowledgement,
                 AllowDismiss = request.AllowDismiss,
                 CreatedBy = createdByUserId,
@@ -321,6 +345,7 @@ namespace Accounts.Services.Services
             note.IsPublished = request.IsPublished;
             note.IsPinned = request.IsPinned;
             note.IsPopup = request.IsPopup;
+            note.IsBanner = request.IsBanner;
             note.RequireAcknowledgement = request.RequireAcknowledgement;
             note.AllowDismiss = request.AllowDismiss;
             if (note.SourceTypeCode == "USER" && string.IsNullOrWhiteSpace(note.OwnerIdentityUserId))
@@ -447,6 +472,7 @@ namespace Accounts.Services.Services
                 IsPublished = n.IsPublished,
                 IsPinned = n.IsPinned,
                 IsPopup = n.IsPopup,
+                IsBanner = n.IsBanner,
                 RequireAcknowledgement = n.RequireAcknowledgement,
                 AllowDismiss = n.AllowDismiss,
                 IsReadOnly = true,
@@ -506,6 +532,7 @@ namespace Accounts.Services.Services
                 IsPublished = note.IsPublished,
                 IsPinned = note.IsPinned,
                 IsPopup = note.IsPopup,
+                IsBanner = note.IsBanner,
                 RequireAcknowledgement = note.RequireAcknowledgement,
                 AllowDismiss = note.AllowDismiss,
                 IsRead = state?.IsRead ?? false,

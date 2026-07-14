@@ -146,17 +146,16 @@ namespace Accounts.Services.Services
             if (staffInfo == null)
                 return new HashSet<int>();
 
-            var rolePermissions = string.IsNullOrWhiteSpace(staffInfo.JobTitle)
-                ? new List<(int PermissionId, int? DeptId, bool IsAllowed)>()
+            var rolePermissionRows = string.IsNullOrWhiteSpace(staffInfo.JobTitle)
+                ? new List<RolePermission>()
                 : await _db.RolePermissions
                     .AsNoTracking()
                     .Where(r => r.JobTitle == staffInfo.JobTitle &&
                                 (r.DeptId == null || r.DeptId == staffInfo.DeptId))
-                    .Select(r => new { r.PermissionId, r.DeptId, r.IsAllowed })
-                    .ToListAsync(cancellationToken)
-                    .ContinueWith(t => t.Result
-                        .Select(r => (r.PermissionId, r.DeptId, r.IsAllowed))
-                        .ToList());
+                    .ToListAsync(cancellationToken);
+            var rolePermissions = rolePermissionRows
+                .Select(r => (r.PermissionId, r.DeptId, r.IsAllowed))
+                .ToList();
 
             // Dept-specific beats global for the same PermissionId
             var hasDeptRule = new HashSet<int>();

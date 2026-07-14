@@ -1,7 +1,9 @@
-using Elfie.Serialization;
 using Microsoft.AspNetCore.Mvc;
 using System.Text;
 using System.Text.Json;
+using System.Linq;
+using System.Collections.Generic;
+using System.Globalization;
 
 namespace Accounts.Controllers
 {
@@ -31,6 +33,25 @@ namespace Accounts.Controllers
             _httpFactory = httpFactory;
         }
 
+        private static IReadOnlyList<object> GetLocalCountries() =>
+            CultureInfo.GetCultures(CultureTypes.SpecificCultures)
+                .Select(c =>
+                {
+                    try { return new RegionInfo(c.Name); }
+                    catch (ArgumentException) { return null; }
+                })
+                .Where(r => r != null && !string.IsNullOrWhiteSpace(r.EnglishName))
+                .GroupBy(r => r!.TwoLetterISORegionName, StringComparer.OrdinalIgnoreCase)
+                .Select(g => g.First()!)
+                .OrderBy(r => r.EnglishName)
+                .Select(r => (object)new
+                {
+                    name = r.EnglishName,
+                    code = r.TwoLetterISORegionName,
+                    flagUrl = $"https://flagcdn.com/{r.TwoLetterISORegionName.ToLowerInvariant()}.svg"
+                })
+                .ToList();
+
         // ── STEP 1 — Countries ────────────────────────────────────────
 
         /// <summary>
@@ -46,31 +67,46 @@ namespace Accounts.Controllers
                 var resp = await client.GetAsync("all?fields=name,cca2,flags");
 
                 if (!resp.IsSuccessStatusCode)
-                    return StatusCode(502, new { message = "Failed to fetch countries from upstream API." });
+                    return Ok(GetLocalCountries());
 
                 var json = await resp.Content.ReadAsStringAsync();
-                var raw  = JsonSerializer.Deserialize<JsonElement[]>(json);
 
-                if (raw == null) return Ok(Array.Empty<object>());
+                // 🌟 SAFE PARSER: Parses both array [] and object {} safely
+                using var document = JsonDocument.Parse(json);
+                var root = document.RootElement;
 
-                var countries = raw
+                var rawArray = new List<JsonElement>();
+
+                if (root.ValueKind == JsonValueKind.Array)
+                {
+                    rawArray = root.EnumerateArray().ToList();
+                }
+                else if (root.ValueKind == JsonValueKind.Object)
+                {
+                    // Agar tiar ho kar Object aata hai, toh usay force karke Array bana dein
+                    rawArray.Add(root);
+                }
+
+                if (!rawArray.Any()) return Ok(GetLocalCountries());
+
+                var countries = rawArray
                     .Select(c => new
                     {
-                        name    = c.GetProperty("name").GetProperty("common").GetString(),
-                        code    = c.GetProperty("cca2").GetString(),
+                        name = c.GetProperty("name").GetProperty("common").GetString(),
+                        code = c.TryGetProperty("cca2", out var cca2) ? cca2.GetString() : null,
                         flagUrl = c.TryGetProperty("flags", out var f)
                                   ? f.TryGetProperty("svg", out var svg) ? svg.GetString() : null
                                   : null
                     })
-                    .Where(c => c.name != null)
+                    .Where(c => !string.IsNullOrEmpty(c.name))
                     .OrderBy(c => c.name)
                     .ToList();
 
                 return Ok(countries);
             }
-            catch (Exception ex)
+            catch (Exception)
             {
-                return StatusCode(500, new { message = "Error fetching countries.", error = ex.Message });
+                return Ok(GetLocalCountries());
             }
         }
 
@@ -89,7 +125,7 @@ namespace Accounts.Controllers
 
             try
             {
-                var client  = _httpFactory.CreateClient("CountriesNow");
+                var client = _httpFactory.CreateClient("CountriesNow");
                 var payload = JsonSerializer.Serialize(new { country });
                 var content = new StringContent(payload, Encoding.UTF8, "application/json");
 
@@ -110,7 +146,7 @@ namespace Accounts.Controllers
                     .EnumerateArray()
                     .Select(s => new
                     {
-                        name      = s.GetProperty("name").GetString(),
+                        name = s.GetProperty("name").GetString(),
                         stateCode = s.TryGetProperty("state_code", out var sc) ? sc.GetString() : null
                     })
                     .Where(s => s.name != null)
@@ -143,7 +179,7 @@ namespace Accounts.Controllers
 
             try
             {
-                var client  = _httpFactory.CreateClient("CountriesNow");
+                var client = _httpFactory.CreateClient("CountriesNow");
                 var payload = JsonSerializer.Serialize(new { country, state });
                 var content = new StringContent(payload, Encoding.UTF8, "application/json");
 
@@ -190,7 +226,7 @@ namespace Accounts.Controllers
 
             try
             {
-                var client  = _httpFactory.CreateClient("CountriesNow");
+                var client = _httpFactory.CreateClient("CountriesNow");
                 var payload = JsonSerializer.Serialize(new { country });
                 var content = new StringContent(payload, Encoding.UTF8, "application/json");
 
@@ -215,7 +251,7 @@ namespace Accounts.Controllers
                     .EnumerateArray()
                     .Select(s => new
                     {
-                        name      = s.GetProperty("name").GetString(),
+                        name = s.GetProperty("name").GetString(),
                         stateCode = s.TryGetProperty("state_code", out var sc) ? sc.GetString() : null
                     })
                     .Where(s => s.name != null)
@@ -245,20 +281,34 @@ namespace Accounts.Controllers
             try
             {
                 var client = _httpFactory.CreateClient("CountryApi");
-                var resp   = await client.GetAsync($"name/{Uri.EscapeDataString(q)}?fields=name,cca2,flags");
+                var resp = await client.GetAsync($"name/{Uri.EscapeDataString(q)}?fields=name,cca2,flags");
 
                 if (!resp.IsSuccessStatusCode)
                     return Ok(Array.Empty<object>());
 
                 var json = await resp.Content.ReadAsStringAsync();
-                var raw  = JsonSerializer.Deserialize<JsonElement[]>(json);
 
-                if (raw == null) return Ok(Array.Empty<object>());
+                // Applying safe parser here as well just in case!
+                using var document = JsonDocument.Parse(json);
+                var root = document.RootElement;
 
-                var results = raw.Take(10).Select(c => new
+                var rawArray = new List<JsonElement>();
+
+                if (root.ValueKind == JsonValueKind.Array)
                 {
-                    name    = c.GetProperty("name").GetProperty("common").GetString(),
-                    code    = c.GetProperty("cca2").GetString(),
+                    rawArray = root.EnumerateArray().ToList();
+                }
+                else if (root.ValueKind == JsonValueKind.Object)
+                {
+                    rawArray.Add(root);
+                }
+
+                if (!rawArray.Any()) return Ok(Array.Empty<object>());
+
+                var results = rawArray.Take(10).Select(c => new
+                {
+                    name = c.GetProperty("name").GetProperty("common").GetString(),
+                    code = c.TryGetProperty("cca2", out var cca2) ? cca2.GetString() : null,
                     flagUrl = c.TryGetProperty("flags", out var f)
                               ? f.TryGetProperty("svg", out var svg) ? svg.GetString() : null
                               : null

@@ -28,7 +28,8 @@ namespace Accounts.Services.Services
 
         public async Task<IEnumerable<PersonDto>> GetAllAsync()
         {
-            var persons  = await _db.Persons.Include(p => p.Addresses).Include(p => p.Staff)
+            var persons  = await _db.Persons.Include(p => p.Addresses)
+                .Include(p => p.Staff).ThenInclude(s => s!.Vacancy).ThenInclude(v => v!.JobTitleNav)
                 .OrderByDescending(p => p.CreatedDate).ToListAsync();
             var orgNodes = await _db.OrganizationTree.ToListAsync();
             return persons.Select(p => MapToDto(p, orgNodes));
@@ -36,7 +37,8 @@ namespace Accounts.Services.Services
 
         public async Task<IEnumerable<PersonDto>> GetUnassignedAsync()
         {
-            var persons  = await _db.Persons.Include(p => p.Addresses).Include(p => p.Staff)
+            var persons  = await _db.Persons.Include(p => p.Addresses)
+                .Include(p => p.Staff).ThenInclude(s => s!.Vacancy).ThenInclude(v => v!.JobTitleNav)
                 .Where(p => p.Staff == null).OrderByDescending(p => p.CreatedDate).ToListAsync();
             var orgNodes = await _db.OrganizationTree.ToListAsync();
             return persons.Select(p => MapToDto(p, orgNodes));
@@ -44,10 +46,24 @@ namespace Accounts.Services.Services
 
         public async Task<PersonDto?> GetByIdAsync(Guid id)
         {
-            var person = await _db.Persons.Include(p => p.Addresses).Include(p => p.Staff)
+            var person = await _db.Persons.Include(p => p.Addresses)
+                .Include(p => p.Contacts)
+                .Include(p => p.Staff).ThenInclude(s => s!.Vacancy).ThenInclude(v => v!.JobTitleNav)
                 .FirstOrDefaultAsync(p => p.PersonId == id);
             if (person == null) return null;
             var orgNodes = await _db.OrganizationTree.ToListAsync();
+            return MapToDto(person, orgNodes);
+        }
+
+        public async Task<PersonDto?> GetByIdentityUserIdAsync(string identityUserId)
+        {
+            var person = await _db.Persons.AsNoTracking()
+                .Include(p => p.Addresses)
+                .Include(p => p.Contacts)
+                .Include(p => p.Staff).ThenInclude(s => s!.Vacancy).ThenInclude(v => v!.JobTitleNav)
+                .FirstOrDefaultAsync(p => p.IdentityUserId == identityUserId);
+            if (person == null) return null;
+            var orgNodes = await _db.OrganizationTree.AsNoTracking().ToListAsync();
             return MapToDto(person, orgNodes);
         }
 
@@ -56,7 +72,7 @@ namespace Accounts.Services.Services
             var orgNodes = await _db.OrganizationTree.AsNoTracking().ToListAsync();
             var persons  = await _db.Persons.AsNoTracking()
                 .Include(p => p.Addresses)
-                .Include(p => p.Staff).ThenInclude(s => s!.Vacancy)
+                .Include(p => p.Staff).ThenInclude(s => s!.Vacancy).ThenInclude(v => v!.JobTitleNav)
                 .OrderByDescending(p => p.CreatedDate).ToListAsync();
             return persons.Select(p => MapToProfile(p, orgNodes));
         }
@@ -65,7 +81,7 @@ namespace Accounts.Services.Services
         {
             var person = await _db.Persons.AsNoTracking()
                 .Include(p => p.Addresses)
-                .Include(p => p.Staff).ThenInclude(s => s!.Vacancy)
+                .Include(p => p.Staff).ThenInclude(s => s!.Vacancy).ThenInclude(v => v!.JobTitleNav)
                 .FirstOrDefaultAsync(p => p.PersonId == id);
             if (person == null) return null;
             var orgNodes = await _db.OrganizationTree.AsNoTracking().ToListAsync();
@@ -193,6 +209,7 @@ namespace Accounts.Services.Services
                 FullName       = dto.FullName.Trim(),
                 Phone          = dto.Phone?.Trim(),
                 Email          = email,
+                PersonalEmail  = dto.PersonalEmail?.Trim(),
                 Gender         = dto.Gender?.Trim(),
                 DateOfBirth    = dto.DateOfBirth,
                 MaritalStatus  = dto.MaritalStatus?.Trim(),
@@ -218,6 +235,31 @@ namespace Accounts.Services.Services
                 });
             }
 
+            var personalEmailValue = string.IsNullOrWhiteSpace(dto.PersonalEmail)
+                ? null
+                : dto.PersonalEmail.Trim();
+            person.PersonalEmail = personalEmailValue;
+            var personalEmail = person.Contacts.FirstOrDefault(c => c.ContactType == "PersonalEmail");
+            if (personalEmailValue == null)
+            {
+                if (personalEmail != null) _db.PersonContacts.Remove(personalEmail);
+            }
+            else if (personalEmail != null)
+            {
+                personalEmail.ContactValue = personalEmailValue;
+            }
+            else
+            {
+                person.Contacts.Add(new PersonContact
+                {
+                    PersonId = person.PersonId,
+                    ContactType = "PersonalEmail",
+                    ContactValue = personalEmailValue,
+                    IsPrimary = false,
+                    CreatedDate = DateTime.UtcNow
+                });
+            }
+
             if (!string.IsNullOrWhiteSpace(dto.Phone))
             {
                 person.Contacts.Add(new PersonContact
@@ -231,10 +273,21 @@ namespace Accounts.Services.Services
             }
 
             _db.Persons.Add(person);
-            try { await _db.SaveChangesAsync(); }
-            catch { await _userManager.DeleteAsync(identityUser); throw; }
+            try
+            {
+                await _db.SaveChangesAsync();
+            }
+            catch (DbUpdateException)
+            {
+                // Remove the failed person graph from the tracker before cleaning
+                // up the Identity account created earlier in this request.
+                _db.ChangeTracker.Clear();
+                await _userManager.DeleteAsync(identityUser);
+                return (null, null, null, "Registration could not be saved. Please verify the supplied details and try again.", 400);
+            }
 
-            var created = await _db.Persons.Include(p => p.Addresses).Include(p => p.Staff)
+            var created = await _db.Persons.Include(p => p.Addresses)
+                .Include(p => p.Staff).ThenInclude(s => s!.Vacancy).ThenInclude(v => v!.JobTitleNav)
                 .FirstOrDefaultAsync(p => p.PersonId == person.PersonId);
 
             return (MapToDto(created!, orgNodes), loginId, password, null, 201);
@@ -294,6 +347,31 @@ namespace Accounts.Services.Services
                 }
             }
 
+            var personalEmailValue = string.IsNullOrWhiteSpace(dto.PersonalEmail)
+                ? null
+                : dto.PersonalEmail.Trim();
+            person.PersonalEmail = personalEmailValue;
+            var personalEmail = person.Contacts.FirstOrDefault(c => c.ContactType == "PersonalEmail");
+            if (personalEmailValue == null)
+            {
+                if (personalEmail != null) _db.PersonContacts.Remove(personalEmail);
+            }
+            else if (personalEmail != null)
+            {
+                personalEmail.ContactValue = personalEmailValue;
+            }
+            else
+            {
+                person.Contacts.Add(new PersonContact
+                {
+                    PersonId = person.PersonId,
+                    ContactType = "PersonalEmail",
+                    ContactValue = personalEmailValue,
+                    IsPrimary = false,
+                    CreatedDate = DateTime.UtcNow
+                });
+            }
+
             // ── Upsert Phone in PersonContacts ─────────────────────────────────
             if (!string.IsNullOrWhiteSpace(dto.Phone))
             {
@@ -322,7 +400,8 @@ namespace Accounts.Services.Services
             await _db.SaveChangesAsync();
 
             var orgNodes = await _db.OrganizationTree.ToListAsync();
-            var updated  = await _db.Persons.Include(p => p.Addresses).Include(p => p.Staff)
+            var updated  = await _db.Persons.Include(p => p.Addresses)
+                .Include(p => p.Staff).ThenInclude(s => s!.Vacancy).ThenInclude(v => v!.JobTitleNav)
                 .FirstOrDefaultAsync(p => p.PersonId == id);
             return (MapToDto(updated!, orgNodes), null);
         }
@@ -795,12 +874,28 @@ namespace Accounts.Services.Services
                 District    = a.District,    City     = a.City,     PostalCode = a.PostalCode
             };
 
+        private static (OrganizationTree? Country, OrganizationTree? Company, OrganizationTree? Branch, OrganizationTree? Department)
+            ResolveOrganization(int? startId, List<OrganizationTree> nodes)
+        {
+            if (!startId.HasValue) return (null, null, null, null);
+            var byId = nodes.ToDictionary(n => n.Id);
+            var chain = new List<OrganizationTree>();
+            var currentId = startId;
+            while (currentId.HasValue && byId.TryGetValue(currentId.Value, out var node) && chain.Count < 20)
+            {
+                chain.Add(node);
+                currentId = node.ParentId;
+            }
+
+            OrganizationTree? Find(params string[] labels) => chain.FirstOrDefault(n =>
+                labels.Any(label => string.Equals(n.Label, label, StringComparison.OrdinalIgnoreCase)));
+            return (Find("Country"), Find("Company"), Find("Branch", "Office"), Find("Department"));
+        }
+
         private static PersonDto MapToDto(Person p, List<OrganizationTree> org)
         {
-            var branchId = p.Staff?.Vacancy?.OrganizationId;
-            var branch  = branchId.HasValue ? org.FirstOrDefault(n => n.Id == branchId) : null;
-            var company = branch?.ParentId.HasValue == true ? org.FirstOrDefault(n => n.Id == branch.ParentId) : null;
-            var country = company?.ParentId.HasValue == true ? org.FirstOrDefault(n => n.Id == company.ParentId) : null;
+            var organizationId = p.Staff?.Vacancy?.OrganizationId;
+            var (country, company, branch, department) = ResolveOrganization(organizationId, org);
 
             var cur  = p.Addresses.FirstOrDefault(a => a.AddressType == "Current");
             var perm = p.Addresses.FirstOrDefault(a => a.AddressType == "Permanent");
@@ -816,19 +911,22 @@ namespace Accounts.Services.Services
             {
                 PersonId = p.PersonId, LoginId = p.Staff?.LoginId ?? "-", FullName = p.FullName,
                 Gender = p.Gender, DateOfBirth = p.DateOfBirth, MaritalStatus = p.MaritalStatus,
-                Phone = p.Phone, Email = p.Email, PhotoUrl = p.ProfilePhotoUrl,
+                Phone = p.Phone, Email = p.Email,
+                PersonalEmail = p.PersonalEmail ?? p.Contacts.FirstOrDefault(c => c.ContactType == "PersonalEmail")?.ContactValue,
+                PhotoUrl = p.ProfilePhotoUrl,
                 IsHired = p.Staff != null, RegisteredAt = p.CreatedDate.ToString("o"),
-                BranchId = branchId, BranchName = branch?.Name, CompanyName = company?.Name, CountryName = country?.Name,
+                BranchId = branch?.Id, BranchName = branch?.Name, CompanyName = company?.Name, CountryName = country?.Name,
+                VacancyCode = p.Staff?.Vacancy?.VacancyCode,
+                JobTitle = p.Staff?.Vacancy?.ResolvedJobTitle,
+                Department = p.Staff?.Vacancy?.Department ?? department?.Name,
                 CurrentAddress = curDto, PermanentAddress = permDto, SameAddress = same
             };
         }
 
         private static PersonProfileDto MapToProfile(Person p, List<OrganizationTree> org)
         {
-            var branchId = p.Staff?.Vacancy?.OrganizationId;
-            var branch  = branchId.HasValue ? org.FirstOrDefault(n => n.Id == branchId) : null;
-            var company = branch?.ParentId.HasValue == true ? org.FirstOrDefault(n => n.Id == branch.ParentId) : null;
-            var country = company?.ParentId.HasValue == true ? org.FirstOrDefault(n => n.Id == company.ParentId) : null;
+            var organizationId = p.Staff?.Vacancy?.OrganizationId;
+            var (country, company, branch, department) = ResolveOrganization(organizationId, org);
 
             var parts    = p.FullName.Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries);
             var initials = parts.Length >= 2
@@ -843,11 +941,11 @@ namespace Accounts.Services.Services
                 PersonId = p.PersonId, LoginId = p.Staff?.LoginId ?? "-", FullName = p.FullName, Initials = initials,
                 Gender = p.Gender, DateOfBirth = p.DateOfBirth, MaritalStatus = p.MaritalStatus,
                 Phone = p.Phone, UserName = p.Email, PhotoUrl = p.ProfilePhotoUrl, RegisteredAt = p.CreatedDate,
-                BranchId = branchId, BranchName = branch?.Name, CompanyName = company?.Name,
+                BranchId = branch?.Id, BranchName = branch?.Name, CompanyName = company?.Name,
                 CountryName = country?.Name, CountryFlag = country?.FlagUrl,
                 IsHired = p.Staff != null, StaffId = p.Staff?.StaffId, JoiningDate = null,
                 VacancyId = p.Staff?.VacancyId, VacancyCode = p.Staff?.Vacancy?.VacancyCode,
-                JobTitle = p.Staff?.Vacancy?.ResolvedJobTitle, Department = p.Staff?.Vacancy?.Department,
+                JobTitle = p.Staff?.Vacancy?.ResolvedJobTitle, Department = p.Staff?.Vacancy?.Department ?? department?.Name,
                 CurrentAddress   = ToAddressResponse(cur),
                 PermanentAddress = ToAddressResponse(perm ?? cur)
             };

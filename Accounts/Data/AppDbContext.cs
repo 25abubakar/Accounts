@@ -563,7 +563,9 @@ namespace Accounts.Data
             // ── PersonContacts (one-to-many contacts per person) ──────────────
             builder.Entity<PersonContact>(e =>
             {
-                e.ToTable("PersonContacts");
+                e.ToTable("PersonContacts", table => table.HasCheckConstraint(
+                    "CK_PersonContacts_Type",
+                    "[ContactType] IN ('Email','PersonalEmail','Phone','WhatsApp','Emergency','Other')"));
                 e.HasKey(x => x.Id);
                 e.Property(x => x.Id).ValueGeneratedOnAdd();
                 e.Property(x => x.ContactType).HasMaxLength(20).IsRequired();

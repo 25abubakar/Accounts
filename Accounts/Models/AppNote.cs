@@ -56,6 +56,7 @@ namespace Accounts.Models
         public bool IsPublished { get; set; } = true;
         public bool IsPinned { get; set; }
         public bool IsPopup { get; set; }
+        public bool IsBanner { get; set; }
         public bool RequireAcknowledgement { get; set; }
         public bool AllowDismiss { get; set; } = true;
         public bool IsActive { get; set; } = true;

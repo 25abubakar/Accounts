@@ -6,7 +6,7 @@ namespace Accounts.Models
     /// <summary>
     /// One-to-many contact records per Person.
     /// Replaces the flat Email / Phone columns on the Persons table.
-    /// ContactType: 'Email' | 'Phone' | 'WhatsApp' | 'Emergency' | 'Other'
+    /// ContactType: 'Email' | 'PersonalEmail' | 'Phone' | 'WhatsApp' | 'Emergency' | 'Other'
     /// IsPrimary:   only one row per (PersonId, ContactType) can be primary
     ///              (enforced by partial unique index in DB).
     /// </summary>
@@ -20,7 +20,7 @@ namespace Accounts.Models
         [Required]
         public Guid PersonId { get; set; }
 
-        /// <summary>Email | Phone | WhatsApp | Emergency | Other</summary>
+        /// <summary>Email | PersonalEmail | Phone | WhatsApp | Emergency | Other</summary>
         [Required]
         [MaxLength(20)]
         public string ContactType { get; set; } = "Email";

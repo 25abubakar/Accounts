@@ -1,6 +1,8 @@
+using Accounts.Data;
 using Accounts.Models;
 using Accounts.Services.Interfaces;
 using Microsoft.AspNetCore.Identity;
+using Microsoft.EntityFrameworkCore;
 using System.Security.Claims;
 
 namespace Accounts.Services.Services
@@ -10,6 +12,7 @@ namespace Accounts.Services.Services
         private readonly UserManager<ApplicationUser>  _userManager;
         private readonly SignInManager<ApplicationUser> _signInManager;
         private readonly RoleManager<IdentityRole>      _roleManager;
+        private readonly ApplicationDbContext           _db;
 
         private static readonly string[] AllowedRoles =
             ["Manager", "Developer", "AssistantManager", "SuperAdmin", "Admin", "TenantAdmin"];
@@ -17,11 +20,13 @@ namespace Accounts.Services.Services
         public AuthService(
             UserManager<ApplicationUser>  userManager,
             SignInManager<ApplicationUser> signInManager,
-            RoleManager<IdentityRole>      roleManager)
+            RoleManager<IdentityRole>      roleManager,
+            ApplicationDbContext           db)
         {
             _userManager   = userManager;
             _signInManager = signInManager;
             _roleManager   = roleManager;
+            _db            = db;
         }
 
         // ── Register ──────────────────────────────────────────────────────────
@@ -93,7 +98,7 @@ namespace Accounts.Services.Services
 
             // Step 3: Sign in — cookie will carry the claims stamped above
             var result = await _signInManager.PasswordSignInAsync(
-                user.UserName!, dto.Password, dto.RememberMe, lockoutOnFailure: false);
+                user.UserName!, dto.Password, dto.RememberMe, lockoutOnFailure: true);
 
             if (result.Succeeded)
             {
@@ -169,10 +174,20 @@ namespace Accounts.Services.Services
 
         // ── Get All Users ─────────────────────────────────────────────────────
 
-        public Task<IEnumerable<object>> GetUsersAsync()
+        public async Task<IEnumerable<object>> GetUsersAsync()
         {
-            var users  = _userManager.Users.ToList();
-            var result = users.Select(u => (object)new
+            var users = await _userManager.Users.AsNoTracking().ToListAsync();
+            var roleRows = await (
+                from userRole in _db.UserRoles
+                join role in _db.Roles on userRole.RoleId equals role.Id
+                select new { userRole.UserId, Role = role.Name! })
+                .AsNoTracking()
+                .ToListAsync();
+            var rolesByUser = roleRows
+                .GroupBy(x => x.UserId)
+                .ToDictionary(g => g.Key, g => (IList<string>)g.Select(x => x.Role).ToList());
+
+            return users.Select(u => (object)new
             {
                 u.Id,
                 u.UserName,
@@ -180,9 +195,8 @@ namespace Accounts.Services.Services
                 u.TenantId,
                 u.IsSuperAdmin,
                 u.IsTenantAdmin,
-                Roles = _userManager.GetRolesAsync(u).Result
+                Roles = rolesByUser.GetValueOrDefault(u.Id, Array.Empty<string>())
             });
-            return Task.FromResult(result);
         }
 
         // ── Private: stamp tenant claims as persistent user claims ────────────

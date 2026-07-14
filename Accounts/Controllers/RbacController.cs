@@ -11,7 +11,7 @@ namespace Accounts.Controllers
 {
     [ApiController]
     [Route("api/rbac")]
-    [Authorize]
+    [Authorize(Roles = "SuperAdmin,Admin,TenantAdmin")]
     [Produces("application/json")]
     public class RbacController : ControllerBase
     {
@@ -238,15 +238,18 @@ namespace Accounts.Controllers
 
             // Compute the allowed PermissionId set in-memory (same logic as RbacService)
             var allowedPermIds = new HashSet<int>();
-            var allFeatureIds  = await _db.Features.AsNoTracking()
-                .Select(f => f.PermissionId).ToListAsync();
+            var grantedMenuIds = menuGrants.Select(ma => ma.MenuId).ToHashSet();
+            var linkedPermissions = await _db.MenuPermissions.AsNoTracking()
+                .Where(mp => grantedMenuIds.Contains(mp.MenuId))
+                .Select(mp => new { mp.MenuId, mp.PermissionId })
+                .ToListAsync();
 
             foreach (var grant in menuGrants)
             {
                 if (!grant.AccessFeatures.Any())
                 {
                     // No feature-level rows → all features allowed for this grant
-                    foreach (var pid in allFeatureIds)
+                    foreach (var pid in linkedPermissions.Where(x => x.MenuId == grant.MenuId).Select(x => x.PermissionId))
                         allowedPermIds.Add(pid);
                 }
                 else
@@ -264,13 +267,14 @@ namespace Accounts.Controllers
                     .Where(f => allowedPermIds.Contains(f.PermissionId))
                     .Select(f => f.FeatureKey)
                     .ToListAsync();
+            allowedFeatureKeys.AddRange(grantedMenuIds.Select(id => $"MENU_{id}"));
+            allowedFeatureKeys = allowedFeatureKeys.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
 
             // Build detailed view for admin display
             var allFeatures = await _db.Features.AsNoTracking()
                 .OrderBy(f => f.Module).ThenBy(f => f.FeatureKey)
                 .ToListAsync();
 
-            var grantedMenuIds = menuGrants.Select(ma => ma.MenuId).ToHashSet();
             var denySet = menuGrants
                 .SelectMany(ma => ma.AccessFeatures)
                 .Where(af => !af.IsAllow)
@@ -596,7 +600,7 @@ namespace Accounts.Controllers
         /// POST /api/rbac/seed-features
         /// </summary>
         [HttpPost("seed-features")]
-        [AllowAnonymous]
+        [Authorize(Roles = "SuperAdmin,Admin")]
         public async Task<IActionResult> SeedFeatures()
         {
             // ── 1. Seed MENU_{id} keys from the Menus table ───────────────────
@@ -672,7 +676,7 @@ namespace Accounts.Controllers
         /// POST /api/rbac/link-menus-to-features
         /// </summary>
         [HttpPost("link-menus-to-features")]
-        [AllowAnonymous]
+        [Authorize(Roles = "SuperAdmin,Admin")]
         public async Task<IActionResult> LinkMenusToFeatures()
         {
             var count = await LinkMenusToFeaturesAsync();

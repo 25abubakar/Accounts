@@ -16,6 +16,7 @@ namespace Accounts.Models
         /// <summary>Auto-generated e.g. LT-KHI-MGR-01</summary>
         public string VacancyCode { get; set; } = string.Empty;
 
+        public int? JobTitleId { get; set; }
         public string JobTitle { get; set; } = string.Empty;
         public string? Department { get; set; }
         public bool IsFilled { get; set; }
@@ -87,10 +88,12 @@ namespace Accounts.Models
     public class StaffDto
     {
         public Guid StaffId { get; set; }
+        public Guid? PersonId { get; set; }
         public string FullName { get; set; } = string.Empty;
         public string? Email { get; set; }
         public string? Phone { get; set; }
         public string? PhotoUrl { get; set; }
+        public string? LoginId { get; set; }
         public Guid? VacancyId { get; set; }
         public string? VacancyCode { get; set; }
         public string? JobTitle { get; set; }

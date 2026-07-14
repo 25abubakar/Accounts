@@ -25,11 +25,7 @@ namespace Accounts.Data
 
         // ── Super Admin accounts to seed ─────────────────────────────────────
         // Add entries here if you need additional system-level admins.
-        private static readonly SuperAdminSeed[] SuperAdmins =
-        {
-            new("admin",      "admin@laltechnologies.com",  "Admin@123"),
-            new("superadmin", "superadmin@lalsgroup.com",   "SuperPassword123!"),
-        };
+        private static readonly SuperAdminSeed[] SuperAdmins = Array.Empty<SuperAdminSeed>();
 
         /// <summary>
         /// Entry point — call from Program.cs inside a scoped DI scope.

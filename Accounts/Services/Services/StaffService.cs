@@ -43,12 +43,12 @@ namespace Accounts.Services.Services
             return list.Select(MapToDto);
         }
 
-        public async Task<(StaffDto? Staff, string? Error)> HireAsync(Guid vacancyId, HireStaffDto dto)
+        public Task<(StaffDto? Staff, string? Error)> HireAsync(Guid vacancyId, HireStaffDto dto)
         {
             // After schema refactor, staff profile columns no longer exist on StaffVacancy.
             // Hiring must link an existing registered Person.
             _ = dto;
-            return (null, "Direct hire is no longer supported. Register the person first, then use hire-person (vacancy + personId).");
+            return Task.FromResult<(StaffDto?, string?)>((null, "Direct hire is no longer supported. Register the person first, then use hire-person (vacancy + personId)."));
         }
 
         public async Task<(StaffDto? Staff, string? Error)> HirePersonAsync(Guid vacancyId, Guid personId)
@@ -143,17 +143,17 @@ namespace Accounts.Services.Services
             return (true, "Employee removed from vacancy. Vacancy is now vacant.");
         }
 
-        public async Task<(string? PhotoUrl, string? FullUrl, string? Error)> UploadPhotoAsync(
+        public Task<(string? PhotoUrl, string? FullUrl, string? Error)> UploadPhotoAsync(
             Guid id, IFormFile photo, string baseUrl)
         {
             _ = id; _ = photo; _ = baseUrl;
-            return (null, null, "Staff photo is no longer stored on StaffVacancy. Upload photo using the Persons endpoints instead.");
+            return Task.FromResult<(string?, string?, string?)>((null, null, "Staff photo is no longer stored on StaffVacancy. Upload photo using the Persons endpoints instead."));
         }
 
-        public async Task<(bool Success, string Message)> DeletePhotoAsync(Guid id)
+        public Task<(bool Success, string Message)> DeletePhotoAsync(Guid id)
         {
             _ = id;
-            return (false, "Staff photo is no longer stored on StaffVacancy. Delete photo using the Persons endpoints instead.");
+            return Task.FromResult((false, "Staff photo is no longer stored on StaffVacancy. Delete photo using the Persons endpoints instead."));
         }
 
         // ── Helpers ───────────────────────────────────────────────────────────
@@ -162,26 +162,38 @@ namespace Accounts.Services.Services
             _db.StaffVacancies
                .Include(s => s.Person)
                .Include(s => s.Vacancy)
+                   .ThenInclude(v => v!.JobTitleNav)
+               .Include(s => s.Vacancy)
                    .ThenInclude(v => v!.Organization)
                        .ThenInclude(o => o!.Parent)
-                           .ThenInclude(p => p!.Parent);
+                           .ThenInclude(p => p!.Parent)
+                               .ThenInclude(p => p!.Parent);
 
         private static StaffDto MapToDto(StaffVacancy s)
         {
-            var branch  = s.Vacancy?.Organization;
-            var company = branch?.Parent;
-            var country = company?.Parent;
+            var chain = new List<OrganizationTree>();
+            for (var node = s.Vacancy?.Organization; node != null && chain.Count < 20; node = node.Parent)
+                chain.Add(node);
+            OrganizationTree? Find(params string[] labels) => chain.FirstOrDefault(n =>
+                labels.Any(label => string.Equals(n.Label, label, StringComparison.OrdinalIgnoreCase)));
+            var department = Find("Department");
+            var branch = Find("Branch", "Office");
+            var company = Find("Company");
+            var country = Find("Country");
 
             return new StaffDto
             {
                 StaffId     = s.StaffId,
+                PersonId    = s.PersonId,
                 FullName    = s.Person?.FullName ?? "-",
                 Email       = s.Person?.Email,
                 Phone       = s.Person?.Phone,
                 PhotoUrl    = s.Person?.ProfilePhotoUrl,
+                LoginId     = s.LoginId,
                 VacancyId   = s.VacancyId,
                 VacancyCode = s.Vacancy?.VacancyCode,
-                JobTitle    = s.Vacancy?.JobTitle,
+                JobTitle    = s.Vacancy?.ResolvedJobTitle,
+                Department  = s.Vacancy?.Department ?? department?.Name,
                 BranchName  = branch?.Name,
                 CompanyName = company?.Name,
                 CountryName = country?.Name,

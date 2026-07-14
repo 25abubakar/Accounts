@@ -10,7 +10,7 @@ namespace Accounts.Models
         public string? OrganizationCode { get; set; }
         public Guid VacancyId { get; set; }
         public string VacancyCode { get; set; } = string.Empty;
-        public string JobTitle { get; set; } = string.Empty;
+        public string? JobTitle { get; set; }
         public string? Department { get; set; }
         public bool IsFilled { get; set; }
         public Guid? PersonId { get; set; }

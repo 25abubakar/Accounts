@@ -40,7 +40,7 @@ namespace Accounts.Controllers
 
         /// <summary>Register a new user with a role (Manager / Developer / AssistantManager)</summary>
         [HttpPost("register")]
-        [AllowAnonymous]
+        [Authorize(Roles = "SuperAdmin,Admin")]
         public async Task<IActionResult> Register([FromBody] RegisterDto dto)
         {
             if (!ModelState.IsValid) return BadRequest(ModelState);
@@ -116,7 +116,7 @@ namespace Accounts.Controllers
 
         /// <summary>Assign a role to an existing user</summary>
         [HttpPost("assign-role")]
-        [AllowAnonymous]
+        [Authorize(Roles = "SuperAdmin")]
         public async Task<IActionResult> AssignRole([FromBody] AssignRoleDto dto)
         {
             if (!ModelState.IsValid) return BadRequest(ModelState);
@@ -131,7 +131,7 @@ namespace Accounts.Controllers
 
         /// <summary>Get all system users with their roles</summary>
         [HttpGet("users")]
-        [AllowAnonymous]
+        [Authorize(Roles = "SuperAdmin,Admin")]
         public async Task<IActionResult> GetUsers() =>
             Ok(await _service.GetUsersAsync());
 

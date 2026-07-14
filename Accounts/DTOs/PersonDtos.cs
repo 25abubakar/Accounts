@@ -8,11 +8,17 @@ namespace Accounts.DTOs
 
     public class AddressDto
     {
+        [JsonPropertyName("addressLine")]
         public string? AddressLine { get; set; }
+        [JsonPropertyName("country")]
         public string? Country     { get; set; }
+        [JsonPropertyName("province")]
         public string? Province    { get; set; }
+        [JsonPropertyName("district")]
         public string? District    { get; set; }
+        [JsonPropertyName("city")]
         public string? City        { get; set; }
+        [JsonPropertyName("postalCode")]
         public string? PostalCode  { get; set; }
     }
 
@@ -35,6 +41,9 @@ namespace Accounts.DTOs
         
         public string?   Phone         { get; set; }
         public string?   Email         { get; set; }
+        [EmailAddress]
+        [MaxLength(256)]
+        public string?   PersonalEmail { get; set; }
         public string?   Gender        { get; set; }
         public DateTime? DateOfBirth   { get; set; }
         public string?   MaritalStatus { get; set; }
@@ -109,6 +118,7 @@ namespace Accounts.DTOs
         public string    FullName      { get; set; } = string.Empty;
         public string?   Phone         { get; set; }
         public string?   Email         { get; set; }
+        public string?   PersonalEmail { get; set; }
         public string?   Gender        { get; set; }
         public DateTime? DateOfBirth   { get; set; }
         public string?   MaritalStatus { get; set; }
@@ -153,6 +163,7 @@ namespace Accounts.DTOs
         public string?   MaritalStatus { get; set; }
         public string?   Phone         { get; set; }
         public string?   Email         { get; set; }
+        public string?   PersonalEmail { get; set; }
         public string?   PhotoUrl      { get; set; }
         public bool      IsHired       { get; set; }
         public string    RegisteredAt  { get; set; } = string.Empty;
@@ -160,6 +171,9 @@ namespace Accounts.DTOs
         public string?   BranchName    { get; set; }
         public string?   CompanyName   { get; set; }
         public string?   CountryName   { get; set; }
+        public string?   VacancyCode   { get; set; }
+        public string?   JobTitle      { get; set; }
+        public string?   Department    { get; set; }
         public AddressResponseDto CurrentAddress   { get; set; } = new();
         public AddressResponseDto PermanentAddress { get; set; } = new();
         public bool               SameAddress      { get; set; }

@@ -219,7 +219,7 @@ namespace Accounts.Controllers
         /// POST /api/menus/seed
         /// </summary>
         [HttpPost("seed")]
-        [AllowAnonymous]  // First-time setup — no auth required
+        [Authorize(Roles = "SuperAdmin,Admin")]
         public async Task<IActionResult> SeedMenus()
         {
             // ── Menu tree definition ──────────────────────────────────────────
@@ -278,6 +278,7 @@ namespace Accounts.Controllers
                 .ToDictionaryAsync(g => g.Key, g => g.First().Id);
 
             int added = 0, skipped = 0;
+            var addedParents = new List<Menu>();
 
             // Pass 1: parent groups (no route, no parent)
             foreach (var item in definitions.Where(d => d.Route == null && d.ParentTitle == null))
@@ -292,9 +293,15 @@ namespace Accounts.Controllers
                     IsActive = true
                 };
                 _db.Menus.Add(menu);
-                await _db.SaveChangesAsync();
-                existingByTitle[item.Title] = menu.Id;
+                addedParents.Add(menu);
                 added++;
+            }
+
+            if (addedParents.Count > 0)
+            {
+                await _db.SaveChangesAsync();
+                foreach (var parent in addedParents)
+                    existingByTitle[parent.Title] = parent.Id;
             }
 
             // Pass 2: leaf items (have a route)
@@ -321,9 +328,11 @@ namespace Accounts.Controllers
                     menu.MenuPermissions.Add(new MenuPermission { PermissionId = featureMap[key] });
 
                 _db.Menus.Add(menu);
-                await _db.SaveChangesAsync();
                 added++;
             }
+
+            if (_db.ChangeTracker.HasChanges())
+                await _db.SaveChangesAsync();
 
             return Ok(new
             {
@@ -339,7 +348,7 @@ namespace Accounts.Controllers
         /// Safe to run multiple times.
         /// </summary>
         [HttpPost("sync-routes")]
-        [AllowAnonymous]
+        [Authorize(Roles = "SuperAdmin,Admin")]
         public async Task<IActionResult> SyncMenuRoutes()
         {
             var routeMap = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)

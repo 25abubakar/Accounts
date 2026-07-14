@@ -18,6 +18,7 @@ namespace Accounts.DTOs.CommCenter
         public bool    IsPublished          { get; set; }
         public bool    IsPinned             { get; set; }
         public bool    IsPopup              { get; set; }
+        public bool    IsBanner             { get; set; }
         public bool    RequireAcknowledgement { get; set; }
         public bool    AllowDismiss         { get; set; }
         public bool    IsRead               { get; set; }
@@ -54,6 +55,7 @@ namespace Accounts.DTOs.CommCenter
         public bool    IsPublished          { get; set; } = true;
         public bool    IsPinned             { get; set; }
         public bool    IsPopup              { get; set; }
+        public bool    IsBanner             { get; set; }
         public bool    RequireAcknowledgement { get; set; }
         public bool    AllowDismiss         { get; set; } = true;
         public List<AppNoteTargetRequest> Targets { get; set; } = new();

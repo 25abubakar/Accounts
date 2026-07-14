@@ -16,6 +16,9 @@ namespace Accounts.Models
         public int?  TenantId      { get; set; }
         public bool  IsSuperAdmin  { get; set; }
         public bool  IsTenantAdmin { get; set; }
+        public int?  TenantOrganizationTreeId { get; set; }
+        public string? TenantName { get; set; }
+        public string? TenantOrganizationLabel { get; set; }
 
         public List<object> Sidebar { get; set; } = new();
         public List<string> Permissions { get; set; } = new();

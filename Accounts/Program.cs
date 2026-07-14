@@ -19,8 +19,7 @@ builder.Services.AddDbContext<ApplicationDbContext>(options =>
                 maxRetryDelay: TimeSpan.FromSeconds(10),
                 errorNumbersToAdd: null);
         })
-    .EnableDetailedErrors()
-    .EnableSensitiveDataLogging());
+    .EnableDetailedErrors());
 
 // ── 2. Identity Configuration (ApplicationUser, not IdentityUser) ────────────
 builder.Services.AddIdentity<ApplicationUser, IdentityRole>(options =>
@@ -39,7 +38,7 @@ builder.Services.AddIdentity<ApplicationUser, IdentityRole>(options =>
 builder.Services.ConfigureApplicationCookie(options =>
 {
     options.Cookie.SameSite     = SameSiteMode.None;
-    options.Cookie.SecurePolicy = CookieSecurePolicy.SameAsRequest;
+    options.Cookie.SecurePolicy = CookieSecurePolicy.Always;
     options.Cookie.HttpOnly     = true;
     options.Cookie.Name         = ".AspNetCore.Identity.Application";
 

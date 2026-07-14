@@ -75,7 +75,7 @@ namespace Accounts.Controllers
         }
 
         private bool IsAdmin =>
-            User.IsInRole("SuperAdmin") || User.IsInRole("Admin");
+            User.IsInRole("SuperAdmin") || User.IsInRole("Admin") || User.IsInRole("TenantAdmin");
 
         /// <summary>
         /// Resolves the StaffId (Guid as string) for the currently logged-in user.

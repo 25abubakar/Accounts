@@ -5,7 +5,9 @@ const string connStr = "Server=(localdb)\\MSSQLLocalDB;Database=Accounts;Trusted
 
 // ── Hash the password using ASP.NET Identity V3 hasher ───────────────────
 var hasher   = new PasswordHasher<object>();
-var hash     = hasher.HashPassword(new object(), "Admin@123");
+var bootstrapPassword = Environment.GetEnvironmentVariable("ACCOUNTS_BOOTSTRAP_ADMIN_PASSWORD")
+    ?? throw new InvalidOperationException("Set ACCOUNTS_BOOTSTRAP_ADMIN_PASSWORD before running SeedAdmin.");
+var hash     = hasher.HashPassword(new object(), bootstrapPassword);
 
 var userId   = Guid.NewGuid().ToString();
 var roleId   = Guid.NewGuid().ToString();
@@ -81,7 +83,7 @@ Console.WriteLine("╔═══════════════════�
 Console.WriteLine("║   ✅  Admin Created Successfully          ║");
 Console.WriteLine("╠══════════════════════════════════════════╣");
 Console.WriteLine("║  Username : admin                        ║");
-Console.WriteLine("║  Password : Admin@123                    ║");
+Console.WriteLine("║  Password : value supplied via environment variable ║");
 Console.WriteLine("║  Email    : admin@laltechnologies.com    ║");
 Console.WriteLine("║  Role     : SuperAdmin                   ║");
 Console.WriteLine("╠══════════════════════════════════════════╣");

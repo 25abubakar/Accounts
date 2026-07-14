@@ -45,6 +45,26 @@ namespace Accounts.Services.Services
                 IsTenantAdmin  = appUser?.IsTenantAdmin ?? false
             };
 
+            if (appUser?.TenantId is int tenantId)
+            {
+                var tenantContext = await _db.Tenants.AsNoTracking()
+                    .Where(t => t.Id == tenantId)
+                    .Select(t => new
+                    {
+                        t.OrganizationTreeId,
+                        t.TenantName,
+                        OrganizationLabel = t.OrganizationNode != null ? t.OrganizationNode.Label : null
+                    })
+                    .FirstOrDefaultAsync(cancellationToken);
+
+                if (tenantContext != null)
+                {
+                    session.TenantOrganizationTreeId = tenantContext.OrganizationTreeId;
+                    session.TenantName = tenantContext.TenantName;
+                    session.TenantOrganizationLabel = tenantContext.OrganizationLabel;
+                }
+            }
+
             // ── Super Admin path ──────────────────────────────────────────────
             // Super Admins see only Organisation + Platform Settings menus.
             // They must NOT see HR/Staff/Notes operational menus.

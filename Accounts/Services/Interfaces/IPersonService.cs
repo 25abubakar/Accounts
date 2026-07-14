@@ -7,6 +7,7 @@ namespace Accounts.Services.Interfaces
         Task<IEnumerable<PersonDto>> GetAllAsync();
         Task<IEnumerable<PersonDto>> GetUnassignedAsync();
         Task<PersonDto?> GetByIdAsync(Guid id);
+        Task<PersonDto?> GetByIdentityUserIdAsync(string identityUserId);
         Task<IEnumerable<PersonProfileDto>> GetProfilesAsync();
         Task<PersonProfileDto?> GetProfileAsync(Guid id);
         Task<object> GetOrgTreeAsync();

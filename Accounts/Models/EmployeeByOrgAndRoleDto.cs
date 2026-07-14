@@ -8,7 +8,7 @@ namespace Accounts.Models
         public int OrganizationId { get; set; }
         public string OrganizationName { get; set; } = string.Empty;
         public string VacancyCode { get; set; } = string.Empty;
-        public string JobTitle { get; set; } = string.Empty;
+        public string? JobTitle { get; set; }
         public string FullName { get; set; } = string.Empty;
         public string? Email { get; set; }
     }
