@@ -36,6 +36,13 @@ namespace Accounts.Controllers
             return user?.IsSuperAdmin == true;
         }
 
+        private async Task<bool> CallerIsTenantAdminAsync()
+        {
+            var uid = User.FindFirstValue(ClaimTypes.NameIdentifier);
+            var user = uid != null ? await _userManager.FindByIdAsync(uid) : null;
+            return user?.IsTenantAdmin == true;
+        }
+
         [HttpGet]
         public async Task<IActionResult> GetAll()
         {
@@ -95,6 +102,8 @@ namespace Accounts.Controllers
         {
             if (await CallerIsSuperAdminAsync()) return Forbid();
             if (!ModelState.IsValid) return BadRequest(ModelState);
+            if (await CallerIsTenantAdminAsync() && !dto.JobTitleId.HasValue)
+                return BadRequest(new { message = "Tenant Admins must select an existing job title from the Job Titles catalog." });
             if (dto.VacancyCount <= 1)
             {
                 var (vacancy, error) = await _service.CreateAsync(dto);

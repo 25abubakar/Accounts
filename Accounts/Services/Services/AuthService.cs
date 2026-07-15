@@ -13,6 +13,7 @@ namespace Accounts.Services.Services
         private readonly SignInManager<ApplicationUser> _signInManager;
         private readonly RoleManager<IdentityRole>      _roleManager;
         private readonly ApplicationDbContext           _db;
+        private readonly IAccountScopeAccessService     _scopeAccess;
 
         private static readonly string[] AllowedRoles =
             ["Manager", "Developer", "AssistantManager", "SuperAdmin", "Admin", "TenantAdmin"];
@@ -21,12 +22,14 @@ namespace Accounts.Services.Services
             UserManager<ApplicationUser>  userManager,
             SignInManager<ApplicationUser> signInManager,
             RoleManager<IdentityRole>      roleManager,
-            ApplicationDbContext           db)
+            ApplicationDbContext           db,
+            IAccountScopeAccessService     scopeAccess)
         {
             _userManager   = userManager;
             _signInManager = signInManager;
             _roleManager   = roleManager;
             _db            = db;
+            _scopeAccess   = scopeAccess;
         }
 
         // ── Register ──────────────────────────────────────────────────────────
@@ -97,11 +100,21 @@ namespace Accounts.Services.Services
             await StampTenantClaimsAsync(user);
 
             // Step 3: Sign in — cookie will carry the claims stamped above
-            var result = await _signInManager.PasswordSignInAsync(
-                user.UserName!, dto.Password, dto.RememberMe, lockoutOnFailure: true);
+            var result = await _signInManager.CheckPasswordSignInAsync(
+                user, dto.Password, lockoutOnFailure: true);
 
             if (result.Succeeded)
             {
+                var access = await _scopeAccess.ValidateAsync(user.Id);
+                if (!access.IsAllowed)
+                    return (false, 403, new AuthResponseDto
+                    {
+                        Success = false,
+                        Message = access.Message
+                    });
+
+                await StampTenantClaimsAsync(user);
+                await _signInManager.SignInAsync(user, dto.RememberMe);
                 var roles = await _userManager.GetRolesAsync(user);
                 return (true, 200, new AuthResponseDto
                 {

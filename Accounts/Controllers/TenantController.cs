@@ -51,20 +51,40 @@ namespace Accounts.Controllers
                 .AsNoTracking()
                 .Include(t => t.OrganizationNode)
                 .OrderBy(t => t.TenantName)
-                .Select(t => new
-                {
-                    t.Id,
-                    t.TenantName,
-                    t.TenantCode,
-                    t.IsActive,
-                    t.CreatedOnUtc,
-                    t.OrganizationTreeId,
-                    orgNodeName  = t.OrganizationNode != null ? t.OrganizationNode.Name : null,
-                    orgNodeLabel = t.OrganizationNode != null ? t.OrganizationNode.Label : null
-                })
                 .ToListAsync();
 
-            return Ok(tenants);
+            var nodes = await _db.OrganizationTree.AsNoTracking().ToListAsync();
+            var nodeById = nodes.ToDictionary(n => n.Id);
+            bool IsHierarchyActive(int nodeId)
+            {
+                var visited = new HashSet<int>();
+                int? current = nodeId;
+                while (current.HasValue && nodeById.TryGetValue(current.Value, out var node) && visited.Add(node.Id))
+                {
+                    if (!node.IsActive) return false;
+                    current = node.ParentId;
+                }
+                return true;
+            }
+
+            var response = tenants.Select(t => new
+            {
+                t.Id,
+                t.TenantName,
+                t.TenantCode,
+                t.IsActive,
+                effectiveIsActive = t.IsActive && IsHierarchyActive(t.OrganizationTreeId),
+                t.CreatedOnUtc,
+                t.OrganizationTreeId,
+                orgNodeName = t.OrganizationNode?.Name,
+                orgNodeLabel = t.OrganizationNode?.Label,
+                parentOrgNodeId = t.OrganizationNode?.ParentId,
+                childCompanyCount = nodes.Count(n =>
+                    n.Label.Equals("Company", StringComparison.OrdinalIgnoreCase) &&
+                    IsDescendantOf(n.Id, t.OrganizationTreeId, nodeById))
+            }).ToList();
+
+            return Ok(response);
         }
 
         // ── GET /api/tenants/{id} ─────────────────────────────────────────────
@@ -100,7 +120,11 @@ namespace Accounts.Controllers
                 {
                     menuId    = mp.MenuId,
                     menuTitle = mp.Menu?.Title,
-                    mp.IsAllow
+                    mp.IsAllow,
+                    mp.CanView,
+                    mp.CanAdd,
+                    mp.CanEdit,
+                    mp.CanDelete
                 })
             });
         }
@@ -295,21 +319,71 @@ namespace Accounts.Controllers
             return result ?? StatusCode(500, new { message = "Tenant creation failed unexpectedly." });
         }
 
-        /// <summary>Enable or disable a tenant.</summary>
-        [HttpPut("{id:int}/toggle")]
-        public async Task<IActionResult> Toggle(int id)
+        /// <summary>Enable or disable a tenant and its mapped Group/Company node.</summary>
+        [HttpPut("{id:int}/status")]
+        public async Task<IActionResult> SetStatus(int id, [FromBody] SetTenantStatusDto dto)
         {
-            var tenant = await _db.Tenants.FindAsync(id);
+            var tenant = await _db.Tenants
+                .Include(t => t.OrganizationNode)
+                .FirstOrDefaultAsync(t => t.Id == id);
             if (tenant == null) return NotFound(new { message = $"Tenant {id} not found." });
 
-            tenant.IsActive = !tenant.IsActive;
+            var allNodes = await _db.OrganizationTree.ToListAsync();
+            var nodeById = allNodes.ToDictionary(n => n.Id);
+            var affectedTenantIds = new HashSet<int> { tenant.Id };
+            var affectedCompanyCount = 0;
+
+            tenant.IsActive = dto.IsActive;
+            if (tenant.OrganizationNode != null)
+                tenant.OrganizationNode.IsActive = dto.IsActive;
+
+            var isGroup = tenant.OrganizationNode?.Label.Equals(
+                "Group", StringComparison.OrdinalIgnoreCase) == true;
+
+            if (!dto.IsActive && dto.DisableChildCompanies && isGroup)
+            {
+                var companyNodeIds = allNodes
+                    .Where(n => n.Label.Equals("Company", StringComparison.OrdinalIgnoreCase)
+                        && IsDescendantOf(n.Id, tenant.OrganizationTreeId, nodeById))
+                    .Select(n => n.Id)
+                    .ToHashSet();
+
+                foreach (var node in allNodes.Where(n => companyNodeIds.Contains(n.Id)))
+                    node.IsActive = false;
+
+                var childTenants = await _db.Tenants
+                    .Where(t => companyNodeIds.Contains(t.OrganizationTreeId))
+                    .ToListAsync();
+                foreach (var child in childTenants)
+                {
+                    child.IsActive = false;
+                    affectedTenantIds.Add(child.Id);
+                }
+                affectedCompanyCount = companyNodeIds.Count;
+            }
+
             await _db.SaveChangesAsync();
 
             return Ok(new
             {
-                message  = $"Tenant '{tenant.TenantName}' is now {(tenant.IsActive ? "active" : "disabled")}.",
-                isActive = tenant.IsActive
+                message = dto.IsActive
+                    ? $"{tenant.TenantName} has been activated. Users can sign in when all parent levels and their accounts are active."
+                    : affectedCompanyCount > 0
+                        ? $"{tenant.TenantName} and {affectedCompanyCount} compan{(affectedCompanyCount == 1 ? "y" : "ies")} have been disabled."
+                        : $"{tenant.TenantName} has been disabled and its users have lost application access.",
+                isActive = tenant.IsActive,
+                affectedTenantIds,
+                affectedCompanyCount
             });
+        }
+
+        /// <summary>Compatibility endpoint for older clients.</summary>
+        [HttpPut("{id:int}/toggle")]
+        public async Task<IActionResult> Toggle(int id)
+        {
+            var tenant = await _db.Tenants.AsNoTracking().FirstOrDefaultAsync(t => t.Id == id);
+            if (tenant == null) return NotFound(new { message = $"Tenant {id} not found." });
+            return await SetStatus(id, new SetTenantStatusDto { IsActive = !tenant.IsActive });
         }
 
         // ── PUT /api/tenants/{id}/menus ───────────────────────────────────────
@@ -329,22 +403,47 @@ namespace Accounts.Controllers
 
             var creatorId = User.FindFirstValue(ClaimTypes.NameIdentifier);
 
-            // Validate that all requested menu IDs exist
-            var validMenuIds = await _db.Menus
-                .Where(m => menuIds.Contains(m.Id) && m.IsActive)
-                .Select(m => m.Id)
+            // Validate requested IDs and automatically include every active ancestor.
+            // This keeps the tenant sidebar hierarchy intact even when the Super Admin
+            // selects only a nested menu.
+            var activeMenus = await _db.Menus
+                .AsNoTracking()
+                .Where(m => m.IsActive)
+                .Select(m => new { m.Id, m.ParentId })
                 .ToListAsync();
+            var activeById = activeMenus.ToDictionary(m => m.Id);
+            var validMenuIds = menuIds
+                .Where(activeById.ContainsKey)
+                .Distinct()
+                .ToHashSet();
+
+            foreach (var requestedId in validMenuIds.ToList())
+            {
+                var currentId = requestedId;
+                var visited = new HashSet<int>();
+                while (activeById.TryGetValue(currentId, out var current)
+                       && current.ParentId.HasValue
+                       && visited.Add(currentId))
+                {
+                    validMenuIds.Add(current.ParentId.Value);
+                    currentId = current.ParentId.Value;
+                }
+            }
 
             // Remove all existing permissions and re-add
             _db.TenantMenuPermissions.RemoveRange(tenant.MenuPermissions);
 
-            foreach (var menuId in validMenuIds)
+            foreach (var menuId in validMenuIds.OrderBy(x => x))
             {
                 _db.TenantMenuPermissions.Add(new TenantMenuPermission
                 {
                     TenantId        = id,
                     MenuId          = menuId,
                     IsAllow         = true,
+                    CanView         = true,
+                    CanAdd          = true,
+                    CanEdit         = true,
+                    CanDelete       = true,
                     GrantedByUserId = creatorId,
                     GrantedOnUtc    = DateTime.UtcNow
                 });
@@ -357,6 +456,48 @@ namespace Accounts.Controllers
                 message      = $"Menus updated for tenant '{tenant.TenantName}'.",
                 grantedCount = validMenuIds.Count
             });
+        }
+
+        [HttpPut("{id:int}/menu-access")]
+        public async Task<IActionResult> SetMenuAccess(int id, [FromBody] List<TenantMenuAccessDto> access)
+        {
+            var tenant = await _db.Tenants
+                .Include(t => t.MenuPermissions)
+                .FirstOrDefaultAsync(t => t.Id == id);
+            if (tenant == null) return NotFound(new { message = $"Tenant {id} not found." });
+
+            var activeMenus = await _db.Menus.AsNoTracking().Where(m => m.IsActive)
+                .Select(m => new { m.Id, m.ParentId }).ToListAsync();
+            var activeById = activeMenus.ToDictionary(m => m.Id);
+            var requested = access
+                .Where(a => activeById.ContainsKey(a.MenuId))
+                .GroupBy(a => a.MenuId)
+                .Select(g => g.Last())
+                .ToDictionary(a => a.MenuId);
+
+            // Parents are structural grants with View permission only.
+            foreach (var item in requested.Values.ToList())
+            {
+                var currentId = item.MenuId;
+                var visited = new HashSet<int>();
+                while (activeById.TryGetValue(currentId, out var current) && current.ParentId.HasValue && visited.Add(currentId))
+                {
+                    if (!requested.ContainsKey(current.ParentId.Value))
+                        requested[current.ParentId.Value] = new TenantMenuAccessDto { MenuId = current.ParentId.Value, CanView = true };
+                    currentId = current.ParentId.Value;
+                }
+            }
+
+            _db.TenantMenuPermissions.RemoveRange(tenant.MenuPermissions);
+            var creatorId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+            _db.TenantMenuPermissions.AddRange(requested.Values.Select(a => new TenantMenuPermission
+            {
+                TenantId = id, MenuId = a.MenuId, IsAllow = true,
+                CanView = a.CanView, CanAdd = a.CanAdd, CanEdit = a.CanEdit, CanDelete = a.CanDelete,
+                GrantedByUserId = creatorId, GrantedOnUtc = DateTime.UtcNow
+            }));
+            await _db.SaveChangesAsync();
+            return Ok(new { message = $"Menu access updated for tenant '{tenant.TenantName}'.", grantedCount = requested.Count });
         }
 
         // ── Private helpers ───────────────────────────────────────────────────
@@ -373,9 +514,39 @@ namespace Accounts.Controllers
             while (await _userManager.FindByNameAsync(loginId) != null);
             return loginId;
         }
+
+        private static bool IsDescendantOf(
+            int candidateId,
+            int ancestorId,
+            IReadOnlyDictionary<int, OrganizationTree> nodes)
+        {
+            var visited = new HashSet<int>();
+            int? current = candidateId;
+            while (current.HasValue && nodes.TryGetValue(current.Value, out var node) && visited.Add(node.Id))
+            {
+                if (node.ParentId == ancestorId) return true;
+                current = node.ParentId;
+            }
+            return false;
+        }
     }
 
     // ── Request DTO ───────────────────────────────────────────────────────────
+
+    public sealed class TenantMenuAccessDto
+    {
+        public int MenuId { get; set; }
+        public bool CanView { get; set; }
+        public bool CanAdd { get; set; }
+        public bool CanEdit { get; set; }
+        public bool CanDelete { get; set; }
+    }
+
+    public sealed class SetTenantStatusDto
+    {
+        public bool IsActive { get; set; }
+        public bool DisableChildCompanies { get; set; }
+    }
 
     public class CreateTenantDto
     {

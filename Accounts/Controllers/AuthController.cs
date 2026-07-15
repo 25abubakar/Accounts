@@ -229,11 +229,11 @@ namespace Accounts.Controllers
             // They must still see the menus granted to their tenant.
             if (appUser?.IsTenantAdmin == true && appUser.TenantId.HasValue)
             {
-                var tenantGrantedMenuIds = await _db.TenantMenuPermissions
+                var tenantGrants = await _db.TenantMenuPermissions
                     .AsNoTracking()
                     .Where(tmp => tmp.TenantId == appUser.TenantId.Value && tmp.IsAllow)
-                    .Select(tmp => tmp.MenuId)
-                    .ToHashSetAsync(ct);
+                    .ToListAsync(ct);
+                var tenantGrantedMenuIds = tenantGrants.Select(g => g.MenuId).ToHashSet();
 
                 var allMenus = await _db.Menus.AsNoTracking()
                     .Where(m => m.IsActive)
@@ -260,13 +260,17 @@ namespace Accounts.Controllers
 
                 var tenantSidebar = BuildFullTreeStatic(null, filteredLookup);
 
-                // Auto-grant ALL CRUD feature keys for every granted menu.
-                // Build the key sets in memory (string.Format can't be translated to SQL).
+                // Grant only the CRUD capabilities selected by Super Admin.
                 var menuIdList = tenantGrantedMenuIds.ToList();
-                var allCrudSuffixes = new[] { "", "_VIEW", "_ADD", "_EDIT", "_DELETE" };
-                var autoKeys = menuIdList
-                    .SelectMany(mid => allCrudSuffixes.Select(s => $"MENU_{mid}{s}"))
-                    .ToHashSet();
+                var autoKeys = new HashSet<string>();
+                foreach (var grant in tenantGrants)
+                {
+                    autoKeys.Add($"MENU_{grant.MenuId}");
+                    if (grant.CanView) autoKeys.Add($"MENU_{grant.MenuId}_VIEW");
+                    if (grant.CanAdd) autoKeys.Add($"MENU_{grant.MenuId}_ADD");
+                    if (grant.CanEdit) autoKeys.Add($"MENU_{grant.MenuId}_EDIT");
+                    if (grant.CanDelete) autoKeys.Add($"MENU_{grant.MenuId}_DELETE");
+                }
 
                 // Also pull any explicitly defined Feature rows linked to these menus
                 // — fetch all Features first, then filter in memory
@@ -276,11 +280,8 @@ namespace Accounts.Controllers
                     .ToListAsync(ct);
 
                 var allGrantedKeys = autoKeys
-                    .Union(dbFeatureKeys.Where(k =>
-                        menuIdList.Any(mid =>
-                            k == $"MENU_{mid}" || k.StartsWith($"MENU_{mid}_"))))
-                    .Distinct()
-                    .ToList();
+                    .Union(dbFeatureKeys.Where(autoKeys.Contains))
+                    .Distinct().ToList();
 
                 // Resolve the person record if it exists (for staffId)
                 var taPersonId  = (Guid?)null;

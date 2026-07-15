@@ -189,6 +189,7 @@ namespace Accounts.Services.Services
                 Email       = s.Person?.Email,
                 Phone       = s.Person?.Phone,
                 PhotoUrl    = s.Person?.ProfilePhotoUrl,
+                IsActive    = s.Person?.IsActive ?? false,
                 LoginId     = s.LoginId,
                 VacancyId   = s.VacancyId,
                 VacancyCode = s.Vacancy?.VacancyCode,

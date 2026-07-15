@@ -149,6 +149,10 @@ namespace Accounts.Data
                 e.ToTable("TenantMenuPermissions");
                 e.HasKey(x => new { x.TenantId, x.MenuId });
                 e.Property(x => x.IsAllow).HasDefaultValue(true);
+                e.Property(x => x.CanView).HasDefaultValue(true);
+                e.Property(x => x.CanAdd).HasDefaultValue(true);
+                e.Property(x => x.CanEdit).HasDefaultValue(true);
+                e.Property(x => x.CanDelete).HasDefaultValue(true);
                 e.Property(x => x.GrantedOnUtc).HasDefaultValueSql("SYSUTCDATETIME()");
                 e.Property(x => x.GrantedByUserId).HasMaxLength(450).IsRequired(false);
 
@@ -288,6 +292,7 @@ namespace Accounts.Data
             builder.Entity<OrganizationTree>(e =>
             {
                 e.ToTable("OrganizationTree", "dbo");
+                e.Property(x => x.IsActive).HasDefaultValue(true);
                 e.HasKey(x => x.Id);
                 e.Property(x => x.Id).ValueGeneratedNever();
                 e.Property(x => x.FlagUrl).HasMaxLength(500).IsRequired(false);
@@ -341,6 +346,7 @@ namespace Accounts.Data
                 e.Property(x => x.IdentityUserId).HasMaxLength(450).IsRequired();
                 e.Property(x => x.ProfilePhotoUrl).HasMaxLength(500).IsRequired(false);
                 e.Property(x => x.PersonalEmail).HasMaxLength(256).IsRequired(false);
+                e.Property(x => x.IsActive).HasDefaultValue(true);
 
                 e.HasIndex(x => x.IdentityUserId).IsUnique();
             });

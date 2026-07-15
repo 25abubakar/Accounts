@@ -54,6 +54,9 @@ namespace Accounts.Models
 
         public DateTime CreatedDate { get; set; } = DateTime.UtcNow;
 
+        /// <summary>Employment/account status controlled by tenant administrators.</summary>
+        public bool IsActive { get; set; } = true;
+
         public ICollection<PersonAddress>  Addresses     { get; set; } = new List<PersonAddress>();
         public ICollection<PersonContact>  Contacts      { get; set; } = new List<PersonContact>();
         public StaffVacancy?               Staff         { get; set; }

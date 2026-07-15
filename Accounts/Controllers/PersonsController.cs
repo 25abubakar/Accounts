@@ -199,6 +199,15 @@ namespace Accounts.Controllers
             return Ok(new { message });
         }
 
+        [HttpPatch("{id:guid}/status")]
+        public async Task<IActionResult> SetStatus(Guid id, [FromBody] SetPersonStatusDto dto)
+        {
+            if (await CallerIsSuperAdminAsync()) return Forbid();
+            var (success, message, isActive) = await _service.SetActiveAsync(id, dto.IsActive);
+            if (!success) return message.Contains("not found") ? NotFound(new { message }) : BadRequest(new { message });
+            return Ok(new { message, isActive });
+        }
+
         [HttpPost("{id:guid}/change-password")]
         public async Task<IActionResult> ChangePassword(Guid id, [FromBody] ChangePasswordDto dto)
         {

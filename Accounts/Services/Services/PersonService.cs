@@ -439,11 +439,30 @@ namespace Accounts.Services.Services
 
         public async Task<(bool Success, string Message)> DeleteAsync(Guid id)
         {
-            var person = await _db.Persons.FindAsync(id);
+            var person = await _db.Persons
+                .Include(p => p.Staff)
+                .FirstOrDefaultAsync(p => p.PersonId == id);
             if (person == null) return (false, $"Person {id} not found.");
 
+            await using var transaction = await _db.Database.BeginTransactionAsync();
+
+            if (person.Staff != null)
+            {
+                if (person.Staff.VacancyId.HasValue)
+                {
+                    var vacancy = await _db.Vacancies.FindAsync(person.Staff.VacancyId.Value);
+                    if (vacancy != null) vacancy.IsFilled = false;
+                }
+                _db.StaffVacancies.Remove(person.Staff);
+            }
+
             var iu = await _userManager.FindByIdAsync(person.IdentityUserId);
-            if (iu != null) await _userManager.DeleteAsync(iu);
+            if (iu != null)
+            {
+                var identityResult = await _userManager.DeleteAsync(iu);
+                if (!identityResult.Succeeded)
+                    return (false, string.Join("; ", identityResult.Errors.Select(e => e.Description)));
+            }
 
             if (!string.IsNullOrWhiteSpace(person.ProfilePhotoUrl))
             {
@@ -454,7 +473,28 @@ namespace Accounts.Services.Services
 
             _db.Persons.Remove(person);
             await _db.SaveChangesAsync();
+            await transaction.CommitAsync();
             return (true, $"Person '{person.FullName}' deleted.");
+        }
+
+        public async Task<(bool Success, string Message, bool IsActive)> SetActiveAsync(Guid id, bool isActive)
+        {
+            var person = await _db.Persons.FindAsync(id);
+            if (person == null) return (false, $"Person {id} not found.", false);
+
+            person.IsActive = isActive;
+            var identityUser = await _userManager.FindByIdAsync(person.IdentityUserId);
+            if (identityUser != null)
+            {
+                identityUser.LockoutEnabled = true;
+                identityUser.LockoutEnd = isActive ? null : DateTimeOffset.MaxValue;
+                var updateResult = await _userManager.UpdateAsync(identityUser);
+                if (!updateResult.Succeeded)
+                    return (false, string.Join("; ", updateResult.Errors.Select(e => e.Description)), person.IsActive);
+            }
+
+            await _db.SaveChangesAsync();
+            return (true, $"Person '{person.FullName}' is now {(isActive ? "active" : "inactive")}.", isActive);
         }
 
         // ── Password Management ───────────────────────────────────────────────
@@ -914,7 +954,7 @@ namespace Accounts.Services.Services
                 Phone = p.Phone, Email = p.Email,
                 PersonalEmail = p.PersonalEmail ?? p.Contacts.FirstOrDefault(c => c.ContactType == "PersonalEmail")?.ContactValue,
                 PhotoUrl = p.ProfilePhotoUrl,
-                IsHired = p.Staff != null, RegisteredAt = p.CreatedDate.ToString("o"),
+                IsHired = p.Staff != null, IsActive = p.IsActive, RegisteredAt = p.CreatedDate.ToString("o"),
                 BranchId = branch?.Id, BranchName = branch?.Name, CompanyName = company?.Name, CountryName = country?.Name,
                 VacancyCode = p.Staff?.Vacancy?.VacancyCode,
                 JobTitle = p.Staff?.Vacancy?.ResolvedJobTitle,

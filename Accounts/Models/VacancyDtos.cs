@@ -93,6 +93,7 @@ namespace Accounts.Models
         public string? Email { get; set; }
         public string? Phone { get; set; }
         public string? PhotoUrl { get; set; }
+        public bool IsActive { get; set; } = true;
         public string? LoginId { get; set; }
         public Guid? VacancyId { get; set; }
         public string? VacancyCode { get; set; }

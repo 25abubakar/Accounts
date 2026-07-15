@@ -27,6 +27,12 @@ namespace Accounts.Models
 
         public int? ParentId { get; set; }
 
+        /// <summary>
+        /// Controls whether this organization node can be used for access. A disabled
+        /// node also blocks users whose tenant belongs to any of its descendants.
+        /// </summary>
+        public bool IsActive { get; set; } = true;
+
         /// <summary>Flag image URL — auto-fetched for Country nodes</summary>
         [MaxLength(500)]
         public string? FlagUrl { get; set; }

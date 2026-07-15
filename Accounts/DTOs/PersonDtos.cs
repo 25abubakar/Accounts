@@ -4,6 +4,11 @@ using System.Text.Json.Serialization;
 
 namespace Accounts.DTOs
 {
+    public sealed class SetPersonStatusDto
+    {
+        public bool IsActive { get; set; }
+    }
+
     // ── Address ───────────────────────────────────────────────────────────────
 
     public class AddressDto
@@ -166,6 +171,7 @@ namespace Accounts.DTOs
         public string?   PersonalEmail { get; set; }
         public string?   PhotoUrl      { get; set; }
         public bool      IsHired       { get; set; }
+        public bool      IsActive      { get; set; }
         public string    RegisteredAt  { get; set; } = string.Empty;
         public int?      BranchId      { get; set; }
         public string?   BranchName    { get; set; }

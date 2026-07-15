@@ -236,6 +236,7 @@ namespace Accounts.Controllers
                 new("Companies & Entities", "Briefcase",          "/groups/companies",     "Accounts & Groups",   1, new() { "DEPT_VIEW" }),
                 new("Organization Chart",   "GitBranch",          "/organization",         "Accounts & Groups",   2, new() { "DEPT_VIEW" }),
                 new("Partner Portals",      "Handshake",          "/groups/partners",      "Accounts & Groups",   3, new() { "DEPT_VIEW" }),
+                new("Tenant Management",    "ShieldCheck",        "/tenants",              "Accounts & Groups",   4, new() { "ACCESS_GROUP_VIEW" }),
 
                 // HR Management (parent group)
                 new("HR Management",        "Users",              null,                    null,                  3, new()),

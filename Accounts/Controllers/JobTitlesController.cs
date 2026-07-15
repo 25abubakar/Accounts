@@ -1,12 +1,10 @@
+using Accounts.Services.Interfaces;
 using Accounts.Services.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
 namespace Accounts.Controllers
 {
-    /// <summary>
-    /// Manages the normalized JobTitles lookup table.
-    /// </summary>
     [ApiController]
     [Route("api/job-titles")]
     [Authorize]
@@ -14,24 +12,27 @@ namespace Accounts.Controllers
     public class JobTitlesController : ControllerBase
     {
         private readonly JobTitleService _service;
-        public JobTitlesController(JobTitleService service) => _service = service;
+        private readonly ITenantService _tenantService;
 
-        /// <summary>
-        /// Returns all job titles with their active vacancy count for UI.
-        /// GET /api/job-titles
-        /// </summary>
+        public JobTitlesController(JobTitleService service, ITenantService tenantService)
+        {
+            _service = service;
+            _tenantService = tenantService;
+        }
+
         [HttpGet]
-        public async Task<IActionResult> GetAll() =>
-            Ok(await _service.GetAllWithCountAsync()); // 🌟 Ab Count bhi aayega!
+        public async Task<IActionResult> GetAll()
+        {
+            // Keep the menu/page visible to Super Admin without exposing tenant data.
+            if (_tenantService.IsSuperAdmin) return Ok(Array.Empty<JobTitleResponseDto>());
+            if (!_tenantService.TenantId.HasValue) return Forbid();
+            return Ok(await _service.GetAllWithCountAsync());
+        }
 
-        /// <summary>
-        /// Upsert by name — finds existing (case-insensitive) or inserts new.
-        /// POST /api/job-titles/upsert
-        /// </summary>
         [HttpPost("upsert")]
-        [Authorize(Roles = "SuperAdmin,Admin,TenantAdmin")]
         public async Task<IActionResult> Upsert([FromBody] UpsertJobTitleDto dto)
         {
+            if (!_tenantService.IsTenantAdmin) return Forbid();
             if (string.IsNullOrWhiteSpace(dto.TitleName))
                 return BadRequest(new { message = "TitleName is required." });
 
@@ -40,45 +41,33 @@ namespace Accounts.Controllers
             return Ok(new { id, titleName = title?.TitleName });
         }
 
-        /// <summary>
-        /// Updates an existing job title.
-        /// PUT /api/job-titles/{id}
-        /// </summary>
-        [HttpPut("{id}")]
-        [Authorize(Roles = "SuperAdmin,Admin,TenantAdmin")]
+        [HttpPut("{id:int}")]
         public async Task<IActionResult> Update(int id, [FromBody] UpsertJobTitleDto dto)
         {
+            if (!_tenantService.IsTenantAdmin) return Forbid();
             if (string.IsNullOrWhiteSpace(dto.TitleName))
                 return BadRequest(new { message = "TitleName is required." });
 
             var success = await _service.UpdateAsync(id, dto.TitleName.Trim());
-
-            if (!success)
-                return NotFound(new { message = "Job Title not found." });
-
-            return Ok(new { id, titleName = dto.TitleName.Trim() });
+            return success
+                ? Ok(new { id, titleName = dto.TitleName.Trim() })
+                : NotFound(new { message = "Job Title not found." });
         }
 
-        /// <summary>
-        /// Deletes a job title ONLY if it's not in use.
-        /// DELETE /api/job-titles/{id}
-        /// </summary>
-        [HttpDelete("{id}")]
-        [Authorize(Roles = "SuperAdmin,Admin,TenantAdmin")]
+        [HttpDelete("{id:int}")]
         public async Task<IActionResult> Delete(int id)
         {
+            if (!_tenantService.IsTenantAdmin) return Forbid();
             try
             {
                 var success = await _service.DeleteAsync(id);
-
-                if (!success)
-                    return NotFound(new { message = "Job Title not found." });
-
-                return Ok(new { message = "Job Title deleted successfully." });
+                return success
+                    ? Ok(new { message = "Job Title deleted successfully." })
+                    : NotFound(new { message = "Job Title not found." });
             }
             catch (InvalidOperationException ex)
             {
-                return BadRequest(new { message = ex.Message }); // 🌟 Agar Delete nai ho sakta to error dega
+                return BadRequest(new { message = ex.Message });
             }
         }
     }

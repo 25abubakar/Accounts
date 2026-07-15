@@ -3,6 +3,7 @@ using Accounts.Models;
 using Accounts.Services;
 using Accounts.Services.Interfaces;
 using Accounts.Services.Services;
+using Accounts.Middleware;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 
@@ -91,6 +92,7 @@ builder.Services.AddHttpContextAccessor();
 
 // ── Multi-Tenant: ITenantService reads TenantId from HttpContext.User claims ─
 builder.Services.AddScoped<ITenantService, TenantService>();
+builder.Services.AddScoped<IAccountScopeAccessService, AccountScopeAccessService>();
 
 // ── Core domain services ──────────────────────────────────────────────────────
 builder.Services.AddScoped<VacancyCodeService>();
@@ -129,6 +131,11 @@ var app = builder.Build();
 // ── 8. Seed Roles + Super Admin ──────────────────────────────────────────────
 using (var scope = app.Services.CreateScope())
 {
+    // Apply pending schema changes before seeding or serving requests. This keeps
+    // deployed/running databases aligned with the model (for example the
+    // OrganizationTree.IsActive hierarchy status column).
+    var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+    await db.Database.MigrateAsync();
     await DbSeeder.SeedAsync(scope.ServiceProvider);
 }
 
@@ -146,6 +153,7 @@ app.UseRouting();
 app.UseCors("AllowReactApp");
 
 app.UseAuthentication();
+app.UseMiddleware<AccountScopeAccessMiddleware>();
 app.UseAuthorization();
 
 app.MapControllers();

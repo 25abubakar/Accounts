@@ -81,7 +81,7 @@ namespace Accounts.Services.Services
                 // Super Admin allowed route prefixes
                 var superAdminRoutes = new[]
                 {
-                    "/groups/", "/organization", "/settings/", "/dashboard"
+                    "/groups/", "/organization", "/settings/", "/tenants", "/dashboard"
                 };
 
                 bool IsSuperAdminMenu(Models.Menu m) =>
