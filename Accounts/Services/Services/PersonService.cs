@@ -213,6 +213,9 @@ namespace Accounts.Services.Services
                 Gender         = dto.Gender?.Trim(),
                 DateOfBirth    = dto.DateOfBirth,
                 MaritalStatus  = dto.MaritalStatus?.Trim(),
+                ShiftStartTime = string.IsNullOrWhiteSpace(dto.ShiftStartTime) ? "09:00" : dto.ShiftStartTime.Trim(),
+                ShiftEndTime   = string.IsNullOrWhiteSpace(dto.ShiftEndTime) ? "18:00" : dto.ShiftEndTime.Trim(),
+                TimeZoneId     = string.IsNullOrWhiteSpace(dto.TimeZoneId) ? "Asia/Karachi" : dto.TimeZoneId.Trim(),
                 IdentityUserId = identityUser.Id,
                 CreatedDate    = DateTime.UtcNow
             };
@@ -442,9 +445,18 @@ namespace Accounts.Services.Services
             var person = await _db.Persons
                 .Include(p => p.Staff)
                 .FirstOrDefaultAsync(p => p.PersonId == id);
-            if (person == null) return (false, $"Person {id} not found.");
+              if (person == null) return (false, $"Person {id} not found.");
 
-            await using var transaction = await _db.Database.BeginTransactionAsync();
+              // The Report-To FK intentionally uses NO ACTION to avoid SQL Server
+              // multiple-cascade-path errors. Clear dependent assignments explicitly
+              // so deleting a manager preserves the existing person-delete workflow.
+              var directReports = await _db.Persons
+                  .Where(p => p.ReportsToPersonId == id)
+                  .ToListAsync();
+              foreach (var directReport in directReports)
+                  directReport.ReportsToPersonId = null;
+  
+              await using var transaction = await _db.Database.BeginTransactionAsync();
 
             if (person.Staff != null)
             {
@@ -953,6 +965,7 @@ namespace Accounts.Services.Services
                 Gender = p.Gender, DateOfBirth = p.DateOfBirth, MaritalStatus = p.MaritalStatus,
                 Phone = p.Phone, Email = p.Email,
                 PersonalEmail = p.PersonalEmail ?? p.Contacts.FirstOrDefault(c => c.ContactType == "PersonalEmail")?.ContactValue,
+                ShiftStartTime = p.ShiftStartTime, ShiftEndTime = p.ShiftEndTime, TimeZoneId = p.TimeZoneId,
                 PhotoUrl = p.ProfilePhotoUrl,
                 IsHired = p.Staff != null, IsActive = p.IsActive, RegisteredAt = p.CreatedDate.ToString("o"),
                 BranchId = branch?.Id, BranchName = branch?.Name, CompanyName = company?.Name, CountryName = country?.Name,
@@ -986,6 +999,7 @@ namespace Accounts.Services.Services
                 IsHired = p.Staff != null, StaffId = p.Staff?.StaffId, JoiningDate = null,
                 VacancyId = p.Staff?.VacancyId, VacancyCode = p.Staff?.Vacancy?.VacancyCode,
                 JobTitle = p.Staff?.Vacancy?.ResolvedJobTitle, Department = p.Staff?.Vacancy?.Department ?? department?.Name,
+                ShiftStartTime = p.ShiftStartTime, ShiftEndTime = p.ShiftEndTime, TimeZoneId = p.TimeZoneId,
                 CurrentAddress   = ToAddressResponse(cur),
                 PermanentAddress = ToAddressResponse(perm ?? cur)
             };

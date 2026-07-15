@@ -1173,7 +1173,14 @@ namespace Accounts.Services.Services
 
         private async Task EnsureFeatureExistsAsync(string featureKey)
         {
-            if (await _db.Features.AnyAsync(f => f.FeatureKey == featureKey)) return;
+            featureKey = featureKey.Trim().ToUpperInvariant();
+
+            // Reuse an entity already added by this DbContext. Without this check,
+            // repeated keys in one unit of work can queue duplicate INSERTs.
+            if (_db.Features.Local.Any(f =>
+                    f.FeatureKey.Equals(featureKey, StringComparison.OrdinalIgnoreCase))) return;
+
+            if (await _db.Features.AsNoTracking().AnyAsync(f => f.FeatureKey == featureKey)) return;
 
             // Only auto-create Feature rows for MENU_* keys
             if (!featureKey.StartsWith("MENU_", StringComparison.OrdinalIgnoreCase)) return;
@@ -1198,9 +1205,22 @@ namespace Accounts.Services.Services
                 _        => $"{menu.Title} - {suffix}"
             };
 
-            _db.Features.Add(new Feature { FeatureKey = featureKey, FeatureName = name, Module = "Menu" });
-            try { await _db.SaveChangesAsync(); }
-            catch { /* ignore duplicate key race */ }
+            var pendingFeature = new Feature { FeatureKey = featureKey, FeatureName = name, Module = "Menu" };
+            _db.Features.Add(pendingFeature);
+            try
+            {
+                await _db.SaveChangesAsync();
+            }
+            catch (DbUpdateException ex) when (
+                ex.InnerException is Microsoft.Data.SqlClient.SqlException sql &&
+                (sql.Number == 2601 || sql.Number == 2627))
+            {
+                // Another request inserted the same unique FeatureKey after our
+                // existence check. Detaching is essential: leaving the failed
+                // Added entity tracked makes the caller's next SaveChanges retry
+                // the duplicate INSERT (the MENU_5045 failure).
+                _db.Entry(pendingFeature).State = EntityState.Detached;
+            }
         }
     }
 }

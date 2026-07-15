@@ -52,6 +52,9 @@ namespace Accounts.DTOs
         public string?   Gender        { get; set; }
         public DateTime? DateOfBirth   { get; set; }
         public string?   MaritalStatus { get; set; }
+        public string? ShiftStartTime { get; set; }
+        public string? ShiftEndTime { get; set; }
+        public string? TimeZoneId { get; set; }
         
         [Required]
         [Range(1, int.MaxValue, ErrorMessage = "BranchId is required")]
@@ -127,6 +130,9 @@ namespace Accounts.DTOs
         public string?   Gender        { get; set; }
         public DateTime? DateOfBirth   { get; set; }
         public string?   MaritalStatus { get; set; }
+        public string? ShiftStartTime { get; set; }
+        public string? ShiftEndTime { get; set; }
+        public string? TimeZoneId { get; set; }
 
         [JsonPropertyName("currentAddress")]
         public JsonElement? CurrentAddressRaw { get; set; }
@@ -169,6 +175,9 @@ namespace Accounts.DTOs
         public string?   Phone         { get; set; }
         public string?   Email         { get; set; }
         public string?   PersonalEmail { get; set; }
+        public string? ShiftStartTime { get; set; }
+        public string? ShiftEndTime { get; set; }
+        public string? TimeZoneId { get; set; }
         public string?   PhotoUrl      { get; set; }
         public bool      IsHired       { get; set; }
         public bool      IsActive      { get; set; }
@@ -210,6 +219,9 @@ namespace Accounts.DTOs
         public string?   VacancyCode   { get; set; }
         public string?   JobTitle      { get; set; }
         public string?   Department    { get; set; }
+        public string? ShiftStartTime { get; set; }
+        public string? ShiftEndTime { get; set; }
+        public string? TimeZoneId { get; set; }
         public AddressResponseDto CurrentAddress   { get; set; } = new();
         public AddressResponseDto PermanentAddress { get; set; } = new();
     }

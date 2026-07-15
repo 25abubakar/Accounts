@@ -6,6 +6,8 @@ using Accounts.Services.Services;
 using Accounts.Middleware;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
+using Accounts.Repositories;
+using Accounts.Repositories.Interfaces;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -116,6 +118,10 @@ builder.Services.AddScoped<IPersonAccessService, PersonAccessService>();
 // ── Normalized domain services ────────────────────────────────────────────────
 builder.Services.AddScoped<StaffMenuAccessService>();
 builder.Services.AddScoped<JobTitleService>();
+builder.Services.AddScoped<IAttendanceStatusRepository, AttendanceStatusRepository>();
+builder.Services.AddScoped<IAttendanceStatusService, AttendanceStatusService>();
+builder.Services.AddScoped<IAttendanceService, AttendanceService>();
+builder.Services.AddAutoMapper(_ => { }, typeof(Program).Assembly);
 
 // ── Dynamic Permission-Based Authorization ────────────────────────────────────
 builder.Services.AddSingleton<Microsoft.AspNetCore.Authorization.IAuthorizationPolicyProvider,

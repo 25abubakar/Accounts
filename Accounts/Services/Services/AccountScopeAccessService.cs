@@ -21,9 +21,14 @@ namespace Accounts.Services.Services
                     u.TenantId,
                     u.LockoutEnabled,
                     u.LockoutEnd,
-                    PersonIsActive = _db.Persons
+                    PersonIsActive = _db.Persons.IgnoreQueryFilters()
                         .Where(p => p.IdentityUserId == u.Id)
                         .Select(p => (bool?)p.IsActive)
+                        .FirstOrDefault(),
+                    EmployeeOrganizationId = _db.Persons.IgnoreQueryFilters()
+                        .Where(p => p.IdentityUserId == u.Id)
+                        .Select(p => p.Staff != null && p.Staff.Vacancy != null
+                            ? (int?)p.Staff.Vacancy.OrganizationId : null)
                         .FirstOrDefault()
                 })
                 .SingleOrDefaultAsync(cancellationToken);
@@ -65,6 +70,19 @@ namespace Accounts.Services.Services
                     return AccountScopeAccessResult.Denied(
                         $"Access is disabled for {node.Name} ({node.Label}). Contact your administrator.");
                 currentId = node.ParentId;
+            }
+
+            // Staff can sit below the tenant's Company node (Department/Branch/Team).
+            // Validate that complete assignment chain as well so department switches
+            // revoke both current sessions and future logins.
+            currentId = user.EmployeeOrganizationId;
+            visited.Clear();
+            while (currentId.HasValue && byId.TryGetValue(currentId.Value, out var employeeNode) && visited.Add(employeeNode.Id))
+            {
+                if (!employeeNode.IsActive)
+                    return AccountScopeAccessResult.Denied(
+                        $"Access is disabled for {employeeNode.Name} ({employeeNode.Label}). Contact your administrator.");
+                currentId = employeeNode.ParentId;
             }
 
             return AccountScopeAccessResult.Allowed();

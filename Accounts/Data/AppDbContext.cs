@@ -32,6 +32,8 @@ namespace Accounts.Data
         public DbSet<PersonAddress>            PersonAddresses          => Set<PersonAddress>();
         public DbSet<PersonContact>            PersonContacts           => Set<PersonContact>();
         public DbSet<JobTitle>                 JobTitles                => Set<JobTitle>();
+        public DbSet<AttendanceStatusMaster>   AttendanceStatuses       => Set<AttendanceStatusMaster>();
+        public DbSet<AttendanceRecord>         AttendanceRecords        => Set<AttendanceRecord>();
         public DbSet<VacancyCounter>           VacancyCounters          => Set<VacancyCounter>();
         public DbSet<Menu>                     Menus                    => Set<Menu>();
         public DbSet<MenuPermission>           MenuPermissions          => Set<MenuPermission>();
@@ -103,6 +105,13 @@ namespace Accounts.Data
                     _tenantService.IsSuperAdmin ||
                     _tenantService.TenantId == null ||
                     j.TenantId == _tenantService.TenantId);
+
+            builder.Entity<AttendanceRecord>()
+                .HasQueryFilter(a =>
+                    _tenantService == null ||
+                    _tenantService.IsSuperAdmin ||
+                    _tenantService.TenantId == null ||
+                    a.TenantId == _tenantService.TenantId);
 
             builder.Entity<AppNote>()
                 .HasQueryFilter(n =>
@@ -347,8 +356,16 @@ namespace Accounts.Data
                 e.Property(x => x.ProfilePhotoUrl).HasMaxLength(500).IsRequired(false);
                 e.Property(x => x.PersonalEmail).HasMaxLength(256).IsRequired(false);
                 e.Property(x => x.IsActive).HasDefaultValue(true);
+                e.Property(x => x.ShiftStartTime).HasDefaultValue("09:00");
+                e.Property(x => x.ShiftEndTime).HasDefaultValue("18:00");
+                e.Property(x => x.TimeZoneId).HasDefaultValue("Asia/Karachi");
 
                 e.HasIndex(x => x.IdentityUserId).IsUnique();
+                e.HasIndex(x => x.ReportsToPersonId);
+                e.HasOne(x => x.ReportsToPerson)
+                 .WithMany(x => x.DirectReports)
+                 .HasForeignKey(x => x.ReportsToPersonId)
+                 .OnDelete(DeleteBehavior.Restrict);
             });
 
             builder.Entity<PersonAddress>(e =>
@@ -364,6 +381,41 @@ namespace Accounts.Data
                  .WithMany(x => x.Addresses)
                  .HasForeignKey(x => x.PersonId)
                  .OnDelete(DeleteBehavior.Cascade);
+            });
+
+            builder.Entity<AttendanceStatusMaster>(e =>
+            {
+                e.ToTable("AttendanceStatusMaster");
+                e.HasKey(x => x.Id);
+                e.Property(x => x.Id).ValueGeneratedOnAdd();
+                e.Property(x => x.Code).HasMaxLength(10).IsRequired();
+                e.Property(x => x.StatusName).HasMaxLength(100).IsRequired();
+                e.Property(x => x.Description).HasMaxLength(500);
+                e.Property(x => x.ColorCode).HasMaxLength(20);
+                e.Property(x => x.IsActive).HasDefaultValue(true);
+                e.Property(x => x.CreatedDate).HasDefaultValueSql("SYSUTCDATETIME()");
+                e.HasIndex(x => x.Code).IsUnique();
+                e.HasIndex(x => x.StatusName).IsUnique();
+
+                var seededAt = new DateTime(2026, 7, 15, 0, 0, 0, DateTimeKind.Utc);
+                e.HasData(
+                    new AttendanceStatusMaster { Id = 1, Code = "P", StatusName = "Present", Description = "Employee was present.", ColorCode = "#10B981", DisplayOrder = 1, IsPaid = true, IsActive = true, CreatedDate = seededAt },
+                    new AttendanceStatusMaster { Id = 2, Code = "A", StatusName = "Absent", Description = "Employee was absent.", ColorCode = "#EF4444", DisplayOrder = 2, IsPaid = false, IsActive = true, CreatedDate = seededAt },
+                    new AttendanceStatusMaster { Id = 3, Code = "L", StatusName = "Leave", Description = "Employee was on approved leave.", ColorCode = "#8B5CF6", DisplayOrder = 3, IsPaid = true, IsActive = true, CreatedDate = seededAt },
+                    new AttendanceStatusMaster { Id = 4, Code = "HD", StatusName = "Half Day", Description = "Employee completed a half working day.", ColorCode = "#F59E0B", DisplayOrder = 4, IsPaid = true, IsActive = true, CreatedDate = seededAt },
+                    new AttendanceStatusMaster { Id = 5, Code = "LT", StatusName = "Late", Description = "Employee arrived after the scheduled start time.", ColorCode = "#F97316", DisplayOrder = 5, IsPaid = true, IsActive = true, CreatedDate = seededAt });
+            });
+
+            builder.Entity<AttendanceRecord>(e =>
+            {
+                e.ToTable("AttendanceRecords");
+                e.HasKey(x => x.Id);
+                e.Property(x => x.Id).ValueGeneratedOnAdd();
+                e.Property(x => x.CreatedDate).HasDefaultValueSql("SYSUTCDATETIME()");
+                e.HasIndex(x => new { x.PersonId, x.AttendanceDate }).IsUnique();
+                e.HasIndex(x => new { x.TenantId, x.AttendanceDate });
+                e.HasOne(x => x.Person).WithMany().HasForeignKey(x => x.PersonId).OnDelete(DeleteBehavior.Restrict);
+                e.HasOne(x => x.AttendanceStatus).WithMany().HasForeignKey(x => x.AttendanceStatusId).OnDelete(DeleteBehavior.Restrict);
             });
 
             builder.Entity<VacancyCounter>(e =>

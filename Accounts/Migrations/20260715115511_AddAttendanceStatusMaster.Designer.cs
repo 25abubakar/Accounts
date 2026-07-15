@@ -4,6 +4,7 @@ using Accounts.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 #nullable disable
@@ -11,9 +12,11 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace Accounts.Migrations
 {
     [DbContext(typeof(ApplicationDbContext))]
-    partial class ApplicationDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260715115511_AddAttendanceStatusMaster")]
+    partial class AddAttendanceStatusMaster
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -506,58 +509,6 @@ namespace Accounts.Migrations
                     b.HasIndex("TenantId");
 
                     b.ToTable("AspNetUsers", (string)null);
-                });
-
-            modelBuilder.Entity("Accounts.Models.AttendanceRecord", b =>
-                {
-                    b.Property<long>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("bigint");
-
-                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<long>("Id"));
-
-                    b.Property<DateOnly>("AttendanceDate")
-                        .HasColumnType("date");
-
-                    b.Property<int?>("AttendanceStatusId")
-                        .HasColumnType("int");
-
-                    b.Property<DateTime?>("BreakStartedUtc")
-                        .HasColumnType("datetime2");
-
-                    b.Property<DateTime?>("CheckInUtc")
-                        .HasColumnType("datetime2");
-
-                    b.Property<DateTime?>("CheckOutUtc")
-                        .HasColumnType("datetime2");
-
-                    b.Property<DateTime>("CreatedDate")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("datetime2")
-                        .HasDefaultValueSql("SYSUTCDATETIME()");
-
-                    b.Property<DateTime?>("ModifiedDate")
-                        .HasColumnType("datetime2");
-
-                    b.Property<Guid>("PersonId")
-                        .HasColumnType("uniqueidentifier");
-
-                    b.Property<int>("TenantId")
-                        .HasColumnType("int");
-
-                    b.Property<int>("TotalBreakMinutes")
-                        .HasColumnType("int");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("AttendanceStatusId");
-
-                    b.HasIndex("PersonId", "AttendanceDate")
-                        .IsUnique();
-
-                    b.HasIndex("TenantId", "AttendanceDate");
-
-                    b.ToTable("AttendanceRecords", (string)null);
                 });
 
             modelBuilder.Entity("Accounts.Models.AttendanceStatusMaster", b =>
@@ -1766,24 +1717,6 @@ namespace Accounts.Migrations
                         .IsRequired();
 
                     b.Navigation("Note");
-                });
-
-            modelBuilder.Entity("Accounts.Models.AttendanceRecord", b =>
-                {
-                    b.HasOne("Accounts.Models.AttendanceStatusMaster", "AttendanceStatus")
-                        .WithMany()
-                        .HasForeignKey("AttendanceStatusId")
-                        .OnDelete(DeleteBehavior.Restrict);
-
-                    b.HasOne("Accounts.Models.Person", "Person")
-                        .WithMany()
-                        .HasForeignKey("PersonId")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
-
-                    b.Navigation("AttendanceStatus");
-
-                    b.Navigation("Person");
                 });
 
             modelBuilder.Entity("Accounts.Models.DepartmentAccessMatrix", b =>

@@ -4,6 +4,7 @@ using Accounts.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 #nullable disable
@@ -11,9 +12,11 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace Accounts.Migrations
 {
     [DbContext(typeof(ApplicationDbContext))]
-    partial class ApplicationDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260715102656_AddPersonReportToHierarchy")]
+    partial class AddPersonReportToHierarchy
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -508,176 +511,6 @@ namespace Accounts.Migrations
                     b.ToTable("AspNetUsers", (string)null);
                 });
 
-            modelBuilder.Entity("Accounts.Models.AttendanceRecord", b =>
-                {
-                    b.Property<long>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("bigint");
-
-                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<long>("Id"));
-
-                    b.Property<DateOnly>("AttendanceDate")
-                        .HasColumnType("date");
-
-                    b.Property<int?>("AttendanceStatusId")
-                        .HasColumnType("int");
-
-                    b.Property<DateTime?>("BreakStartedUtc")
-                        .HasColumnType("datetime2");
-
-                    b.Property<DateTime?>("CheckInUtc")
-                        .HasColumnType("datetime2");
-
-                    b.Property<DateTime?>("CheckOutUtc")
-                        .HasColumnType("datetime2");
-
-                    b.Property<DateTime>("CreatedDate")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("datetime2")
-                        .HasDefaultValueSql("SYSUTCDATETIME()");
-
-                    b.Property<DateTime?>("ModifiedDate")
-                        .HasColumnType("datetime2");
-
-                    b.Property<Guid>("PersonId")
-                        .HasColumnType("uniqueidentifier");
-
-                    b.Property<int>("TenantId")
-                        .HasColumnType("int");
-
-                    b.Property<int>("TotalBreakMinutes")
-                        .HasColumnType("int");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("AttendanceStatusId");
-
-                    b.HasIndex("PersonId", "AttendanceDate")
-                        .IsUnique();
-
-                    b.HasIndex("TenantId", "AttendanceDate");
-
-                    b.ToTable("AttendanceRecords", (string)null);
-                });
-
-            modelBuilder.Entity("Accounts.Models.AttendanceStatusMaster", b =>
-                {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("int");
-
-                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
-
-                    b.Property<string>("Code")
-                        .IsRequired()
-                        .HasMaxLength(10)
-                        .HasColumnType("nvarchar(10)");
-
-                    b.Property<string>("ColorCode")
-                        .HasMaxLength(20)
-                        .HasColumnType("nvarchar(20)");
-
-                    b.Property<DateTime>("CreatedDate")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("datetime2")
-                        .HasDefaultValueSql("SYSUTCDATETIME()");
-
-                    b.Property<string>("Description")
-                        .HasMaxLength(500)
-                        .HasColumnType("nvarchar(500)");
-
-                    b.Property<int>("DisplayOrder")
-                        .HasColumnType("int");
-
-                    b.Property<bool>("IsActive")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("bit")
-                        .HasDefaultValue(true);
-
-                    b.Property<bool>("IsPaid")
-                        .HasColumnType("bit");
-
-                    b.Property<DateTime?>("ModifiedDate")
-                        .HasColumnType("datetime2");
-
-                    b.Property<string>("StatusName")
-                        .IsRequired()
-                        .HasMaxLength(100)
-                        .HasColumnType("nvarchar(100)");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("Code")
-                        .IsUnique();
-
-                    b.HasIndex("StatusName")
-                        .IsUnique();
-
-                    b.ToTable("AttendanceStatusMaster", (string)null);
-
-                    b.HasData(
-                        new
-                        {
-                            Id = 1,
-                            Code = "P",
-                            ColorCode = "#10B981",
-                            CreatedDate = new DateTime(2026, 7, 15, 0, 0, 0, 0, DateTimeKind.Utc),
-                            Description = "Employee was present.",
-                            DisplayOrder = 1,
-                            IsActive = true,
-                            IsPaid = true,
-                            StatusName = "Present"
-                        },
-                        new
-                        {
-                            Id = 2,
-                            Code = "A",
-                            ColorCode = "#EF4444",
-                            CreatedDate = new DateTime(2026, 7, 15, 0, 0, 0, 0, DateTimeKind.Utc),
-                            Description = "Employee was absent.",
-                            DisplayOrder = 2,
-                            IsActive = true,
-                            IsPaid = false,
-                            StatusName = "Absent"
-                        },
-                        new
-                        {
-                            Id = 3,
-                            Code = "L",
-                            ColorCode = "#8B5CF6",
-                            CreatedDate = new DateTime(2026, 7, 15, 0, 0, 0, 0, DateTimeKind.Utc),
-                            Description = "Employee was on approved leave.",
-                            DisplayOrder = 3,
-                            IsActive = true,
-                            IsPaid = true,
-                            StatusName = "Leave"
-                        },
-                        new
-                        {
-                            Id = 4,
-                            Code = "HD",
-                            ColorCode = "#F59E0B",
-                            CreatedDate = new DateTime(2026, 7, 15, 0, 0, 0, 0, DateTimeKind.Utc),
-                            Description = "Employee completed a half working day.",
-                            DisplayOrder = 4,
-                            IsActive = true,
-                            IsPaid = true,
-                            StatusName = "Half Day"
-                        },
-                        new
-                        {
-                            Id = 5,
-                            Code = "LT",
-                            ColorCode = "#F97316",
-                            CreatedDate = new DateTime(2026, 7, 15, 0, 0, 0, 0, DateTimeKind.Utc),
-                            Description = "Employee arrived after the scheduled start time.",
-                            DisplayOrder = 5,
-                            IsActive = true,
-                            IsPaid = true,
-                            StatusName = "Late"
-                        });
-                });
-
             modelBuilder.Entity("Accounts.Models.DepartmentAccessMatrix", b =>
                 {
                     b.Property<int>("Id")
@@ -1019,29 +852,8 @@ namespace Accounts.Migrations
                     b.Property<Guid?>("ReportsToPersonId")
                         .HasColumnType("uniqueidentifier");
 
-                    b.Property<string>("ShiftEndTime")
-                        .IsRequired()
-                        .ValueGeneratedOnAdd()
-                        .HasMaxLength(5)
-                        .HasColumnType("nvarchar(5)")
-                        .HasDefaultValue("18:00");
-
-                    b.Property<string>("ShiftStartTime")
-                        .IsRequired()
-                        .ValueGeneratedOnAdd()
-                        .HasMaxLength(5)
-                        .HasColumnType("nvarchar(5)")
-                        .HasDefaultValue("09:00");
-
                     b.Property<int>("TenantId")
                         .HasColumnType("int");
-
-                    b.Property<string>("TimeZoneId")
-                        .IsRequired()
-                        .ValueGeneratedOnAdd()
-                        .HasMaxLength(100)
-                        .HasColumnType("nvarchar(100)")
-                        .HasDefaultValue("Asia/Karachi");
 
                     b.HasKey("PersonId");
 
@@ -1766,24 +1578,6 @@ namespace Accounts.Migrations
                         .IsRequired();
 
                     b.Navigation("Note");
-                });
-
-            modelBuilder.Entity("Accounts.Models.AttendanceRecord", b =>
-                {
-                    b.HasOne("Accounts.Models.AttendanceStatusMaster", "AttendanceStatus")
-                        .WithMany()
-                        .HasForeignKey("AttendanceStatusId")
-                        .OnDelete(DeleteBehavior.Restrict);
-
-                    b.HasOne("Accounts.Models.Person", "Person")
-                        .WithMany()
-                        .HasForeignKey("PersonId")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
-
-                    b.Navigation("AttendanceStatus");
-
-                    b.Navigation("Person");
                 });
 
             modelBuilder.Entity("Accounts.Models.DepartmentAccessMatrix", b =>

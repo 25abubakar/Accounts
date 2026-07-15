@@ -44,6 +44,10 @@ namespace Accounts.Models
 
         [MaxLength(50)]
         public string? MaritalStatus { get; set; }
+
+        [MaxLength(5)] public string ShiftStartTime { get; set; } = "09:00";
+        [MaxLength(5)] public string ShiftEndTime { get; set; } = "18:00";
+        [MaxLength(100)] public string TimeZoneId { get; set; } = "Asia/Karachi";
         [MaxLength(500)]
         public string? ProfilePhotoUrl { get; set; }
 
@@ -56,6 +60,14 @@ namespace Accounts.Models
 
         /// <summary>Employment/account status controlled by tenant administrators.</summary>
         public bool IsActive { get; set; } = true;
+
+        /// <summary>Configurable reporting manager within the same tenant.</summary>
+        public Guid? ReportsToPersonId { get; set; }
+
+        [ForeignKey(nameof(ReportsToPersonId))]
+        public Person? ReportsToPerson { get; set; }
+
+        public ICollection<Person> DirectReports { get; set; } = new List<Person>();
 
         public ICollection<PersonAddress>  Addresses     { get; set; } = new List<PersonAddress>();
         public ICollection<PersonContact>  Contacts      { get; set; } = new List<PersonContact>();
