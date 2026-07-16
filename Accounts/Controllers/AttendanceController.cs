@@ -35,8 +35,13 @@ public sealed class AttendanceController : ControllerBase
     public Task<IActionResult> MonthlyReport([FromQuery] int year, [FromQuery] int month, [FromQuery] Guid? personId, CancellationToken ct) =>
         Execute(() => _service.GetMonthlyReportAsync(UserId(), CanViewOthers(), personId, year, month, ct));
 
+    [HttpGet("report/daily")]
+    public Task<IActionResult> DailyReport([FromQuery] DateOnly dateFrom, [FromQuery] DateOnly dateTo, CancellationToken ct) =>
+        Execute(() => _service.GetDailyReportAsync(UserId(), CanViewOrganization(), dateFrom, dateTo, ct));
+
     private string UserId() => User.FindFirstValue(ClaimTypes.NameIdentifier) ?? throw new UnauthorizedAccessException();
-    private bool CanViewOthers() => User.IsInRole("Admin") || User.IsInRole("Manager") || User.HasClaim(ITenantService.ClaimIsTenantAdmin, "true");
+    private bool CanViewOthers() => User.IsInRole("SuperAdmin") || User.IsInRole("Admin") || User.HasClaim(ITenantService.ClaimIsTenantAdmin, "true");
+    private bool CanViewOrganization() => User.IsInRole("SuperAdmin") || User.IsInRole("Admin") || User.HasClaim(ITenantService.ClaimIsTenantAdmin, "true");
     private async Task<IActionResult> Execute<T>(Func<Task<T>> action)
     {
         try { return Ok(await action()); }
