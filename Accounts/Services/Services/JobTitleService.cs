@@ -32,6 +32,7 @@ namespace Accounts.Services.Services
                 {
                     Id = jt.Id,
                     TitleName = jt.TitleName,
+                    AttendanceVisibilityScope = jt.AttendanceVisibilityScope,
                     Count = _db.Vacancies.Count(v => v.JobTitleId == jt.Id) // Database se count layega!
                 })
                 .OrderBy(jt => jt.TitleName)
@@ -89,6 +90,16 @@ namespace Accounts.Services.Services
             return true;
         }
 
+        public async Task<bool> UpdateAttendanceScopeAsync(int id, AttendanceVisibilityScope scope)
+        {
+            if (!Enum.IsDefined(scope)) throw new ArgumentOutOfRangeException(nameof(scope));
+            var jobTitle = await _db.JobTitles.FindAsync(id);
+            if (jobTitle == null) return false;
+            jobTitle.AttendanceVisibilityScope = scope;
+            await _db.SaveChangesAsync();
+            return true;
+        }
+
         // 🌟 NAYA METHOD: Safe Delete karne ke liye
         public async Task<bool> DeleteAsync(int id)
         {
@@ -139,5 +150,6 @@ namespace Accounts.Services.Services
         public int Id { get; set; }
         public string TitleName { get; set; } = string.Empty;
         public int Count { get; set; }
+        public AttendanceVisibilityScope AttendanceVisibilityScope { get; set; }
     }
 }

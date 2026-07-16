@@ -108,6 +108,26 @@ namespace Accounts.Controllers
         // ── Delete ────────────────────────────────────────────────────────────
 
         [HasPermission("ACCESS_GROUP_EDIT")]
+        [HttpPut("{id:int}")]
+        public async Task<IActionResult> UpdateMenu(int id, [FromBody] CreateMenuDto dto)
+        {
+            if (!ModelState.IsValid) return ValidationProblem(ModelState);
+            if (string.IsNullOrWhiteSpace(dto.Title))
+                return BadRequest(new { message = "Menu title is required." });
+
+            try
+            {
+                var menu = await _menuService.UpdateMenuAsync(id, dto);
+                if (menu is null) return NotFound(new { message = $"Menu {id} not found." });
+                return Ok(new { menu.Id, menu.Title, menu.Icon, menu.Route, menu.ParentId, menu.SortOrder, menu.IsActive });
+            }
+            catch (InvalidOperationException ex)
+            {
+                return Conflict(new { message = ex.Message });
+            }
+        }
+
+        [HasPermission("ACCESS_GROUP_EDIT")]
         [HttpDelete("{id:int}")]
         public async Task<IActionResult> Deactivate(int id)
         {

@@ -3,7 +3,9 @@ using Accounts.DTOs;
 using Accounts.Models;
 using Accounts.Services.Interfaces;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Data.SqlClient;
 using System.Globalization;
+using System.Text.Json;
 
 namespace Accounts.Services.Services;
 
@@ -123,7 +125,20 @@ public sealed class AttendanceService : IAttendanceService
 
         var caller = await _db.Persons.AsNoTracking()
             .Where(p => p.IdentityUserId == identityUserId && p.IsActive)
-            .Select(p => new { p.PersonId, p.TimeZoneId })
+            .Select(p => new
+            {
+                p.PersonId, p.TenantId, p.TimeZoneId,
+                OrganizationId = p.Staff != null && p.Staff.Vacancy != null
+                    ? (int?)p.Staff.Vacancy.OrganizationId : null,
+                JobTitle = p.Staff != null && p.Staff.Vacancy != null
+                    ? (p.Staff.Vacancy.JobTitleNav != null
+                        ? p.Staff.Vacancy.JobTitleNav.TitleName
+                        : p.Staff.Vacancy.JobTitle)
+                    : null,
+                AttendanceScope = p.Staff != null && p.Staff.Vacancy != null && p.Staff.Vacancy.JobTitleNav != null
+                    ? p.Staff.Vacancy.JobTitleNav.AttendanceVisibilityScope
+                    : AttendanceVisibilityScope.Self
+            })
             .FirstOrDefaultAsync(cancellationToken)
             ?? throw new KeyNotFoundException("No active employee profile is linked to this account.");
 
@@ -133,31 +148,40 @@ public sealed class AttendanceService : IAttendanceService
             {
                 p.PersonId, p.FullName, p.ReportsToPersonId, p.ShiftStartTime, p.ShiftEndTime, p.TimeZoneId,
                 OrganizationId = p.Staff != null && p.Staff.Vacancy != null
-                    ? (int?)p.Staff.Vacancy.OrganizationId : null
+                    ? (int?)p.Staff.Vacancy.OrganizationId : null,
+                JobTitle = p.Staff != null && p.Staff.Vacancy != null
+                    ? (p.Staff.Vacancy.JobTitleNav != null
+                        ? p.Staff.Vacancy.JobTitleNav.TitleName
+                        : p.Staff.Vacancy.JobTitle)
+                    : null
             })
             .ToListAsync(cancellationToken);
 
         var visibleIds = new HashSet<Guid> { caller.PersonId };
+        var callerRank = AttendanceRoleRank(caller.JobTitle);
         if (organizationWide)
         {
             foreach (var person in people) visibleIds.Add(person.PersonId);
         }
-        else
+        else if (caller.OrganizationId.HasValue)
         {
-            var children = people.Where(p => p.ReportsToPersonId.HasValue)
-                .ToLookup(p => p.ReportsToPersonId!.Value, p => p.PersonId);
-            var pending = new Queue<Guid>();
-            pending.Enqueue(caller.PersonId);
-            while (pending.TryDequeue(out var managerId))
-                foreach (var childId in children[managerId])
-                    if (visibleIds.Add(childId)) pending.Enqueue(childId);
+            // Role order inside every organization node:
+            // CEO > Duty CEO > Manager > Deputy Manager > Assistant Manager > Supervisor > Agent/Bell Boy.
+            // The stored scope can widen a custom title, while known leadership titles receive
+            // their natural hierarchy scope automatically.
+            var derivedScope = callerRank switch
+            {
+                >= 300 => AttendanceVisibilityScope.OrganizationNodeAndDescendants,
+                >= 200 => AttendanceVisibilityScope.OrganizationNode,
+                _ => AttendanceVisibilityScope.Self
+            };
+            var effectiveScope = (AttendanceVisibilityScope)Math.Max(
+                (int)caller.AttendanceScope, (int)derivedScope);
+            if (effectiveScope == AttendanceVisibilityScope.Self)
+                goto VisibilityResolved;
 
-            // Organization-tree scope complements explicit Report-To links for an
-            // employee who is demonstrably a hierarchy owner (has direct reports).
-            // A regular employee with no direct reports never receives peer access.
-            var callerPerson = people.First(p => p.PersonId == caller.PersonId);
-            var directReportIds = children[caller.PersonId].ToHashSet();
-            if (directReportIds.Count > 0 && callerPerson.OrganizationId.HasValue)
+            var visibleNodeIds = new HashSet<int> { caller.OrganizationId.Value };
+            if (effectiveScope == AttendanceVisibilityScope.OrganizationNodeAndDescendants)
             {
                 var nodes = await _db.OrganizationTree.AsNoTracking()
                     .Where(n => n.IsActive)
@@ -165,29 +189,34 @@ public sealed class AttendanceService : IAttendanceService
                     .ToListAsync(cancellationToken);
                 var nodeChildren = nodes.Where(n => n.ParentId.HasValue)
                     .ToLookup(n => n.ParentId!.Value, n => n.Id);
-                var visibleNodeIds = new HashSet<int> { callerPerson.OrganizationId.Value };
                 var pendingNodes = new Queue<int>();
-                pendingNodes.Enqueue(callerPerson.OrganizationId.Value);
+                pendingNodes.Enqueue(caller.OrganizationId.Value);
                 while (pendingNodes.TryDequeue(out var parentNodeId))
                     foreach (var childNodeId in nodeChildren[parentNodeId])
                         if (visibleNodeIds.Add(childNodeId)) pendingNodes.Enqueue(childNodeId);
-
-                // Node-wide scope is valid only when the employee is positioned at
-                // a parent node and at least one direct report sits below that node.
-                // Same-node supervisors remain governed entirely by Report-To links.
-                var isTopReportingPerson = !callerPerson.ReportsToPersonId.HasValue;
-                var managesAcrossDescendantNodes = people.Any(person => directReportIds.Contains(person.PersonId)
-                    && person.OrganizationId.HasValue
-                    && person.OrganizationId.Value != callerPerson.OrganizationId.Value
-                    && visibleNodeIds.Contains(person.OrganizationId.Value));
-                // The root reporting person (for example the CEO assigned to the
-                // Company node) owns the complete subtree even when immediate
-                // executives are also attached to that same Company node.
-                if (isTopReportingPerson || managesAcrossDescendantNodes)
-                    foreach (var person in people)
-                        if (person.OrganizationId.HasValue && visibleNodeIds.Contains(person.OrganizationId.Value))
-                            visibleIds.Add(person.PersonId);
             }
+
+            foreach (var person in people)
+                if (person.OrganizationId.HasValue &&
+                    visibleNodeIds.Contains(person.OrganizationId.Value) &&
+                    AttendanceRoleRank(person.JobTitle) < callerRank)
+                    visibleIds.Add(person.PersonId);
+        }
+
+        VisibilityResolved:
+
+        // The hierarchy is authorized above; row generation, date expansion and
+        // attendance joins are performed set-wise by SQL Server.
+        try
+        {
+            return await BuildDailyReportFromProcedureAsync(
+                caller.TenantId, visibleIds, people.ToDictionary(p => p.PersonId, p => p.FullName),
+                dateFrom, dateTo, cancellationToken);
+        }
+        catch (SqlException ex) when (ex.Number == 2812)
+        {
+            // Compatibility only for an application instance started before the
+            // migration completed. Production databases use the procedure path.
         }
 
         var staff = await _db.StaffVacancies.AsNoTracking()
@@ -277,6 +306,114 @@ public sealed class AttendanceService : IAttendanceService
             TotalWorkingMinutes = rows.Sum(r => r.WorkingMinutes), TotalOvertimeMinutes = rows.Sum(r => r.OvertimeMinutes)
         };
         return new DailyAttendanceReportDto { DateFrom = dateFrom, DateTo = dateTo, Rows = rows, Summary = summary };
+    }
+
+    private async Task<DailyAttendanceReportDto> BuildDailyReportFromProcedureAsync(
+        int tenantId,
+        IReadOnlyCollection<Guid> visiblePersonIds,
+        IReadOnlyDictionary<Guid, string> personNames,
+        DateOnly dateFrom,
+        DateOnly dateTo,
+        CancellationToken cancellationToken)
+    {
+        var sqlRows = await _db.AttendanceDailyReportRows
+            .FromSqlRaw(
+                "EXEC dbo.usp_Attendance_DailyReport @TenantId, @DateFrom, @DateTo, @VisiblePersonIds",
+                new SqlParameter("@TenantId", tenantId),
+                new SqlParameter("@DateFrom", dateFrom.ToDateTime(TimeOnly.MinValue)),
+                new SqlParameter("@DateTo", dateTo.ToDateTime(TimeOnly.MinValue)),
+                new SqlParameter("@VisiblePersonIds", JsonSerializer.Serialize(visiblePersonIds)))
+            .AsNoTracking()
+            .ToListAsync(cancellationToken);
+
+        var statusByCode = await _db.Statuses.AsNoTracking()
+            .Where(s => s.StatusType == "Attendance" && s.IsActive)
+            .ToDictionaryAsync(s => s.Code, StringComparer.OrdinalIgnoreCase, cancellationToken);
+        statusByCode.TryGetValue("P", out var presentStatus);
+        statusByCode.TryGetValue("A", out var absentStatus);
+        statusByCode.TryGetValue("LT", out var lateStatus);
+
+        var rows = new List<DailyAttendanceRowDto>(sqlRows.Count);
+        foreach (var source in sqlRows)
+        {
+            var zone = ResolveTimeZone(source.TimeZoneId);
+            var localToday = DateOnly.FromDateTime(TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, zone));
+            var checkInLocal = source.CheckInUtc.HasValue ? TimeZoneInfo.ConvertTimeFromUtc(source.CheckInUtc.Value, zone) : (DateTime?)null;
+            var checkOutLocal = source.CheckOutUtc.HasValue ? TimeZoneInfo.ConvertTimeFromUtc(source.CheckOutUtc.Value, zone) : (DateTime?)null;
+            var shiftStart = ParseShift(source.ShiftStartTime, new TimeOnly(9, 0));
+            var shiftEnd = ParseShift(source.ShiftEndTime, new TimeOnly(18, 0));
+            var working = source.CheckInUtc.HasValue && source.CheckOutUtc.HasValue
+                ? Math.Max(0, (int)Math.Floor((source.CheckOutUtc.Value - source.CheckInUtc.Value).TotalMinutes) - (source.TotalBreakMinutes ?? 0)) : 0;
+            var late = checkInLocal.HasValue ? Math.Max(0, (int)(TimeOnly.FromDateTime(checkInLocal.Value).ToTimeSpan() - shiftStart.ToTimeSpan()).TotalMinutes) : 0;
+            var early = checkOutLocal.HasValue ? Math.Max(0, (int)(shiftEnd.ToTimeSpan() - TimeOnly.FromDateTime(checkOutLocal.Value).ToTimeSpan()).TotalMinutes) : 0;
+            var effectiveStatus = source.StatusName != null ? null
+                : source.AttendanceDate < localToday && !source.CheckInUtc.HasValue ? absentStatus
+                : late > 0 ? lateStatus
+                : source.CheckInUtc.HasValue ? presentStatus : null;
+            var statusName = source.StatusName ?? effectiveStatus?.StatusName ?? string.Empty;
+            var statusCode = source.StatusCode ?? effectiveStatus?.Code;
+
+            rows.Add(new DailyAttendanceRowDto
+            {
+                Id = source.Id,
+                PersonId = source.PersonId,
+                EmployeeNumber = source.EmployeeNumber,
+                EmployeeName = source.EmployeeName,
+                Department = source.Department,
+                Designation = source.Designation,
+                ReportingManager = source.ReportsToPersonId.HasValue && personNames.TryGetValue(source.ReportsToPersonId.Value, out var manager) ? manager : null,
+                Date = source.AttendanceDate,
+                AttendanceType = statusName,
+                CheckInTime = checkInLocal?.ToString("HH:mm"),
+                CheckOutTime = checkOutLocal?.ToString("HH:mm"),
+                WorkingMinutes = working,
+                LateMinutes = late,
+                EarlyDepartureMinutes = early,
+                OvertimeMinutes = source.CheckOutUtc.HasValue ? Math.Max(0, working - ShiftMinutes(source.ShiftStartTime, source.ShiftEndTime)) : 0,
+                AttendanceStatusId = source.AttendanceStatusId ?? effectiveStatus?.Id,
+                AttendanceStatus = statusName,
+                StatusCode = statusCode,
+                StatusColorCode = source.StatusColorCode ?? effectiveStatus?.ColorCode,
+                Present = source.CheckInUtc.HasValue,
+                Absent = statusCode?.Equals("A", StringComparison.OrdinalIgnoreCase) == true,
+                OnLeave = statusCode?.Equals("L", StringComparison.OrdinalIgnoreCase) == true,
+                Remote = statusCode?.Equals("WFH", StringComparison.OrdinalIgnoreCase) == true,
+                MissingCheckIn = source.Id.HasValue && !source.CheckInUtc.HasValue && statusCode?.Equals("L", StringComparison.OrdinalIgnoreCase) != true,
+                MissingCheckOut = source.CheckInUtc.HasValue && !source.CheckOutUtc.HasValue && source.AttendanceDate < localToday
+            });
+        }
+
+        var summary = new DailyAttendanceSummaryDto
+        {
+            TotalEmployees = rows.Select(r => r.PersonId).Distinct().Count(),
+            Present = rows.Count(r => r.Present),
+            Absent = rows.Count(r => r.Absent),
+            Late = rows.Count(r => r.LateMinutes > 0),
+            OnLeave = rows.Count(r => r.OnLeave),
+            Remote = rows.Count(r => r.Remote),
+            MissingCheckIn = rows.Count(r => r.MissingCheckIn),
+            MissingCheckOut = rows.Count(r => r.MissingCheckOut),
+            TotalWorkingMinutes = rows.Sum(r => r.WorkingMinutes),
+            TotalOvertimeMinutes = rows.Sum(r => r.OvertimeMinutes)
+        };
+        return new DailyAttendanceReportDto { DateFrom = dateFrom, DateTo = dateTo, Rows = rows, Summary = summary };
+    }
+
+    private static int AttendanceRoleRank(string? title)
+    {
+        if (string.IsNullOrWhiteSpace(title)) return 0;
+        var value = new string(title.Trim().ToLowerInvariant()
+            .Where(char.IsLetterOrDigit).ToArray());
+
+        // Check Duty CEO first because it also contains "CEO".
+        if (value.Contains("dutyceo")) return 600;
+        if (value.Contains("ceo") || value.Contains("chiefexecutive")) return 700;
+        if (value.Contains("deputymanager") || value.Contains("deptymanager")) return 400;
+        if (value.Contains("assistantmanager") || value.Contains("asstmanager") || value.Contains("assistmanager")) return 300;
+        if (value.Contains("manager")) return 500;
+        if (value.Contains("supervisor") || value.Contains("teamlead")) return 200;
+        if (value.Contains("agent") || value.Contains("bellboy")) return 100;
+        return 0;
     }
 
     public async Task<MonthlyAttendanceReportDto> GetMonthlyReportAsync(string identityUserId, bool canViewOthers, Guid? requestedPersonId, int year, int month, CancellationToken cancellationToken = default)

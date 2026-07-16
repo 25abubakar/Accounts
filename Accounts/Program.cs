@@ -17,6 +17,7 @@ builder.Services.AddDbContext<ApplicationDbContext>(options =>
         builder.Configuration.GetConnectionString("DefaultConnection"),
         sqlOptions =>
         {
+            sqlOptions.MaxBatchSize(200);
             sqlOptions.EnableRetryOnFailure(
                 maxRetryCount: 5,
                 maxRetryDelay: TimeSpan.FromSeconds(10),
@@ -157,6 +158,10 @@ app.UseStaticFiles();
 app.UseRouting();
 
 app.UseCors("AllowReactApp");
+
+// Client disconnects/navigation aborts are expected and must not surface as
+// unhandled EF Core errors. Keep this before authentication and controllers.
+app.UseMiddleware<RequestCancellationMiddleware>();
 
 app.UseAuthentication();
 app.UseMiddleware<AccountScopeAccessMiddleware>();

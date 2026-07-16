@@ -102,6 +102,14 @@ namespace Accounts.Controllers
             return Ok(persons);
         }
 
+        [HttpGet("staff-access-overview")]
+        [Authorize(Roles = "SuperAdmin,Admin,TenantAdmin")]
+        public async Task<IActionResult> GetStaffAccessOverview()
+        {
+            var overview = await _rbac.GetStaffAccessOverviewAsync();
+            return Ok(overview.Select(item => new { staffId = item.Key, allowedFeatureKeys = item.Value }));
+        }
+
         /// <summary>
         /// Get all current permissions for a staff member, with feature details.
         /// Reads from the new 2-tier RBAC (StaffMenuAccess + AccessFeatures).
@@ -184,6 +192,19 @@ namespace Accounts.Controllers
                 return NotFound(new { message });
 
             return Ok(new { message, saved, skipped });
+        }
+
+        [HttpPost("staff/bulk-overrides")]
+        [Authorize(Roles = "SuperAdmin,Admin,TenantAdmin")]
+        public async Task<IActionResult> BulkSetOverridesForStaff([FromBody] MultiStaffOverridesDto request)
+        {
+            if (request.StaffIds == null || request.StaffIds.Count == 0)
+                return BadRequest(new { message = "Select at least one staff member." });
+            if (request.Overrides == null || request.Overrides.Count == 0)
+                return BadRequest(new { message = "No overrides provided." });
+            var result = await _rbac.BulkApplyOverridesToStaffAsync(request.StaffIds, request.Overrides, CurrentUserId);
+            if (result.UsersUpdated == 0) return BadRequest(new { message = result.Message });
+            return Ok(new { message = result.Message, usersUpdated = result.UsersUpdated, saved = result.Saved, skipped = result.Skipped });
         }
 
         /// <summary>
@@ -747,5 +768,11 @@ namespace Accounts.Controllers
         /// <summary>ALLOW, DENY, or INHERIT</summary>
         public string  Status { get; set; } = "INHERIT";
         public string? Reason { get; set; }
+    }
+
+    public sealed class MultiStaffOverridesDto
+    {
+        public List<Guid> StaffIds { get; set; } = new();
+        public Dictionary<string, string> Overrides { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     }
 }

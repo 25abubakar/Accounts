@@ -560,7 +560,7 @@ namespace Accounts.Migrations
                     b.ToTable("AttendanceRecords", (string)null);
                 });
 
-            modelBuilder.Entity("Accounts.Models.AttendanceStatusMaster", b =>
+            modelBuilder.Entity("Accounts.Models.StatusMaster", b =>
                 {
                     b.Property<int>("Id")
                         .ValueGeneratedOnAdd()
@@ -605,15 +605,20 @@ namespace Accounts.Migrations
                         .HasMaxLength(100)
                         .HasColumnType("nvarchar(100)");
 
+                    b.Property<string>("StatusType")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .HasColumnType("nvarchar(50)");
+
                     b.HasKey("Id");
 
-                    b.HasIndex("Code")
+                    b.HasIndex("StatusType", "Code")
                         .IsUnique();
 
-                    b.HasIndex("StatusName")
+                    b.HasIndex("StatusType", "StatusName")
                         .IsUnique();
 
-                    b.ToTable("AttendanceStatusMaster", (string)null);
+                    b.ToTable("StatusMaster", (string)null);
 
                     b.HasData(
                         new
@@ -626,7 +631,8 @@ namespace Accounts.Migrations
                             DisplayOrder = 1,
                             IsActive = true,
                             IsPaid = true,
-                            StatusName = "Present"
+                            StatusName = "Present",
+                            StatusType = "Attendance"
                         },
                         new
                         {
@@ -638,7 +644,8 @@ namespace Accounts.Migrations
                             DisplayOrder = 2,
                             IsActive = true,
                             IsPaid = false,
-                            StatusName = "Absent"
+                            StatusName = "Absent",
+                            StatusType = "Attendance"
                         },
                         new
                         {
@@ -650,7 +657,8 @@ namespace Accounts.Migrations
                             DisplayOrder = 3,
                             IsActive = true,
                             IsPaid = true,
-                            StatusName = "Leave"
+                            StatusName = "Leave",
+                            StatusType = "Attendance"
                         },
                         new
                         {
@@ -662,7 +670,8 @@ namespace Accounts.Migrations
                             DisplayOrder = 4,
                             IsActive = true,
                             IsPaid = true,
-                            StatusName = "Half Day"
+                            StatusName = "Half Day",
+                            StatusType = "Attendance"
                         },
                         new
                         {
@@ -674,7 +683,8 @@ namespace Accounts.Migrations
                             DisplayOrder = 5,
                             IsActive = true,
                             IsPaid = true,
-                            StatusName = "Late"
+                            StatusName = "Late",
+                            StatusType = "Attendance"
                         });
                 });
 
@@ -796,6 +806,9 @@ namespace Accounts.Migrations
                         .HasColumnType("int");
 
                     SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<int>("AttendanceVisibilityScope")
+                        .HasColumnType("int");
 
                     b.Property<int>("TenantId")
                         .HasColumnType("int");
@@ -1770,7 +1783,7 @@ namespace Accounts.Migrations
 
             modelBuilder.Entity("Accounts.Models.AttendanceRecord", b =>
                 {
-                    b.HasOne("Accounts.Models.AttendanceStatusMaster", "AttendanceStatus")
+                    b.HasOne("Accounts.Models.StatusMaster", "AttendanceStatus")
                         .WithMany()
                         .HasForeignKey("AttendanceStatusId")
                         .OnDelete(DeleteBehavior.Restrict);

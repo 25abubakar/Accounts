@@ -27,7 +27,8 @@ public sealed class AttendanceStatusService : IAttendanceStatusService
     {
         Normalize(dto);
         await EnsureUniqueAsync(dto.Code, dto.StatusName, null, cancellationToken);
-        var entity = _mapper.Map<AttendanceStatusMaster>(dto);
+        var entity = _mapper.Map<StatusMaster>(dto);
+        entity.StatusType = "Attendance";
         entity.CreatedDate = DateTime.UtcNow;
         await _repository.AddAsync(entity, cancellationToken);
         await _repository.SaveChangesAsync(cancellationToken);

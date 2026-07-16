@@ -70,10 +70,24 @@ namespace Accounts.Controllers
                 return BadRequest(new { message = ex.Message });
             }
         }
+
+        [HttpPut("{id:int}/attendance-scope")]
+        public async Task<IActionResult> UpdateAttendanceScope(int id, [FromBody] UpdateAttendanceScopeDto dto)
+        {
+            if (!_tenantService.IsTenantAdmin) return Forbid();
+            if (!Enum.IsDefined(dto.Scope)) return BadRequest(new { message = "Invalid attendance visibility scope." });
+            var success = await _service.UpdateAttendanceScopeAsync(id, dto.Scope);
+            return success ? Ok(new { id, attendanceVisibilityScope = dto.Scope }) : NotFound(new { message = "Job Title not found." });
+        }
     }
 
     public class UpsertJobTitleDto
     {
         public string TitleName { get; set; } = string.Empty;
+    }
+
+    public sealed class UpdateAttendanceScopeDto
+    {
+        public Accounts.Models.AttendanceVisibilityScope Scope { get; set; }
     }
 }

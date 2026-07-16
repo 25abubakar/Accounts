@@ -122,6 +122,82 @@ namespace Accounts.Services.Services
         }
 
         /// <summary>
+        /// Resolves overview permission keys for every visible staff member with a
+        /// fixed number of set-based queries. This replaces two API calls plus
+        /// several permission queries per row on Staff Access Overview.
+        /// </summary>
+        public async Task<IReadOnlyDictionary<Guid, IReadOnlyCollection<string>>> GetStaffAccessOverviewAsync()
+        {
+            var staff = await _db.StaffVacancies.AsNoTracking()
+                .Where(s => s.PersonId.HasValue)
+                .Select(s => new
+                {
+                    s.StaffId,
+                    DepartmentId = s.Vacancy != null ? (int?)s.Vacancy.OrganizationId : null,
+                    JobTitle = s.Vacancy != null
+                        ? (s.Vacancy.JobTitleNav != null ? s.Vacancy.JobTitleNav.TitleName : s.Vacancy.JobTitle)
+                        : null
+                }).ToListAsync();
+            var staffIds = staff.Select(s => s.StaffId).ToArray();
+            if (staffIds.Length == 0) return new Dictionary<Guid, IReadOnlyCollection<string>>();
+
+            var grants = await _db.StaffMenuAccesses.AsNoTracking()
+                .Where(g => staffIds.Contains(g.StaffId) && g.IsAllow)
+                .Select(g => new { g.Id, g.StaffId, g.MenuId }).ToListAsync();
+            var grantIds = grants.Select(g => g.Id).ToArray();
+            var accessFeatures = await _db.AccessFeatures.AsNoTracking()
+                .Where(f => grantIds.Contains(f.StaffMenuAccessId))
+                .Select(f => new { f.StaffMenuAccessId, f.PermissionId, f.IsAllow }).ToListAsync();
+
+            var features = await _db.Features.AsNoTracking()
+                .Select(f => new { f.PermissionId, f.FeatureKey }).ToDictionaryAsync(f => f.PermissionId, f => f.FeatureKey);
+            var staffWithGrants = grants.Select(g => g.StaffId).ToHashSet();
+            var legacyStaff = staff.Where(s => !staffWithGrants.Contains(s.StaffId)).ToList();
+            var legacyTitles = legacyStaff.Select(s => s.JobTitle).Where(t => !string.IsNullOrWhiteSpace(t)).Distinct().ToArray();
+            var roleRows = await _db.RolePermissions.AsNoTracking()
+                .Where(r => legacyTitles.Contains(r.JobTitle))
+                .Select(r => new { r.JobTitle, r.DeptId, r.PermissionId, r.IsAllowed }).ToListAsync();
+            var legacyIds = legacyStaff.Select(s => s.StaffId).ToArray();
+            var matrixRows = await _db.DepartmentAccessMatrix.AsNoTracking()
+                .Where(m => legacyIds.Contains(m.StaffId) && m.HasAccess)
+                .Select(m => new { m.StaffId, m.PermissionId }).ToListAsync();
+
+            var grantFeatures = accessFeatures.ToLookup(f => f.StaffMenuAccessId);
+            var grantsByStaff = grants.ToLookup(g => g.StaffId);
+            var roleByTitle = roleRows.ToLookup(r => r.JobTitle, StringComparer.OrdinalIgnoreCase);
+            var matrixByStaff = matrixRows.ToLookup(m => m.StaffId);
+            var result = new Dictionary<Guid, IReadOnlyCollection<string>>(staff.Count);
+
+            foreach (var employee in staff)
+            {
+                var keys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                var employeeGrants = grantsByStaff[employee.StaffId].ToList();
+                if (employeeGrants.Count > 0)
+                {
+                    foreach (var grant in employeeGrants)
+                    {
+                        keys.Add($"MENU_{grant.MenuId}");
+                        foreach (var feature in grantFeatures[grant.Id].Where(f => f.IsAllow))
+                            if (features.TryGetValue(feature.PermissionId, out var key)) keys.Add(key);
+                    }
+                }
+                else
+                {
+                    var effectiveRoles = roleByTitle[employee.JobTitle ?? string.Empty]
+                        .Where(r => r.DeptId == null || r.DeptId == employee.DepartmentId)
+                        .GroupBy(r => r.PermissionId)
+                        .Select(group => group.OrderByDescending(r => r.DeptId.HasValue).First());
+                    foreach (var role in effectiveRoles.Where(r => r.IsAllowed))
+                        if (features.TryGetValue(role.PermissionId, out var key)) keys.Add(key);
+                    foreach (var matrix in matrixByStaff[employee.StaffId])
+                        if (features.TryGetValue(matrix.PermissionId, out var key)) keys.Add(key);
+                }
+                result[employee.StaffId] = keys;
+            }
+            return result;
+        }
+
+        /// <summary>
         /// Returns the HashSet of int PermissionIds the user is allowed to access.
         ///
         /// 2-tier RBAC resolution (StaffMenuAccess + AccessFeatures):
@@ -797,6 +873,103 @@ namespace Accounts.Services.Services
             // ── Step 4: Persist everything in one round-trip ─────────────────
             await _db.SaveChangesAsync();
             return (saved, skipped, $"{saved} permission(s) saved, {skipped} skipped.");
+        }
+
+        /// <summary>
+        /// Replaces the same permission set for many staff members in one unit of work.
+        /// Shared menu/feature metadata is loaded once, avoiding one HTTP request and
+        /// several repeated database queries per selected user.
+        /// </summary>
+        public async Task<(int UsersUpdated, int Saved, int Skipped, string Message)> BulkApplyOverridesToStaffAsync(
+            IReadOnlyCollection<Guid> requestedStaffIds,
+            IReadOnlyDictionary<string, string> overrides,
+            string? setBy)
+        {
+            var staffIds = requestedStaffIds.Where(id => id != Guid.Empty).Distinct().ToArray();
+            if (staffIds.Length == 0) return (0, 0, 0, "No staff members were selected.");
+            if (overrides == null || overrides.Count == 0) return (0, 0, 0, "No overrides provided.");
+
+            var validStaffIds = await _db.StaffVacancies.AsNoTracking()
+                .Where(s => staffIds.Contains(s.StaffId)).Select(s => s.StaffId).ToArrayAsync();
+            if (validStaffIds.Length != staffIds.Length)
+                return (0, 0, 0, "One or more selected staff members were not found.");
+
+            var strategy = _db.Database.CreateExecutionStrategy();
+            return await strategy.ExecuteAsync(async () =>
+            {
+            // A retry re-enters this delegate using the scoped DbContext. Clear any
+            // entities left from the failed attempt before rebuilding the graph.
+            _db.ChangeTracker.Clear();
+            await using var transaction = await _db.Database.BeginTransactionAsync();
+            var menus = await _db.Menus.AsNoTracking().Select(m => new { m.Id, m.Title }).ToListAsync();
+            var menuById = menus.ToDictionary(m => m.Id);
+            var allowedKeys = overrides
+                .Where(pair => pair.Value.Trim().Equals("ALLOW", StringComparison.OrdinalIgnoreCase))
+                .Select(pair => pair.Key.Trim().ToUpperInvariant())
+                .Where(key => key.StartsWith("MENU_", StringComparison.Ordinal))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+
+            var parsed = new List<(string Key, int MenuId, bool IsTopLevel)>();
+            var skippedPerUser = overrides.Count - allowedKeys.Length;
+            foreach (var key in allowedKeys)
+            {
+                var parts = key.Split('_');
+                if (parts.Length < 2 || !int.TryParse(parts[1], out var menuId) || !menuById.ContainsKey(menuId))
+                { skippedPerUser++; continue; }
+                parsed.Add((key, menuId, parts.Length == 2));
+            }
+
+            // Seed any missing MENU_* features in a single save, not once per key/user.
+            var featureIds = await _db.Features.AsNoTracking()
+                .Where(f => allowedKeys.Contains(f.FeatureKey))
+                .ToDictionaryAsync(f => f.FeatureKey, f => f.PermissionId, StringComparer.OrdinalIgnoreCase);
+            var missingFeatures = parsed.Where(item => !featureIds.ContainsKey(item.Key))
+                .GroupBy(item => item.Key, StringComparer.OrdinalIgnoreCase).Select(group => group.First())
+                .Select(item =>
+                {
+                    var suffix = item.Key.Split('_').Length >= 3 ? string.Join("_", item.Key.Split('_').Skip(2)) : "";
+                    var title = menuById[item.MenuId].Title;
+                    var name = suffix switch { "VIEW" => $"{title} - View", "ADD" => $"{title} - Add", "EDIT" => $"{title} - Edit", "DELETE" => $"{title} - Delete", "" => title, _ => $"{title} - {suffix}" };
+                    return new Feature { FeatureKey = item.Key, FeatureName = name, Module = "Menu" };
+                }).ToList();
+            if (missingFeatures.Count > 0)
+            {
+                _db.Features.AddRange(missingFeatures);
+                await _db.SaveChangesAsync();
+                foreach (var feature in missingFeatures)
+                    featureIds[feature.FeatureKey] = feature.PermissionId;
+            }
+
+            await _db.StaffMenuAccesses.Where(grant => validStaffIds.Contains(grant.StaffId)).ExecuteDeleteAsync();
+
+            var now = DateTime.UtcNow;
+            var saved = 0;
+            var newGrants = new List<StaffMenuAccess>(validStaffIds.Length * Math.Max(1, parsed.Select(item => item.MenuId).Distinct().Count()));
+            foreach (var staffId in validStaffIds)
+            {
+                var grants = new Dictionary<int, StaffMenuAccess>();
+                foreach (var item in parsed)
+                {
+                    if (!featureIds.TryGetValue(item.Key, out var permissionId)) { skippedPerUser++; continue; }
+                    if (!grants.TryGetValue(item.MenuId, out var grant))
+                    {
+                        grant = new StaffMenuAccess { StaffId = staffId, MenuId = item.MenuId, IsAllow = true, GrantedBy = setBy, GrantedDate = now };
+                        grants[item.MenuId] = grant;
+                        newGrants.Add(grant);
+                    }
+                    if (!item.IsTopLevel)
+                        grant.AccessFeatures.Add(new AccessFeature { PermissionId = permissionId, IsAllow = true });
+                    saved++;
+                }
+            }
+
+            _db.StaffMenuAccesses.AddRange(newGrants);
+            await _db.SaveChangesAsync();
+            await transaction.CommitAsync();
+            var skipped = skippedPerUser * validStaffIds.Length;
+            return (validStaffIds.Length, saved, skipped, $"Access updated for {validStaffIds.Length} user(s).");
+            });
         }
 
         /// <summary>Remove every StaffMenuAccess row for a staff member (one query + one save).</summary>

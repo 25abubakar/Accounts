@@ -3,6 +3,13 @@ using System.ComponentModel.DataAnnotations.Schema;
 
 namespace Accounts.Models
 {
+    public enum AttendanceVisibilityScope
+    {
+        Self = 0,
+        OrganizationNode = 1,
+        OrganizationNodeAndDescendants = 2
+    }
+
     /// <summary>
     /// Normalized lookup for job titles.
     /// Replaces the raw string JobTitle column on Vacancies.
@@ -26,6 +33,12 @@ namespace Accounts.Models
         [Required]
         [MaxLength(100)]
         public string TitleName { get; set; } = string.Empty;
+
+        /// <summary>
+        /// Database-driven attendance visibility attached to this position type.
+        /// It is intentionally independent from the Report-To feature.
+        /// </summary>
+        public AttendanceVisibilityScope AttendanceVisibilityScope { get; set; } = AttendanceVisibilityScope.Self;
 
         // ── Navigation ────────────────────────────────────────────────────
         public ICollection<Vacancy> Vacancies { get; set; } = new List<Vacancy>();

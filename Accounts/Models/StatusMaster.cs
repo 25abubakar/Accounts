@@ -3,11 +3,10 @@ using System.ComponentModel.DataAnnotations.Schema;
 
 namespace Accounts.Models;
 
-[Table("AttendanceStatusMaster")]
-public class AttendanceStatusMaster
+[Table("StatusMaster")]
+public class StatusMaster
 {
-    [Key]
-    [DatabaseGenerated(DatabaseGeneratedOption.Identity)]
+    [Key, DatabaseGenerated(DatabaseGeneratedOption.Identity)]
     public int Id { get; set; }
 
     [Required, MaxLength(10)]
@@ -15,6 +14,9 @@ public class AttendanceStatusMaster
 
     [Required, MaxLength(100)]
     public string StatusName { get; set; } = string.Empty;
+
+    [Required, MaxLength(50)]
+    public string StatusType { get; set; } = string.Empty;
 
     [MaxLength(500)]
     public string? Description { get; set; }

@@ -36,6 +36,41 @@ namespace Accounts.Services.Services
             return menu;
         }
 
+        public async Task<Menu?> UpdateMenuAsync(int id, CreateMenuDto dto)
+        {
+            var menu = await _context.Menus.FirstOrDefaultAsync(m => m.Id == id);
+            if (menu is null) return null;
+            if (dto.ParentId == id) throw new InvalidOperationException("A menu cannot be its own parent.");
+
+            if (dto.ParentId.HasValue)
+            {
+                if (!await _context.Menus.AnyAsync(m => m.Id == dto.ParentId.Value && m.IsActive))
+                    throw new InvalidOperationException("The selected parent menu does not exist or is inactive.");
+
+                var cursor = dto.ParentId;
+                while (cursor.HasValue)
+                {
+                    if (cursor.Value == id)
+                        throw new InvalidOperationException("A menu cannot be moved below one of its child menus.");
+                    cursor = await _context.Menus.Where(m => m.Id == cursor.Value)
+                        .Select(m => m.ParentId).FirstOrDefaultAsync();
+                }
+            }
+
+            var route = string.IsNullOrWhiteSpace(dto.Route) ? null : dto.Route.Trim();
+            if (route != null && !route.StartsWith('/')) route = "/" + route;
+            if (route != null && await _context.Menus.AnyAsync(m => m.Id != id && m.IsActive && m.Route == route))
+                throw new InvalidOperationException($"Another active menu already uses route '{route}'.");
+
+            menu.Title = dto.Title.Trim();
+            menu.Icon = string.IsNullOrWhiteSpace(dto.Icon) ? null : dto.Icon.Trim();
+            menu.Route = route;
+            menu.ParentId = dto.ParentId;
+            menu.SortOrder = dto.SortOrder;
+            await _context.SaveChangesAsync();
+            return menu;
+        }
+
         /// <summary>
         /// Seeds MENU_{id}, MENU_{id}_VIEW/_ADD/_EDIT/_DELETE into Features.
         /// Also links the MENU_{id} feature to this menu via MenuPermissions (int FK).
@@ -120,10 +155,19 @@ namespace Accounts.Services.Services
 
         public async Task<bool> DeactivateAsync(int id)
         {
-            var menu = await _context.Menus.FindAsync(id);
+            var menu = await _context.Menus.FirstOrDefaultAsync(m => m.Id == id);
             if (menu is null) return false;
 
-            menu.IsActive = false;
+            var allMenus = await _context.Menus.ToListAsync();
+            var childrenByParent = allMenus.ToLookup(m => m.ParentId);
+            var pending = new Stack<int>();
+            pending.Push(id);
+            while (pending.Count > 0)
+            {
+                var currentId = pending.Pop();
+                allMenus.First(m => m.Id == currentId).IsActive = false;
+                foreach (var child in childrenByParent[currentId]) pending.Push(child.Id);
+            }
             await _context.SaveChangesAsync();
             return true;
         }

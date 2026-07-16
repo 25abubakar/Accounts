@@ -20,5 +20,5 @@ public sealed class AttendanceRecord : ITenantEntity
     public DateTime? ModifiedDate { get; set; }
 
     public Person Person { get; set; } = null!;
-    public AttendanceStatusMaster? AttendanceStatus { get; set; }
+    public StatusMaster? AttendanceStatus { get; set; }
 }

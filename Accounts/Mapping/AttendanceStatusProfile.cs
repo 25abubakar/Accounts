@@ -8,12 +8,12 @@ public sealed class AttendanceStatusProfile : Profile
 {
     public AttendanceStatusProfile()
     {
-        CreateMap<AttendanceStatusMaster, AttendanceStatusDto>();
-        CreateMap<CreateAttendanceStatusDto, AttendanceStatusMaster>()
+        CreateMap<StatusMaster, AttendanceStatusDto>();
+        CreateMap<CreateAttendanceStatusDto, StatusMaster>()
             .ForMember(d => d.Id, o => o.Ignore())
             .ForMember(d => d.CreatedDate, o => o.Ignore())
             .ForMember(d => d.ModifiedDate, o => o.Ignore());
-        CreateMap<UpdateAttendanceStatusDto, AttendanceStatusMaster>()
+        CreateMap<UpdateAttendanceStatusDto, StatusMaster>()
             .ForMember(d => d.Id, o => o.Ignore())
             .ForMember(d => d.CreatedDate, o => o.Ignore())
             .ForMember(d => d.ModifiedDate, o => o.Ignore());

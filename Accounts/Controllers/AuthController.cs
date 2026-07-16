@@ -232,6 +232,14 @@ namespace Accounts.Controllers
                 var tenantGrants = await _db.TenantMenuPermissions
                     .AsNoTracking()
                     .Where(tmp => tmp.TenantId == appUser.TenantId.Value && tmp.IsAllow)
+                    .Select(tmp => new
+                    {
+                        tmp.MenuId,
+                        tmp.CanView,
+                        tmp.CanAdd,
+                        tmp.CanEdit,
+                        tmp.CanDelete
+                    })
                     .ToListAsync(ct);
                 var tenantGrantedMenuIds = tenantGrants.Select(g => g.MenuId).ToHashSet();
 
@@ -261,7 +269,6 @@ namespace Accounts.Controllers
                 var tenantSidebar = BuildFullTreeStatic(null, filteredLookup);
 
                 // Grant only the CRUD capabilities selected by Super Admin.
-                var menuIdList = tenantGrantedMenuIds.ToList();
                 var autoKeys = new HashSet<string>();
                 foreach (var grant in tenantGrants)
                 {
@@ -274,25 +281,23 @@ namespace Accounts.Controllers
 
                 // Also pull any explicitly defined Feature rows linked to these menus
                 // — fetch all Features first, then filter in memory
-                var dbFeatureKeys = await _db.Features
-                    .AsNoTracking()
-                    .Select(f => f.FeatureKey)
-                    .ToListAsync(ct);
-
-                var allGrantedKeys = autoKeys
-                    .Union(dbFeatureKeys.Where(autoKeys.Contains))
-                    .Distinct().ToList();
+                var allGrantedKeys = autoKeys.ToList();
 
                 // Resolve the person record if it exists (for staffId)
                 var taPersonId  = (Guid?)null;
                 var taStaffId   = (Guid?)null;
-                var taPerson    = await _db.Persons.AsNoTracking()
-                    .Include(p => p.Staff)
-                    .FirstOrDefaultAsync(p => p.IdentityUserId == identityUserId, ct);
+                var taPerson = await _db.Persons.AsNoTracking()
+                    .Where(p => p.IdentityUserId == identityUserId)
+                    .Select(p => new
+                    {
+                        p.PersonId,
+                        StaffId = p.Staff != null ? (Guid?)p.Staff.StaffId : null
+                    })
+                    .FirstOrDefaultAsync(ct);
                 if (taPerson != null)
                 {
                     taPersonId = taPerson.PersonId;
-                    taStaffId  = taPerson.Staff?.StaffId;
+                    taStaffId  = taPerson.StaffId;
                 }
 
                 return Ok(new
