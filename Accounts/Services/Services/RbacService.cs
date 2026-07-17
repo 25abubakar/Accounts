@@ -1,6 +1,8 @@
 using Accounts.Data;
 using Accounts.Models;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Data.SqlClient;
+using System.Text.Json;
 
 namespace Accounts.Services.Services
 {
@@ -941,31 +943,17 @@ namespace Accounts.Services.Services
                     featureIds[feature.FeatureKey] = feature.PermissionId;
             }
 
-            await _db.StaffMenuAccesses.Where(grant => validStaffIds.Contains(grant.StaffId)).ExecuteDeleteAsync();
-
-            var now = DateTime.UtcNow;
-            var saved = 0;
-            var newGrants = new List<StaffMenuAccess>(validStaffIds.Length * Math.Max(1, parsed.Select(item => item.MenuId).Distinct().Count()));
-            foreach (var staffId in validStaffIds)
-            {
-                var grants = new Dictionary<int, StaffMenuAccess>();
-                foreach (var item in parsed)
-                {
-                    if (!featureIds.TryGetValue(item.Key, out var permissionId)) { skippedPerUser++; continue; }
-                    if (!grants.TryGetValue(item.MenuId, out var grant))
-                    {
-                        grant = new StaffMenuAccess { StaffId = staffId, MenuId = item.MenuId, IsAllow = true, GrantedBy = setBy, GrantedDate = now };
-                        grants[item.MenuId] = grant;
-                        newGrants.Add(grant);
-                    }
-                    if (!item.IsTopLevel)
-                        grant.AccessFeatures.Add(new AccessFeature { PermissionId = permissionId, IsAllow = true });
-                    saved++;
-                }
-            }
-
-            _db.StaffMenuAccesses.AddRange(newGrants);
-            await _db.SaveChangesAsync();
+            var permissionRows = parsed
+                .Where(item => featureIds.ContainsKey(item.Key))
+                .Select(item => new { item.MenuId, PermissionId = featureIds[item.Key], item.IsTopLevel })
+                .Distinct()
+                .ToArray();
+            var saved = validStaffIds.Length * permissionRows.Length;
+            await _db.Database.ExecuteSqlRawAsync(
+                "EXEC dbo.usp_Rbac_ReplaceStaffAccess @StaffIdsJson, @PermissionsJson, @GrantedBy",
+                new SqlParameter("@StaffIdsJson", JsonSerializer.Serialize(validStaffIds)),
+                new SqlParameter("@PermissionsJson", JsonSerializer.Serialize(permissionRows)),
+                new SqlParameter("@GrantedBy", (object?)setBy ?? DBNull.Value));
             await transaction.CommitAsync();
             var skipped = skippedPerUser * validStaffIds.Length;
             return (validStaffIds.Length, saved, skipped, $"Access updated for {validStaffIds.Length} user(s).");

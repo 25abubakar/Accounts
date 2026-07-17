@@ -508,6 +508,74 @@ namespace Accounts.Migrations
                     b.ToTable("AspNetUsers", (string)null);
                 });
 
+            modelBuilder.Entity("Accounts.Models.AttendanceDailyReportRow", b =>
+                {
+                    b.Property<DateOnly>("AttendanceDate")
+                        .HasColumnType("date");
+
+                    b.Property<int?>("AttendanceStatusId")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime?>("CheckInUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<DateTime?>("CheckOutUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("Department")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("Designation")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("EmployeeName")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("EmployeeNumber")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<long?>("Id")
+                        .HasColumnType("bigint");
+
+                    b.Property<Guid>("PersonId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid?>("ReportsToPersonId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("ShiftEndTime")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("ShiftStartTime")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("StatusCode")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("StatusColorCode")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("StatusName")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("TimeZoneId")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<int?>("TotalBreakMinutes")
+                        .HasColumnType("int");
+
+                    b.ToTable((string)null);
+
+                    b.ToView(null, (string)null);
+                });
+
             modelBuilder.Entity("Accounts.Models.AttendanceRecord", b =>
                 {
                     b.Property<long>("Id")
@@ -558,134 +626,6 @@ namespace Accounts.Migrations
                     b.HasIndex("TenantId", "AttendanceDate");
 
                     b.ToTable("AttendanceRecords", (string)null);
-                });
-
-            modelBuilder.Entity("Accounts.Models.StatusMaster", b =>
-                {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("int");
-
-                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
-
-                    b.Property<string>("Code")
-                        .IsRequired()
-                        .HasMaxLength(10)
-                        .HasColumnType("nvarchar(10)");
-
-                    b.Property<string>("ColorCode")
-                        .HasMaxLength(20)
-                        .HasColumnType("nvarchar(20)");
-
-                    b.Property<DateTime>("CreatedDate")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("datetime2")
-                        .HasDefaultValueSql("SYSUTCDATETIME()");
-
-                    b.Property<string>("Description")
-                        .HasMaxLength(500)
-                        .HasColumnType("nvarchar(500)");
-
-                    b.Property<int>("DisplayOrder")
-                        .HasColumnType("int");
-
-                    b.Property<bool>("IsActive")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("bit")
-                        .HasDefaultValue(true);
-
-                    b.Property<bool>("IsPaid")
-                        .HasColumnType("bit");
-
-                    b.Property<DateTime?>("ModifiedDate")
-                        .HasColumnType("datetime2");
-
-                    b.Property<string>("StatusName")
-                        .IsRequired()
-                        .HasMaxLength(100)
-                        .HasColumnType("nvarchar(100)");
-
-                    b.Property<string>("StatusType")
-                        .IsRequired()
-                        .HasMaxLength(50)
-                        .HasColumnType("nvarchar(50)");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("StatusType", "Code")
-                        .IsUnique();
-
-                    b.HasIndex("StatusType", "StatusName")
-                        .IsUnique();
-
-                    b.ToTable("StatusMaster", (string)null);
-
-                    b.HasData(
-                        new
-                        {
-                            Id = 1,
-                            Code = "P",
-                            ColorCode = "#10B981",
-                            CreatedDate = new DateTime(2026, 7, 15, 0, 0, 0, 0, DateTimeKind.Utc),
-                            Description = "Employee was present.",
-                            DisplayOrder = 1,
-                            IsActive = true,
-                            IsPaid = true,
-                            StatusName = "Present",
-                            StatusType = "Attendance"
-                        },
-                        new
-                        {
-                            Id = 2,
-                            Code = "A",
-                            ColorCode = "#EF4444",
-                            CreatedDate = new DateTime(2026, 7, 15, 0, 0, 0, 0, DateTimeKind.Utc),
-                            Description = "Employee was absent.",
-                            DisplayOrder = 2,
-                            IsActive = true,
-                            IsPaid = false,
-                            StatusName = "Absent",
-                            StatusType = "Attendance"
-                        },
-                        new
-                        {
-                            Id = 3,
-                            Code = "L",
-                            ColorCode = "#8B5CF6",
-                            CreatedDate = new DateTime(2026, 7, 15, 0, 0, 0, 0, DateTimeKind.Utc),
-                            Description = "Employee was on approved leave.",
-                            DisplayOrder = 3,
-                            IsActive = true,
-                            IsPaid = true,
-                            StatusName = "Leave",
-                            StatusType = "Attendance"
-                        },
-                        new
-                        {
-                            Id = 4,
-                            Code = "HD",
-                            ColorCode = "#F59E0B",
-                            CreatedDate = new DateTime(2026, 7, 15, 0, 0, 0, 0, DateTimeKind.Utc),
-                            Description = "Employee completed a half working day.",
-                            DisplayOrder = 4,
-                            IsActive = true,
-                            IsPaid = true,
-                            StatusName = "Half Day",
-                            StatusType = "Attendance"
-                        },
-                        new
-                        {
-                            Id = 5,
-                            Code = "LT",
-                            ColorCode = "#F97316",
-                            CreatedDate = new DateTime(2026, 7, 15, 0, 0, 0, 0, DateTimeKind.Utc),
-                            Description = "Employee arrived after the scheduled start time.",
-                            DisplayOrder = 5,
-                            IsActive = true,
-                            IsPaid = true,
-                            StatusName = "Late",
-                            StatusType = "Attendance"
-                        });
                 });
 
             modelBuilder.Entity("Accounts.Models.DepartmentAccessMatrix", b =>
@@ -1303,6 +1243,134 @@ namespace Accounts.Migrations
                         .HasFilter("[VacancyId] IS NOT NULL");
 
                     b.ToTable("StaffVacancy", (string)null);
+                });
+
+            modelBuilder.Entity("Accounts.Models.StatusMaster", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<string>("Code")
+                        .IsRequired()
+                        .HasMaxLength(10)
+                        .HasColumnType("nvarchar(10)");
+
+                    b.Property<string>("ColorCode")
+                        .HasMaxLength(20)
+                        .HasColumnType("nvarchar(20)");
+
+                    b.Property<DateTime>("CreatedDate")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("datetime2")
+                        .HasDefaultValueSql("SYSUTCDATETIME()");
+
+                    b.Property<string>("Description")
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)");
+
+                    b.Property<int>("DisplayOrder")
+                        .HasColumnType("int");
+
+                    b.Property<bool>("IsActive")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bit")
+                        .HasDefaultValue(true);
+
+                    b.Property<bool>("IsPaid")
+                        .HasColumnType("bit");
+
+                    b.Property<DateTime?>("ModifiedDate")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("StatusName")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<string>("StatusType")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .HasColumnType("nvarchar(50)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("StatusType", "Code")
+                        .IsUnique();
+
+                    b.HasIndex("StatusType", "StatusName")
+                        .IsUnique();
+
+                    b.ToTable("StatusMaster", (string)null);
+
+                    b.HasData(
+                        new
+                        {
+                            Id = 1,
+                            Code = "P",
+                            ColorCode = "#10B981",
+                            CreatedDate = new DateTime(2026, 7, 15, 0, 0, 0, 0, DateTimeKind.Utc),
+                            Description = "Employee was present.",
+                            DisplayOrder = 1,
+                            IsActive = true,
+                            IsPaid = true,
+                            StatusName = "Present",
+                            StatusType = "Attendance"
+                        },
+                        new
+                        {
+                            Id = 2,
+                            Code = "A",
+                            ColorCode = "#EF4444",
+                            CreatedDate = new DateTime(2026, 7, 15, 0, 0, 0, 0, DateTimeKind.Utc),
+                            Description = "Employee was absent.",
+                            DisplayOrder = 2,
+                            IsActive = true,
+                            IsPaid = false,
+                            StatusName = "Absent",
+                            StatusType = "Attendance"
+                        },
+                        new
+                        {
+                            Id = 3,
+                            Code = "L",
+                            ColorCode = "#8B5CF6",
+                            CreatedDate = new DateTime(2026, 7, 15, 0, 0, 0, 0, DateTimeKind.Utc),
+                            Description = "Employee was on approved leave.",
+                            DisplayOrder = 3,
+                            IsActive = true,
+                            IsPaid = true,
+                            StatusName = "Leave",
+                            StatusType = "Attendance"
+                        },
+                        new
+                        {
+                            Id = 4,
+                            Code = "HD",
+                            ColorCode = "#F59E0B",
+                            CreatedDate = new DateTime(2026, 7, 15, 0, 0, 0, 0, DateTimeKind.Utc),
+                            Description = "Employee completed a half working day.",
+                            DisplayOrder = 4,
+                            IsActive = true,
+                            IsPaid = true,
+                            StatusName = "Half Day",
+                            StatusType = "Attendance"
+                        },
+                        new
+                        {
+                            Id = 5,
+                            Code = "LT",
+                            ColorCode = "#F97316",
+                            CreatedDate = new DateTime(2026, 7, 15, 0, 0, 0, 0, DateTimeKind.Utc),
+                            Description = "Employee arrived after the scheduled start time.",
+                            DisplayOrder = 5,
+                            IsActive = true,
+                            IsPaid = true,
+                            StatusName = "Late",
+                            StatusType = "Attendance"
+                        });
                 });
 
             modelBuilder.Entity("Accounts.Models.Tenant", b =>

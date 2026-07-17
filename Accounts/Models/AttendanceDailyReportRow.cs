@@ -14,6 +14,10 @@ public sealed class AttendanceDailyReportRow
     public string? StatusName { get; set; }
     public string? StatusCode { get; set; }
     public string? StatusColorCode { get; set; }
+    public int? AttendanceEntryTypeId { get; set; }
+    public string? AttendanceEntryType { get; set; }
+    public int? AttendanceWorkModeId { get; set; }
+    public string? AttendanceWorkMode { get; set; }
     public DateTime? CheckInUtc { get; set; }
     public DateTime? CheckOutUtc { get; set; }
     public int? TotalBreakMinutes { get; set; }

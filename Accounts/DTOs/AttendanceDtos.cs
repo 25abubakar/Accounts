@@ -17,6 +17,10 @@ public sealed class MyAttendanceTodayDto
     public int ShortMinutes { get; set; }
     public int RemainingMinutes { get; set; }
     public double ProgressPercent { get; set; }
+    public int? AttendanceEntryTypeId { get; set; }
+    public string? AttendanceEntryType { get; set; }
+    public int? AttendanceWorkModeId { get; set; }
+    public string? AttendanceWorkMode { get; set; }
     public bool IsOnBreak => BreakStartedUtc.HasValue;
 }
 
@@ -77,6 +81,9 @@ public sealed class DailyAttendanceRowDto
     public string? ReportingManager { get; set; }
     public DateOnly Date { get; set; }
     public string AttendanceType { get; set; } = string.Empty;
+    public int? AttendanceEntryTypeId { get; set; }
+    public int? AttendanceWorkModeId { get; set; }
+    public string? WorkMode { get; set; }
     public string? CheckInTime { get; set; }
     public string? CheckOutTime { get; set; }
     public int WorkingMinutes { get; set; }

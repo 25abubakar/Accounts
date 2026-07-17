@@ -17,16 +17,25 @@ public sealed class AttendanceService : IAttendanceService
     public async Task<MyAttendanceTodayDto> GetTodayAsync(string identityUserId, CancellationToken cancellationToken = default)
     {
         var (person, localDate) = await ResolvePersonAsync(identityUserId, cancellationToken);
-        var record = await _db.AttendanceRecords.AsNoTracking().FirstOrDefaultAsync(x => x.PersonId == person.PersonId && x.AttendanceDate == localDate, cancellationToken);
+        var record = await _db.AttendanceRecords.AsNoTracking()
+            .Include(x => x.AttendanceEntryType).Include(x => x.AttendanceWorkMode)
+            .FirstOrDefaultAsync(x => x.PersonId == person.PersonId && x.AttendanceDate == localDate, cancellationToken);
         return Map(person, record, DateTime.UtcNow);
     }
 
-    public async Task<MyAttendanceTodayDto> CheckInAsync(string identityUserId, CancellationToken cancellationToken = default)
+    public async Task<MyAttendanceTodayDto> CheckInAsync(string identityUserId, int? workModeId = null, CancellationToken cancellationToken = default)
     {
         var (person, localDate) = await ResolvePersonAsync(identityUserId, cancellationToken);
         var record = await _db.AttendanceRecords.FirstOrDefaultAsync(x => x.PersonId == person.PersonId && x.AttendanceDate == localDate, cancellationToken);
         if (record?.CheckInUtc is not null) throw new InvalidOperationException("You have already checked in today.");
+        var entryType = await _db.AttendanceEntryTypes.SingleAsync(x => x.Code == "CHECK" && x.IsActive, cancellationToken);
+        var workMode = workModeId.HasValue
+            ? await _db.AttendanceWorkModes.FirstOrDefaultAsync(x => x.Id == workModeId.Value && x.IsActive, cancellationToken)
+            : await _db.AttendanceWorkModes.FirstOrDefaultAsync(x => x.Code == "ONSITE" && x.IsActive, cancellationToken);
+        if (workMode == null) throw new InvalidOperationException("Select a valid active work mode.");
         record ??= new AttendanceRecord { TenantId = person.TenantId, PersonId = person.PersonId, AttendanceDate = localDate, CreatedDate = DateTime.UtcNow };
+        record.AttendanceEntryType = entryType;
+        record.AttendanceWorkMode = workMode;
         record.CheckInUtc = DateTime.UtcNow;
         record.ModifiedDate = DateTime.UtcNow;
         if (record.Id == 0) _db.AttendanceRecords.Add(record);
@@ -37,7 +46,8 @@ public sealed class AttendanceService : IAttendanceService
     public async Task<MyAttendanceTodayDto> ToggleBreakAsync(string identityUserId, CancellationToken cancellationToken = default)
     {
         var (person, localDate) = await ResolvePersonAsync(identityUserId, cancellationToken);
-        var record = await _db.AttendanceRecords.FirstOrDefaultAsync(x => x.PersonId == person.PersonId && x.AttendanceDate == localDate, cancellationToken)
+        var record = await _db.AttendanceRecords.Include(x => x.AttendanceEntryType).Include(x => x.AttendanceWorkMode)
+            .FirstOrDefaultAsync(x => x.PersonId == person.PersonId && x.AttendanceDate == localDate, cancellationToken)
             ?? throw new InvalidOperationException("Check in before starting a break.");
         if (record.CheckOutUtc.HasValue) throw new InvalidOperationException("Attendance is already closed for today.");
         var now = DateTime.UtcNow;
@@ -55,7 +65,8 @@ public sealed class AttendanceService : IAttendanceService
     public async Task<MyAttendanceTodayDto> CheckOutAsync(string identityUserId, CancellationToken cancellationToken = default)
     {
         var (person, localDate) = await ResolvePersonAsync(identityUserId, cancellationToken);
-        var record = await _db.AttendanceRecords.FirstOrDefaultAsync(x => x.PersonId == person.PersonId && x.AttendanceDate == localDate, cancellationToken)
+        var record = await _db.AttendanceRecords.Include(x => x.AttendanceEntryType).Include(x => x.AttendanceWorkMode)
+            .FirstOrDefaultAsync(x => x.PersonId == person.PersonId && x.AttendanceDate == localDate, cancellationToken)
             ?? throw new InvalidOperationException("Check in before checking out.");
         if (record.CheckOutUtc.HasValue) throw new InvalidOperationException("You have already checked out today.");
         var now = DateTime.UtcNow;
@@ -215,10 +226,11 @@ public sealed class AttendanceService : IAttendanceService
         }
         catch (SqlException ex) when (ex.Number == 2812)
         {
-            // Compatibility only for an application instance started before the
-            // migration completed. Production databases use the procedure path.
+            throw new InvalidOperationException(
+                "The set-based attendance report procedure is not installed. Apply pending database migrations before requesting reports.", ex);
         }
 
+#pragma warning disable CS0162 // Retained only as a temporary rollback reference; never executed.
         var staff = await _db.StaffVacancies.AsNoTracking()
             .Where(s => s.PersonId.HasValue && visibleIds.Contains(s.PersonId.Value) && s.Person != null && s.Person.IsActive)
             .Select(s => new
@@ -269,7 +281,7 @@ public sealed class AttendanceService : IAttendanceService
                     ? Math.Max(0, (int)Math.Floor((endUtc - startUtc).TotalMinutes) - record.TotalBreakMinutes) : 0;
                 var late = checkInLocal.HasValue ? Math.Max(0, (int)(TimeOnly.FromDateTime(checkInLocal.Value).ToTimeSpan() - shiftStart.ToTimeSpan()).TotalMinutes) : 0;
                 var early = checkOutLocal.HasValue ? Math.Max(0, (int)(shiftEnd.ToTimeSpan() - TimeOnly.FromDateTime(checkOutLocal.Value).ToTimeSpan()).TotalMinutes) : 0;
-                var statusName = record?.AttendanceStatus?.StatusName;
+                var statusName = record?.AttendanceStatus?.Status.StatusName;
                 var hasCheckIn = record?.CheckInUtc.HasValue == true;
                 var hasCheckOut = record?.CheckOutUtc.HasValue == true;
                 var isPast = date < localToday;
@@ -288,7 +300,7 @@ public sealed class AttendanceService : IAttendanceService
                     WorkingMinutes = working, LateMinutes = late, EarlyDepartureMinutes = early,
                     OvertimeMinutes = hasCheckOut ? Math.Max(0, working - required) : 0,
                     AttendanceStatusId = record?.AttendanceStatusId, AttendanceStatus = statusName ?? fallbackStatus,
-                    StatusCode = record?.AttendanceStatus?.Code, StatusColorCode = record?.AttendanceStatus?.ColorCode,
+                    StatusCode = record?.AttendanceStatus?.Code, StatusColorCode = record?.AttendanceStatus?.ColorStyle.ColorCode,
                     Present = hasCheckIn, Absent = record is null && isPast, OnLeave = isLeave,
                     Remote = isRemote, MissingCheckIn = record is not null && !hasCheckIn && !isLeave,
                     MissingCheckOut = hasCheckIn && !hasCheckOut && isPast,
@@ -306,6 +318,7 @@ public sealed class AttendanceService : IAttendanceService
             TotalWorkingMinutes = rows.Sum(r => r.WorkingMinutes), TotalOvertimeMinutes = rows.Sum(r => r.OvertimeMinutes)
         };
         return new DailyAttendanceReportDto { DateFrom = dateFrom, DateTo = dateTo, Rows = rows, Summary = summary };
+#pragma warning restore CS0162
     }
 
     private async Task<DailyAttendanceReportDto> BuildDailyReportFromProcedureAsync(
@@ -326,8 +339,9 @@ public sealed class AttendanceService : IAttendanceService
             .AsNoTracking()
             .ToListAsync(cancellationToken);
 
-        var statusByCode = await _db.Statuses.AsNoTracking()
-            .Where(s => s.StatusType == "Attendance" && s.IsActive)
+        var statusByCode = await _db.ProcessStatusStyles.AsNoTracking()
+            .Include(s => s.Process).Include(s => s.Status).Include(s => s.ColorStyle)
+            .Where(s => s.Process.ProcessName == "Attendance" && s.IsActive)
             .ToDictionaryAsync(s => s.Code, StringComparer.OrdinalIgnoreCase, cancellationToken);
         statusByCode.TryGetValue("P", out var presentStatus);
         statusByCode.TryGetValue("A", out var absentStatus);
@@ -350,7 +364,7 @@ public sealed class AttendanceService : IAttendanceService
                 : source.AttendanceDate < localToday && !source.CheckInUtc.HasValue ? absentStatus
                 : late > 0 ? lateStatus
                 : source.CheckInUtc.HasValue ? presentStatus : null;
-            var statusName = source.StatusName ?? effectiveStatus?.StatusName ?? string.Empty;
+            var statusName = source.StatusName ?? effectiveStatus?.Status.StatusName ?? string.Empty;
             var statusCode = source.StatusCode ?? effectiveStatus?.Code;
 
             rows.Add(new DailyAttendanceRowDto
@@ -363,7 +377,10 @@ public sealed class AttendanceService : IAttendanceService
                 Designation = source.Designation,
                 ReportingManager = source.ReportsToPersonId.HasValue && personNames.TryGetValue(source.ReportsToPersonId.Value, out var manager) ? manager : null,
                 Date = source.AttendanceDate,
-                AttendanceType = statusName,
+                AttendanceType = source.AttendanceEntryType ?? statusName,
+                AttendanceEntryTypeId = source.AttendanceEntryTypeId,
+                AttendanceWorkModeId = source.AttendanceWorkModeId,
+                WorkMode = source.AttendanceWorkMode,
                 CheckInTime = checkInLocal?.ToString("HH:mm"),
                 CheckOutTime = checkOutLocal?.ToString("HH:mm"),
                 WorkingMinutes = working,
@@ -373,11 +390,11 @@ public sealed class AttendanceService : IAttendanceService
                 AttendanceStatusId = source.AttendanceStatusId ?? effectiveStatus?.Id,
                 AttendanceStatus = statusName,
                 StatusCode = statusCode,
-                StatusColorCode = source.StatusColorCode ?? effectiveStatus?.ColorCode,
+                StatusColorCode = source.StatusColorCode ?? effectiveStatus?.ColorStyle.ColorCode,
                 Present = source.CheckInUtc.HasValue,
                 Absent = statusCode?.Equals("A", StringComparison.OrdinalIgnoreCase) == true,
                 OnLeave = statusCode?.Equals("L", StringComparison.OrdinalIgnoreCase) == true,
-                Remote = statusCode?.Equals("WFH", StringComparison.OrdinalIgnoreCase) == true,
+                Remote = source.AttendanceWorkMode?.Equals("Remote", StringComparison.OrdinalIgnoreCase) == true,
                 MissingCheckIn = source.Id.HasValue && !source.CheckInUtc.HasValue && statusCode?.Equals("L", StringComparison.OrdinalIgnoreCase) != true,
                 MissingCheckOut = source.CheckInUtc.HasValue && !source.CheckOutUtc.HasValue && source.AttendanceDate < localToday
             });
@@ -455,7 +472,7 @@ public sealed class AttendanceService : IAttendanceService
                 WorkingMinutes = worked, BreakMinutes = r.TotalBreakMinutes, RequiredMinutes = required,
                 ShortMinutes = r.CheckOutUtc.HasValue ? Math.Max(0, required - worked) : 0,
                 AttendanceStatusId = r.AttendanceStatusId, StatusCode = r.AttendanceStatus?.Code,
-                StatusName = r.AttendanceStatus?.StatusName, StatusColorCode = r.AttendanceStatus?.ColorCode
+                StatusName = r.AttendanceStatus?.Status.StatusName, StatusColorCode = r.AttendanceStatus?.ColorStyle.ColorCode
             };
         }).ToList();
         return new MonthlyAttendanceReportDto { Employee = employee, Year = year, Month = month, Rows = rows };
@@ -485,6 +502,10 @@ public sealed class AttendanceService : IAttendanceService
             ShortMinutes = record?.CheckOutUtc.HasValue == true ? Math.Max(0, required - worked) : 0,
             RemainingMinutes = record?.CheckInUtc.HasValue == true && !record.CheckOutUtc.HasValue ? Math.Max(0, required - worked) : 0,
             ProgressPercent = required == 0 ? 0 : Math.Round(Math.Min(100, worked * 100d / required), 1)
+            ,AttendanceEntryTypeId = record?.AttendanceEntryTypeId
+            ,AttendanceEntryType = record?.AttendanceEntryType?.Name
+            ,AttendanceWorkModeId = record?.AttendanceWorkModeId
+            ,AttendanceWorkMode = record?.AttendanceWorkMode?.Name
         };
     }
 

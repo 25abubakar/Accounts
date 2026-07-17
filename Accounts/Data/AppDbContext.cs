@@ -32,9 +32,15 @@ namespace Accounts.Data
         public DbSet<PersonAddress>            PersonAddresses          => Set<PersonAddress>();
         public DbSet<PersonContact>            PersonContacts           => Set<PersonContact>();
         public DbSet<JobTitle>                 JobTitles                => Set<JobTitle>();
-        public DbSet<StatusMaster>             Statuses                 => Set<StatusMaster>();
-        public IQueryable<StatusMaster> AttendanceStatuses => Statuses.Where(s => s.StatusType == "Attendance");
+        public DbSet<ProcessMaster>            Processes                => Set<ProcessMaster>();
+        public DbSet<StatusDefinition>         Statuses                 => Set<StatusDefinition>();
+        public DbSet<ColorStyle>               ColorStyles              => Set<ColorStyle>();
+        public DbSet<ProcessStatusStyle>       ProcessStatusStyles      => Set<ProcessStatusStyle>();
+        public IQueryable<ProcessStatusStyle> AttendanceStatuses =>
+            ProcessStatusStyles.Where(x => x.Process.ProcessName == "Attendance");
         public DbSet<AttendanceRecord>         AttendanceRecords        => Set<AttendanceRecord>();
+        public DbSet<AttendanceEntryType>      AttendanceEntryTypes     => Set<AttendanceEntryType>();
+        public DbSet<AttendanceWorkMode>       AttendanceWorkModes      => Set<AttendanceWorkMode>();
         public DbSet<AttendanceDailyReportRow> AttendanceDailyReportRows => Set<AttendanceDailyReportRow>();
         public DbSet<VacancyCounter>           VacancyCounters          => Set<VacancyCounter>();
         public DbSet<Menu>                     Menus                    => Set<Menu>();
@@ -385,28 +391,50 @@ namespace Accounts.Data
                  .OnDelete(DeleteBehavior.Cascade);
             });
 
-            builder.Entity<StatusMaster>(e =>
+            builder.Entity<ProcessMaster>(e =>
             {
-                e.ToTable("StatusMaster");
+                e.ToTable("Processes");
+                e.HasKey(x => x.Id);
+                e.Property(x => x.Id).ValueGeneratedOnAdd();
+                e.Property(x => x.ProcessName).HasMaxLength(100).IsRequired();
+                e.HasIndex(x => x.ProcessName).IsUnique();
+            });
+
+            builder.Entity<StatusDefinition>(e =>
+            {
+                e.ToTable("Statuses");
+                e.HasKey(x => x.Id);
+                e.Property(x => x.Id).ValueGeneratedOnAdd();
+                e.Property(x => x.StatusName).HasMaxLength(100).IsRequired();
+                e.HasIndex(x => x.StatusName).IsUnique();
+            });
+
+            builder.Entity<ColorStyle>(e =>
+            {
+                e.ToTable("ColorStyles");
+                e.HasKey(x => x.Id);
+                e.Property(x => x.Id).ValueGeneratedOnAdd();
+                e.Property(x => x.ColorName).HasMaxLength(100).IsRequired();
+                e.Property(x => x.ColorCode).HasMaxLength(20);
+                e.Property(x => x.FontColor).HasMaxLength(20);
+                e.Property(x => x.FontSize).HasMaxLength(20);
+                e.HasIndex(x => new { x.ColorName, x.ColorCode, x.FontColor, x.FontSize }).IsUnique();
+            });
+
+            builder.Entity<ProcessStatusStyle>(e =>
+            {
+                e.ToTable("ProcessStatusStyles");
                 e.HasKey(x => x.Id);
                 e.Property(x => x.Id).ValueGeneratedOnAdd();
                 e.Property(x => x.Code).HasMaxLength(10).IsRequired();
-                e.Property(x => x.StatusName).HasMaxLength(100).IsRequired();
-                e.Property(x => x.StatusType).HasMaxLength(50).IsRequired();
                 e.Property(x => x.Description).HasMaxLength(500);
-                e.Property(x => x.ColorCode).HasMaxLength(20);
                 e.Property(x => x.IsActive).HasDefaultValue(true);
                 e.Property(x => x.CreatedDate).HasDefaultValueSql("SYSUTCDATETIME()");
-                e.HasIndex(x => new { x.StatusType, x.Code }).IsUnique();
-                e.HasIndex(x => new { x.StatusType, x.StatusName }).IsUnique();
-
-                var seededAt = new DateTime(2026, 7, 15, 0, 0, 0, DateTimeKind.Utc);
-                e.HasData(
-                    new StatusMaster { Id = 1, StatusType = "Attendance", Code = "P", StatusName = "Present", Description = "Employee was present.", ColorCode = "#10B981", DisplayOrder = 1, IsPaid = true, IsActive = true, CreatedDate = seededAt },
-                    new StatusMaster { Id = 2, StatusType = "Attendance", Code = "A", StatusName = "Absent", Description = "Employee was absent.", ColorCode = "#EF4444", DisplayOrder = 2, IsPaid = false, IsActive = true, CreatedDate = seededAt },
-                    new StatusMaster { Id = 3, StatusType = "Attendance", Code = "L", StatusName = "Leave", Description = "Employee was on approved leave.", ColorCode = "#8B5CF6", DisplayOrder = 3, IsPaid = true, IsActive = true, CreatedDate = seededAt },
-                    new StatusMaster { Id = 4, StatusType = "Attendance", Code = "HD", StatusName = "Half Day", Description = "Employee completed a half working day.", ColorCode = "#F59E0B", DisplayOrder = 4, IsPaid = true, IsActive = true, CreatedDate = seededAt },
-                    new StatusMaster { Id = 5, StatusType = "Attendance", Code = "LT", StatusName = "Late", Description = "Employee arrived after the scheduled start time.", ColorCode = "#F97316", DisplayOrder = 5, IsPaid = true, IsActive = true, CreatedDate = seededAt });
+                e.HasIndex(x => new { x.ProcessId, x.Code }).IsUnique();
+                e.HasIndex(x => new { x.ProcessId, x.StatusId, x.ColorStyleId }).IsUnique();
+                e.HasOne(x => x.Process).WithMany(x => x.StatusStyles).HasForeignKey(x => x.ProcessId).OnDelete(DeleteBehavior.Restrict);
+                e.HasOne(x => x.Status).WithMany(x => x.ProcessStyles).HasForeignKey(x => x.StatusId).OnDelete(DeleteBehavior.Restrict);
+                e.HasOne(x => x.ColorStyle).WithMany(x => x.ProcessStatuses).HasForeignKey(x => x.ColorStyleId).OnDelete(DeleteBehavior.Restrict);
             });
 
             builder.Entity<AttendanceRecord>(e =>
@@ -419,6 +447,24 @@ namespace Accounts.Data
                 e.HasIndex(x => new { x.TenantId, x.AttendanceDate });
                 e.HasOne(x => x.Person).WithMany().HasForeignKey(x => x.PersonId).OnDelete(DeleteBehavior.Restrict);
                 e.HasOne(x => x.AttendanceStatus).WithMany().HasForeignKey(x => x.AttendanceStatusId).OnDelete(DeleteBehavior.Restrict);
+                e.HasOne(x => x.AttendanceEntryType).WithMany(x => x.Records).HasForeignKey(x => x.AttendanceEntryTypeId).OnDelete(DeleteBehavior.Restrict);
+                e.HasOne(x => x.AttendanceWorkMode).WithMany(x => x.Records).HasForeignKey(x => x.AttendanceWorkModeId).OnDelete(DeleteBehavior.Restrict);
+            });
+
+            builder.Entity<AttendanceEntryType>(e =>
+            {
+                e.HasKey(x => x.Id);
+                e.Property(x => x.Code).HasMaxLength(30).IsRequired();
+                e.Property(x => x.Name).HasMaxLength(100).IsRequired();
+                e.HasIndex(x => x.Code).IsUnique();
+            });
+
+            builder.Entity<AttendanceWorkMode>(e =>
+            {
+                e.HasKey(x => x.Id);
+                e.Property(x => x.Code).HasMaxLength(30).IsRequired();
+                e.Property(x => x.Name).HasMaxLength(100).IsRequired();
+                e.HasIndex(x => x.Code).IsUnique();
             });
 
             builder.Entity<AttendanceDailyReportRow>(e =>

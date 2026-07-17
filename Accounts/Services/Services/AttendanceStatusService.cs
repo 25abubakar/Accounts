@@ -3,6 +3,8 @@ using Accounts.Models;
 using Accounts.Repositories.Interfaces;
 using Accounts.Services.Interfaces;
 using AutoMapper;
+using Accounts.Data;
+using Microsoft.EntityFrameworkCore;
 
 namespace Accounts.Services.Services;
 
@@ -10,11 +12,13 @@ public sealed class AttendanceStatusService : IAttendanceStatusService
 {
     private readonly IAttendanceStatusRepository _repository;
     private readonly IMapper _mapper;
+    private readonly ApplicationDbContext _db;
 
-    public AttendanceStatusService(IAttendanceStatusRepository repository, IMapper mapper)
+    public AttendanceStatusService(IAttendanceStatusRepository repository, IMapper mapper, ApplicationDbContext db)
     {
         _repository = repository;
         _mapper = mapper;
+        _db = db;
     }
 
     public async Task<IReadOnlyList<AttendanceStatusDto>> GetAllAsync(CancellationToken cancellationToken = default) =>
@@ -27,8 +31,8 @@ public sealed class AttendanceStatusService : IAttendanceStatusService
     {
         Normalize(dto);
         await EnsureUniqueAsync(dto.Code, dto.StatusName, null, cancellationToken);
-        var entity = _mapper.Map<StatusMaster>(dto);
-        entity.StatusType = "Attendance";
+        var entity = _mapper.Map<ProcessStatusStyle>(dto);
+        await SetRelationsAsync(entity, dto, cancellationToken);
         entity.CreatedDate = DateTime.UtcNow;
         await _repository.AddAsync(entity, cancellationToken);
         await _repository.SaveChangesAsync(cancellationToken);
@@ -42,6 +46,7 @@ public sealed class AttendanceStatusService : IAttendanceStatusService
         Normalize(dto);
         await EnsureUniqueAsync(dto.Code, dto.StatusName, id, cancellationToken);
         _mapper.Map(dto, entity);
+        await SetRelationsAsync(entity, dto, cancellationToken);
         entity.ModifiedDate = DateTime.UtcNow;
         await _repository.SaveChangesAsync(cancellationToken);
         return _mapper.Map<AttendanceStatusDto>(entity);
@@ -68,8 +73,33 @@ public sealed class AttendanceStatusService : IAttendanceStatusService
     private static void Normalize(AttendanceStatusWriteDto dto)
     {
         dto.Code = dto.Code.Trim().ToUpperInvariant();
+        dto.ProcessName = dto.ProcessName.Trim();
         dto.StatusName = dto.StatusName.Trim();
         dto.Description = string.IsNullOrWhiteSpace(dto.Description) ? null : dto.Description.Trim();
         dto.ColorCode = string.IsNullOrWhiteSpace(dto.ColorCode) ? null : dto.ColorCode.Trim().ToUpperInvariant();
+        dto.ColorName = dto.ColorName.Trim();
+        dto.FontColor = dto.FontColor.Trim().ToUpperInvariant();
+        dto.FontSize = dto.FontSize.Trim();
+    }
+
+    private async Task SetRelationsAsync(ProcessStatusStyle entity, AttendanceStatusWriteDto dto, CancellationToken ct)
+    {
+        var process = await _db.Processes.FirstOrDefaultAsync(x => x.ProcessName == dto.ProcessName, ct);
+        if (process == null) { process = new ProcessMaster { ProcessName = dto.ProcessName }; _db.Processes.Add(process); }
+
+        var status = await _db.Statuses.FirstOrDefaultAsync(x => x.StatusName == dto.StatusName, ct);
+        if (status == null) { status = new StatusDefinition { StatusName = dto.StatusName }; _db.Statuses.Add(status); }
+
+        var colorCode = dto.ColorCode ?? "#64748B";
+        var style = await _db.ColorStyles.FirstOrDefaultAsync(x => x.ColorName == dto.ColorName && x.ColorCode == colorCode && x.FontColor == dto.FontColor && x.FontSize == dto.FontSize, ct);
+        if (style == null)
+        {
+            style = new ColorStyle { ColorName = dto.ColorName, ColorCode = colorCode, FontColor = dto.FontColor, FontSize = dto.FontSize };
+            _db.ColorStyles.Add(style);
+        }
+
+        entity.Process = process;
+        entity.Status = status;
+        entity.ColorStyle = style;
     }
 }

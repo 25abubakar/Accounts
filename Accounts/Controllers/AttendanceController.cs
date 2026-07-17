@@ -2,6 +2,7 @@ using Accounts.Services.Interfaces;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using System.Security.Claims;
+using Microsoft.EntityFrameworkCore;
 
 namespace Accounts.Controllers;
 
@@ -15,7 +16,12 @@ public sealed class AttendanceController : ControllerBase
     public Task<IActionResult> Today(CancellationToken ct) => Execute(() => _service.GetTodayAsync(UserId(), ct));
 
     [HttpPost("me/check-in")]
-    public Task<IActionResult> CheckIn(CancellationToken ct) => Execute(() => _service.CheckInAsync(UserId(), ct));
+    public Task<IActionResult> CheckIn([FromQuery] int? workModeId, CancellationToken ct) => Execute(() => _service.CheckInAsync(UserId(), workModeId, ct));
+
+    [HttpGet("work-modes")]
+    public async Task<IActionResult> WorkModes([FromServices] Accounts.Data.ApplicationDbContext db, CancellationToken ct) =>
+        Ok(await db.AttendanceWorkModes.AsNoTracking().Where(x => x.IsActive).OrderBy(x => x.Name)
+            .Select(x => new { x.Id, x.Code, x.Name }).ToListAsync(ct));
 
     [HttpPost("me/toggle-break")]
     public Task<IActionResult> ToggleBreak(CancellationToken ct) => Execute(() => _service.ToggleBreakAsync(UserId(), ct));

@@ -12,6 +12,8 @@ public sealed class AttendanceRecord : ITenantEntity
     public Guid PersonId { get; set; }
     public DateOnly AttendanceDate { get; set; }
     public int? AttendanceStatusId { get; set; }
+    public int? AttendanceEntryTypeId { get; set; }
+    public int? AttendanceWorkModeId { get; set; }
     public DateTime? CheckInUtc { get; set; }
     public DateTime? CheckOutUtc { get; set; }
     public DateTime? BreakStartedUtc { get; set; }
@@ -20,5 +22,7 @@ public sealed class AttendanceRecord : ITenantEntity
     public DateTime? ModifiedDate { get; set; }
 
     public Person Person { get; set; } = null!;
-    public StatusMaster? AttendanceStatus { get; set; }
+    public ProcessStatusStyle? AttendanceStatus { get; set; }
+    public AttendanceEntryType? AttendanceEntryType { get; set; }
+    public AttendanceWorkMode? AttendanceWorkMode { get; set; }
 }
