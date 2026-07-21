@@ -102,6 +102,9 @@ namespace Accounts.Models
         public string? BranchName { get; set; }
         public string? CompanyName { get; set; }
         public string? CountryName { get; set; }  // ← required for country filter
+        public string? GroupName { get; set; }
+        public string? ShiftStartTime { get; set; }
+        public string? ShiftEndTime { get; set; }
         public DateTime JoiningDate { get; set; }
     }
 

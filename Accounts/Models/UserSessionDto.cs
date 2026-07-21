@@ -11,6 +11,12 @@ namespace Accounts.Models
         public Guid? PersonId { get; set; }
         public Guid? StaffId { get; set; }
         public string? IdentityUserId { get; set; }
+        public string? DisplayName { get; set; }
+        public string? Email { get; set; }
+        public string? StaffLoginId { get; set; }
+        public string? ProfilePhotoUrl { get; set; }
+        public string? JobTitle { get; set; }
+        public string? Department { get; set; }
 
         // ── Multi-tenant fields ───────────────────────────────────────────────
         public int?  TenantId      { get; set; }

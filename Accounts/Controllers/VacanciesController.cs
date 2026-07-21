@@ -1,7 +1,6 @@
 using Accounts.Models;
 using Accounts.Services.Interfaces;
 using Microsoft.AspNetCore.Authorization;
-using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc;
 using System.Security.Claims;
 
@@ -19,29 +18,19 @@ namespace Accounts.Controllers
     public class VacanciesController : ControllerBase
     {
         private readonly IVacancyService              _service;
-        private readonly UserManager<ApplicationUser> _userManager;
 
-        public VacanciesController(
-            IVacancyService              service,
-            UserManager<ApplicationUser> userManager)
+        public VacanciesController(IVacancyService service)
         {
             _service     = service;
-            _userManager = userManager;
         }
 
-        private async Task<bool> CallerIsSuperAdminAsync()
-        {
-            var uid  = User.FindFirstValue(ClaimTypes.NameIdentifier);
-            var user = uid != null ? await _userManager.FindByIdAsync(uid) : null;
-            return user?.IsSuperAdmin == true;
-        }
+        private Task<bool> CallerIsSuperAdminAsync() => Task.FromResult(
+            User.IsInRole("SuperAdmin") ||
+            string.Equals(User.FindFirstValue(ITenantService.ClaimIsSuperAdmin), "true", StringComparison.OrdinalIgnoreCase));
 
-        private async Task<bool> CallerIsTenantAdminAsync()
-        {
-            var uid = User.FindFirstValue(ClaimTypes.NameIdentifier);
-            var user = uid != null ? await _userManager.FindByIdAsync(uid) : null;
-            return user?.IsTenantAdmin == true;
-        }
+        private Task<bool> CallerIsTenantAdminAsync() => Task.FromResult(
+            User.IsInRole("CEO") ||
+            string.Equals(User.FindFirstValue(ITenantService.ClaimIsTenantAdmin), "true", StringComparison.OrdinalIgnoreCase));
 
         [HttpGet]
         public async Task<IActionResult> GetAll()

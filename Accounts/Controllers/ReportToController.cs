@@ -86,7 +86,7 @@ namespace Accounts.Controllers
             if (!_tenant.TenantId.HasValue || _tenant.IsSuperAdmin) return false;
             var id = User.FindFirstValue(ClaimTypes.NameIdentifier);
             var user = id == null ? null : await _users.FindByIdAsync(id);
-            if (user?.IsTenantAdmin == true) return true;
+            if (user?.IsTenantAdmin == true || User.IsInRole("CEO")) return true;
             return user != null && (await _users.GetRolesAsync(user)).Any(r => r is "Admin" or "TenantAdmin");
         }
     }

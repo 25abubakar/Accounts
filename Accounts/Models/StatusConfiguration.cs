@@ -41,6 +41,9 @@ public sealed class ProcessStatusStyle
     public int ProcessId { get; set; }
     public int StatusId { get; set; }
     public int ColorStyleId { get; set; }
+    /// <summary>Null for platform defaults; otherwise owned by one tenant.</summary>
+    public int? TenantId { get; set; }
+    public bool IsSystem { get; set; }
     [Required, MaxLength(10)] public string Code { get; set; } = string.Empty;
     [MaxLength(500)] public string? Description { get; set; }
     public int DisplayOrder { get; set; }
@@ -52,4 +55,5 @@ public sealed class ProcessStatusStyle
     public ProcessMaster Process { get; set; } = null!;
     public StatusDefinition Status { get; set; } = null!;
     public ColorStyle ColorStyle { get; set; } = null!;
+    public Tenant? Tenant { get; set; }
 }

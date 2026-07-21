@@ -8,11 +8,14 @@ using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 using Accounts.Repositories;
 using Accounts.Repositories.Interfaces;
+using Microsoft.AspNetCore.Authentication;
+using Microsoft.AspNetCore.ResponseCompression;
 
 var builder = WebApplication.CreateBuilder(args);
 
 // ── 1. Database Configuration ────────────────────────────────────────────────
 builder.Services.AddDbContext<ApplicationDbContext>(options =>
+{
     options.UseSqlServer(
         builder.Configuration.GetConnectionString("DefaultConnection"),
         sqlOptions =>
@@ -22,8 +25,13 @@ builder.Services.AddDbContext<ApplicationDbContext>(options =>
                 maxRetryCount: 5,
                 maxRetryDelay: TimeSpan.FromSeconds(10),
                 errorNumbersToAdd: null);
-        })
-    .EnableDetailedErrors());
+        });
+
+    // Detailed EF diagnostics are useful locally but add avoidable work and may
+    // expose query details in a production process.
+    if (builder.Environment.IsDevelopment())
+        options.EnableDetailedErrors();
+});
 
 // ── 2. Identity Configuration (ApplicationUser, not IdentityUser) ────────────
 builder.Services.AddIdentity<ApplicationUser, IdentityRole>(options =>
@@ -89,9 +97,19 @@ builder.Services.AddControllers()
             System.Text.Json.Serialization.ReferenceHandler.IgnoreCycles;
     });
 builder.Services.AddRazorPages();
+builder.Services.AddResponseCompression(options =>
+{
+    options.EnableForHttps = true;
+    options.Providers.Add<BrotliCompressionProvider>();
+    options.Providers.Add<GzipCompressionProvider>();
+    options.MimeTypes = ResponseCompressionDefaults.MimeTypes.Concat(
+        ["application/json", "application/problem+json"]);
+});
 
 // ── 7. Dependency Injection ──────────────────────────────────────────────────
 builder.Services.AddHttpContextAccessor();
+builder.Services.AddScoped<IClaimsTransformation,
+    Accounts.Authorization.OrganizationCeoClaimsTransformation>();
 
 // ── Multi-Tenant: ITenantService reads TenantId from HttpContext.User claims ─
 builder.Services.AddScoped<ITenantService, TenantService>();
@@ -154,6 +172,7 @@ if (app.Environment.IsDevelopment())
 }
 
 app.UseHttpsRedirection();
+app.UseResponseCompression();
 app.UseStaticFiles();
 app.UseRouting();
 

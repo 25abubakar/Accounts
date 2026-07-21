@@ -13,12 +13,14 @@ public sealed class AttendanceStatusService : IAttendanceStatusService
     private readonly IAttendanceStatusRepository _repository;
     private readonly IMapper _mapper;
     private readonly ApplicationDbContext _db;
+    private readonly ITenantService _tenant;
 
-    public AttendanceStatusService(IAttendanceStatusRepository repository, IMapper mapper, ApplicationDbContext db)
+    public AttendanceStatusService(IAttendanceStatusRepository repository, IMapper mapper, ApplicationDbContext db, ITenantService tenant)
     {
         _repository = repository;
         _mapper = mapper;
         _db = db;
+        _tenant = tenant;
     }
 
     public async Task<IReadOnlyList<AttendanceStatusDto>> GetAllAsync(CancellationToken cancellationToken = default) =>
@@ -32,6 +34,8 @@ public sealed class AttendanceStatusService : IAttendanceStatusService
         Normalize(dto);
         await EnsureUniqueAsync(dto.Code, dto.StatusName, null, cancellationToken);
         var entity = _mapper.Map<ProcessStatusStyle>(dto);
+        entity.TenantId = _tenant.IsSuperAdmin ? null : _tenant.TenantId;
+        entity.IsSystem = _tenant.IsSuperAdmin;
         await SetRelationsAsync(entity, dto, cancellationToken);
         entity.CreatedDate = DateTime.UtcNow;
         await _repository.AddAsync(entity, cancellationToken);

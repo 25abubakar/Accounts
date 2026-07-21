@@ -45,7 +45,8 @@ namespace Accounts.Controllers
         {
             var uid  = User.FindFirstValue(ClaimTypes.NameIdentifier);
             var user = uid != null ? await _userManager.FindByIdAsync(uid) : null;
-            return (user, user?.TenantId, user?.IsTenantAdmin ?? false);
+            return (user, user?.TenantId,
+                (user?.IsTenantAdmin ?? false) || User.IsInRole("CEO"));
         }
 
         // ── GET /api/tenant-roles ──────────────────────────────────────────

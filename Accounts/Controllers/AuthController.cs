@@ -3,7 +3,6 @@ using Accounts.Models;
 using Accounts.Services.Interfaces;
 using Accounts.Services.Services;
 using Microsoft.AspNetCore.Authorization;
-using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using System.Security.Claims;
@@ -20,22 +19,19 @@ namespace Accounts.Controllers
         private readonly RbacService            _rbac;
         private readonly IPersonAccessService   _personAccess;
         private readonly ApplicationDbContext   _db;
-        private readonly UserManager<ApplicationUser> _userManager;
 
         public AuthController(
             IAuthService service,
             IUserSessionService session,
             RbacService rbac,
             IPersonAccessService personAccess,
-            ApplicationDbContext db,
-            UserManager<ApplicationUser> userManager)
+            ApplicationDbContext db)
         {
             _service       = service;
             _session       = session;
             _rbac          = rbac;
             _personAccess  = personAccess;
             _db            = db;
-            _userManager   = userManager;
         }
 
         /// <summary>Register a new user with a role (Manager / Developer / AssistantManager)</summary>
@@ -63,29 +59,10 @@ namespace Accounts.Controllers
             if (!success)
                 return StatusCode(statusCode, response);
 
-            // Cookie is set; load session using the user we just authenticated
-            var user = await _userManager.FindByNameAsync(response.Username ?? dto.Username)
-                      ?? await _userManager.FindByEmailAsync(dto.Username);
-
-            if (user == null)
-                return StatusCode(statusCode, response);
-
-            var roles = await _userManager.GetRolesAsync(user);
-            var isFullAccess = roles.Contains("SuperAdmin") || roles.Contains("Admin");
-            var sessionData = await _session.GetSessionAsync(user.Id, isFullAccess);
-
-            return Ok(new
-            {
-                response.Success,
-                response.Message,
-                response.Username,
-                response.Email,
-                roles,
-                tenantId      = user.TenantId,
-                isSuperAdmin  = user.IsSuperAdmin,
-                isTenantAdmin = user.IsTenantAdmin,
-                session       = sessionData
-            });
+            // The shell performs one bootstrap after the cookie is created.
+            // Returning another full RBAC/session graph here duplicated the
+            // heaviest login queries and the client discarded that payload.
+            return Ok(response);
         }
 
         /// <summary>Logout the current user</summary>
@@ -103,14 +80,21 @@ namespace Accounts.Controllers
         /// </summary>
         [HttpGet("session")]
         [Authorize]
-        public async Task<IActionResult> GetSession(CancellationToken ct)
+        public async Task<IActionResult> GetSession(
+            [FromQuery] bool includeNavigation = true,
+            CancellationToken ct = default)
         {
             var identityUserId = User.FindFirstValue(ClaimTypes.NameIdentifier);
             if (string.IsNullOrWhiteSpace(identityUserId))
                 return Unauthorized(new { success = false, message = "Not authenticated." });
 
-            var isFullAccess = User.IsInRole("SuperAdmin") || User.IsInRole("Admin");
-            var session = await _session.GetSessionAsync(identityUserId, isFullAccess, ct);
+            var isFullAccess = User.IsInRole("SuperAdmin") || User.IsInRole("Admin") || User.IsInRole("CEO");
+            var session = await _session.GetSessionAsync(
+                identityUserId,
+                isFullAccess,
+                User.IsInRole("CEO"),
+                includeNavigation,
+                ct);
             return Ok(new { success = true, data = session });
         }
 
@@ -162,8 +146,18 @@ namespace Accounts.Controllers
                 return Unauthorized(new { status = false, message = "Invalid token" });
 
             // ── SuperAdmin / Admin gets everything without any permission checks ──
-            bool isFullAccess = User.IsInRole("SuperAdmin") || User.IsInRole("Admin");
-            var appUser = await _userManager.FindByIdAsync(identityUserId);
+            bool isFullAccess = User.IsInRole("SuperAdmin") || User.IsInRole("Admin") || User.IsInRole("CEO");
+            _ = int.TryParse(User.FindFirstValue(ITenantService.ClaimTenantId), out var claimedTenantId);
+            var appUser = new
+            {
+                IsSuperAdmin = User.IsInRole("SuperAdmin") ||
+                    string.Equals(User.FindFirstValue(ITenantService.ClaimIsSuperAdmin), "true", StringComparison.OrdinalIgnoreCase),
+                IsTenantAdmin = string.Equals(
+                    User.FindFirstValue(ITenantService.ClaimIsTenantAdmin),
+                    "true",
+                    StringComparison.OrdinalIgnoreCase),
+                TenantId = claimedTenantId > 0 ? (int?)claimedTenantId : null
+            };
 
             if (appUser?.IsSuperAdmin == true)
             {
@@ -214,7 +208,7 @@ namespace Accounts.Controllers
                     status        = true,
                     isFullAccess  = true,
                     isSuperAdmin  = false,
-                    isTenantAdmin = appUser?.IsTenantAdmin ?? false,
+                    isTenantAdmin = (appUser?.IsTenantAdmin ?? false) || User.IsInRole("CEO"),
                     tenantId      = appUser?.TenantId,
                     staffId       = (Guid?)null,
                     menus         = allSidebar,
@@ -229,6 +223,24 @@ namespace Accounts.Controllers
             // They must still see the menus granted to their tenant.
             if (appUser?.IsTenantAdmin == true && appUser.TenantId.HasValue)
             {
+                // A tenant administrator can also be an employee. In that case,
+                // Staff Attendance is always available as a self-service screen.
+                var taPersonId = (Guid?)null;
+                var taStaffId = (Guid?)null;
+                var taPerson = await _db.Persons.AsNoTracking()
+                    .Where(p => p.IdentityUserId == identityUserId)
+                    .Select(p => new
+                    {
+                        p.PersonId,
+                        StaffId = p.Staff != null ? (Guid?)p.Staff.StaffId : null
+                    })
+                    .FirstOrDefaultAsync(ct);
+                if (taPerson != null)
+                {
+                    taPersonId = taPerson.PersonId;
+                    taStaffId = taPerson.StaffId;
+                }
+
                 var tenantGrants = await _db.TenantMenuPermissions
                     .AsNoTracking()
                     .Where(tmp => tmp.TenantId == appUser.TenantId.Value && tmp.IsAllow)
@@ -250,9 +262,14 @@ namespace Accounts.Controllers
 
                 var byId       = allMenus.ToDictionary(m => m.Id);
                 var visibleIds = new HashSet<int>(tenantGrantedMenuIds);
+                var staffAttendanceMenuId = taStaffId.HasValue
+                    ? allMenus.FirstOrDefault(m => m.Route == "/attendance/staff")?.Id
+                    : null;
+                if (staffAttendanceMenuId.HasValue)
+                    visibleIds.Add(staffAttendanceMenuId.Value);
 
                 // Bubble up ancestors so tree structure is preserved
-                foreach (var menuId in tenantGrantedMenuIds)
+                foreach (var menuId in visibleIds.ToList())
                 {
                     var current = byId.GetValueOrDefault(menuId);
                     while (current?.ParentId != null && byId.TryGetValue(current.ParentId.Value, out var parent))
@@ -278,27 +295,15 @@ namespace Accounts.Controllers
                     if (grant.CanEdit) autoKeys.Add($"MENU_{grant.MenuId}_EDIT");
                     if (grant.CanDelete) autoKeys.Add($"MENU_{grant.MenuId}_DELETE");
                 }
+                if (staffAttendanceMenuId.HasValue)
+                {
+                    autoKeys.Add($"MENU_{staffAttendanceMenuId.Value}");
+                    autoKeys.Add($"MENU_{staffAttendanceMenuId.Value}_VIEW");
+                }
 
                 // Also pull any explicitly defined Feature rows linked to these menus
                 // — fetch all Features first, then filter in memory
                 var allGrantedKeys = autoKeys.ToList();
-
-                // Resolve the person record if it exists (for staffId)
-                var taPersonId  = (Guid?)null;
-                var taStaffId   = (Guid?)null;
-                var taPerson = await _db.Persons.AsNoTracking()
-                    .Where(p => p.IdentityUserId == identityUserId)
-                    .Select(p => new
-                    {
-                        p.PersonId,
-                        StaffId = p.Staff != null ? (Guid?)p.Staff.StaffId : null
-                    })
-                    .FirstOrDefaultAsync(ct);
-                if (taPerson != null)
-                {
-                    taPersonId = taPerson.PersonId;
-                    taStaffId  = taPerson.StaffId;
-                }
 
                 return Ok(new
                 {

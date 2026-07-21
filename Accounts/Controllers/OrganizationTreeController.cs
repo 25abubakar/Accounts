@@ -3,7 +3,6 @@ using Accounts.Data;
 using Accounts.Models;
 using Accounts.Services.Interfaces;
 using Microsoft.AspNetCore.Authorization;
-using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using System.Security.Claims;
@@ -18,16 +17,16 @@ namespace Accounts.Controllers
     {
         private readonly IOrganizationService         _service;
         private readonly ApplicationDbContext         _db;
-        private readonly UserManager<ApplicationUser> _userManager;
+        private readonly ITenantService               _tenantService;
 
         public OrganizationTreeController(
             IOrganizationService          service,
             ApplicationDbContext          db,
-            UserManager<ApplicationUser>  userManager)
+            ITenantService                tenantService)
         {
             _service     = service;
             _db          = db;
-            _userManager = userManager;
+            _tenantService = tenantService;
         }
 
         // ── Caller context helper ─────────────────────────────────────────────
@@ -41,31 +40,20 @@ namespace Accounts.Controllers
         private async Task<(bool isSuperAdmin, bool isTenantAdmin, int? tenantRootNodeId)>
             ResolveCallerContextAsync()
         {
-            var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
-            if (string.IsNullOrWhiteSpace(userId))
-                return (false, false, null);
-
-            var appUser = await _userManager.FindByIdAsync(userId);
-            if (appUser == null) return (false, false, null);
+            var isSuperAdmin = _tenantService.IsSuperAdmin;
+            var isOrganizationAdmin = _tenantService.IsTenantAdmin || User.IsInRole("CEO");
 
             int? rootNodeId = null;
 
-            if (appUser.IsTenantAdmin && appUser.TenantId.HasValue)
+            if (!isSuperAdmin && _tenantService.TenantId.HasValue)
             {
-                // Tenant Admin: root = the company/group node linked to their tenant
-                var tenant = await _db.Tenants.AsNoTracking()
-                    .FirstOrDefaultAsync(t => t.Id == appUser.TenantId.Value);
-                rootNodeId = tenant?.OrganizationTreeId;
-            }
-            else if (!appUser.IsSuperAdmin && appUser.TenantId.HasValue)
-            {
-                // Regular Staff: root = the company node belonging to their tenant
-                var tenant = await _db.Tenants.AsNoTracking()
-                    .FirstOrDefaultAsync(t => t.Id == appUser.TenantId.Value);
-                rootNodeId = tenant?.OrganizationTreeId;
+                rootNodeId = await _db.Tenants.AsNoTracking()
+                    .Where(tenant => tenant.Id == _tenantService.TenantId.Value)
+                    .Select(tenant => (int?)tenant.OrganizationTreeId)
+                    .FirstOrDefaultAsync();
             }
 
-            return (appUser.IsSuperAdmin, appUser.IsTenantAdmin, rootNodeId);
+            return (isSuperAdmin, isOrganizationAdmin, rootNodeId);
         }
 
         // ── Country Lookup — available to all authenticated users ─────────────

@@ -31,12 +31,9 @@ namespace Accounts.Controllers
             _userManager = userManager;
         }
 
-        private async Task<bool> CallerIsSuperAdminAsync()
-        {
-            var uid  = User.FindFirstValue(ClaimTypes.NameIdentifier);
-            var user = uid != null ? await _userManager.FindByIdAsync(uid) : null;
-            return user?.IsSuperAdmin == true;
-        }
+        private Task<bool> CallerIsSuperAdminAsync() => Task.FromResult(
+            User.IsInRole("SuperAdmin") ||
+            string.Equals(User.FindFirstValue(ITenantService.ClaimIsSuperAdmin), "true", StringComparison.OrdinalIgnoreCase));
 
         [HttpGet("profiles")]
         public async Task<IActionResult> GetProfiles()

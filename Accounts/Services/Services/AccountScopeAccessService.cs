@@ -29,7 +29,17 @@ namespace Accounts.Services.Services
                         .Where(p => p.IdentityUserId == u.Id)
                         .Select(p => p.Staff != null && p.Staff.Vacancy != null
                             ? (int?)p.Staff.Vacancy.OrganizationId : null)
-                        .FirstOrDefault()
+                        .FirstOrDefault(),
+                    TenantExists = u.TenantId.HasValue && _db.Tenants
+                        .Any(t => t.Id == u.TenantId.Value),
+                    TenantIsActive = u.TenantId.HasValue
+                        ? _db.Tenants.Where(t => t.Id == u.TenantId.Value)
+                            .Select(t => (bool?)t.IsActive).FirstOrDefault()
+                        : null,
+                    TenantOrganizationTreeId = u.TenantId.HasValue
+                        ? _db.Tenants.Where(t => t.Id == u.TenantId.Value)
+                            .Select(t => (int?)t.OrganizationTreeId).FirstOrDefault()
+                        : null
                 })
                 .SingleOrDefaultAsync(cancellationToken);
 
@@ -48,21 +58,32 @@ namespace Accounts.Services.Services
             if (!user.TenantId.HasValue)
                 return AccountScopeAccessResult.Denied("This account is not assigned to an active tenant.");
 
-            var tenant = await _db.Tenants.AsNoTracking()
-                .Where(t => t.Id == user.TenantId.Value)
-                .Select(t => new { t.IsActive, t.OrganizationTreeId, t.TenantName })
-                .SingleOrDefaultAsync(cancellationToken);
-
-            if (tenant == null || !tenant.IsActive)
+            if (!user.TenantExists || user.TenantIsActive != true ||
+                !user.TenantOrganizationTreeId.HasValue)
                 return AccountScopeAccessResult.Denied("Your tenant is currently disabled. Contact your administrator.");
 
-            // One bounded query avoids an N+1 walk through the parent hierarchy.
-            var nodes = await _db.OrganizationTree.AsNoTracking()
-                .Select(n => new { n.Id, n.ParentId, n.IsActive, n.Name, n.Label })
-                .ToListAsync(cancellationToken);
+            // Load only the two relevant ancestor chains on SQL Server. The
+            // previous request middleware copied the complete organization tree
+            // for every API call, which became progressively slower as tenants
+            // and departments were added.
+            var nodes = _db.Database.IsSqlServer()
+                ? await LoadRelevantSqlServerNodesAsync(
+                    user.TenantOrganizationTreeId.Value,
+                    user.EmployeeOrganizationId,
+                    cancellationToken)
+                : await _db.OrganizationTree.AsNoTracking()
+                    .Select(n => new OrganizationAccessNode
+                    {
+                        Id = n.Id,
+                        ParentId = n.ParentId,
+                        IsActive = n.IsActive,
+                        Name = n.Name,
+                        Label = n.Label
+                    })
+                    .ToListAsync(cancellationToken);
             var byId = nodes.ToDictionary(n => n.Id);
             var visited = new HashSet<int>();
-            var currentId = (int?)tenant.OrganizationTreeId;
+            var currentId = user.TenantOrganizationTreeId;
 
             while (currentId.HasValue && byId.TryGetValue(currentId.Value, out var node) && visited.Add(node.Id))
             {
@@ -86,6 +107,41 @@ namespace Accounts.Services.Services
             }
 
             return AccountScopeAccessResult.Allowed();
+        }
+
+        private async Task<List<OrganizationAccessNode>> LoadRelevantSqlServerNodesAsync(
+            int tenantOrganizationId,
+            int? employeeOrganizationId,
+            CancellationToken cancellationToken)
+        {
+            return await _db.Database.SqlQuery<OrganizationAccessNode>(
+                $"""
+                WITH Ancestors AS
+                (
+                    SELECT node.Id, node.ParentId, node.IsActive, node.Name, node.Label
+                    FROM dbo.OrganizationTree AS node
+                    WHERE node.Id = {tenantOrganizationId}
+                       OR node.Id = {employeeOrganizationId}
+
+                    UNION ALL
+
+                    SELECT parent.Id, parent.ParentId, parent.IsActive, parent.Name, parent.Label
+                    FROM dbo.OrganizationTree AS parent
+                    INNER JOIN Ancestors AS child ON child.ParentId = parent.Id
+                )
+                SELECT DISTINCT Id, ParentId, IsActive, Name, Label
+                FROM Ancestors
+                """)
+                .ToListAsync(cancellationToken);
+        }
+
+        private sealed class OrganizationAccessNode
+        {
+            public int Id { get; set; }
+            public int? ParentId { get; set; }
+            public bool IsActive { get; set; }
+            public string Name { get; set; } = string.Empty;
+            public string Label { get; set; } = string.Empty;
         }
     }
 }

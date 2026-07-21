@@ -1,4 +1,5 @@
 using Accounts.Data;
+using Accounts.Authorization;
 using Accounts.DTOs.CommCenter;
 using Accounts.Models;
 using Accounts.Services.Interfaces;
@@ -40,11 +41,11 @@ namespace Accounts.Controllers
             var idFromClaims = User.FindFirst(ClaimTypes.NameIdentifier)?.Value
                                ?? User.FindFirst("sub")?.Value;
 
-            if (!string.IsNullOrWhiteSpace(idFromClaims) &&
-                await _db.Users.AsNoTracking().AnyAsync(u => u.Id == idFromClaims))
-            {
+            // Authentication plus AccountScopeAccessMiddleware already validate
+            // this identity on every request, so re-querying AspNetUsers here
+            // added no protection and multiplied note-polling database calls.
+            if (!string.IsNullOrWhiteSpace(idFromClaims))
                 return idFromClaims;
-            }
 
             // Fallback 1: map by username claim
             var userName = User.FindFirst(ClaimTypes.Name)?.Value
@@ -83,15 +84,20 @@ namespace Accounts.Controllers
         /// </summary>
         private async Task<string?> GetCurrentStaffIdAsync()
         {
+            var staffIdClaim = User.FindFirstValue(AccountClaimTypes.StaffId);
+            if (Guid.TryParse(staffIdClaim, out var claimedStaffId))
+                return claimedStaffId.ToString();
+
             var identityUserId = await ResolveIdentityUserIdAsync();
             if (string.IsNullOrWhiteSpace(identityUserId)) return null;
 
-            var person = await _db.Persons
-                .AsNoTracking()
-                .Include(p => p.Staff)
-                .FirstOrDefaultAsync(p => p.IdentityUserId == identityUserId);
-
-            return person?.Staff?.StaffId.ToString();
+            var staffId = await _db.Persons.AsNoTracking()
+                .Where(person => person.IdentityUserId == identityUserId)
+                .Select(person => person.Staff != null
+                    ? (Guid?)person.Staff.StaffId
+                    : null)
+                .FirstOrDefaultAsync();
+            return staffId?.ToString();
         }
 
         /// <summary>

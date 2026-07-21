@@ -39,9 +39,13 @@ namespace Accounts.Data
         public IQueryable<ProcessStatusStyle> AttendanceStatuses =>
             ProcessStatusStyles.Where(x => x.Process.ProcessName == "Attendance");
         public DbSet<AttendanceRecord>         AttendanceRecords        => Set<AttendanceRecord>();
+        public DbSet<EmployeeTimingSchedule>   EmployeeTimingSchedules  => Set<EmployeeTimingSchedule>();
+        public DbSet<AttendanceMapRule>        AttendanceMapRules       => Set<AttendanceMapRule>();
+        public DbSet<AttendanceHolidayColorMap> AttendanceHolidayColorMaps => Set<AttendanceHolidayColorMap>();
         public DbSet<AttendanceEntryType>      AttendanceEntryTypes     => Set<AttendanceEntryType>();
         public DbSet<AttendanceWorkMode>       AttendanceWorkModes      => Set<AttendanceWorkMode>();
         public DbSet<AttendanceDailyReportRow> AttendanceDailyReportRows => Set<AttendanceDailyReportRow>();
+        public DbSet<AttendancePolicy> AttendancePolicies => Set<AttendancePolicy>();
         public DbSet<VacancyCounter>           VacancyCounters          => Set<VacancyCounter>();
         public DbSet<Menu>                     Menus                    => Set<Menu>();
         public DbSet<MenuPermission>           MenuPermissions          => Set<MenuPermission>();
@@ -120,6 +124,27 @@ namespace Accounts.Data
                     _tenantService.IsSuperAdmin ||
                     _tenantService.TenantId == null ||
                     a.TenantId == _tenantService.TenantId);
+
+            builder.Entity<EmployeeTimingSchedule>()
+                .HasQueryFilter(schedule =>
+                    _tenantService == null ||
+                    _tenantService.IsSuperAdmin ||
+                    _tenantService.TenantId == null ||
+                    schedule.TenantId == _tenantService.TenantId);
+
+            builder.Entity<AttendanceMapRule>()
+                .HasQueryFilter(rule =>
+                    _tenantService == null ||
+                    _tenantService.IsSuperAdmin ||
+                    _tenantService.TenantId == null ||
+                    rule.TenantId == _tenantService.TenantId);
+
+            builder.Entity<AttendanceHolidayColorMap>()
+                .HasQueryFilter(map =>
+                    _tenantService == null ||
+                    _tenantService.IsSuperAdmin ||
+                    _tenantService.TenantId == null ||
+                    map.TenantId == _tenantService.TenantId);
 
             builder.Entity<AppNote>()
                 .HasQueryFilter(n =>
@@ -430,11 +455,13 @@ namespace Accounts.Data
                 e.Property(x => x.Description).HasMaxLength(500);
                 e.Property(x => x.IsActive).HasDefaultValue(true);
                 e.Property(x => x.CreatedDate).HasDefaultValueSql("SYSUTCDATETIME()");
-                e.HasIndex(x => new { x.ProcessId, x.Code }).IsUnique();
-                e.HasIndex(x => new { x.ProcessId, x.StatusId, x.ColorStyleId }).IsUnique();
+                e.HasIndex(x => new { x.ProcessId, x.Code }).IsUnique().HasFilter("[TenantId] IS NULL");
+                e.HasIndex(x => new { x.TenantId, x.ProcessId, x.Code }).IsUnique().HasFilter("[TenantId] IS NOT NULL");
+                e.HasIndex(x => new { x.ProcessId, x.StatusId, x.ColorStyleId }).HasFilter("[TenantId] IS NULL");
                 e.HasOne(x => x.Process).WithMany(x => x.StatusStyles).HasForeignKey(x => x.ProcessId).OnDelete(DeleteBehavior.Restrict);
                 e.HasOne(x => x.Status).WithMany(x => x.ProcessStyles).HasForeignKey(x => x.StatusId).OnDelete(DeleteBehavior.Restrict);
                 e.HasOne(x => x.ColorStyle).WithMany(x => x.ProcessStatuses).HasForeignKey(x => x.ColorStyleId).OnDelete(DeleteBehavior.Restrict);
+                e.HasOne(x => x.Tenant).WithMany().HasForeignKey(x => x.TenantId).OnDelete(DeleteBehavior.Restrict);
             });
 
             builder.Entity<AttendanceRecord>(e =>
@@ -449,6 +476,50 @@ namespace Accounts.Data
                 e.HasOne(x => x.AttendanceStatus).WithMany().HasForeignKey(x => x.AttendanceStatusId).OnDelete(DeleteBehavior.Restrict);
                 e.HasOne(x => x.AttendanceEntryType).WithMany(x => x.Records).HasForeignKey(x => x.AttendanceEntryTypeId).OnDelete(DeleteBehavior.Restrict);
                 e.HasOne(x => x.AttendanceWorkMode).WithMany(x => x.Records).HasForeignKey(x => x.AttendanceWorkModeId).OnDelete(DeleteBehavior.Restrict);
+            });
+
+            builder.Entity<EmployeeTimingSchedule>(e =>
+            {
+                e.ToTable("EmployeeTimingSchedules", table => table.HasCheckConstraint(
+                    "CK_EmployeeTimingSchedules_RequiredWeekend",
+                    "(((DATEDIFF(day,'19000101',[ScheduleDate]) % 7 + 7) % 7) NOT IN (5,6)) OR " +
+                    "(((DATEDIFF(day,'19000101',[ScheduleDate]) % 7 + 7) % 7) = 5 AND [HolidayType] = 'DAY_OFF' AND [IsOn] = 0 AND [TimeFrom] IS NULL AND [TimeTo] IS NULL) OR " +
+                    "(((DATEDIFF(day,'19000101',[ScheduleDate]) % 7 + 7) % 7) = 6 AND [HolidayType] = 'HOLIDAY' AND [IsOn] = 0 AND [TimeFrom] IS NULL AND [TimeTo] IS NULL)"));
+                e.HasKey(x => x.Id);
+                e.Property(x => x.Id).ValueGeneratedOnAdd();
+                e.Property(x => x.HolidayType).HasMaxLength(30).IsRequired();
+                e.Property(x => x.TimeFrom).HasMaxLength(5);
+                e.Property(x => x.TimeTo).HasMaxLength(5);
+                e.Property(x => x.IsOn).HasDefaultValue(true);
+                e.Property(x => x.CreatedDate).HasDefaultValueSql("SYSUTCDATETIME()");
+                e.HasIndex(x => new { x.PersonId, x.ScheduleDate }).IsUnique();
+                e.HasIndex(x => new { x.TenantId, x.ScheduleDate });
+                e.HasOne(x => x.Person).WithMany().HasForeignKey(x => x.PersonId).OnDelete(DeleteBehavior.Restrict);
+                e.HasOne<Tenant>().WithMany().HasForeignKey(x => x.TenantId).OnDelete(DeleteBehavior.Restrict);
+            });
+
+            builder.Entity<AttendanceMapRule>(e =>
+            {
+                e.HasKey(x => x.Id);
+                e.Property(x => x.ShiftCode).HasMaxLength(100).IsRequired();
+                e.Property(x => x.TimeFrom).HasMaxLength(5).IsRequired();
+                e.Property(x => x.TimeTo).HasMaxLength(5).IsRequired();
+                e.Property(x => x.CreatedDate).HasDefaultValueSql("SYSUTCDATETIME()");
+                e.HasIndex(x => new { x.TenantId, x.StaffId }).IsUnique();
+                e.HasIndex(x => new { x.TenantId, x.AttendanceEntryTypeId });
+                e.HasOne(x => x.Staff).WithMany().HasForeignKey(x => x.StaffId).OnDelete(DeleteBehavior.Restrict);
+                e.HasOne(x => x.AttendanceEntryType).WithMany().HasForeignKey(x => x.AttendanceEntryTypeId).OnDelete(DeleteBehavior.Restrict);
+                e.HasOne<Tenant>().WithMany().HasForeignKey(x => x.TenantId).OnDelete(DeleteBehavior.Restrict);
+            });
+
+            builder.Entity<AttendanceHolidayColorMap>(e =>
+            {
+                e.HasKey(x => x.Id);
+                e.Property(x => x.HolidayTypeCode).HasMaxLength(100).IsRequired();
+                e.Property(x => x.ColorCode).HasMaxLength(7).IsRequired();
+                e.Property(x => x.CreatedDate).HasDefaultValueSql("SYSUTCDATETIME()");
+                e.HasIndex(x => new { x.TenantId, x.HolidayTypeCode }).IsUnique();
+                e.HasOne(x => x.Tenant).WithMany().HasForeignKey(x => x.TenantId).OnDelete(DeleteBehavior.Restrict);
             });
 
             builder.Entity<AttendanceEntryType>(e =>
@@ -471,6 +542,21 @@ namespace Accounts.Data
             {
                 e.HasNoKey();
                 e.ToView(null);
+            });
+
+            builder.Entity<AttendancePolicy>(e =>
+            {
+                e.ToTable("AttendancePolicies"); e.HasKey(x => x.Id);
+                e.Property(x => x.PolicyName).HasMaxLength(100).IsRequired();
+                e.Property(x => x.TimeZoneId).HasMaxLength(100).IsRequired();
+                e.HasIndex(x => x.TenantId).IsUnique().HasFilter("[IsActive] = 1");
+                e.HasOne(x => x.Tenant).WithMany().HasForeignKey(x => x.TenantId).OnDelete(DeleteBehavior.Restrict);
+                e.HasOne(x => x.PresentStatus).WithMany().HasForeignKey(x => x.PresentStatusId).OnDelete(DeleteBehavior.Restrict);
+                e.HasOne(x => x.LateStatus).WithMany().HasForeignKey(x => x.LateStatusId).OnDelete(DeleteBehavior.Restrict);
+                e.HasOne(x => x.CompletedLateStatus).WithMany().HasForeignKey(x => x.CompletedLateStatusId).OnDelete(DeleteBehavior.Restrict);
+                e.HasOne(x => x.ShortLeaveStatus).WithMany().HasForeignKey(x => x.ShortLeaveStatusId).OnDelete(DeleteBehavior.Restrict);
+                e.HasOne(x => x.EarlyDepartureStatus).WithMany().HasForeignKey(x => x.EarlyDepartureStatusId).OnDelete(DeleteBehavior.Restrict);
+                e.HasOne(x => x.AbsentStatus).WithMany().HasForeignKey(x => x.AbsentStatusId).OnDelete(DeleteBehavior.Restrict);
             });
 
             builder.Entity<VacancyCounter>(e =>

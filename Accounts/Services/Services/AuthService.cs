@@ -1,6 +1,7 @@
 using Accounts.Data;
 using Accounts.Models;
 using Accounts.Services.Interfaces;
+using Accounts.Authorization;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 using System.Security.Claims;
@@ -9,6 +10,7 @@ namespace Accounts.Services.Services
 {
     public class AuthService : IAuthService
     {
+        private const string OrganizationCeoRole = "CEO";
         private readonly UserManager<ApplicationUser>  _userManager;
         private readonly SignInManager<ApplicationUser> _signInManager;
         private readonly RoleManager<IdentityRole>      _roleManager;
@@ -97,7 +99,6 @@ namespace Accounts.Services.Services
                 });
 
             // Step 2: Ensure tenant claims are up-to-date before signing in
-            await StampTenantClaimsAsync(user);
 
             // Step 3: Sign in — cookie will carry the claims stamped above
             var result = await _signInManager.CheckPasswordSignInAsync(
@@ -113,6 +114,7 @@ namespace Accounts.Services.Services
                         Message = access.Message
                     });
 
+                await SyncOrganizationCeoRoleAsync(user);
                 await StampTenantClaimsAsync(user);
                 await _signInManager.SignInAsync(user, dto.RememberMe);
                 var roles = await _userManager.GetRolesAsync(user);
@@ -125,7 +127,7 @@ namespace Accounts.Services.Services
                     Roles        = roles,
                     TenantId     = user.TenantId,
                     IsSuperAdmin = user.IsSuperAdmin,
-                    IsTenantAdmin = user.IsTenantAdmin
+                    IsTenantAdmin = user.IsTenantAdmin || roles.Contains(OrganizationCeoRole)
                 });
             }
 
@@ -222,6 +224,40 @@ namespace Accounts.Services.Services
         /// Called on registration, login, and role assignment to keep claims
         /// in sync with the ApplicationUser flags.
         /// </summary>
+        private async Task SyncOrganizationCeoRoleAsync(ApplicationUser user)
+        {
+            if (!user.TenantId.HasValue || user.IsSuperAdmin) return;
+
+            var tenantId = user.TenantId.Value;
+            var titles = _db.Persons.IgnoreQueryFilters()
+                .AsNoTracking()
+                .Where(person =>
+                    person.IdentityUserId == user.Id &&
+                    person.TenantId == tenantId &&
+                    person.IsActive &&
+                    person.Staff != null &&
+                    person.Staff.Vacancy != null)
+                .Select(person => person.Staff!.Vacancy!.JobTitleNav != null
+                    ? person.Staff.Vacancy.JobTitleNav.TitleName
+                    : person.Staff.Vacancy.JobTitle);
+            var isCeo = await titles.AnyAsync(title =>
+                title != null &&
+                (title.Trim().ToUpper() == "CEO" ||
+                 title.Trim().ToUpper() == "CHIEF EXECUTIVE OFFICER"));
+            var hasCeoRole = await _userManager.IsInRoleAsync(user, OrganizationCeoRole);
+
+            if (isCeo && !hasCeoRole)
+            {
+                if (!await _roleManager.RoleExistsAsync(OrganizationCeoRole))
+                    await _roleManager.CreateAsync(new IdentityRole(OrganizationCeoRole));
+                await _userManager.AddToRoleAsync(user, OrganizationCeoRole);
+            }
+            else if (!isCeo && hasCeoRole)
+            {
+                await _userManager.RemoveFromRoleAsync(user, OrganizationCeoRole);
+            }
+        }
+
         private async Task StampTenantClaimsAsync(ApplicationUser user)
         {
             // Remove stale tenant claims before re-stamping
@@ -230,7 +266,8 @@ namespace Accounts.Services.Services
             {
                 ITenantService.ClaimTenantId,
                 ITenantService.ClaimIsSuperAdmin,
-                ITenantService.ClaimIsTenantAdmin
+                ITenantService.ClaimIsTenantAdmin,
+                AccountClaimTypes.StaffId
             };
 
             var stale = existingClaims
@@ -249,6 +286,14 @@ namespace Accounts.Services.Services
 
             if (user.TenantId.HasValue)
                 fresh.Add(new Claim(ITenantService.ClaimTenantId, user.TenantId.Value.ToString()));
+
+            var staffId = await _db.Persons.IgnoreQueryFilters()
+                .AsNoTracking()
+                .Where(person => person.IdentityUserId == user.Id)
+                .Select(person => person.Staff != null ? (Guid?)person.Staff.StaffId : null)
+                .FirstOrDefaultAsync();
+            if (staffId.HasValue)
+                fresh.Add(new Claim(AccountClaimTypes.StaffId, staffId.Value.ToString()));
 
             await _userManager.AddClaimsAsync(user, fresh);
         }

@@ -18,6 +18,7 @@ namespace Accounts.Data
             "SuperAdmin",
             "TenantAdmin",
             "Admin",
+            "CEO",
             "Manager",
             "Developer",
             "AssistantManager",

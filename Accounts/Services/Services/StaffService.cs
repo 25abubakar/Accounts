@@ -75,6 +75,21 @@ namespace Accounts.Services.Services
             };
 
             _db.StaffVacancies.Add(staff);
+            var staffAttendanceMenuId = await _db.Menus
+                .Where(menu => menu.IsActive && menu.Route == "/attendance/staff")
+                .Select(menu => (int?)menu.Id)
+                .FirstOrDefaultAsync();
+            if (staffAttendanceMenuId.HasValue)
+            {
+                _db.StaffMenuAccesses.Add(new StaffMenuAccess
+                {
+                    StaffId = staff.StaffId,
+                    MenuId = staffAttendanceMenuId.Value,
+                    IsAllow = true,
+                    GrantedBy = "System: Staff Attendance",
+                    GrantedDate = DateTime.UtcNow
+                });
+            }
             vacancy.IsFilled = true;
             await _db.SaveChangesAsync();
 
@@ -180,6 +195,7 @@ namespace Accounts.Services.Services
             var branch = Find("Branch", "Office");
             var company = Find("Company");
             var country = Find("Country");
+            var group = Find("Group");
 
             return new StaffDto
             {
@@ -198,6 +214,9 @@ namespace Accounts.Services.Services
                 BranchName  = branch?.Name,
                 CompanyName = company?.Name,
                 CountryName = country?.Name,
+                GroupName   = group?.Name,
+                ShiftStartTime = s.Person?.ShiftStartTime,
+                ShiftEndTime   = s.Person?.ShiftEndTime,
                 JoiningDate = DateTime.UtcNow
             };
         }

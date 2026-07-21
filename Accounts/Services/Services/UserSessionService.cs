@@ -31,6 +31,8 @@ namespace Accounts.Services.Services
         public async Task<UserSessionDto> GetSessionAsync(
             string identityUserId,
             bool isFullAccess,
+            bool isOrganizationCeo,
+            bool includeNavigation,
             CancellationToken cancellationToken = default)
         {
             // ── Resolve ApplicationUser to get tenant flags ───────────────────
@@ -40,9 +42,11 @@ namespace Accounts.Services.Services
             {
                 IsFullAccess   = isFullAccess,
                 IdentityUserId = identityUserId,
+                DisplayName    = appUser?.UserName ?? appUser?.Email,
+                Email          = appUser?.Email,
                 TenantId       = appUser?.TenantId,
                 IsSuperAdmin   = appUser?.IsSuperAdmin ?? false,
-                IsTenantAdmin  = appUser?.IsTenantAdmin ?? false
+                IsTenantAdmin  = (appUser?.IsTenantAdmin ?? false) || isOrganizationCeo
             };
 
             if (appUser?.TenantId is int tenantId)
@@ -70,6 +74,9 @@ namespace Accounts.Services.Services
             // They must NOT see HR/Staff/Notes operational menus.
             if (session.IsSuperAdmin)
             {
+                if (!includeNavigation)
+                    return session;
+
                 // Load only menus whose routes belong to the SuperAdmin scope
                 var allMenus = await _db.Menus.AsNoTracking()
                     .Where(m => m.IsActive)
@@ -108,15 +115,15 @@ namespace Accounts.Services.Services
             // ── Legacy isFullAccess path (Admin role — not Super Admin) ───────
             if (isFullAccess)
             {
-                session.Sidebar     = await _rbac.GetFilteredSidebarAsync(Guid.Empty);
-                session.Permissions = await _db.Features.AsNoTracking()
-                    .Select(f => f.FeatureKey).ToListAsync(cancellationToken);
+                if (includeNavigation)
+                {
+                    session.Sidebar = await _rbac.GetFilteredSidebarAsync(Guid.Empty);
+                    session.Permissions = await _db.Features.AsNoTracking()
+                        .Select(f => f.FeatureKey).ToListAsync(cancellationToken);
+                }
 
-                var staffForAdmin = await _db.Persons.AsNoTracking()
-                    .Include(p => p.Staff)
-                    .FirstOrDefaultAsync(p => p.IdentityUserId == identityUserId, cancellationToken);
-                session.StaffId  = staffForAdmin?.Staff?.StaffId;
-                session.PersonId = staffForAdmin?.PersonId;
+                var staffForAdmin = await GetPersonInfoAsync(identityUserId, cancellationToken);
+                ApplyPersonInfo(session, staffForAdmin);
 
                 var adminStaffId = session.StaffId?.ToString() ?? identityUserId;
                 session.LoginInstructions = await _notes.GetLoginInstructionsAsync(
@@ -126,9 +133,7 @@ namespace Accounts.Services.Services
             }
 
             // ── Regular staff / tenant path ───────────────────────────────────
-            var person = await _db.Persons.AsNoTracking()
-                .Include(p => p.Staff)
-                .FirstOrDefaultAsync(p => p.IdentityUserId == identityUserId, cancellationToken);
+            var person = await GetPersonInfoAsync(identityUserId, cancellationToken);
 
             if (person == null)
             {
@@ -137,25 +142,21 @@ namespace Accounts.Services.Services
             }
             else
             {
-                session.PersonId = person.PersonId;
-                session.StaffId  = person.Staff?.StaffId;
+                ApplyPersonInfo(session, person);
 
-                var hasDirectGrants = await _personAccess.HasPersonGrantsAsync(person.PersonId, cancellationToken);
-
-                if (hasDirectGrants)
+                if (includeNavigation)
                 {
-                    session.Sidebar     = await _personAccess.GetGrantedSidebarAsync(person.PersonId, cancellationToken);
-                    session.Permissions = (await _personAccess.GetGrantedFeatureKeysAsync(person.PersonId, cancellationToken)).ToList();
-                }
-                else if (person.Staff != null)
-                {
-                    session.Sidebar     = await _rbac.GetFilteredSidebarAsync(person.Staff.StaffId);
-                    session.Permissions = (await _rbac.GetEffectivePermissionsAsync(person.Staff.StaffId)).ToList();
-                }
-                else
-                {
-                    session.Sidebar     = new List<object>();
-                    session.Permissions = new List<string>();
+                    var hasDirectGrants = await _personAccess.HasPersonGrantsAsync(person.PersonId, cancellationToken);
+                    if (hasDirectGrants)
+                    {
+                        session.Sidebar = await _personAccess.GetGrantedSidebarAsync(person.PersonId, cancellationToken);
+                        session.Permissions = (await _personAccess.GetGrantedFeatureKeysAsync(person.PersonId, cancellationToken)).ToList();
+                    }
+                    else if (person.StaffId.HasValue)
+                    {
+                        session.Sidebar = await _rbac.GetFilteredSidebarAsync(person.StaffId.Value);
+                        session.Permissions = (await _rbac.GetEffectivePermissionsAsync(person.StaffId.Value)).ToList();
+                    }
                 }
             }
 
@@ -168,6 +169,61 @@ namespace Accounts.Services.Services
         }
 
         // ── Sidebar tree builder (same as RbacService.BuildFullTree) ─────────
+        private Task<SessionPersonInfo?> GetPersonInfoAsync(
+            string identityUserId,
+            CancellationToken cancellationToken) =>
+            _db.Persons.AsNoTracking()
+                .Where(person => person.IdentityUserId == identityUserId)
+                .Select(person => new SessionPersonInfo
+                {
+                    PersonId = person.PersonId,
+                    FullName = person.FullName,
+                    Email = person.Email,
+                    ProfilePhotoUrl = person.ProfilePhotoUrl,
+                    StaffId = person.Staff != null ? (Guid?)person.Staff.StaffId : null,
+                    StaffLoginId = person.Staff != null
+                        ? (person.Staff.LoginId ??
+                           (person.Staff.Vacancy != null ? person.Staff.Vacancy.VacancyCode : null))
+                        : null,
+                    JobTitle = person.Staff != null && person.Staff.Vacancy != null
+                        ? (person.Staff.Vacancy.JobTitleNav != null
+                            ? person.Staff.Vacancy.JobTitleNav.TitleName
+                            : person.Staff.Vacancy.JobTitle)
+                        : null,
+                    Department = person.Staff != null && person.Staff.Vacancy != null
+                        ? (person.Staff.Vacancy.Department ??
+                           (person.Staff.Vacancy.Organization != null
+                               ? person.Staff.Vacancy.Organization.Name
+                               : null))
+                        : null
+                })
+                .FirstOrDefaultAsync(cancellationToken);
+
+        private static void ApplyPersonInfo(UserSessionDto session, SessionPersonInfo? person)
+        {
+            if (person == null) return;
+            session.PersonId = person.PersonId;
+            session.StaffId = person.StaffId;
+            session.DisplayName = person.FullName;
+            session.Email = person.Email ?? session.Email;
+            session.StaffLoginId = person.StaffLoginId;
+            session.ProfilePhotoUrl = person.ProfilePhotoUrl;
+            session.JobTitle = person.JobTitle;
+            session.Department = person.Department;
+        }
+
+        private sealed class SessionPersonInfo
+        {
+            public Guid PersonId { get; set; }
+            public Guid? StaffId { get; set; }
+            public string FullName { get; set; } = string.Empty;
+            public string? Email { get; set; }
+            public string? StaffLoginId { get; set; }
+            public string? ProfilePhotoUrl { get; set; }
+            public string? JobTitle { get; set; }
+            public string? Department { get; set; }
+        }
+
         private static List<object> BuildFullTree(int? parentId, ILookup<int?, Models.Menu> lookup)
         {
             return lookup[parentId].Select(menu => (object)new

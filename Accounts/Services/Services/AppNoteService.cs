@@ -135,7 +135,7 @@ namespace Accounts.Services.Services
                 .Where(n => n.IsPublished && n.IsActive && !n.IsDeleted)
                 .Where(n => n.StartDateUtc == null || n.StartDateUtc <= now)
                 .Where(n => n.EndDateUtc == null || n.EndDateUtc >= now)
-                .ToListAsync(CancellationToken.None);
+                .ToListAsync(ct);
 
             // Step 2: apply privacy rules in memory
             var notes = candidates.Where(n =>
@@ -212,11 +212,11 @@ namespace Accounts.Services.Services
             // Step 3: load per-staff states
             var states = await _db.AppNoteUserStates
                 .AsNoTracking()
-                .Where(s => noteIds.Contains(s.NoteId))
-                .ToListAsync(CancellationToken.None);
+                .Where(s => noteIds.Contains(s.NoteId) &&
+                            userIdentifiers.Contains(s.StaffId.ToLower()))
+                .ToListAsync(ct);
 
             var stateMap = states
-                .Where(s => userIdentifiers.Contains((s.StaffId ?? "").Trim().ToLower()))
                 .ToDictionary(s => s.NoteId);
 
             // Step 4: exclude dismissed, map to DTOs
@@ -237,7 +237,7 @@ namespace Accounts.Services.Services
             var note = await _db.AppNotes
                 .AsNoTracking()
                 .Include(n => n.Targets)
-                .FirstOrDefaultAsync(n => n.NoteId == noteId && !n.IsDeleted, CancellationToken.None)
+                .FirstOrDefaultAsync(n => n.NoteId == noteId && !n.IsDeleted, ct)
                 ?? throw new KeyNotFoundException($"Note {noteId} not found.");
 
             if (note.SourceTypeCode == "USER" &&

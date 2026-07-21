@@ -14,6 +14,8 @@ public sealed class AttendanceDailyReportRow
     public string? StatusName { get; set; }
     public string? StatusCode { get; set; }
     public string? StatusColorCode { get; set; }
+    public string? StatusFontColor { get; set; }
+    public string? StatusFontSize { get; set; }
     public int? AttendanceEntryTypeId { get; set; }
     public string? AttendanceEntryType { get; set; }
     public int? AttendanceWorkModeId { get; set; }

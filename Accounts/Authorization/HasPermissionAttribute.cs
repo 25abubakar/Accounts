@@ -76,7 +76,7 @@ namespace Accounts.Authorization
 
             // ── 2. SuperAdmin / Admin / TenantAdmin bypasses all permission checks ──
             // TenantAdmin access is controlled by TenantMenuPermissions, not RBAC
-            if (user.IsInRole("SuperAdmin") || user.IsInRole("Admin") || user.IsInRole("TenantAdmin"))
+            if (user.IsInRole("SuperAdmin") || user.IsInRole("Admin") || user.IsInRole("CEO") || user.IsInRole("TenantAdmin"))
                 return;
 
             // ── 3. Get IdentityUser.Id from claims ────────────────────────────

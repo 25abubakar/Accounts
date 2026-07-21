@@ -2,7 +2,6 @@ using Accounts.Data;
 using Accounts.Models;
 using Accounts.Services.Interfaces;
 using Microsoft.AspNetCore.Authorization;
-using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using System.Security.Claims;
@@ -22,24 +21,18 @@ namespace Accounts.Controllers
     {
         private readonly IStaffService               _service;
         private readonly ApplicationDbContext        _db;
-        private readonly UserManager<ApplicationUser> _userManager;
 
         public StaffController(
             IStaffService               service,
-            ApplicationDbContext        db,
-            UserManager<ApplicationUser> userManager)
+            ApplicationDbContext        db)
         {
             _service     = service;
             _db          = db;
-            _userManager = userManager;
         }
 
-        private async Task<bool> CallerIsSuperAdminAsync()
-        {
-            var uid  = User.FindFirstValue(ClaimTypes.NameIdentifier);
-            var user = uid != null ? await _userManager.FindByIdAsync(uid) : null;
-            return user?.IsSuperAdmin == true;
-        }
+        private Task<bool> CallerIsSuperAdminAsync() => Task.FromResult(
+            User.IsInRole("SuperAdmin") ||
+            string.Equals(User.FindFirstValue(ITenantService.ClaimIsSuperAdmin), "true", StringComparison.OrdinalIgnoreCase));
 
         [HttpGet]
         public async Task<IActionResult> GetAll()
@@ -117,6 +110,7 @@ namespace Accounts.Controllers
             return Ok(new
             {
                 staffId     = staff.StaffId,
+                loginId     = staff.LoginId ?? staff.Vacancy?.VacancyCode,
                 fullName    = staff.Person?.FullName ?? "-",
                 email       = staff.Person?.Email,
                 phone       = staff.Person?.Phone,

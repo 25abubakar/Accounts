@@ -10,6 +10,8 @@ namespace Accounts.Services.Interfaces
         Task<UserSessionDto> GetSessionAsync(
             string identityUserId,
             bool isFullAccess,
+            bool isOrganizationCeo,
+            bool includeNavigation,
             CancellationToken cancellationToken = default);
     }
 }

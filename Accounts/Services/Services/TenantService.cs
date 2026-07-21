@@ -49,7 +49,8 @@ namespace Accounts.Services.Services
             get
             {
                 var claim = User?.FindFirstValue(ITenantService.ClaimIsTenantAdmin);
-                return string.Equals(claim, "true", StringComparison.OrdinalIgnoreCase);
+                return string.Equals(claim, "true", StringComparison.OrdinalIgnoreCase) ||
+                    User?.IsInRole("CEO") == true;
             }
         }
 
