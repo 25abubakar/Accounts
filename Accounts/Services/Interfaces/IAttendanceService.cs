@@ -10,10 +10,10 @@ public interface IAttendanceService
     Task<MyAttendanceTodayDto> CheckOutAsync(string identityUserId, CancellationToken cancellationToken = default);
     Task<IReadOnlyList<AttendanceReportStaffDto>> GetReportStaffAsync(int year, int month, CancellationToken cancellationToken = default);
     Task<IReadOnlyList<AttendanceReportStaffDto>> GetTimingChartStaffAsync(string identityUserId, bool organizationWide, CancellationToken cancellationToken = default);
-    Task<TimingChartScheduleMonthDto> GetTimingChartSchedulesAsync(string identityUserId, bool organizationWide, Guid personId, int year, int month, CancellationToken cancellationToken = default);
+    Task<TimingChartScheduleMonthDto> GetTimingChartSchedulesAsync(string identityUserId, bool organizationWide, Guid staffId, int year, int month, CancellationToken cancellationToken = default);
     Task<TimingChartStaffScheduleMonthDto> GetTimingChartStaffScheduleAsync(string identityUserId, bool organizationWide, int year, int month, CancellationToken cancellationToken = default);
-    Task<TimingChartScheduleRowDto> SaveTimingChartScheduleAsync(string identityUserId, bool organizationWide, Guid personId, DateOnly holidayDate, SaveTimingChartScheduleDto dto, CancellationToken cancellationToken = default);
-    Task<TimingChartScheduleRangeResultDto> SaveTimingChartScheduleRangeAsync(string identityUserId, bool organizationWide, Guid personId, SaveTimingChartScheduleRangeDto dto, CancellationToken cancellationToken = default);
+    Task<TimingChartScheduleRowDto> SaveTimingChartScheduleAsync(string identityUserId, bool organizationWide, Guid staffId, DateOnly holidayDate, SaveTimingChartScheduleDto dto, CancellationToken cancellationToken = default);
+    Task<TimingChartScheduleRangeResultDto> SaveTimingChartScheduleRangeAsync(string identityUserId, bool organizationWide, Guid staffId, SaveTimingChartScheduleRangeDto dto, CancellationToken cancellationToken = default);
     Task<MonthlyAttendanceReportDto> GetMonthlyReportAsync(string identityUserId, bool canViewOthers, Guid? requestedPersonId, int year, int month, CancellationToken cancellationToken = default);
     Task<DailyAttendanceReportDto> GetDailyReportAsync(string identityUserId, bool organizationWide, DateOnly dateFrom, DateOnly dateTo, CancellationToken cancellationToken = default);
     Task<DailyAttendanceReportDto> GetRemoteAttendanceReportAsync(string identityUserId, bool organizationWide, DateOnly dateFrom, DateOnly dateTo, CancellationToken cancellationToken = default);

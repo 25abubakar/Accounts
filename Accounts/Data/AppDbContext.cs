@@ -40,8 +40,11 @@ namespace Accounts.Data
             ProcessStatusStyles.Where(x => x.Process.ProcessName == "Attendance");
         public DbSet<AttendanceRecord>         AttendanceRecords        => Set<AttendanceRecord>();
         public DbSet<EmployeeTimingSchedule>   EmployeeTimingSchedules  => Set<EmployeeTimingSchedule>();
+        public DbSet<StaffDirectoryRow>        StaffDirectoryRows       => Set<StaffDirectoryRow>();
         public DbSet<AttendanceMapRule>        AttendanceMapRules       => Set<AttendanceMapRule>();
+        public DbSet<AttendanceMapRuleReadRow> AttendanceMapRuleReadRows => Set<AttendanceMapRuleReadRow>();
         public DbSet<AttendanceHolidayColorMap> AttendanceHolidayColorMaps => Set<AttendanceHolidayColorMap>();
+        public DbSet<AttendanceHolidayColorMapReadRow> AttendanceHolidayColorMapReadRows => Set<AttendanceHolidayColorMapReadRow>();
         public DbSet<AttendanceEntryType>      AttendanceEntryTypes     => Set<AttendanceEntryType>();
         public DbSet<AttendanceWorkMode>       AttendanceWorkModes      => Set<AttendanceWorkMode>();
         public DbSet<AttendanceDailyReportRow> AttendanceDailyReportRows => Set<AttendanceDailyReportRow>();
@@ -127,6 +130,13 @@ namespace Accounts.Data
                     _tenantService.TenantId == null ||
                     s.TenantId == _tenantService.TenantId);
 
+            builder.Entity<StaffDirectoryRow>()
+                .HasQueryFilter(s =>
+                    _tenantService == null ||
+                    _tenantService.IsSuperAdmin ||
+                    _tenantService.TenantId == null ||
+                    s.TenantId == _tenantService.TenantId);
+
             builder.Entity<StaffAccessGroup>()
                 .HasQueryFilter(g =>
                     _tenantService == null ||
@@ -187,7 +197,21 @@ namespace Accounts.Data
                     _tenantService.TenantId == null ||
                     rule.TenantId == _tenantService.TenantId);
 
+            builder.Entity<AttendanceMapRuleReadRow>()
+                .HasQueryFilter(rule =>
+                    _tenantService == null ||
+                    _tenantService.IsSuperAdmin ||
+                    _tenantService.TenantId == null ||
+                    rule.TenantId == _tenantService.TenantId);
+
             builder.Entity<AttendanceHolidayColorMap>()
+                .HasQueryFilter(map =>
+                    _tenantService == null ||
+                    _tenantService.IsSuperAdmin ||
+                    _tenantService.TenantId == null ||
+                    map.TenantId == _tenantService.TenantId);
+
+            builder.Entity<AttendanceHolidayColorMapReadRow>()
                 .HasQueryFilter(map =>
                     _tenantService == null ||
                     _tenantService.IsSuperAdmin ||
@@ -567,23 +591,38 @@ namespace Accounts.Data
                 e.HasOne(x => x.AttendanceWorkMode).WithMany(x => x.Records).HasForeignKey(x => x.AttendanceWorkModeId).OnDelete(DeleteBehavior.Restrict);
             });
 
+            builder.Entity<StaffDirectoryRow>(e =>
+            {
+                e.HasNoKey();
+                e.ToView("vw_StaffDirectory", "dbo");
+                e.Property(x => x.EmployeeId).HasMaxLength(50);
+                e.Property(x => x.FullName).HasMaxLength(200);
+                e.Property(x => x.Department).HasMaxLength(200);
+                e.Property(x => x.Designation).HasMaxLength(150);
+                e.Property(x => x.PhotoUrl).HasMaxLength(1000);
+                e.Property(x => x.ShiftStartTime).HasMaxLength(5);
+                e.Property(x => x.ShiftEndTime).HasMaxLength(5);
+                e.Property(x => x.TimeZoneId).HasMaxLength(100);
+            });
+
             builder.Entity<EmployeeTimingSchedule>(e =>
             {
                 e.ToTable("EmployeeTimingSchedules", table => table.HasCheckConstraint(
                     "CK_EmployeeTimingSchedules_RequiredWeekend",
                     "(((DATEDIFF(day,'19000101',[ScheduleDate]) % 7 + 7) % 7) NOT IN (5,6)) OR " +
-                    "(((DATEDIFF(day,'19000101',[ScheduleDate]) % 7 + 7) % 7) = 5 AND [HolidayType] = 'DAY_OFF' AND [IsOn] = 0 AND [TimeFrom] IS NULL AND [TimeTo] IS NULL) OR " +
-                    "(((DATEDIFF(day,'19000101',[ScheduleDate]) % 7 + 7) % 7) = 6 AND [HolidayType] = 'HOLIDAY' AND [IsOn] = 0 AND [TimeFrom] IS NULL AND [TimeTo] IS NULL)"));
+                    "(((DATEDIFF(day,'19000101',[ScheduleDate]) % 7 + 7) % 7) IN (5,6) AND [IsOn] = 0 AND [TimeFrom] IS NULL AND [TimeTo] IS NULL AND [WorkingMinutes] = 0)"));
                 e.HasKey(x => x.Id);
                 e.Property(x => x.Id).ValueGeneratedOnAdd();
-                e.Property(x => x.HolidayType).HasMaxLength(30).IsRequired();
                 e.Property(x => x.TimeFrom).HasMaxLength(5);
                 e.Property(x => x.TimeTo).HasMaxLength(5);
                 e.Property(x => x.IsOn).HasDefaultValue(true);
+                e.Property(x => x.WorkingMinutes).HasDefaultValue(0);
                 e.Property(x => x.CreatedDate).HasDefaultValueSql("SYSUTCDATETIME()");
-                e.HasIndex(x => new { x.PersonId, x.ScheduleDate }).IsUnique();
+                e.HasIndex(x => new { x.StaffId, x.ScheduleDate }).IsUnique();
+                e.HasIndex(x => new { x.StaffId, x.ScheduleYear, x.ScheduleMonth });
                 e.HasIndex(x => new { x.TenantId, x.ScheduleDate });
-                e.HasOne(x => x.Person).WithMany().HasForeignKey(x => x.PersonId).OnDelete(DeleteBehavior.Restrict);
+                e.HasOne(x => x.Staff).WithMany().HasForeignKey(x => x.StaffId).OnDelete(DeleteBehavior.Restrict);
+                e.HasOne(x => x.HolidayType).WithMany().HasForeignKey(x => x.HolidayTypeId).OnDelete(DeleteBehavior.Restrict);
                 e.HasOne<Tenant>().WithMany().HasForeignKey(x => x.TenantId).OnDelete(DeleteBehavior.Restrict);
             });
 
@@ -601,6 +640,18 @@ namespace Accounts.Data
                 e.HasOne<Tenant>().WithMany().HasForeignKey(x => x.TenantId).OnDelete(DeleteBehavior.Restrict);
             });
 
+            builder.Entity<AttendanceMapRuleReadRow>(e =>
+            {
+                e.HasNoKey();
+                e.ToView("vw_AttendanceMapRules", "dbo");
+                e.Property(x => x.AttendanceTypeCode).HasMaxLength(50);
+                e.Property(x => x.AttendanceTypeName).HasMaxLength(100);
+                e.Property(x => x.ShiftCode).HasMaxLength(100);
+                e.Property(x => x.ShiftName).HasMaxLength(200);
+                e.Property(x => x.TimeFrom).HasMaxLength(5);
+                e.Property(x => x.TimeTo).HasMaxLength(5);
+            });
+
             builder.Entity<AttendanceHolidayColorMap>(e =>
             {
                 e.HasKey(x => x.Id);
@@ -609,6 +660,15 @@ namespace Accounts.Data
                 e.Property(x => x.CreatedDate).HasDefaultValueSql("SYSUTCDATETIME()");
                 e.HasIndex(x => new { x.TenantId, x.HolidayTypeCode }).IsUnique();
                 e.HasOne(x => x.Tenant).WithMany().HasForeignKey(x => x.TenantId).OnDelete(DeleteBehavior.Restrict);
+            });
+
+            builder.Entity<AttendanceHolidayColorMapReadRow>(e =>
+            {
+                e.HasNoKey();
+                e.ToView("vw_AttendanceHolidayColorMaps", "dbo");
+                e.Property(x => x.HolidayTypeCode).HasMaxLength(100);
+                e.Property(x => x.HolidayTypeName).HasMaxLength(200);
+                e.Property(x => x.ColorCode).HasMaxLength(7);
             });
 
             builder.Entity<AttendanceEntryType>(e =>

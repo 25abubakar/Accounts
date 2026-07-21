@@ -56,12 +56,15 @@ public sealed class TimingChartScheduleRowDto
 {
     public long? Id { get; set; }
     public Guid PersonId { get; set; }
+    public Guid StaffId { get; set; }
     public string FullName { get; set; } = string.Empty;
     public string EmployeeId { get; set; } = string.Empty;
     public string Department { get; set; } = string.Empty;
     public DateOnly HolidayDate { get; set; }
     public string Day { get; set; } = string.Empty;
+    public int HolidayTypeId { get; set; }
     public string HolidayType { get; set; } = string.Empty;
+    public string HolidayTypeName { get; set; } = string.Empty;
     public string? TimeFrom { get; set; }
     public string? TimeTo { get; set; }
     public int WorkingMinutes { get; set; }
@@ -72,6 +75,7 @@ public sealed class TimingChartScheduleRowDto
 public sealed class TimingChartScheduleMonthDto
 {
     public Guid PersonId { get; set; }
+    public Guid StaffId { get; set; }
     public int Year { get; set; }
     public int Month { get; set; }
     public bool CanEdit { get; set; }
@@ -84,7 +88,9 @@ public sealed class TimingChartStaffScheduleDayDto
     public long? Id { get; set; }
     public DateOnly Date { get; set; }
     public string Day { get; set; } = string.Empty;
+    public int HolidayTypeId { get; set; }
     public string HolidayType { get; set; } = string.Empty;
+    public string HolidayTypeName { get; set; } = string.Empty;
     public string? TimeFrom { get; set; }
     public string? TimeTo { get; set; }
     public int WorkingMinutes { get; set; }
@@ -95,6 +101,7 @@ public sealed class TimingChartStaffScheduleDayDto
 public sealed class TimingChartStaffScheduleEmployeeDto
 {
     public Guid PersonId { get; set; }
+    public Guid StaffId { get; set; }
     public string EmployeeId { get; set; } = string.Empty;
     public string FullName { get; set; } = string.Empty;
     public string Department { get; set; } = string.Empty;
@@ -118,6 +125,7 @@ public sealed class TimingChartStaffScheduleMonthDto
 
 public sealed class TimingChartHolidayTypeDto
 {
+    public int Id { get; set; }
     public string Code { get; set; } = string.Empty;
     public string Name { get; set; } = string.Empty;
     public bool DefaultIsOn { get; set; }
@@ -125,7 +133,7 @@ public sealed class TimingChartHolidayTypeDto
 
 public sealed class SaveTimingChartScheduleDto
 {
-    public string HolidayType { get; set; } = "Working Day";
+    public int HolidayTypeId { get; set; }
     public string? TimeFrom { get; set; }
     public string? TimeTo { get; set; }
     public bool IsOn { get; set; }
@@ -136,7 +144,7 @@ public sealed class SaveTimingChartScheduleRangeDto
     public DateOnly DateFrom { get; set; }
     public DateOnly DateTo { get; set; }
     public int? DayOfWeek { get; set; }
-    public string HolidayType { get; set; } = "Working Day";
+    public int HolidayTypeId { get; set; }
     public string? TimeFrom { get; set; }
     public string? TimeTo { get; set; }
     public bool IsOn { get; set; }
@@ -145,6 +153,7 @@ public sealed class SaveTimingChartScheduleRangeDto
 public sealed class TimingChartScheduleRangeResultDto
 {
     public Guid PersonId { get; set; }
+    public Guid StaffId { get; set; }
     public DateOnly DateFrom { get; set; }
     public DateOnly DateTo { get; set; }
     public int SavedDays { get; set; }

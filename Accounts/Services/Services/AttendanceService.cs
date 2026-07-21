@@ -117,25 +117,27 @@ public sealed class AttendanceService : IAttendanceService
 
     public async Task<IReadOnlyList<AttendanceReportStaffDto>> GetReportStaffAsync(int year, int month, CancellationToken cancellationToken = default)
     {
-        var staffRows = await _db.StaffVacancies.AsNoTracking()
-            .Where(s => s.PersonId.HasValue && s.Person != null && s.Person.IsActive)
-            .OrderBy(s => s.Person!.FullName)
+        var dateFrom = new DateOnly(year, month, 1);
+        var dateTo = dateFrom.AddMonths(1);
+
+        var staffRows = await _db.StaffDirectoryRows.AsNoTracking()
+            .Where(s => s.IsPersonActive)
+            .OrderBy(s => s.FullName)
             .Select(s => new
             {
                 Dto = new AttendanceReportStaffDto
                 {
-                    PersonId = s.PersonId!.Value, StaffId = s.StaffId, EmployeeId = s.LoginId ?? s.Vacancy!.VacancyCode,
-                    FullName = s.Person!.FullName, Department = s.Vacancy!.Department ?? s.Vacancy.Organization!.Name,
-                    Designation = s.Vacancy.JobTitleNav != null ? s.Vacancy.JobTitleNav.TitleName : (s.Vacancy.JobTitle ?? string.Empty),
-                    PhotoUrl = s.Person.ProfilePhotoUrl
+                    PersonId = s.PersonId, StaffId = s.StaffId, EmployeeId = s.EmployeeId,
+                    FullName = s.FullName, Department = s.Department, Designation = s.Designation,
+                    PhotoUrl = s.PhotoUrl
                 },
-                s.Person!.ShiftStartTime, s.Person.ShiftEndTime, s.Person.TimeZoneId
+                s.ShiftStartTime, s.ShiftEndTime, s.TimeZoneId
             })
             .ToListAsync(cancellationToken);
 
         var personIds = staffRows.Select(x => x.Dto.PersonId).ToList();
         var records = await _db.AttendanceRecords.AsNoTracking()
-            .Where(r => personIds.Contains(r.PersonId) && r.AttendanceDate.Year == year && r.AttendanceDate.Month == month)
+            .Where(r => personIds.Contains(r.PersonId) && r.AttendanceDate >= dateFrom && r.AttendanceDate < dateTo)
             .Select(r => new { r.PersonId, r.CheckInUtc, r.CheckOutUtc, r.TotalBreakMinutes })
             .ToListAsync(cancellationToken);
         var recordsByPerson = records.ToLookup(r => r.PersonId);
@@ -169,31 +171,27 @@ public sealed class AttendanceService : IAttendanceService
         var visiblePersonIds = visibility.VisiblePersonIds;
         var callerPersonId = visibility.CallerPersonId;
 
-        var staffRows = await _db.StaffVacancies.AsNoTracking()
+        var staffRows = await _db.StaffDirectoryRows.AsNoTracking()
             .Where(staff =>
-                staff.PersonId.HasValue &&
-                visiblePersonIds.Contains(staff.PersonId.Value) &&
-                staff.Person != null &&
-                staff.Person.IsActive)
-            .OrderBy(staff => staff.Person!.FullName)
+                visiblePersonIds.Contains(staff.PersonId) &&
+                staff.IsPersonActive)
+            .OrderBy(staff => staff.FullName)
             .Select(staff => new
             {
                 Dto = new AttendanceReportStaffDto
                 {
-                    PersonId = staff.PersonId!.Value,
+                    PersonId = staff.PersonId,
                     StaffId = staff.StaffId,
-                    EmployeeId = staff.LoginId ?? staff.Vacancy!.VacancyCode,
-                    FullName = staff.Person!.FullName,
+                    EmployeeId = staff.EmployeeId,
+                    FullName = staff.FullName,
                     BranchName = string.Empty,
-                    Department = staff.Vacancy!.Department ?? staff.Vacancy.Organization!.Name,
-                    Designation = staff.Vacancy.JobTitleNav != null
-                        ? staff.Vacancy.JobTitleNav.TitleName
-                        : (staff.Vacancy.JobTitle ?? string.Empty),
-                    PhotoUrl = staff.Person.ProfilePhotoUrl,
-                    IsCurrentUser = staff.PersonId.Value == callerPersonId,
-                    CanEditTiming = organizationWide || staff.PersonId.Value != callerPersonId
+                    Department = staff.Department,
+                    Designation = staff.Designation,
+                    PhotoUrl = staff.PhotoUrl,
+                    IsCurrentUser = staff.PersonId == callerPersonId,
+                    CanEditTiming = organizationWide || staff.PersonId != callerPersonId
                 },
-                OrganizationId = staff.Vacancy!.OrganizationId
+                staff.OrganizationId
             })
             .ToListAsync(cancellationToken);
 
@@ -218,8 +216,10 @@ public sealed class AttendanceService : IAttendanceService
             }
 
             if (string.IsNullOrWhiteSpace(staffRow.Dto.BranchName))
-                staffRow.Dto.BranchName = nodesById.GetValueOrDefault(staffRow.OrganizationId)?.Name
-                    ?? staffRow.Dto.Department;
+                staffRow.Dto.BranchName = staffRow.OrganizationId.HasValue
+                    ? (nodesById.GetValueOrDefault(staffRow.OrganizationId.Value)?.Name
+                        ?? staffRow.Dto.Department)
+                    : staffRow.Dto.Department;
         }
 
         return staffRows.Select(staffRow => staffRow.Dto).ToList();
@@ -228,7 +228,7 @@ public sealed class AttendanceService : IAttendanceService
     public async Task<TimingChartScheduleMonthDto> GetTimingChartSchedulesAsync(
         string identityUserId,
         bool organizationWide,
-        Guid personId,
+        Guid staffId,
         int year,
         int month,
         CancellationToken cancellationToken = default)
@@ -238,33 +238,37 @@ public sealed class AttendanceService : IAttendanceService
 
         var visibility = await ResolveAttendanceVisibilityAsync(
             identityUserId, organizationWide, selfOnly: false, cancellationToken);
-        if (!visibility.VisiblePersonIds.Contains(personId))
+        var employee = await GetTimingChartEmployeeAsync(staffId, cancellationToken);
+        if (!visibility.VisiblePersonIds.Contains(employee.PersonId))
             throw new InvalidOperationException("This employee is outside your attendance hierarchy.");
 
-        var employee = await GetTimingChartEmployeeAsync(personId, cancellationToken);
         var dateFrom = new DateOnly(year, month, 1);
         var dateTo = new DateOnly(year, month, DateTime.DaysInMonth(year, month));
         var savedSchedules = await _db.EmployeeTimingSchedules.AsNoTracking()
+            .Include(schedule => schedule.HolidayType)
             .Where(schedule =>
-                schedule.PersonId == personId &&
-                schedule.ScheduleDate >= dateFrom &&
-                schedule.ScheduleDate <= dateTo)
+                schedule.StaffId == staffId &&
+                schedule.ScheduleYear == year &&
+                schedule.ScheduleMonth == month)
             .ToDictionaryAsync(schedule => schedule.ScheduleDate, cancellationToken);
 
+        var holidayTypes = await GetTimingHolidayTypesAsync(cancellationToken);
+        var holidayTypesByCode = holidayTypes.ToDictionary(type => type.Code, StringComparer.OrdinalIgnoreCase);
         var rows = new List<TimingChartScheduleRowDto>(dateTo.Day);
         for (var date = dateFrom; date <= dateTo; date = date.AddDays(1))
         {
             savedSchedules.TryGetValue(date, out var schedule);
-            rows.Add(MapTimingChartSchedule(employee, schedule, date));
+            rows.Add(MapTimingChartSchedule(employee, schedule, date, holidayTypesByCode));
         }
 
         return new TimingChartScheduleMonthDto
         {
-            PersonId = personId,
+            PersonId = employee.PersonId,
+            StaffId = employee.StaffId,
             Year = year,
             Month = month,
-            CanEdit = organizationWide || personId != visibility.CallerPersonId,
-            HolidayTypes = await GetTimingHolidayTypesAsync(cancellationToken),
+            CanEdit = organizationWide || employee.PersonId != visibility.CallerPersonId,
+            HolidayTypes = holidayTypes,
             Rows = rows
         };
     }
@@ -285,43 +289,44 @@ public sealed class AttendanceService : IAttendanceService
         var dateFrom = new DateOnly(year, month, 1);
         var dateTo = new DateOnly(year, month, DateTime.DaysInMonth(year, month));
 
-        var employees = await _db.StaffVacancies.AsNoTracking()
+        var employees = await _db.StaffDirectoryRows.AsNoTracking()
             .Where(staff =>
-                staff.PersonId.HasValue &&
-                visiblePersonIds.Contains(staff.PersonId.Value) &&
-                staff.Person != null &&
-                staff.Person.IsActive)
-            .OrderBy(staff => staff.Person!.FullName)
+                visiblePersonIds.Contains(staff.PersonId) &&
+                staff.IsPersonActive)
+            .OrderBy(staff => staff.FullName)
             .Select(staff => new
             {
                 staff.TenantId,
-                PersonId = staff.PersonId!.Value,
-                EmployeeId = staff.LoginId ?? staff.Vacancy!.VacancyCode,
-                FullName = staff.Person!.FullName,
-                Department = staff.Vacancy!.Department ?? staff.Vacancy.Organization!.Name,
-                Designation = staff.Vacancy.JobTitleNav != null
-                    ? staff.Vacancy.JobTitleNav.TitleName
-                    : (staff.Vacancy.JobTitle ?? string.Empty),
-                PhotoUrl = staff.Person.ProfilePhotoUrl,
-                staff.Person.ShiftStartTime,
-                staff.Person.ShiftEndTime
+                staff.StaffId,
+                staff.PersonId,
+                staff.EmployeeId,
+                staff.FullName,
+                staff.Department,
+                staff.Designation,
+                staff.PhotoUrl,
+                staff.ShiftStartTime,
+                staff.ShiftEndTime
             })
             .ToListAsync(cancellationToken);
 
-        var personIds = employees.Select(employee => employee.PersonId).ToList();
+        var employeeStaffIds = employees.Select(employee => employee.StaffId).ToList();
         var savedSchedules = await _db.EmployeeTimingSchedules.AsNoTracking()
+            .Include(schedule => schedule.HolidayType)
             .Where(schedule =>
-                personIds.Contains(schedule.PersonId) &&
-                schedule.ScheduleDate >= dateFrom &&
-                schedule.ScheduleDate <= dateTo)
+                employeeStaffIds.Contains(schedule.StaffId) &&
+                schedule.ScheduleYear == year &&
+                schedule.ScheduleMonth == month)
             .ToListAsync(cancellationToken);
-        var schedulesByEmployee = savedSchedules.ToLookup(schedule => schedule.PersonId);
+        var schedulesByEmployee = savedSchedules.ToLookup(schedule => schedule.StaffId);
+        var holidayTypes = await GetTimingHolidayTypesAsync(cancellationToken);
+        var holidayTypesByCode = holidayTypes.ToDictionary(type => type.Code, StringComparer.OrdinalIgnoreCase);
 
         var rows = employees.Select(employee =>
         {
             var employeeContext = new TimingChartEmployeeContext
             {
                 TenantId = employee.TenantId,
+                StaffId = employee.StaffId,
                 PersonId = employee.PersonId,
                 FullName = employee.FullName,
                 EmployeeId = employee.EmployeeId,
@@ -329,19 +334,21 @@ public sealed class AttendanceService : IAttendanceService
                 DefaultTimeFrom = employee.ShiftStartTime,
                 DefaultTimeTo = employee.ShiftEndTime
             };
-            var employeeSchedules = schedulesByEmployee[employee.PersonId]
+            var employeeSchedules = schedulesByEmployee[employee.StaffId]
                 .ToDictionary(schedule => schedule.ScheduleDate);
             var days = new List<TimingChartStaffScheduleDayDto>(dateTo.Day);
             for (var date = dateFrom; date <= dateTo; date = date.AddDays(1))
             {
                 employeeSchedules.TryGetValue(date, out var schedule);
-                var mapped = MapTimingChartSchedule(employeeContext, schedule, date);
+                var mapped = MapTimingChartSchedule(employeeContext, schedule, date, holidayTypesByCode);
                 days.Add(new TimingChartStaffScheduleDayDto
                 {
                     Id = mapped.Id,
                     Date = mapped.HolidayDate,
                     Day = mapped.Day,
+                    HolidayTypeId = mapped.HolidayTypeId,
                     HolidayType = mapped.HolidayType,
+                    HolidayTypeName = mapped.HolidayTypeName,
                     TimeFrom = mapped.TimeFrom,
                     TimeTo = mapped.TimeTo,
                     WorkingMinutes = mapped.WorkingMinutes,
@@ -353,6 +360,7 @@ public sealed class AttendanceService : IAttendanceService
             return new TimingChartStaffScheduleEmployeeDto
             {
                 PersonId = employee.PersonId,
+                StaffId = employee.StaffId,
                 EmployeeId = employee.EmployeeId,
                 FullName = employee.FullName,
                 Department = employee.Department,
@@ -371,7 +379,7 @@ public sealed class AttendanceService : IAttendanceService
             DateFrom = dateFrom,
             DateTo = dateTo,
             DaysInMonth = dateTo.Day,
-            HolidayTypes = await GetTimingHolidayTypesAsync(cancellationToken),
+            HolidayTypes = holidayTypes,
             Employees = rows
         };
     }
@@ -379,7 +387,7 @@ public sealed class AttendanceService : IAttendanceService
     public async Task<TimingChartScheduleRowDto> SaveTimingChartScheduleAsync(
         string identityUserId,
         bool organizationWide,
-        Guid personId,
+        Guid staffId,
         DateOnly holidayDate,
         SaveTimingChartScheduleDto dto,
         CancellationToken cancellationToken = default)
@@ -388,10 +396,10 @@ public sealed class AttendanceService : IAttendanceService
             throw new ArgumentOutOfRangeException(nameof(holidayDate), "A valid holiday date is required.");
 
         var employee = await GetEditableTimingChartEmployeeAsync(
-            identityUserId, organizationWide, personId, cancellationToken);
+            identityUserId, organizationWide, staffId, cancellationToken);
         var requestedTiming = await ValidateTimingScheduleAsync(
-            employee, dto.HolidayType, dto.TimeFrom, dto.TimeTo, dto.IsOn, cancellationToken);
-        var timing = ApplyRequiredWeekendRule(holidayDate, requestedTiming);
+            employee, dto.HolidayTypeId, dto.TimeFrom, dto.TimeTo, dto.IsOn, cancellationToken);
+        var timing = await ApplyRequiredWeekendRuleAsync(holidayDate, requestedTiming, cancellationToken);
         EmployeeTimingSchedule? savedSchedule = null;
 
         // SQL Server retry-on-failure requires every user transaction to run inside
@@ -404,41 +412,51 @@ public sealed class AttendanceService : IAttendanceService
             await using var transaction = await _db.Database.BeginTransactionAsync(cancellationToken);
 
             var schedule = await _db.EmployeeTimingSchedules
+                .Include(item => item.HolidayType)
                 .FirstOrDefaultAsync(item =>
-                    item.PersonId == personId && item.ScheduleDate == holidayDate,
+                    item.StaffId == staffId && item.ScheduleDate == holidayDate,
                     cancellationToken);
             if (schedule == null)
             {
                 schedule = new EmployeeTimingSchedule
                 {
                     TenantId = employee.TenantId,
-                    PersonId = personId,
+                    StaffId = staffId,
                     ScheduleDate = holidayDate,
+                    ScheduleYear = holidayDate.Year,
+                    ScheduleMonth = holidayDate.Month,
                     CreatedByUserId = identityUserId,
                     CreatedDate = DateTime.UtcNow
                 };
                 _db.EmployeeTimingSchedules.Add(schedule);
             }
 
-            schedule.HolidayType = timing.HolidayType;
+            schedule.HolidayTypeId = timing.HolidayTypeId;
             schedule.TimeFrom = timing.TimeFrom;
             schedule.TimeTo = timing.TimeTo;
             schedule.IsOn = timing.IsOn;
+            schedule.WorkingMinutes = timing.WorkingMinutes;
             schedule.ModifiedByUserId = identityUserId;
             schedule.ModifiedDate = DateTime.UtcNow;
             await _db.SaveChangesAsync(cancellationToken);
+            await _db.Entry(schedule).Reference(item => item.HolidayType).LoadAsync(cancellationToken);
             await EvaluateStatusesAsync(employee.TenantId, holidayDate, holidayDate, cancellationToken);
             await transaction.CommitAsync(cancellationToken);
             savedSchedule = schedule;
         });
 
-        return MapTimingChartSchedule(employee, savedSchedule, holidayDate);
+        var holidayTypes = await GetTimingHolidayTypesAsync(cancellationToken);
+        return MapTimingChartSchedule(
+            employee,
+            savedSchedule,
+            holidayDate,
+            holidayTypes.ToDictionary(type => type.Code, StringComparer.OrdinalIgnoreCase));
     }
 
     public async Task<TimingChartScheduleRangeResultDto> SaveTimingChartScheduleRangeAsync(
         string identityUserId,
         bool organizationWide,
-        Guid personId,
+        Guid staffId,
         SaveTimingChartScheduleRangeDto dto,
         CancellationToken cancellationToken = default)
     {
@@ -452,9 +470,9 @@ public sealed class AttendanceService : IAttendanceService
             throw new InvalidOperationException("Select a valid day of the week.");
 
         var employee = await GetEditableTimingChartEmployeeAsync(
-            identityUserId, organizationWide, personId, cancellationToken);
+            identityUserId, organizationWide, staffId, cancellationToken);
         var requestedTiming = await ValidateTimingScheduleAsync(
-            employee, dto.HolidayType, dto.TimeFrom, dto.TimeTo, dto.IsOn, cancellationToken);
+            employee, dto.HolidayTypeId, dto.TimeFrom, dto.TimeTo, dto.IsOn, cancellationToken);
 
         var dates = new List<DateOnly>();
         for (var date = dto.DateFrom; date <= dto.DateTo; date = date.AddDays(1))
@@ -474,7 +492,7 @@ public sealed class AttendanceService : IAttendanceService
             await using var transaction = await _db.Database.BeginTransactionAsync(cancellationToken);
             var existing = await _db.EmployeeTimingSchedules
                 .Where(schedule =>
-                    schedule.PersonId == personId &&
+                    schedule.StaffId == staffId &&
                     schedule.ScheduleDate >= dto.DateFrom &&
                     schedule.ScheduleDate <= dto.DateTo)
                 .ToDictionaryAsync(schedule => schedule.ScheduleDate, cancellationToken);
@@ -482,24 +500,27 @@ public sealed class AttendanceService : IAttendanceService
 
             foreach (var date in dates)
             {
-                var timing = ApplyRequiredWeekendRule(date, requestedTiming);
+                var timing = await ApplyRequiredWeekendRuleAsync(date, requestedTiming, cancellationToken);
                 if (!existing.TryGetValue(date, out var schedule))
                 {
                     schedule = new EmployeeTimingSchedule
                     {
                         TenantId = employee.TenantId,
-                        PersonId = personId,
+                        StaffId = staffId,
                         ScheduleDate = date,
+                        ScheduleYear = date.Year,
+                        ScheduleMonth = date.Month,
                         CreatedByUserId = identityUserId,
                         CreatedDate = now
                     };
                     _db.EmployeeTimingSchedules.Add(schedule);
                 }
 
-                schedule.HolidayType = timing.HolidayType;
+                schedule.HolidayTypeId = timing.HolidayTypeId;
                 schedule.TimeFrom = timing.TimeFrom;
                 schedule.TimeTo = timing.TimeTo;
                 schedule.IsOn = timing.IsOn;
+                schedule.WorkingMinutes = timing.WorkingMinutes;
                 schedule.ModifiedByUserId = identityUserId;
                 schedule.ModifiedDate = now;
             }
@@ -511,7 +532,8 @@ public sealed class AttendanceService : IAttendanceService
 
         return new TimingChartScheduleRangeResultDto
         {
-            PersonId = personId,
+            PersonId = employee.PersonId,
+            StaffId = staffId,
             DateFrom = dto.DateFrom,
             DateTo = dto.DateTo,
             SavedDays = dates.Count
@@ -880,13 +902,14 @@ public sealed class AttendanceService : IAttendanceService
             return new EffectiveTiming(false, HolidayCode, null, null);
 
         var schedule = await _db.EmployeeTimingSchedules.AsNoTracking()
+            .Include(item => item.HolidayType)
             .FirstOrDefaultAsync(item =>
-                item.PersonId == person.PersonId && item.ScheduleDate == date,
+                item.Staff.PersonId == person.PersonId && item.ScheduleDate == date,
                 cancellationToken);
         if (schedule != null)
             return new EffectiveTiming(
                 schedule.IsOn,
-                schedule.HolidayType,
+                schedule.HolidayType.ValueCode,
                 schedule.TimeFrom ?? attendanceRule?.TimeFrom ?? person.ShiftStartTime,
                 schedule.TimeTo ?? attendanceRule?.TimeTo ?? person.ShiftEndTime);
 
@@ -974,49 +997,55 @@ public sealed class AttendanceService : IAttendanceService
         bool IsOpenAttendance);
 
     private sealed record ValidatedTimingSchedule(
-        string HolidayType,
+        int HolidayTypeId,
+        string HolidayTypeCode,
         string? TimeFrom,
         string? TimeTo,
-        bool IsOn);
+        bool IsOn,
+        int WorkingMinutes);
 
     private async Task<TimingChartEmployeeContext> GetEditableTimingChartEmployeeAsync(
         string identityUserId,
         bool organizationWide,
-        Guid personId,
+        Guid staffId,
         CancellationToken cancellationToken)
     {
         var visibility = await ResolveAttendanceVisibilityAsync(
             identityUserId, organizationWide, selfOnly: false, cancellationToken);
-        var canEdit = visibility.VisiblePersonIds.Contains(personId) &&
-            (organizationWide || personId != visibility.CallerPersonId);
+        var employee = await GetTimingChartEmployeeAsync(staffId, cancellationToken);
+        var canEdit = visibility.VisiblePersonIds.Contains(employee.PersonId) &&
+            (organizationWide || employee.PersonId != visibility.CallerPersonId);
         if (!canEdit)
             throw new InvalidOperationException("Only an authorized head can update this employee's Timing Chart.");
 
-        return await GetTimingChartEmployeeAsync(personId, cancellationToken);
+        return employee;
     }
 
     private async Task<ValidatedTimingSchedule> ValidateTimingScheduleAsync(
         TimingChartEmployeeContext employee,
-        string holidayTypeInput,
+        int holidayTypeId,
         string? timeFromInput,
         string? timeToInput,
         bool isOn,
         CancellationToken cancellationToken)
     {
-        var holidayType = holidayTypeInput.Trim().ToUpperInvariant();
-        var holidayTypeExists = await _db.AppLookupValues.AsNoTracking()
-            .AnyAsync(value =>
+        var holidayType = await _db.AppLookupValues.AsNoTracking()
+            .Where(value =>
                 value.IsActive &&
                 value.LookupType != null &&
                 value.LookupType.IsActive &&
                 value.LookupType.LookupTypeCode == TimingHolidayTypeLookupCode &&
-                value.ValueCode == holidayType,
-                cancellationToken);
-        if (!holidayTypeExists)
+                value.LookupValueId == holidayTypeId)
+            .Select(value => new { value.LookupValueId, value.ValueCode })
+            .SingleOrDefaultAsync(cancellationToken);
+        if (holidayType == null)
             throw new InvalidOperationException("Select a valid active Work Type.");
 
         string? timeFrom = null;
         string? timeTo = null;
+        var holidayTypeCode = holidayType.ValueCode;
+        var effectiveHolidayTypeId = holidayType.LookupValueId;
+        var workingMinutes = 0;
         if (isOn)
         {
             if (!TryNormalizeTime(timeFromInput ?? employee.DefaultTimeFrom, out timeFrom) ||
@@ -1024,42 +1053,77 @@ public sealed class AttendanceService : IAttendanceService
                 throw new InvalidOperationException("Time From and Time To are required in HH:mm format for an On day.");
             if (timeFrom == timeTo)
                 throw new InvalidOperationException("Time From and Time To cannot be the same.");
-            if (holidayType == DayOffCode) holidayType = WorkingDayCode;
+            if (holidayTypeCode == DayOffCode)
+            {
+                var workingDay = await GetTimingHolidayTypeByCodeAsync(WorkingDayCode, cancellationToken);
+                effectiveHolidayTypeId = workingDay.LookupValueId;
+                holidayTypeCode = workingDay.ValueCode;
+            }
+            workingMinutes = ShiftMinutes(timeFrom, timeTo);
         }
-        else if (holidayType == WorkingDayCode)
+        else if (holidayTypeCode == WorkingDayCode)
         {
-            holidayType = DayOffCode;
+            var dayOff = await GetTimingHolidayTypeByCodeAsync(DayOffCode, cancellationToken);
+            effectiveHolidayTypeId = dayOff.LookupValueId;
+            holidayTypeCode = dayOff.ValueCode;
         }
 
-        return new ValidatedTimingSchedule(holidayType, timeFrom, timeTo, isOn);
+        return new ValidatedTimingSchedule(effectiveHolidayTypeId, holidayTypeCode, timeFrom, timeTo, isOn, workingMinutes);
     }
 
-    private static ValidatedTimingSchedule ApplyRequiredWeekendRule(
+    private async Task<ValidatedTimingSchedule> ApplyRequiredWeekendRuleAsync(
         DateOnly date,
-        ValidatedTimingSchedule requested) => date.DayOfWeek switch
+        ValidatedTimingSchedule requested,
+        CancellationToken cancellationToken) => date.DayOfWeek switch
     {
-        DayOfWeek.Saturday => new ValidatedTimingSchedule(DayOffCode, null, null, false),
-        DayOfWeek.Sunday => new ValidatedTimingSchedule(HolidayCode, null, null, false),
+        DayOfWeek.Saturday => await RequiredOffScheduleAsync(DayOffCode, cancellationToken),
+        DayOfWeek.Sunday => await RequiredOffScheduleAsync(HolidayCode, cancellationToken),
         _ => requested
     };
 
+    private async Task<ValidatedTimingSchedule> RequiredOffScheduleAsync(
+        string holidayTypeCode,
+        CancellationToken cancellationToken)
+    {
+        var holidayType = await GetTimingHolidayTypeByCodeAsync(holidayTypeCode, cancellationToken);
+        return new ValidatedTimingSchedule(holidayType.LookupValueId, holidayType.ValueCode, null, null, false, 0);
+    }
+
+    private async Task<(int LookupValueId, string ValueCode, string DisplayText)> GetTimingHolidayTypeByCodeAsync(
+        string holidayTypeCode,
+        CancellationToken cancellationToken)
+    {
+        var holidayType = await _db.AppLookupValues.AsNoTracking()
+            .Where(value =>
+                value.IsActive &&
+                value.LookupType != null &&
+                value.LookupType.IsActive &&
+                value.LookupType.LookupTypeCode == TimingHolidayTypeLookupCode &&
+                value.ValueCode == holidayTypeCode)
+            .Select(value => new { value.LookupValueId, value.ValueCode, value.DisplayText })
+            .SingleOrDefaultAsync(cancellationToken);
+        return holidayType == null
+            ? throw new InvalidOperationException($"Timing holiday type '{holidayTypeCode}' is not configured.")
+            : (holidayType.LookupValueId, holidayType.ValueCode, holidayType.DisplayText);
+    }
+
     private async Task<TimingChartEmployeeContext> GetTimingChartEmployeeAsync(
-        Guid personId,
+        Guid staffId,
         CancellationToken cancellationToken) =>
-        await _db.StaffVacancies.AsNoTracking()
+        await _db.StaffDirectoryRows.AsNoTracking()
             .Where(staff =>
-                staff.PersonId == personId &&
-                staff.Person != null &&
-                staff.Person.IsActive)
+                staff.StaffId == staffId &&
+                staff.IsPersonActive)
             .Select(staff => new TimingChartEmployeeContext
             {
                 TenantId = staff.TenantId,
-                PersonId = personId,
-                FullName = staff.Person!.FullName,
-                EmployeeId = staff.LoginId ?? staff.Vacancy!.VacancyCode,
-                Department = staff.Vacancy!.Department ?? staff.Vacancy.Organization!.Name,
-                DefaultTimeFrom = staff.Person.ShiftStartTime,
-                DefaultTimeTo = staff.Person.ShiftEndTime
+                StaffId = staff.StaffId,
+                PersonId = staff.PersonId,
+                FullName = staff.FullName,
+                EmployeeId = staff.EmployeeId,
+                Department = staff.Department,
+                DefaultTimeFrom = staff.ShiftStartTime,
+                DefaultTimeTo = staff.ShiftEndTime
             })
             .FirstOrDefaultAsync(cancellationToken)
         ?? throw new KeyNotFoundException("The selected employee was not found in your organization.");
@@ -1074,11 +1138,12 @@ public sealed class AttendanceService : IAttendanceService
                 value.LookupType.IsActive &&
                 value.LookupType.LookupTypeCode == TimingHolidayTypeLookupCode)
             .OrderBy(value => value.SortOrder)
-            .Select(value => new { value.ValueCode, value.DisplayText, value.MetadataJson })
+            .Select(value => new { value.LookupValueId, value.ValueCode, value.DisplayText, value.MetadataJson })
             .ToListAsync(cancellationToken);
 
         return values.Select(value => new TimingChartHolidayTypeDto
         {
+            Id = value.LookupValueId,
             Code = value.ValueCode,
             Name = value.DisplayText,
             DefaultIsOn = ReadDefaultIsOn(value.MetadataJson)
@@ -1103,7 +1168,8 @@ public sealed class AttendanceService : IAttendanceService
     private static TimingChartScheduleRowDto MapTimingChartSchedule(
         TimingChartEmployeeContext employee,
         EmployeeTimingSchedule? schedule,
-        DateOnly date)
+        DateOnly date,
+        IReadOnlyDictionary<string, TimingChartHolidayTypeDto> holidayTypesByCode)
     {
         var requiredWeekendType = date.DayOfWeek switch
         {
@@ -1112,29 +1178,37 @@ public sealed class AttendanceService : IAttendanceService
             _ => null
         };
         var isOn = requiredWeekendType == null && (schedule?.IsOn ?? true);
-        var holidayType = requiredWeekendType ?? schedule?.HolidayType ?? WorkingDayCode;
+        var holidayType = requiredWeekendType ?? schedule?.HolidayType?.ValueCode ?? WorkingDayCode;
+        holidayTypesByCode.TryGetValue(holidayType, out var holidayTypeInfo);
+        var holidayTypeId = requiredWeekendType == null
+            ? schedule?.HolidayTypeId ?? holidayTypeInfo?.Id ?? 0
+            : holidayTypeInfo?.Id ?? 0;
         var timeFrom = requiredWeekendType == null
             ? schedule != null ? schedule.TimeFrom : employee.DefaultTimeFrom
             : null;
         var timeTo = requiredWeekendType == null
             ? schedule != null ? schedule.TimeTo : employee.DefaultTimeTo
             : null;
+        var workingMinutes = isOn && timeFrom != null && timeTo != null
+            ? schedule?.WorkingMinutes > 0 ? schedule.WorkingMinutes : ShiftMinutes(timeFrom, timeTo)
+            : 0;
 
         return new TimingChartScheduleRowDto
         {
             Id = schedule?.Id,
             PersonId = employee.PersonId,
+            StaffId = employee.StaffId,
             FullName = employee.FullName,
             EmployeeId = employee.EmployeeId,
             Department = employee.Department,
             HolidayDate = date,
             Day = date.ToString("ddd", CultureInfo.InvariantCulture),
+            HolidayTypeId = holidayTypeId,
             HolidayType = holidayType,
+            HolidayTypeName = holidayTypeInfo?.Name ?? schedule?.HolidayType?.DisplayText ?? holidayType,
             TimeFrom = timeFrom,
             TimeTo = timeTo,
-            WorkingMinutes = isOn && timeFrom != null && timeTo != null
-                ? ShiftMinutes(timeFrom, timeTo)
-                : 0,
+            WorkingMinutes = workingMinutes,
             IsOn = isOn,
             IsOverride = schedule != null
         };
@@ -1158,6 +1232,7 @@ public sealed class AttendanceService : IAttendanceService
     private sealed class TimingChartEmployeeContext
     {
         public int TenantId { get; init; }
+        public Guid StaffId { get; init; }
         public Guid PersonId { get; init; }
         public string FullName { get; init; } = string.Empty;
         public string EmployeeId { get; init; } = string.Empty;
@@ -1317,13 +1392,12 @@ public sealed class AttendanceService : IAttendanceService
         var personId = canViewOthers && requestedPersonId.HasValue ? requestedPersonId.Value : callerPersonId
             ?? throw new KeyNotFoundException("No employee profile is linked to this account.");
 
-        var employee = await _db.StaffVacancies.AsNoTracking()
-            .Where(s => s.PersonId == personId && s.Person != null)
+        var employee = await _db.StaffDirectoryRows.AsNoTracking()
+            .Where(s => s.PersonId == personId && s.IsPersonActive)
             .Select(s => new AttendanceReportStaffDto
             {
-                PersonId = personId, StaffId = s.StaffId, EmployeeId = s.LoginId ?? s.Vacancy!.VacancyCode,
-                FullName = s.Person!.FullName, Department = s.Vacancy!.Department ?? s.Vacancy.Organization!.Name,
-                Designation = s.Vacancy.JobTitleNav != null ? s.Vacancy.JobTitleNav.TitleName : (s.Vacancy.JobTitle ?? string.Empty)
+                PersonId = personId, StaffId = s.StaffId, EmployeeId = s.EmployeeId,
+                FullName = s.FullName, Department = s.Department, Designation = s.Designation
             }).FirstOrDefaultAsync(cancellationToken)
             ?? throw new KeyNotFoundException("The selected employee was not found in your organization.");
 
@@ -1331,12 +1405,14 @@ public sealed class AttendanceService : IAttendanceService
             .Select(p => new { p.TimeZoneId, p.ShiftStartTime, p.ShiftEndTime }).FirstAsync(cancellationToken);
         var schedules = await _db.EmployeeTimingSchedules.AsNoTracking()
             .Where(schedule =>
-                schedule.PersonId == personId &&
-                schedule.ScheduleDate.Year == year &&
-                schedule.ScheduleDate.Month == month)
+                schedule.StaffId == employee.StaffId &&
+                schedule.ScheduleYear == year &&
+                schedule.ScheduleMonth == month)
             .ToDictionaryAsync(schedule => schedule.ScheduleDate, cancellationToken);
+        var dateFrom = new DateOnly(year, month, 1);
+        var dateTo = dateFrom.AddMonths(1);
         var records = await _db.AttendanceRecords.AsNoTracking().Include(r => r.AttendanceStatus)
-            .Where(r => r.PersonId == personId && r.AttendanceDate.Year == year && r.AttendanceDate.Month == month)
+            .Where(r => r.PersonId == personId && r.AttendanceDate >= dateFrom && r.AttendanceDate < dateTo)
             .OrderByDescending(r => r.AttendanceDate).ToListAsync(cancellationToken);
         var zone = ResolveTimeZone(person.TimeZoneId);
         var rows = records.Select(r =>
