@@ -57,6 +57,10 @@ namespace Accounts.Services.Services
                     {
                         t.OrganizationTreeId,
                         t.TenantName,
+                        t.BrandingAssetType,
+                        t.BrandingFileName,
+                        t.BrandingUpdatedOnUtc,
+                        HasBranding = t.BrandingContent != null,
                         OrganizationLabel = t.OrganizationNode != null ? t.OrganizationNode.Label : null
                     })
                     .FirstOrDefaultAsync(cancellationToken);
@@ -66,6 +70,14 @@ namespace Accounts.Services.Services
                     session.TenantOrganizationTreeId = tenantContext.OrganizationTreeId;
                     session.TenantName = tenantContext.TenantName;
                     session.TenantOrganizationLabel = tenantContext.OrganizationLabel;
+                    session.TenantBrandingType = tenantContext.BrandingAssetType;
+                    session.TenantBrandingFileName = tenantContext.BrandingFileName;
+                    session.TenantBrandingUpdatedOnUtc = tenantContext.BrandingUpdatedOnUtc;
+                    if (tenantContext.HasBranding)
+                    {
+                        var version = tenantContext.BrandingUpdatedOnUtc?.Ticks ?? 0;
+                        session.TenantBrandingUrl = $"/api/tenant-branding/{tenantId}/content?v={version}";
+                    }
                 }
             }
 

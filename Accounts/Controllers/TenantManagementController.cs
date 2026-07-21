@@ -32,11 +32,18 @@ namespace Accounts.Controllers
             if (!await HasTenantManagementMenuAsync(caller.TenantId!.Value, ct)) return Forbid();
 
             var tenant = await _db.Tenants.IgnoreQueryFilters().AsNoTracking()
-                .Include(t => t.OrganizationNode)
-                .SingleAsync(t => t.Id == caller.TenantId.Value, ct);
+                .Where(t => t.Id == caller.TenantId.Value)
+                .Select(t => new
+                {
+                    t.Id, t.TenantName, t.OrganizationTreeId, t.BrandingAssetType,
+                    t.BrandingFileName, t.BrandingUpdatedOnUtc,
+                    HasBranding = t.BrandingContent != null,
+                    OrganizationLabel = t.OrganizationNode != null ? t.OrganizationNode.Label : null
+                })
+                .SingleAsync(ct);
             var allNodes = await _db.OrganizationTree.AsNoTracking().ToListAsync(ct);
             var nodeById = allNodes.ToDictionary(n => n.Id);
-            var label = tenant.OrganizationNode?.Label ?? "Company";
+            var label = tenant.OrganizationLabel ?? "Company";
 
             if (label.Equals("Group", StringComparison.OrdinalIgnoreCase))
             {
@@ -47,7 +54,14 @@ namespace Accounts.Controllers
                     .Select(t => new { id = t.Id.ToString(), kind = "Company", name = t.TenantName,
                         code = t.TenantCode, t.IsActive, organizationTreeId = t.OrganizationTreeId })
                     .OrderBy(x => x.name).ToListAsync(ct);
-                return Ok(new { scopeType = "Group", scopeName = tenant.TenantName, items = companies });
+                return Ok(new
+                {
+                    scopeType = "Group", scopeName = tenant.TenantName, tenantId = tenant.Id,
+                    brandingAssetType = tenant.BrandingAssetType,
+                    brandingFileName = tenant.BrandingFileName,
+                    brandingUpdatedOnUtc = tenant.BrandingUpdatedOnUtc,
+                    brandingUrl = BrandingUrl(tenant.Id, tenant.HasBranding, tenant.BrandingUpdatedOnUtc), items = companies
+                });
             }
 
             var departmentIds = allNodes.Where(n => n.Label.Equals("Department", StringComparison.OrdinalIgnoreCase)
@@ -72,8 +86,15 @@ namespace Accounts.Controllers
                         ? (p.Staff.Vacancy.JobTitleNav != null ? p.Staff.Vacancy.JobTitleNav.TitleName : p.Staff.Vacancy.JobTitle)
                         : null
                 }).OrderBy(x => x.name).ToListAsync(ct);
-            return Ok(new { scopeType = "Company", scopeName = tenant.TenantName,
-                items = departments.Cast<object>().Concat(staff.Cast<object>()) });
+            return Ok(new
+            {
+                scopeType = "Company", scopeName = tenant.TenantName, tenantId = tenant.Id,
+                brandingAssetType = tenant.BrandingAssetType,
+                brandingFileName = tenant.BrandingFileName,
+                brandingUpdatedOnUtc = tenant.BrandingUpdatedOnUtc,
+                brandingUrl = BrandingUrl(tenant.Id, tenant.HasBranding, tenant.BrandingUpdatedOnUtc),
+                items = departments.Cast<object>().Concat(staff.Cast<object>())
+            });
         }
 
         [HttpPut("items/{kind}/{id}/status")]
@@ -143,6 +164,10 @@ namespace Accounts.Controllers
             { if (node.ParentId == ancestor) return true; current = node.ParentId; }
             return false;
         }
+
+        private static string? BrandingUrl(int tenantId, bool hasBranding, DateTime? updatedOnUtc) => !hasBranding
+            ? null
+            : $"/api/tenant-branding/{tenantId}/content?v={updatedOnUtc?.Ticks ?? 0}";
     }
 
     public sealed class ManagementStatusDto { public bool IsActive { get; set; } }

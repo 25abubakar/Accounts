@@ -52,6 +52,21 @@ namespace Accounts.Models
         [MaxLength(450)]
         public string? CreatedByUserId { get; set; }
 
+        /// <summary>Optional tenant-owned sidebar branding stored directly in SQL Server.</summary>
+        [MaxLength(255)]
+        public string? BrandingFileName { get; set; }
+
+        [MaxLength(100)]
+        public string? BrandingContentType { get; set; }
+
+        /// <summary>Image or Video. Kept separately so clients can render the correct element.</summary>
+        [MaxLength(20)]
+        public string? BrandingAssetType { get; set; }
+
+        public byte[]? BrandingContent { get; set; }
+
+        public DateTime? BrandingUpdatedOnUtc { get; set; }
+
         // ── Navigation ────────────────────────────────────────────────────
         [ForeignKey(nameof(OrganizationTreeId))]
         public OrganizationTree? OrganizationNode { get; set; }

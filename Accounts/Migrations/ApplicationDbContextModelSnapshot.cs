@@ -1385,6 +1385,24 @@ namespace Accounts.Migrations
                         .HasMaxLength(450)
                         .HasColumnType("nvarchar(450)");
 
+                    b.Property<string>("BrandingAssetType")
+                        .HasMaxLength(20)
+                        .HasColumnType("nvarchar(20)");
+
+                    b.Property<byte[]>("BrandingContent")
+                        .HasColumnType("varbinary(max)");
+
+                    b.Property<string>("BrandingContentType")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<string>("BrandingFileName")
+                        .HasMaxLength(255)
+                        .HasColumnType("nvarchar(255)");
+
+                    b.Property<DateTime?>("BrandingUpdatedOnUtc")
+                        .HasColumnType("datetime2");
+
                     b.Property<DateTime>("CreatedOnUtc")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("datetime2")

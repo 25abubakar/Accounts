@@ -97,6 +97,22 @@ namespace Accounts.Data
                     _tenantService.TenantId == null ||
                     p.TenantId == _tenantService.TenantId);
 
+            builder.Entity<PersonAddress>()
+                .HasQueryFilter(a =>
+                    _tenantService == null ||
+                    _tenantService.IsSuperAdmin ||
+                    _tenantService.TenantId == null ||
+                    a.Person == null ||
+                    a.Person.TenantId == _tenantService.TenantId);
+
+            builder.Entity<PersonContact>()
+                .HasQueryFilter(c =>
+                    _tenantService == null ||
+                    _tenantService.IsSuperAdmin ||
+                    _tenantService.TenantId == null ||
+                    c.Person == null ||
+                    c.Person.TenantId == _tenantService.TenantId);
+
             builder.Entity<Vacancy>()
                 .HasQueryFilter(v =>
                     _tenantService == null ||
@@ -110,6 +126,38 @@ namespace Accounts.Data
                     _tenantService.IsSuperAdmin ||
                     _tenantService.TenantId == null ||
                     s.TenantId == _tenantService.TenantId);
+
+            builder.Entity<StaffAccessGroup>()
+                .HasQueryFilter(g =>
+                    _tenantService == null ||
+                    _tenantService.IsSuperAdmin ||
+                    _tenantService.TenantId == null ||
+                    g.Staff == null ||
+                    g.Staff.TenantId == _tenantService.TenantId);
+
+            builder.Entity<DepartmentAccessMatrix>()
+                .HasQueryFilter(m =>
+                    _tenantService == null ||
+                    _tenantService.IsSuperAdmin ||
+                    _tenantService.TenantId == null ||
+                    m.Staff == null ||
+                    m.Staff.TenantId == _tenantService.TenantId);
+
+            builder.Entity<StaffMenuAccess>()
+                .HasQueryFilter(a =>
+                    _tenantService == null ||
+                    _tenantService.IsSuperAdmin ||
+                    _tenantService.TenantId == null ||
+                    a.Staff == null ||
+                    a.Staff.TenantId == _tenantService.TenantId);
+
+            builder.Entity<UserPermissionOverride>()
+                .HasQueryFilter(o =>
+                    _tenantService == null ||
+                    _tenantService.IsSuperAdmin ||
+                    _tenantService.TenantId == null ||
+                    o.Staff == null ||
+                    o.Staff.TenantId == _tenantService.TenantId);
 
             builder.Entity<JobTitle>()
                 .HasQueryFilter(j =>
@@ -154,6 +202,42 @@ namespace Accounts.Data
                     n.TenantId == null ||
                     n.TenantId == _tenantService.TenantId);
 
+            builder.Entity<AppNoteTarget>()
+                .HasQueryFilter(t =>
+                    _tenantService == null ||
+                    _tenantService.IsSuperAdmin ||
+                    _tenantService.TenantId == null ||
+                    t.Note == null ||
+                    t.Note.TenantId == null ||
+                    t.Note.TenantId == _tenantService.TenantId);
+
+            builder.Entity<AppNoteUserStatus>()
+                .HasQueryFilter(s =>
+                    _tenantService == null ||
+                    _tenantService.IsSuperAdmin ||
+                    _tenantService.TenantId == null ||
+                    s.Note == null ||
+                    s.Note.TenantId == null ||
+                    s.Note.TenantId == _tenantService.TenantId);
+
+            builder.Entity<AppNoteUserState>()
+                .HasQueryFilter(s =>
+                    _tenantService == null ||
+                    _tenantService.IsSuperAdmin ||
+                    _tenantService.TenantId == null ||
+                    s.Note == null ||
+                    s.Note.TenantId == null ||
+                    s.Note.TenantId == _tenantService.TenantId);
+
+            builder.Entity<AppNoteAttachment>()
+                .HasQueryFilter(a =>
+                    _tenantService == null ||
+                    _tenantService.IsSuperAdmin ||
+                    _tenantService.TenantId == null ||
+                    a.Note == null ||
+                    a.Note.TenantId == null ||
+                    a.Note.TenantId == _tenantService.TenantId);
+
             // ── ApplicationUser (AspNetUsers) — multi-tenant columns ──────────
             builder.Entity<ApplicationUser>(e =>
             {
@@ -174,6 +258,11 @@ namespace Accounts.Data
                 e.Property(x => x.IsActive).HasDefaultValue(true);
                 e.Property(x => x.CreatedOnUtc).HasDefaultValueSql("SYSUTCDATETIME()");
                 e.Property(x => x.CreatedByUserId).HasMaxLength(450).IsRequired(false);
+                e.Property(x => x.BrandingFileName).HasMaxLength(255).IsRequired(false);
+                e.Property(x => x.BrandingContentType).HasMaxLength(100).IsRequired(false);
+                e.Property(x => x.BrandingAssetType).HasMaxLength(20).IsRequired(false);
+                e.Property(x => x.BrandingContent).HasColumnType("varbinary(max)").IsRequired(false);
+                e.Property(x => x.BrandingUpdatedOnUtc).IsRequired(false);
 
                 // One org node = one tenant
                 e.HasIndex(x => x.OrganizationTreeId).IsUnique();

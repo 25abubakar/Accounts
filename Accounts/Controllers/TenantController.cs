@@ -49,7 +49,15 @@ namespace Accounts.Controllers
         {
             var tenants = await _db.Tenants
                 .AsNoTracking()
-                .Include(t => t.OrganizationNode)
+                .Select(t => new
+                {
+                    t.Id, t.TenantName, t.TenantCode, t.IsActive, t.CreatedOnUtc,
+                    t.OrganizationTreeId, t.BrandingAssetType, t.BrandingFileName,
+                    t.BrandingUpdatedOnUtc, HasBranding = t.BrandingContent != null,
+                    OrgNodeName = t.OrganizationNode != null ? t.OrganizationNode.Name : null,
+                    OrgNodeLabel = t.OrganizationNode != null ? t.OrganizationNode.Label : null,
+                    ParentOrgNodeId = t.OrganizationNode != null ? t.OrganizationNode.ParentId : null
+                })
                 .OrderBy(t => t.TenantName)
                 .ToListAsync();
 
@@ -76,9 +84,15 @@ namespace Accounts.Controllers
                 effectiveIsActive = t.IsActive && IsHierarchyActive(t.OrganizationTreeId),
                 t.CreatedOnUtc,
                 t.OrganizationTreeId,
-                orgNodeName = t.OrganizationNode?.Name,
-                orgNodeLabel = t.OrganizationNode?.Label,
-                parentOrgNodeId = t.OrganizationNode?.ParentId,
+                orgNodeName = t.OrgNodeName,
+                orgNodeLabel = t.OrgNodeLabel,
+                parentOrgNodeId = t.ParentOrgNodeId,
+                brandingAssetType = t.BrandingAssetType,
+                brandingFileName = t.BrandingFileName,
+                brandingUpdatedOnUtc = t.BrandingUpdatedOnUtc,
+                brandingUrl = t.HasBranding
+                    ? $"/api/tenant-branding/{t.Id}/content?v={t.BrandingUpdatedOnUtc?.Ticks ?? 0}"
+                    : null,
                 childCompanyCount = nodes.Count(n =>
                     n.Label.Equals("Company", StringComparison.OrdinalIgnoreCase) &&
                     IsDescendantOf(n.Id, t.OrganizationTreeId, nodeById))
@@ -115,6 +129,12 @@ namespace Accounts.Controllers
                 tenant.IsActive,
                 tenant.OrganizationTreeId,
                 orgNodeName  = tenant.OrganizationNode?.Name,
+                brandingAssetType = tenant.BrandingAssetType,
+                brandingFileName = tenant.BrandingFileName,
+                brandingUpdatedOnUtc = tenant.BrandingUpdatedOnUtc,
+                brandingUrl = tenant.BrandingContent != null
+                    ? $"/api/tenant-branding/{tenant.Id}/content?v={tenant.BrandingUpdatedOnUtc?.Ticks ?? 0}"
+                    : null,
                 staffCount,
                 grantedMenus = tenant.MenuPermissions.Select(mp => new
                 {
@@ -288,6 +308,10 @@ namespace Accounts.Controllers
                             tenant.TenantName,
                             tenant.TenantCode,
                             tenant.OrganizationTreeId,
+                            brandingAssetType = tenant.BrandingAssetType,
+                            brandingFileName = tenant.BrandingFileName,
+                            brandingUpdatedOnUtc = tenant.BrandingUpdatedOnUtc,
+                            brandingUrl = (string?)null,
                             orgNodeId   = orgNode.Id,
                             orgNodeName = orgNode.Name
                         },

@@ -25,6 +25,10 @@ namespace Accounts.Models
         public int?  TenantOrganizationTreeId { get; set; }
         public string? TenantName { get; set; }
         public string? TenantOrganizationLabel { get; set; }
+        public string? TenantBrandingUrl { get; set; }
+        public string? TenantBrandingType { get; set; }
+        public string? TenantBrandingFileName { get; set; }
+        public DateTime? TenantBrandingUpdatedOnUtc { get; set; }
 
         public List<object> Sidebar { get; set; } = new();
         public List<string> Permissions { get; set; } = new();
