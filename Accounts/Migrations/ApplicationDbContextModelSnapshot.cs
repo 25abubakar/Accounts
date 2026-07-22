@@ -252,7 +252,13 @@ namespace Accounts.Migrations
 
                     b.HasIndex("OwnerIdentityUserId");
 
+                    b.HasIndex("IsPublished", "IsActive", "IsDeleted", "StartDateUtc", "EndDateUtc")
+                        .HasDatabaseName("IX_AppNotes_PublishedActiveDeleted_Dates");
+
                     b.HasIndex("TenantId");
+
+                    b.HasIndex("TenantId", "IsPublished", "IsActive", "IsDeleted")
+                        .HasDatabaseName("IX_AppNotes_TenantId_PublishedActiveDeleted");
 
                     b.ToTable("AppNotes", (string)null);
                 });
@@ -335,6 +341,12 @@ namespace Accounts.Migrations
 
                     b.HasIndex("NoteId");
 
+                    b.HasIndex("NoteId", "TargetTypeCode", "TargetValue")
+                        .HasDatabaseName("IX_AppNoteTargets_NoteId_TypeValue");
+
+                    b.HasIndex("TargetTypeCode", "TargetValue", "NoteId")
+                        .HasDatabaseName("IX_AppNoteTargets_TypeValueNoteId");
+
                     b.ToTable("AppNoteTargets", (string)null);
                 });
 
@@ -376,6 +388,9 @@ namespace Accounts.Migrations
 
                     b.HasIndex("NoteId", "StaffId")
                         .IsUnique();
+
+                    b.HasIndex("StaffId", "NoteId")
+                        .HasDatabaseName("IX_AppNoteUserStates_StaffId_NoteId");
 
                     b.ToTable("AppNoteUserStates", (string)null);
                 });

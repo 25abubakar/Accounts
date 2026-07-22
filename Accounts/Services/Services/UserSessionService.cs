@@ -184,30 +184,33 @@ namespace Accounts.Services.Services
         private Task<SessionPersonInfo?> GetPersonInfoAsync(
             string identityUserId,
             CancellationToken cancellationToken) =>
-            _db.Persons.AsNoTracking()
-                .Where(person => person.IdentityUserId == identityUserId)
+            (from person in _db.Persons.AsNoTracking()
+             where person.IdentityUserId == identityUserId
+             join staff in _db.StaffDirectoryRows.AsNoTracking()
+                on person.PersonId equals staff.PersonId into staffRows
+             from staff in staffRows.DefaultIfEmpty()
+             select new SessionPersonInfo
+             {
+                 PersonId = person.PersonId,
+                 FullName = person.FullName,
+                 Email = person.Email,
+                 ProfilePhotoUrl = person.ProfilePhotoUrl,
+                 StaffId = staff != null ? staff.StaffId : null,
+                 StaffLoginId = staff != null ? staff.EmployeeId : null,
+                 JobTitle = staff != null ? staff.Designation : null,
+                 Department = staff != null ? staff.Department : null
+             })
+                .OrderBy(info => info.StaffId == null)
                 .Select(person => new SessionPersonInfo
                 {
                     PersonId = person.PersonId,
                     FullName = person.FullName,
                     Email = person.Email,
                     ProfilePhotoUrl = person.ProfilePhotoUrl,
-                    StaffId = person.Staff != null ? (Guid?)person.Staff.StaffId : null,
-                    StaffLoginId = person.Staff != null
-                        ? (person.Staff.LoginId ??
-                           (person.Staff.Vacancy != null ? person.Staff.Vacancy.VacancyCode : null))
-                        : null,
-                    JobTitle = person.Staff != null && person.Staff.Vacancy != null
-                        ? (person.Staff.Vacancy.JobTitleNav != null
-                            ? person.Staff.Vacancy.JobTitleNav.TitleName
-                            : person.Staff.Vacancy.JobTitle)
-                        : null,
-                    Department = person.Staff != null && person.Staff.Vacancy != null
-                        ? (person.Staff.Vacancy.Department ??
-                           (person.Staff.Vacancy.Organization != null
-                               ? person.Staff.Vacancy.Organization.Name
-                               : null))
-                        : null
+                    StaffId = person.StaffId,
+                    StaffLoginId = person.StaffLoginId,
+                    JobTitle = person.JobTitle,
+                    Department = person.Department
                 })
                 .FirstOrDefaultAsync(cancellationToken);
 

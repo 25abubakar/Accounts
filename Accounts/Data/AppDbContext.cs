@@ -849,6 +849,10 @@ namespace Accounts.Data
                 e.Property(x => x.VisibilityTypeCode).HasMaxLength(100).IsRequired();
                 e.Property(x => x.OwnerIdentityUserId).HasMaxLength(450).IsRequired(false);
                 e.HasIndex(x => x.OwnerIdentityUserId);
+                e.HasIndex(x => new { x.TenantId, x.IsPublished, x.IsActive, x.IsDeleted })
+                 .HasDatabaseName("IX_AppNotes_TenantId_PublishedActiveDeleted");
+                e.HasIndex(x => new { x.IsPublished, x.IsActive, x.IsDeleted, x.StartDateUtc, x.EndDateUtc })
+                 .HasDatabaseName("IX_AppNotes_PublishedActiveDeleted_Dates");
                 e.HasOne<ApplicationUser>()
                  .WithMany()
                  .HasForeignKey(x => x.OwnerIdentityUserId)
@@ -866,6 +870,10 @@ namespace Accounts.Data
                 e.HasKey(x => x.NoteTargetId);
                 e.Property(x => x.TargetTypeCode).HasMaxLength(100).IsRequired();
                 e.Property(x => x.TargetValue).HasMaxLength(150).IsRequired();
+                e.HasIndex(x => new { x.NoteId, x.TargetTypeCode, x.TargetValue })
+                 .HasDatabaseName("IX_AppNoteTargets_NoteId_TypeValue");
+                e.HasIndex(x => new { x.TargetTypeCode, x.TargetValue, x.NoteId })
+                 .HasDatabaseName("IX_AppNoteTargets_TypeValueNoteId");
             });
 
             // ── Communication Center: AppNoteUserStatuses (legacy) ────────────
@@ -885,6 +893,8 @@ namespace Accounts.Data
                 e.Property(x => x.StaffId).HasMaxLength(100).IsRequired();
                 // One row per (NoteId, StaffId)
                 e.HasIndex(x => new { x.NoteId, x.StaffId }).IsUnique();
+                e.HasIndex(x => new { x.StaffId, x.NoteId })
+                 .HasDatabaseName("IX_AppNoteUserStates_StaffId_NoteId");
             });
 
             // ── Communication Center: AppNoteAttachments ──────────────────────

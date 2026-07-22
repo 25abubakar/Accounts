@@ -41,9 +41,9 @@ namespace Accounts.Services.Services
                 : null;
 
             // 🌟 SMART IDENTIFIERS LIST (Saari lowercase IDs isme jama hongi)
-            var userIdentifiers = new List<string>();
-            if (!string.IsNullOrWhiteSpace(staffId)) userIdentifiers.Add(staffId.Trim().ToLower());
-            if (!string.IsNullOrWhiteSpace(identityUserId)) userIdentifiers.Add(identityUserId.Trim().ToLower());
+            var userIdentifiers = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            AddIdentifier(userIdentifiers, staffId);
+            AddIdentifier(userIdentifiers, identityUserId);
 
             string userName = string.Empty;
             string email = string.Empty;
@@ -114,9 +114,7 @@ namespace Accounts.Services.Services
                         {
                             for (int i = 0; i < reader.FieldCount; i++)
                             {
-                                var val = reader.GetValue(i)?.ToString()?.Trim()?.ToLower();
-                                if (!string.IsNullOrWhiteSpace(val) && !userIdentifiers.Contains(val))
-                                    userIdentifiers.Add(val);
+                                AddIdentifier(userIdentifiers, reader.GetValue(i)?.ToString());
                             }
                         }
                     }
@@ -159,7 +157,7 @@ namespace Accounts.Services.Services
                     {
                         var audienceMatches = audienceTargets.Count == 0 || audienceTargets.Any(t =>
                             t.TargetTypeCode.Equals("ALL", StringComparison.OrdinalIgnoreCase) ||
-                            userIdentifiers.Contains((t.TargetValue ?? "").Trim().ToLower()));
+                            userIdentifiers.Contains(NormalizeIdentifier(t.TargetValue)));
                         var menuMatches = menuTargets.Count == 0 ||
                             (!string.IsNullOrWhiteSpace(menuCode) && menuTargets.Any(t =>
                                 string.Equals(t.TargetValue, menuCode, StringComparison.OrdinalIgnoreCase)));
@@ -177,7 +175,7 @@ namespace Accounts.Services.Services
 
                         // STAFF → Matches if target value matches ANY resolved form of user identity
                         "STAFF" => n.Targets.Any(t =>
-                            t.TargetTypeCode == "STAFF" && userIdentifiers.Contains((t.TargetValue ?? "").Trim().ToLower())),
+                            t.TargetTypeCode == "STAFF" && userIdentifiers.Contains(NormalizeIdentifier(t.TargetValue))),
 
                         "MENU" => menuCode != null &&
                                   n.Targets.Any(t =>
@@ -192,7 +190,7 @@ namespace Accounts.Services.Services
                 }
 
                 return n.Targets.Any(t => t.TargetTypeCode == "ALL" && t.TargetValue == "*") ||
-                       n.Targets.Any(t => t.TargetTypeCode == "STAFF" && userIdentifiers.Contains((t.TargetValue ?? "").Trim().ToLower())) ||
+                       n.Targets.Any(t => t.TargetTypeCode == "STAFF" && userIdentifiers.Contains(NormalizeIdentifier(t.TargetValue))) ||
                        (menuCode != null && n.Targets.Any(t => t.TargetTypeCode == "MENU" && t.TargetValue == menuCode)) ||
                        (recordKey != null && n.Targets.Any(t => t.TargetTypeCode == "RECORD" && t.TargetValue == recordKey));
             }).ToList();
@@ -208,16 +206,18 @@ namespace Accounts.Services.Services
                 return new List<AppNoteDto>();
 
             var noteIds = notes.Select(n => n.NoteId).ToList();
+            var identifierList = userIdentifiers.ToList();
 
             // Step 3: load per-staff states
             var states = await _db.AppNoteUserStates
                 .AsNoTracking()
-                .Where(s => noteIds.Contains(s.NoteId) &&
-                            userIdentifiers.Contains(s.StaffId.ToLower()))
+                .Where(s => identifierList.Contains(s.StaffId) &&
+                            noteIds.Contains(s.NoteId))
                 .ToListAsync(ct);
 
             var stateMap = states
-                .ToDictionary(s => s.NoteId);
+                .GroupBy(s => s.NoteId)
+                .ToDictionary(g => g.Key, g => g.First());
 
             // Step 4: exclude dismissed, map to DTOs
             return notes
@@ -247,13 +247,14 @@ namespace Accounts.Services.Services
                 throw new UnauthorizedAccessException("You are not allowed to view this note.");
             }
 
-            var userIdentifiers = new List<string>();
-            if (!string.IsNullOrWhiteSpace(staffId)) userIdentifiers.Add(staffId.Trim().ToLower());
-            if (!string.IsNullOrWhiteSpace(identityUserId)) userIdentifiers.Add(identityUserId.Trim().ToLower());
+            var userIdentifiers = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            AddIdentifier(userIdentifiers, staffId);
+            AddIdentifier(userIdentifiers, identityUserId);
+            var identifierList = userIdentifiers.ToList();
 
             var state = await _db.AppNoteUserStates
                 .AsNoTracking()
-                .FirstOrDefaultAsync(s => s.NoteId == noteId && userIdentifiers.Contains((s.StaffId ?? "").Trim().ToLower()), CancellationToken.None);
+                .FirstOrDefaultAsync(s => s.NoteId == noteId && identifierList.Contains(s.StaffId), ct);
 
             return ToDto(note, state);
         }
@@ -503,12 +504,14 @@ namespace Accounts.Services.Services
         private async Task<AppNoteUserState> GetOrCreateStateAsync(
             int noteId, string staffId, CancellationToken ct)
         {
+            var normalizedStaffId = NormalizeIdentifier(staffId);
+
             var state = await _db.AppNoteUserStates
-                .FirstOrDefaultAsync(s => s.NoteId == noteId && s.StaffId == staffId, ct);
+                .FirstOrDefaultAsync(s => s.NoteId == noteId && s.StaffId == normalizedStaffId, ct);
 
             if (state != null) return state;
 
-            state = new AppNoteUserState { NoteId = noteId, StaffId = staffId };
+            state = new AppNoteUserState { NoteId = noteId, StaffId = normalizedStaffId };
             _db.AppNoteUserStates.Add(state);
             return state;
         }
@@ -542,6 +545,18 @@ namespace Accounts.Services.Services
                 CreatedBy = note.CreatedBy,
                 CreatedOnUtc = note.CreatedOnUtc
             };
+        }
+
+        private static string NormalizeIdentifier(string? value)
+        {
+            return (value ?? string.Empty).Trim().ToLowerInvariant();
+        }
+
+        private static void AddIdentifier(ISet<string> identifiers, string? value)
+        {
+            var normalized = NormalizeIdentifier(value);
+            if (!string.IsNullOrWhiteSpace(normalized))
+                identifiers.Add(normalized);
         }
 
         private static int PriorityRank(string code) => code switch
