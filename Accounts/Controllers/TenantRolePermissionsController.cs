@@ -12,15 +12,14 @@ namespace Accounts.Controllers
     /// <summary>
     /// Tenant Admin only — manages role-based permissions within a tenant.
     ///
-    /// Plaza Rule: Tenant Admin can only assign menus/features that the Super Admin
-    /// has explicitly granted to this tenant via TenantMenuPermissions.
-    /// They cannot sub-delegate beyond what they were given.
+    /// Tenant Admin owns the full tenant/company scope and may delegate menus/features
+    /// to staff inside that tenant.
     ///
     /// GET    /api/tenant-roles                        → list all job titles in this tenant
     /// GET    /api/tenant-roles/{jobTitle}/permissions → get permissions for a job title
     /// PUT    /api/tenant-roles/{jobTitle}/permissions → overwrite permissions for a job title
     /// DELETE /api/tenant-roles/{jobTitle}             → remove all permissions for a job title
-    /// GET    /api/tenant-roles/allowed-menus          → menus Tenant Admin may delegate (from TenantMenuPermissions)
+    /// GET    /api/tenant-roles/allowed-menus          → menus Tenant Admin may delegate
     /// </summary>
     [ApiController]
     [Route("api/tenant-roles")]
@@ -46,7 +45,7 @@ namespace Accounts.Controllers
             var uid  = User.FindFirstValue(ClaimTypes.NameIdentifier);
             var user = uid != null ? await _userManager.FindByIdAsync(uid) : null;
             return (user, user?.TenantId,
-                (user?.IsTenantAdmin ?? false) || User.IsInRole("CEO"));
+                (user?.IsTenantAdmin ?? false) || User.IsInRole("TenantAdmin"));
         }
 
         // ── GET /api/tenant-roles ──────────────────────────────────────────
@@ -117,9 +116,7 @@ namespace Accounts.Controllers
         ///
         /// Body: array of permissionId (int) values.
         ///
-        /// Validation: each permissionId must map to a feature whose FeatureKey
-        /// is reachable from one of the tenant's granted TenantMenuPermissions.
-        /// (Plaza Rule: you cannot sub-delegate what you don't own.)
+        /// Validation: each permissionId must be a valid menu permission.
         /// </summary>
         [HttpPut("{jobTitle}/permissions")]
         public async Task<IActionResult> SetPermissions(string jobTitle, [FromBody] List<int> permissionIds)
@@ -132,18 +129,11 @@ namespace Accounts.Controllers
                 return BadRequest(new { message = "jobTitle is required." });
 
             // ── Pool check: what menu IDs does this tenant own? ────────────
-            var tenantMenuIds = await _db.TenantMenuPermissions
-                .AsNoTracking()
-                .Where(tmp => tmp.TenantId == tenantId.Value && tmp.IsAllow)
-                .Select(tmp => tmp.MenuId)
-                .ToHashSetAsync();
-
             // Resolve allowed permissionIds: any Feature whose FeatureKey
             // contains a reference to one of the tenant's menu IDs,
             // OR any Feature linked to a menu the tenant owns via MenuPermissions.
             var allowedPermissionIds = await _db.MenuPermissions
                 .AsNoTracking()
-                .Where(mp => tenantMenuIds.Contains(mp.MenuId))
                 .Select(mp => mp.PermissionId)
                 .ToHashSetAsync();
 
@@ -217,8 +207,7 @@ namespace Accounts.Controllers
         // ── GET /api/tenant-roles/allowed-menus ───────────────────────────
 
         /// <summary>
-        /// Returns all menus + their feature keys that this Tenant Admin may delegate
-        /// (i.e. only menus from TenantMenuPermissions for their tenant).
+        /// Returns all menus + their feature keys that this Tenant Admin may delegate.
         ///
         /// Used by the frontend to populate the Roles & Permissions checklist.
         /// </summary>
@@ -229,21 +218,11 @@ namespace Accounts.Controllers
             if (!isTenantAdmin || !tenantId.HasValue)
                 return Forbid();
 
-            // Menus the Super Admin granted to this tenant
-            var tenantMenuIds = await _db.TenantMenuPermissions
-                .AsNoTracking()
-                .Where(tmp => tmp.TenantId == tenantId.Value && tmp.IsAllow)
-                .Select(tmp => tmp.MenuId)
-                .ToHashSetAsync();
-
-            if (!tenantMenuIds.Any())
-                return Ok(new List<object>());
-
-            // Fetch those menus with their linked feature keys
+            // Fetch active menus with their linked feature keys.
             var menus = await _db.Menus
                 .AsNoTracking()
                 .Include(m => m.MenuPermissions).ThenInclude(mp => mp.Feature)
-                .Where(m => tenantMenuIds.Contains(m.Id) && m.IsActive)
+                .Where(m => m.IsActive)
                 .OrderBy(m => m.SortOrder)
                 .Select(m => new
                 {

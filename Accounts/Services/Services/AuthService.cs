@@ -2,6 +2,7 @@ using Accounts.Data;
 using Accounts.Models;
 using Accounts.Services.Interfaces;
 using Accounts.Authorization;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 using System.Security.Claims;
@@ -10,12 +11,12 @@ namespace Accounts.Services.Services
 {
     public class AuthService : IAuthService
     {
-        private const string OrganizationCeoRole = "CEO";
         private readonly UserManager<ApplicationUser>  _userManager;
         private readonly SignInManager<ApplicationUser> _signInManager;
         private readonly RoleManager<IdentityRole>      _roleManager;
         private readonly ApplicationDbContext           _db;
         private readonly IAccountScopeAccessService     _scopeAccess;
+        private readonly IHttpContextAccessor           _httpContextAccessor;
 
         private static readonly string[] AllowedRoles =
             ["Manager", "Developer", "AssistantManager", "SuperAdmin", "Admin", "TenantAdmin"];
@@ -25,13 +26,15 @@ namespace Accounts.Services.Services
             SignInManager<ApplicationUser> signInManager,
             RoleManager<IdentityRole>      roleManager,
             ApplicationDbContext           db,
-            IAccountScopeAccessService     scopeAccess)
+            IAccountScopeAccessService     scopeAccess,
+            IHttpContextAccessor           httpContextAccessor)
         {
             _userManager   = userManager;
             _signInManager = signInManager;
             _roleManager   = roleManager;
             _db            = db;
             _scopeAccess   = scopeAccess;
+            _httpContextAccessor = httpContextAccessor;
         }
 
         // ── Register ──────────────────────────────────────────────────────────
@@ -114,9 +117,9 @@ namespace Accounts.Services.Services
                         Message = access.Message
                     });
 
-                await SyncOrganizationCeoRoleAsync(user);
                 await StampTenantClaimsAsync(user);
                 await _signInManager.SignInAsync(user, dto.RememberMe);
+                await OpenApplicationLoginSessionAsync(user);
                 var roles = await _userManager.GetRolesAsync(user);
                 return (true, 200, new AuthResponseDto
                 {
@@ -127,7 +130,7 @@ namespace Accounts.Services.Services
                     Roles        = roles,
                     TenantId     = user.TenantId,
                     IsSuperAdmin = user.IsSuperAdmin,
-                    IsTenantAdmin = user.IsTenantAdmin || roles.Contains(OrganizationCeoRole)
+                    IsTenantAdmin = user.IsTenantAdmin
                 });
             }
 
@@ -147,8 +150,14 @@ namespace Accounts.Services.Services
 
         // ── Logout ────────────────────────────────────────────────────────────
 
-        public async Task LogoutAsync() =>
+        public async Task LogoutAsync()
+        {
+            var identityUserId = _httpContextAccessor.HttpContext?.User.FindFirstValue(ClaimTypes.NameIdentifier);
+            if (!string.IsNullOrWhiteSpace(identityUserId))
+                await CloseApplicationLoginSessionAsync(identityUserId);
+
             await _signInManager.SignOutAsync();
+        }
 
         // ── Assign Role ───────────────────────────────────────────────────────
 
@@ -224,40 +233,6 @@ namespace Accounts.Services.Services
         /// Called on registration, login, and role assignment to keep claims
         /// in sync with the ApplicationUser flags.
         /// </summary>
-        private async Task SyncOrganizationCeoRoleAsync(ApplicationUser user)
-        {
-            if (!user.TenantId.HasValue || user.IsSuperAdmin) return;
-
-            var tenantId = user.TenantId.Value;
-            var titles = _db.Persons.IgnoreQueryFilters()
-                .AsNoTracking()
-                .Where(person =>
-                    person.IdentityUserId == user.Id &&
-                    person.TenantId == tenantId &&
-                    person.IsActive &&
-                    person.Staff != null &&
-                    person.Staff.Vacancy != null)
-                .Select(person => person.Staff!.Vacancy!.JobTitleNav != null
-                    ? person.Staff.Vacancy.JobTitleNav.TitleName
-                    : person.Staff.Vacancy.JobTitle);
-            var isCeo = await titles.AnyAsync(title =>
-                title != null &&
-                (title.Trim().ToUpper() == "CEO" ||
-                 title.Trim().ToUpper() == "CHIEF EXECUTIVE OFFICER"));
-            var hasCeoRole = await _userManager.IsInRoleAsync(user, OrganizationCeoRole);
-
-            if (isCeo && !hasCeoRole)
-            {
-                if (!await _roleManager.RoleExistsAsync(OrganizationCeoRole))
-                    await _roleManager.CreateAsync(new IdentityRole(OrganizationCeoRole));
-                await _userManager.AddToRoleAsync(user, OrganizationCeoRole);
-            }
-            else if (!isCeo && hasCeoRole)
-            {
-                await _userManager.RemoveFromRoleAsync(user, OrganizationCeoRole);
-            }
-        }
-
         private async Task StampTenantClaimsAsync(ApplicationUser user)
         {
             // Remove stale tenant claims before re-stamping
@@ -296,6 +271,78 @@ namespace Accounts.Services.Services
                 fresh.Add(new Claim(AccountClaimTypes.StaffId, staffId.Value.ToString()));
 
             await _userManager.AddClaimsAsync(user, fresh);
+        }
+
+        private async Task OpenApplicationLoginSessionAsync(ApplicationUser user)
+        {
+            if (!user.TenantId.HasValue || user.IsSuperAdmin || user.IsTenantAdmin)
+                return;
+
+            await ApplicationLoginSessionSchema.EnsureCreatedAsync(_db);
+
+            var staffInfo = await _db.Persons.IgnoreQueryFilters()
+                .AsNoTracking()
+                .Where(person => person.IdentityUserId == user.Id && person.TenantId == user.TenantId.Value)
+                .Select(person => new
+                {
+                    person.PersonId,
+                    person.TimeZoneId,
+                    StaffId = person.Staff != null ? (Guid?)person.Staff.StaffId : null
+                })
+                .FirstOrDefaultAsync();
+
+            var nowUtc = DateTime.UtcNow;
+            var zone = ResolveTimeZone(staffInfo?.TimeZoneId);
+            var localNow = TimeZoneInfo.ConvertTimeFromUtc(nowUtc, zone);
+            var context = _httpContextAccessor.HttpContext;
+            var userAgent = context?.Request.Headers.UserAgent.ToString();
+            if (userAgent?.Length > 300) userAgent = userAgent[..300];
+
+            _db.ApplicationLoginSessions.Add(new ApplicationLoginSession
+            {
+                TenantId = user.TenantId.Value,
+                StaffId = staffInfo?.StaffId,
+                PersonId = staffInfo?.PersonId,
+                IdentityUserId = user.Id,
+                SessionDate = DateOnly.FromDateTime(localNow),
+                LoginUtc = nowUtc,
+                IpAddress = context?.Connection.RemoteIpAddress?.ToString(),
+                UserAgent = userAgent,
+                Source = "Software",
+                CreatedDate = nowUtc,
+            });
+
+            await _db.SaveChangesAsync();
+        }
+
+        private async Task CloseApplicationLoginSessionAsync(string identityUserId)
+        {
+            var user = await _userManager.FindByIdAsync(identityUserId);
+            if (user?.IsSuperAdmin == true || user?.IsTenantAdmin == true)
+                return;
+
+            await ApplicationLoginSessionSchema.EnsureCreatedAsync(_db);
+
+            var session = await _db.ApplicationLoginSessions
+                .IgnoreQueryFilters()
+                .Where(item => item.IdentityUserId == identityUserId && item.LogoutUtc == null)
+                .OrderByDescending(item => item.LoginUtc)
+                .FirstOrDefaultAsync();
+
+            if (session == null) return;
+
+            var nowUtc = DateTime.UtcNow;
+            session.LogoutUtc = nowUtc;
+            session.WorkingMinutes = Math.Max(0, (int)Math.Floor((nowUtc - session.LoginUtc).TotalMinutes));
+            session.ModifiedDate = nowUtc;
+            await _db.SaveChangesAsync();
+        }
+
+        private static TimeZoneInfo ResolveTimeZone(string? timeZoneId)
+        {
+            if (string.IsNullOrWhiteSpace(timeZoneId)) return TimeZoneInfo.Local;
+            try { return TimeZoneInfo.FindSystemTimeZoneById(timeZoneId); }
+            catch { return TimeZoneInfo.Local; }
         }
     }
 }

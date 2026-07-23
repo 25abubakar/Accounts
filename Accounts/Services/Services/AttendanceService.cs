@@ -584,9 +584,15 @@ public sealed class AttendanceService : IAttendanceService
     }
 
     public Task<DailyAttendanceReportDto> GetStaffAttendanceReportAsync(
-        string identityUserId, DateOnly dateFrom, DateOnly dateTo,
+        string identityUserId, bool organizationWide, DateOnly dateFrom, DateOnly dateTo,
         CancellationToken cancellationToken = default) =>
-        GetAttendanceReportAsync(identityUserId, organizationWide: false, selfOnly: true, dateFrom, dateTo, cancellationToken);
+        GetAttendanceReportAsync(
+            identityUserId,
+            organizationWide,
+            selfOnly: !organizationWide,
+            dateFrom,
+            dateTo,
+            cancellationToken);
 
     public async Task<MonthlyAttendanceChartDto> GetMonthlyChartAsync(
         string identityUserId, bool organizationWide, int year, int month,
@@ -1247,6 +1253,17 @@ public sealed class AttendanceService : IAttendanceService
         bool selfOnly,
         CancellationToken cancellationToken)
     {
+        var callerUser = await _db.Users.AsNoTracking()
+            .Where(user => user.Id == identityUserId)
+            .Select(user => new
+            {
+                user.Id,
+                user.TenantId,
+                user.IsSuperAdmin,
+                user.IsTenantAdmin
+            })
+            .FirstOrDefaultAsync(cancellationToken);
+
         var caller = await _db.Persons.AsNoTracking()
             .Where(person => person.IdentityUserId == identityUserId && person.IsActive)
             .Select(person => new
@@ -1267,15 +1284,17 @@ public sealed class AttendanceService : IAttendanceService
                         ? person.Staff.Vacancy.JobTitleNav.AttendanceVisibilityScope
                         : AttendanceVisibilityScope.Self
             })
-            .FirstOrDefaultAsync(cancellationToken)
-            ?? throw new KeyNotFoundException("No active employee profile is linked to this account.");
+            .FirstOrDefaultAsync(cancellationToken);
 
         var people = await _db.Persons.AsNoTracking()
-            .Where(person => person.IsActive)
+            .Where(person =>
+                person.IsActive &&
+                !_db.Users.Any(user => user.Id == person.IdentityUserId && user.IsTenantAdmin))
             .Select(person => new AttendanceVisibilityPerson
             {
                 PersonId = person.PersonId,
                 FullName = person.FullName,
+                TenantId = person.TenantId,
                 OrganizationId = person.Staff != null && person.Staff.Vacancy != null
                     ? (int?)person.Staff.Vacancy.OrganizationId
                     : null,
@@ -1287,14 +1306,32 @@ public sealed class AttendanceService : IAttendanceService
             })
             .ToListAsync(cancellationToken);
 
+        if (!selfOnly && organizationWide)
+        {
+            var organizationTenantId = caller?.TenantId ?? callerUser?.TenantId;
+            if (!organizationTenantId.HasValue)
+                throw new KeyNotFoundException("No active employee profile is linked to this account.");
+
+            var visiblePeople = people
+                .Where(person => person.TenantId == organizationTenantId.Value)
+                .ToList();
+
+            return new AttendanceVisibilityContext
+            {
+                CallerPersonId = caller?.PersonId ?? Guid.Empty,
+                TenantId = organizationTenantId.Value,
+                People = visiblePeople,
+                VisiblePersonIds = visiblePeople.Select(person => person.PersonId).ToHashSet()
+            };
+        }
+
+        if (caller == null)
+            throw new KeyNotFoundException("No active employee profile is linked to this account.");
+
         var visiblePersonIds = new HashSet<Guid> { caller.PersonId };
         var callerRank = AttendanceRoleRank(caller.JobTitle);
 
-        if (!selfOnly && organizationWide)
-        {
-            foreach (var person in people) visiblePersonIds.Add(person.PersonId);
-        }
-        else if (!selfOnly && caller.OrganizationId.HasValue)
+        if (!selfOnly && caller.OrganizationId.HasValue)
         {
             // The same title rank and configured visibility scope drive Daily Attendance,
             // Monthly Chart, and Timing Chart so an attendance screen cannot widen access.
@@ -1348,6 +1385,7 @@ public sealed class AttendanceService : IAttendanceService
     {
         public Guid PersonId { get; init; }
         public string FullName { get; init; } = string.Empty;
+        public int TenantId { get; init; }
         public int? OrganizationId { get; init; }
         public string? JobTitle { get; init; }
     }

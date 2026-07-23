@@ -74,6 +74,106 @@ namespace Accounts.Controllers
             return Ok(new { success = true, message = "Logged out successfully." });
         }
 
+        [HttpPost("login-sessions/close-current")]
+        [Authorize]
+        public async Task<IActionResult> CloseCurrentLoginSession(CancellationToken ct)
+        {
+            var identityUserId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+            if (string.IsNullOrWhiteSpace(identityUserId))
+                return Unauthorized(new { success = false, message = "Not authenticated." });
+
+            if (User.IsInRole("SuperAdmin") ||
+                User.IsInRole("TenantAdmin") ||
+                User.HasClaim(ITenantService.ClaimIsSuperAdmin, "true") ||
+                User.HasClaim(ITenantService.ClaimIsTenantAdmin, "true"))
+                return Ok(new { success = true, skipped = true });
+
+            var user = await _db.Users.AsNoTracking().SingleOrDefaultAsync(item => item.Id == identityUserId, CancellationToken.None);
+            if (user?.IsSuperAdmin == true || user?.IsTenantAdmin == true)
+                return Ok(new { success = true, skipped = true });
+
+            await ApplicationLoginSessionSchema.EnsureCreatedAsync(_db, CancellationToken.None);
+
+            var session = await _db.ApplicationLoginSessions
+                .IgnoreQueryFilters()
+                .Where(item => item.IdentityUserId == identityUserId && item.LogoutUtc == null)
+                .OrderByDescending(item => item.LoginUtc)
+                .FirstOrDefaultAsync(CancellationToken.None);
+
+            if (session != null)
+            {
+                var nowUtc = DateTime.UtcNow;
+                session.LogoutUtc = nowUtc;
+                session.WorkingMinutes = Math.Max(0, (int)Math.Floor((nowUtc - session.LoginUtc).TotalMinutes));
+                session.ModifiedDate = nowUtc;
+                await _db.SaveChangesAsync(CancellationToken.None);
+            }
+
+            return Ok(new { success = true });
+        }
+
+        [HttpPost("login-sessions/ensure-current")]
+        [Authorize]
+        public async Task<IActionResult> EnsureCurrentLoginSession(CancellationToken ct)
+        {
+            var identityUserId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+            if (string.IsNullOrWhiteSpace(identityUserId))
+                return Unauthorized(new { success = false, message = "Not authenticated." });
+
+            if (User.IsInRole("SuperAdmin") ||
+                User.IsInRole("TenantAdmin") ||
+                User.HasClaim(ITenantService.ClaimIsSuperAdmin, "true") ||
+                User.HasClaim(ITenantService.ClaimIsTenantAdmin, "true"))
+                return Ok(new { success = true, skipped = true });
+
+            await ApplicationLoginSessionSchema.EnsureCreatedAsync(_db, CancellationToken.None);
+
+            var user = await _db.Users.AsNoTracking().SingleOrDefaultAsync(item => item.Id == identityUserId, CancellationToken.None);
+            if (user?.IsSuperAdmin == true || user?.IsTenantAdmin == true)
+                return Ok(new { success = true, skipped = true });
+
+            var hasOpen = await _db.ApplicationLoginSessions
+                .IgnoreQueryFilters()
+                .AnyAsync(item => item.IdentityUserId == identityUserId && item.LogoutUtc == null, CancellationToken.None);
+            if (hasOpen) return Ok(new { success = true });
+
+            if (user?.TenantId == null) return Ok(new { success = true });
+
+            var staffInfo = await _db.Persons.IgnoreQueryFilters()
+                .AsNoTracking()
+                .Where(person => person.IdentityUserId == identityUserId && person.TenantId == user.TenantId.Value)
+                .Select(person => new
+                {
+                    person.PersonId,
+                    person.TimeZoneId,
+                    StaffId = person.Staff != null ? (Guid?)person.Staff.StaffId : null
+                })
+                .FirstOrDefaultAsync(CancellationToken.None);
+
+            var nowUtc = DateTime.UtcNow;
+            var zone = ResolveTimeZone(staffInfo?.TimeZoneId);
+            var localNow = TimeZoneInfo.ConvertTimeFromUtc(nowUtc, zone);
+            var userAgent = Request.Headers.UserAgent.ToString();
+            if (userAgent.Length > 300) userAgent = userAgent[..300];
+
+            _db.ApplicationLoginSessions.Add(new ApplicationLoginSession
+            {
+                TenantId = user.TenantId.Value,
+                StaffId = staffInfo?.StaffId,
+                PersonId = staffInfo?.PersonId,
+                IdentityUserId = identityUserId,
+                SessionDate = DateOnly.FromDateTime(localNow),
+                LoginUtc = nowUtc,
+                IpAddress = HttpContext.Connection.RemoteIpAddress?.ToString(),
+                UserAgent = userAgent,
+                Source = "Software",
+                CreatedDate = nowUtc,
+            });
+
+            await _db.SaveChangesAsync(CancellationToken.None);
+            return Ok(new { success = true });
+        }
+
         /// <summary>
         /// Post-login bootstrap: filtered sidebar, permissions, and admin instructions.
         /// Call immediately after successful login.
@@ -88,11 +188,13 @@ namespace Accounts.Controllers
             if (string.IsNullOrWhiteSpace(identityUserId))
                 return Unauthorized(new { success = false, message = "Not authenticated." });
 
-            var isFullAccess = User.IsInRole("SuperAdmin") || User.IsInRole("Admin") || User.IsInRole("CEO");
+            var isTenantAdmin = User.IsInRole("TenantAdmin") ||
+                string.Equals(User.FindFirstValue(ITenantService.ClaimIsTenantAdmin), "true", StringComparison.OrdinalIgnoreCase);
+            var isFullAccess = User.IsInRole("SuperAdmin") || User.IsInRole("Admin") || isTenantAdmin;
             var session = await _session.GetSessionAsync(
                 identityUserId,
                 isFullAccess,
-                User.IsInRole("CEO"),
+                false,
                 includeNavigation,
                 ct);
             return Ok(new { success = true, data = session });
@@ -146,7 +248,8 @@ namespace Accounts.Controllers
                 return Unauthorized(new { status = false, message = "Invalid token" });
 
             // ── SuperAdmin / Admin gets everything without any permission checks ──
-            bool isFullAccess = User.IsInRole("SuperAdmin") || User.IsInRole("Admin") || User.IsInRole("CEO");
+            bool isFullAccess = User.IsInRole("SuperAdmin") || User.IsInRole("Admin") || User.IsInRole("TenantAdmin") ||
+                string.Equals(User.FindFirstValue(ITenantService.ClaimIsTenantAdmin), "true", StringComparison.OrdinalIgnoreCase);
             _ = int.TryParse(User.FindFirstValue(ITenantService.ClaimTenantId), out var claimedTenantId);
             var appUser = new
             {
@@ -208,7 +311,7 @@ namespace Accounts.Controllers
                     status        = true,
                     isFullAccess  = true,
                     isSuperAdmin  = false,
-                    isTenantAdmin = (appUser?.IsTenantAdmin ?? false) || User.IsInRole("CEO"),
+                    isTenantAdmin = appUser?.IsTenantAdmin ?? false,
                     tenantId      = appUser?.TenantId,
                     staffId       = (Guid?)null,
                     menus         = allSidebar,
@@ -453,6 +556,13 @@ namespace Accounts.Controllers
                 sortOrder = menu.SortOrder,
                 children  = BuildFullTreeStatic(menu.Id, lookup)
             }).ToList();
+        }
+
+        private static TimeZoneInfo ResolveTimeZone(string? timeZoneId)
+        {
+            if (string.IsNullOrWhiteSpace(timeZoneId)) return TimeZoneInfo.Local;
+            try { return TimeZoneInfo.FindSystemTimeZoneById(timeZoneId); }
+            catch { return TimeZoneInfo.Local; }
         }
     }
 }

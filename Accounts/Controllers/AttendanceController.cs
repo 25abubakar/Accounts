@@ -217,17 +217,179 @@ public sealed class AttendanceController : ControllerBase
     public Task<IActionResult> RemoteAttendanceReport([FromQuery] DateOnly dateFrom, [FromQuery] DateOnly dateTo, CancellationToken ct) =>
         Execute(() => _service.GetRemoteAttendanceReportAsync(UserId(), CanViewOrganization(), dateFrom, dateTo, ct));
 
+    [HttpGet("report/login")]
+    public async Task<IActionResult> LoginAttendanceReport([FromQuery] DateOnly dateFrom, [FromQuery] DateOnly dateTo, CancellationToken ct)
+    {
+        if (dateFrom > dateTo) return BadRequest(new { message = "Date From cannot be later than Date To." });
+
+        var userId = UserId();
+        var canViewOrganization = CanViewOrganization();
+        await ApplicationLoginSessionSchema.EnsureCreatedAsync(_db, ct);
+        var query = _db.ApplicationLoginSessions
+            .AsNoTracking()
+            .Include(session => session.Person)
+            .ThenInclude(person => person!.Staff)
+            .ThenInclude(staff => staff!.Vacancy)
+            .ThenInclude(vacancy => vacancy!.JobTitleNav)
+            .Where(session =>
+                session.SessionDate >= dateFrom &&
+                session.SessionDate <= dateTo &&
+                !_db.Users.Any(user =>
+                    user.Id == session.IdentityUserId &&
+                    (user.IsTenantAdmin || user.IsSuperAdmin)));
+
+        if (!canViewOrganization)
+            query = query.Where(session => session.IdentityUserId == userId);
+
+        var rows = await query
+            .OrderByDescending(session => session.LoginUtc)
+            .ThenBy(session => session.Person != null ? session.Person.FullName : session.IdentityUserId)
+            .Select(session => new
+            {
+                session.Id,
+                session.StaffId,
+                session.PersonId,
+                session.SessionDate,
+                session.LoginUtc,
+                session.LogoutUtc,
+                session.WorkingMinutes,
+                session.IdentityUserId,
+                session.Source,
+                session.IpAddress,
+                session.Remarks,
+                PersonName = session.Person != null ? session.Person.FullName : string.Empty,
+                TimeZoneId = session.Person != null ? session.Person.TimeZoneId : null,
+                StaffNumber = session.Person != null && session.Person.Staff != null ? session.Person.Staff.LoginId : null,
+                Department = session.Person != null && session.Person.Staff != null && session.Person.Staff.Vacancy != null
+                    ? session.Person.Staff.Vacancy.Department
+                    : string.Empty,
+                Designation = session.Person != null && session.Person.Staff != null && session.Person.Staff.Vacancy != null
+                    ? (session.Person.Staff.Vacancy.JobTitleNav != null
+                        ? session.Person.Staff.Vacancy.JobTitleNav.TitleName
+                        : session.Person.Staff.Vacancy.JobTitle)
+                    : string.Empty,
+            })
+            .ToListAsync(ct);
+
+        var result = rows.Select(row =>
+        {
+            var zone = ResolveTimeZone(row.TimeZoneId);
+            return new LoginAttendanceSessionDto
+            {
+                Id = row.Id,
+                StaffId = row.StaffId,
+                PersonId = row.PersonId,
+                EmployeeNumber = row.StaffNumber ?? string.Empty,
+                EmployeeName = string.IsNullOrWhiteSpace(row.PersonName) ? row.IdentityUserId : row.PersonName,
+                Department = row.Department ?? string.Empty,
+                Designation = row.Designation ?? string.Empty,
+                Date = row.SessionDate,
+                LoginTime = TimeZoneInfo.ConvertTimeFromUtc(row.LoginUtc, zone).ToString("HH:mm", CultureInfo.InvariantCulture),
+                LogoutTime = row.LogoutUtc.HasValue
+                    ? TimeZoneInfo.ConvertTimeFromUtc(row.LogoutUtc.Value, zone).ToString("HH:mm", CultureInfo.InvariantCulture)
+                    : null,
+                WorkingMinutes = row.LogoutUtc.HasValue
+                    ? Math.Max(0, (int)Math.Floor((row.LogoutUtc.Value - row.LoginUtc).TotalMinutes))
+                    : Math.Max(0, (int)Math.Floor((DateTime.UtcNow - row.LoginUtc).TotalMinutes)),
+                Source = row.Source,
+                IpAddress = row.IpAddress,
+                Remarks = row.Remarks,
+            };
+        }).ToList();
+
+        return Ok(new LoginAttendanceReportDto
+        {
+            DateFrom = dateFrom,
+            DateTo = dateTo,
+            Rows = result,
+        });
+    }
+
+    [HttpPost("types/camera/entries")]
+    public async Task<IActionResult> SaveCameraAttendance([FromBody] SaveCameraAttendanceDto dto, CancellationToken ct)
+    {
+        if (!CanViewOrganization() || !_tenant.TenantId.HasValue) return Forbid();
+        if (dto.PersonId == Guid.Empty) return BadRequest(new { message = "Select a staff member." });
+        if (string.IsNullOrWhiteSpace(dto.CheckInTime) && string.IsNullOrWhiteSpace(dto.CheckOutTime))
+            return BadRequest(new { message = "Enter at least check-in or check-out time." });
+
+        var person = await _db.Persons
+            .Include(p => p.Staff)
+            .SingleOrDefaultAsync(p => p.PersonId == dto.PersonId && p.TenantId == _tenant.RequiredTenantId, ct);
+        if (person?.Staff == null) return NotFound(new { message = "Staff member was not found in the current organization." });
+
+        var zone = ResolveTimeZone(person.TimeZoneId);
+        DateTime? checkInUtc = null;
+        DateTime? checkOutUtc = null;
+        if (!string.IsNullOrWhiteSpace(dto.CheckInTime))
+        {
+            if (!TimeOnly.TryParseExact(dto.CheckInTime, "HH:mm", CultureInfo.InvariantCulture, DateTimeStyles.None, out var time))
+                return BadRequest(new { message = "Check-in time must be in HH:mm format." });
+            checkInUtc = ToUtc(dto.AttendanceDate, time, zone);
+        }
+        if (!string.IsNullOrWhiteSpace(dto.CheckOutTime))
+        {
+            if (!TimeOnly.TryParseExact(dto.CheckOutTime, "HH:mm", CultureInfo.InvariantCulture, DateTimeStyles.None, out var time))
+                return BadRequest(new { message = "Check-out time must be in HH:mm format." });
+            checkOutUtc = ToUtc(dto.AttendanceDate, time, zone);
+        }
+        if (checkInUtc.HasValue && checkOutUtc.HasValue && checkOutUtc.Value < checkInUtc.Value)
+            return BadRequest(new { message = "Check-out time cannot be earlier than check-in time." });
+
+        var entryType = await _db.AttendanceEntryTypes.SingleOrDefaultAsync(x => x.Code == "CAMERA" && x.IsActive, ct)
+            ?? await _db.AttendanceEntryTypes.SingleOrDefaultAsync(x => x.Code == "MANUAL" && x.IsActive, ct);
+        if (entryType == null) return BadRequest(new { message = "Camera attendance type is not configured." });
+        var workMode = await _db.AttendanceWorkModes.SingleOrDefaultAsync(x => x.Code == "ONSITE" && x.IsActive, ct);
+
+        var record = await _db.AttendanceRecords
+            .SingleOrDefaultAsync(x => x.PersonId == person.PersonId && x.AttendanceDate == dto.AttendanceDate, ct);
+        var now = DateTime.UtcNow;
+        if (record == null)
+        {
+            record = new AttendanceRecord
+            {
+                TenantId = person.TenantId,
+                PersonId = person.PersonId,
+                AttendanceDate = dto.AttendanceDate,
+                CreatedDate = now,
+            };
+            _db.AttendanceRecords.Add(record);
+        }
+
+        record.AttendanceEntryTypeId = entryType.Id;
+        record.AttendanceWorkModeId = workMode?.Id;
+        if (checkInUtc.HasValue) record.CheckInUtc = checkInUtc.Value;
+        if (checkOutUtc.HasValue) record.CheckOutUtc = checkOutUtc.Value;
+        record.ModifiedDate = now;
+        await _db.SaveChangesAsync(ct);
+
+        return Ok(new { message = "Camera attendance saved successfully." });
+    }
+
     [HttpGet("report/staff-attendance")]
     public Task<IActionResult> StaffAttendanceReport([FromQuery] DateOnly dateFrom, [FromQuery] DateOnly dateTo, CancellationToken ct) =>
-        Execute(() => _service.GetStaffAttendanceReportAsync(UserId(), dateFrom, dateTo, ct));
+        Execute(() => _service.GetStaffAttendanceReportAsync(UserId(), CanViewOrganization(), dateFrom, dateTo, ct));
 
     [HttpGet("report/monthly-chart")]
     public Task<IActionResult> MonthlyChart([FromQuery] int year, [FromQuery] int month, CancellationToken ct) =>
         Execute(() => _service.GetMonthlyChartAsync(UserId(), CanViewOrganization(), year, month, ct));
 
     private string UserId() => User.FindFirstValue(ClaimTypes.NameIdentifier) ?? throw new UnauthorizedAccessException();
-    private bool CanViewOthers() => User.IsInRole("SuperAdmin") || User.IsInRole("Admin") || User.IsInRole("CEO") || User.HasClaim(ITenantService.ClaimIsTenantAdmin, "true");
-    private bool CanViewOrganization() => User.IsInRole("SuperAdmin") || User.IsInRole("Admin") || User.IsInRole("CEO") || User.HasClaim(ITenantService.ClaimIsTenantAdmin, "true");
+    private bool CanViewOthers() => User.IsInRole("SuperAdmin") || User.IsInRole("Admin") || User.IsInRole("TenantAdmin") || User.HasClaim(ITenantService.ClaimIsTenantAdmin, "true");
+    private bool CanViewOrganization() => User.IsInRole("SuperAdmin") || User.IsInRole("Admin") || User.IsInRole("TenantAdmin") || User.HasClaim(ITenantService.ClaimIsTenantAdmin, "true");
+    private static TimeZoneInfo ResolveTimeZone(string? timeZoneId)
+    {
+        if (string.IsNullOrWhiteSpace(timeZoneId)) return TimeZoneInfo.Local;
+        try { return TimeZoneInfo.FindSystemTimeZoneById(timeZoneId); }
+        catch { return TimeZoneInfo.Local; }
+    }
+
+    private static DateTime ToUtc(DateOnly date, TimeOnly time, TimeZoneInfo zone)
+    {
+        var local = DateTime.SpecifyKind(date.ToDateTime(time), DateTimeKind.Unspecified);
+        return TimeZoneInfo.ConvertTimeToUtc(local, zone);
+    }
+
     private static AttendanceMapRuleDto ToMapRuleDto(AttendanceMapRule rule, string shiftName) => new()
     {
         Id = rule.Id,

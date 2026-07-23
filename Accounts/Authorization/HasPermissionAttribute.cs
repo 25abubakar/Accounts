@@ -1,4 +1,5 @@
 using Accounts.Data;
+using Accounts.Services.Interfaces;
 using Accounts.Services.Services;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.Filters;
@@ -76,7 +77,8 @@ namespace Accounts.Authorization
 
             // ── 2. SuperAdmin / Admin / TenantAdmin bypasses all permission checks ──
             // TenantAdmin access is controlled by TenantMenuPermissions, not RBAC
-            if (user.IsInRole("SuperAdmin") || user.IsInRole("Admin") || user.IsInRole("CEO") || user.IsInRole("TenantAdmin"))
+            if (user.IsInRole("SuperAdmin") || user.IsInRole("Admin") || user.IsInRole("TenantAdmin") ||
+                string.Equals(user.FindFirstValue(ITenantService.ClaimIsTenantAdmin), "true", StringComparison.OrdinalIgnoreCase))
                 return;
 
             // ── 3. Get IdentityUser.Id from claims ────────────────────────────

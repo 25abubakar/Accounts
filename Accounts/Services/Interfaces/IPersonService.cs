@@ -10,6 +10,8 @@ namespace Accounts.Services.Interfaces
         Task<PersonDto?> GetByIdentityUserIdAsync(string identityUserId);
         Task<IEnumerable<PersonProfileDto>> GetProfilesAsync();
         Task<PersonProfileDto?> GetProfileAsync(Guid id);
+        Task<PersonHrProfileDto?> GetHrProfileAsync(Guid id);
+        Task<(PersonHrProfileDto? Profile, string? Error)> UpdateHrProfileAsync(Guid id, PersonHrProfileDto dto);
         Task<object> GetOrgTreeAsync();
         Task<object?> PreviewLoginIdAsync(int branchId);
         Task<object?> PreviewEmailAsync(int branchId, string fullName);

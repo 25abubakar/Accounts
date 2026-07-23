@@ -1,6 +1,7 @@
 using Accounts.Data;
 using Accounts.Models;
 using Accounts.Services.Interfaces;
+using Accounts.Services.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -21,18 +22,50 @@ namespace Accounts.Controllers
     {
         private readonly IStaffService               _service;
         private readonly ApplicationDbContext        _db;
+        private readonly RbacService                 _rbac;
 
         public StaffController(
             IStaffService               service,
-            ApplicationDbContext        db)
+            ApplicationDbContext        db,
+            RbacService                 rbac)
         {
             _service     = service;
             _db          = db;
+            _rbac        = rbac;
         }
 
         private Task<bool> CallerIsSuperAdminAsync() => Task.FromResult(
             User.IsInRole("SuperAdmin") ||
             string.Equals(User.FindFirstValue(ITenantService.ClaimIsSuperAdmin), "true", StringComparison.OrdinalIgnoreCase));
+
+        private async Task<bool> HasStaffActionAsync(string action, params string[] semanticKeys)
+        {
+            if (User.IsInRole("Admin") || User.IsInRole("TenantAdmin") ||
+                string.Equals(User.FindFirstValue(ITenantService.ClaimIsTenantAdmin), "true", StringComparison.OrdinalIgnoreCase))
+                return true;
+
+            var identityUserId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+            if (string.IsNullOrWhiteSpace(identityUserId)) return false;
+
+            var staffId = await _db.Persons.AsNoTracking()
+                .Where(person => person.IdentityUserId == identityUserId && person.Staff != null)
+                .Select(person => (Guid?)person.Staff!.StaffId)
+                .FirstOrDefaultAsync();
+            if (!staffId.HasValue) return false;
+
+            var staffMenuId = await _db.Menus.AsNoTracking()
+                .Where(menu => menu.IsActive && menu.Route == "/hr/staff")
+                .Select(menu => (int?)menu.Id)
+                .FirstOrDefaultAsync();
+
+            if (staffMenuId.HasValue && await _rbac.HasAccessAsync(staffId.Value, $"MENU_{staffMenuId.Value}_{action}"))
+                return true;
+
+            foreach (var key in semanticKeys)
+                if (await _rbac.HasAccessAsync(staffId.Value, key)) return true;
+
+            return false;
+        }
 
         [HttpGet]
         public async Task<IActionResult> GetAll()
@@ -130,6 +163,7 @@ namespace Accounts.Controllers
         public async Task<IActionResult> Hire(Guid vacancyId, [FromBody] HireStaffDto dto)
         {
             if (await CallerIsSuperAdminAsync()) return Forbid();
+            if (!await HasStaffActionAsync("ADD", "PERSON_REGISTER")) return Forbid();
             if (!ModelState.IsValid) return BadRequest(ModelState);
             var (staff, error) = await _service.HireAsync(vacancyId, dto);
             if (error != null) return error.Contains("not found") ? NotFound(new { message = error }) : BadRequest(new { message = error });
@@ -140,6 +174,7 @@ namespace Accounts.Controllers
         public async Task<IActionResult> HirePerson(Guid vacancyId, [FromQuery] Guid personId)
         {
             if (await CallerIsSuperAdminAsync()) return Forbid();
+            if (!await HasStaffActionAsync("ADD", "PERSON_REGISTER")) return Forbid();
             var (staff, error) = await _service.HirePersonAsync(vacancyId, personId);
             if (error != null) return error.Contains("not found") ? NotFound(new { message = error }) : BadRequest(new { message = error });
             return CreatedAtAction(nameof(GetById), new { id = staff!.StaffId }, staff);
@@ -149,6 +184,7 @@ namespace Accounts.Controllers
         public async Task<IActionResult> Update(Guid id, [FromBody] UpdateStaffDto dto)
         {
             if (await CallerIsSuperAdminAsync()) return Forbid();
+            if (!await HasStaffActionAsync("EDIT", "EMPLOYEE_EDIT", "PERSON_EDIT")) return Forbid();
             if (!ModelState.IsValid) return BadRequest(ModelState);
             var (staff, error) = await _service.UpdateAsync(id, dto);
             if (error != null) return NotFound(new { message = error });
@@ -160,6 +196,7 @@ namespace Accounts.Controllers
         public async Task<IActionResult> UploadPhoto(Guid id, IFormFile photo)
         {
             if (await CallerIsSuperAdminAsync()) return Forbid();
+            if (!await HasStaffActionAsync("EDIT", "EMPLOYEE_EDIT", "PERSON_EDIT")) return Forbid();
             var baseUrl = $"{Request.Scheme}://{Request.Host}";
             var (photoUrl, fullUrl, error) = await _service.UploadPhotoAsync(id, photo, baseUrl);
             if (error != null) return error.Contains("not found") ? NotFound(new { message = error }) : BadRequest(new { message = error });
@@ -170,6 +207,7 @@ namespace Accounts.Controllers
         public async Task<IActionResult> DeletePhoto(Guid id)
         {
             if (await CallerIsSuperAdminAsync()) return Forbid();
+            if (!await HasStaffActionAsync("EDIT", "EMPLOYEE_EDIT", "PERSON_EDIT")) return Forbid();
             var (success, message) = await _service.DeletePhotoAsync(id);
             if (!success) return message.Contains("not found") ? NotFound(new { message }) : BadRequest(new { message });
             return Ok(new { message });
@@ -179,6 +217,7 @@ namespace Accounts.Controllers
         public async Task<IActionResult> Transfer(Guid id, [FromBody] TransferStaffDto dto)
         {
             if (await CallerIsSuperAdminAsync()) return Forbid();
+            if (!await HasStaffActionAsync("EDIT", "EMPLOYEE_TRANSFER", "EMPLOYEE_EDIT")) return Forbid();
             if (!ModelState.IsValid) return BadRequest(ModelState);
             var (staff, error) = await _service.TransferAsync(id, dto);
             if (error != null) return error.Contains("not found") ? NotFound(new { message = error }) : BadRequest(new { message = error });
@@ -189,6 +228,7 @@ namespace Accounts.Controllers
         public async Task<IActionResult> Delete(Guid id)
         {
             if (await CallerIsSuperAdminAsync()) return Forbid();
+            if (!await HasStaffActionAsync("DELETE", "EMPLOYEE_DELETE", "PERSON_DELETE")) return Forbid();
             var (success, message) = await _service.DeleteAsync(id);
             if (!success) return message.Contains("not found") ? NotFound(new { message }) : BadRequest(new { message });
             return Ok(new { message });

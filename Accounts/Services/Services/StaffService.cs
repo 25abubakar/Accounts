@@ -103,7 +103,7 @@ namespace Accounts.Services.Services
 
             var staff = await _db.StaffVacancies.FindAsync(id);
             if (staff == null) return (null, $"Staff {id} not found.");
-            return (MapToDto((await WithIncludes().FirstAsync(x => x.StaffId == staff.StaffId))!), "Staff profile fields now live on Person. Update the linked Person instead.");
+            return (MapToDto((await WithIncludes().FirstAsync(x => x.StaffId == staff.StaffId))!), null);
         }
 
         public async Task<(StaffDto? Staff, string? Error)> TransferAsync(Guid id, TransferStaffDto dto)

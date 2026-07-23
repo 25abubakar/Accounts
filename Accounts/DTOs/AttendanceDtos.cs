@@ -249,6 +249,40 @@ public sealed class DailyAttendanceReportDto
     public IReadOnlyList<DailyAttendanceRowDto> Rows { get; set; } = Array.Empty<DailyAttendanceRowDto>();
 }
 
+public sealed class SaveCameraAttendanceDto
+{
+    public Guid PersonId { get; set; }
+    public DateOnly AttendanceDate { get; set; }
+    public string? CheckInTime { get; set; }
+    public string? CheckOutTime { get; set; }
+    public string? Remarks { get; set; }
+}
+
+public sealed class LoginAttendanceSessionDto
+{
+    public long Id { get; set; }
+    public Guid? StaffId { get; set; }
+    public Guid? PersonId { get; set; }
+    public string EmployeeNumber { get; set; } = string.Empty;
+    public string EmployeeName { get; set; } = string.Empty;
+    public string Department { get; set; } = string.Empty;
+    public string Designation { get; set; } = string.Empty;
+    public DateOnly Date { get; set; }
+    public string LoginTime { get; set; } = string.Empty;
+    public string? LogoutTime { get; set; }
+    public int WorkingMinutes { get; set; }
+    public string Source { get; set; } = string.Empty;
+    public string? IpAddress { get; set; }
+    public string? Remarks { get; set; }
+}
+
+public sealed class LoginAttendanceReportDto
+{
+    public DateOnly DateFrom { get; set; }
+    public DateOnly DateTo { get; set; }
+    public IReadOnlyList<LoginAttendanceSessionDto> Rows { get; set; } = Array.Empty<LoginAttendanceSessionDto>();
+}
+
 public sealed class MonthlyAttendanceChartCellDto
 {
     public long? AttendanceId { get; set; }

@@ -46,7 +46,7 @@ namespace Accounts.Services.Services
                 Email          = appUser?.Email,
                 TenantId       = appUser?.TenantId,
                 IsSuperAdmin   = appUser?.IsSuperAdmin ?? false,
-                IsTenantAdmin  = (appUser?.IsTenantAdmin ?? false) || isOrganizationCeo
+                IsTenantAdmin  = appUser?.IsTenantAdmin ?? false
             };
 
             if (appUser?.TenantId is int tenantId)

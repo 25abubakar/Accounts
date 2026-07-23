@@ -88,6 +88,157 @@ namespace Accounts.Services.Services
             return MapToProfile(person, orgNodes);
         }
 
+        public async Task<PersonHrProfileDto?> GetHrProfileAsync(Guid id)
+        {
+            var profile = await _db.PersonHrProfileReadRows.AsNoTracking()
+                .FirstOrDefaultAsync(x => x.PersonId == id);
+            if (profile == null) return null;
+
+            var educations = await _db.PersonEducations.AsNoTracking()
+                .Where(x => x.PersonId == id)
+                .OrderBy(x => x.SortOrder)
+                .ToListAsync();
+            var experiences = await _db.PersonExperiences.AsNoTracking()
+                .Where(x => x.PersonId == id)
+                .OrderBy(x => x.SortOrder)
+                .ToListAsync();
+
+            return MapHrProfile(profile, educations, experiences);
+        }
+
+        public async Task<(PersonHrProfileDto? Profile, string? Error)> UpdateHrProfileAsync(Guid id, PersonHrProfileDto dto)
+        {
+            var person = await _db.Persons
+                .Include(p => p.Contacts)
+                .Include(p => p.Staff)
+                .FirstOrDefaultAsync(p => p.PersonId == id);
+            if (person == null) return (null, $"Person {id} not found.");
+            if (string.IsNullOrWhiteSpace(dto.FullName)) return (null, "FullName is required.");
+
+            var (firstName, middleName, lastName) = SplitFullName(dto.FullName);
+            person.FirstName = firstName;
+            person.MiddleName = middleName;
+            person.LastName = lastName;
+            person.FullName = dto.FullName.Trim();
+            person.Phone = dto.Phone?.Trim();
+            person.Email = dto.Email?.Trim();
+            person.PersonalEmail = dto.PersonalEmail?.Trim();
+            person.Gender = dto.Gender?.Trim();
+            person.DateOfBirth = dto.DateOfBirth;
+            person.MaritalStatus = dto.MaritalStatus?.Trim();
+            person.ShiftStartTime = string.IsNullOrWhiteSpace(dto.ShiftStartTime) ? person.ShiftStartTime : dto.ShiftStartTime.Trim();
+            person.ShiftEndTime = string.IsNullOrWhiteSpace(dto.ShiftEndTime) ? person.ShiftEndTime : dto.ShiftEndTime.Trim();
+            person.TimeZoneId = string.IsNullOrWhiteSpace(dto.TimeZoneId) ? person.TimeZoneId : dto.TimeZoneId.Trim();
+
+            UpsertContact(person, "Phone", person.Phone, true);
+            UpsertContact(person, "Email", person.Email, true);
+            UpsertContact(person, "PersonalEmail", person.PersonalEmail, false);
+            UpsertContact(person, "Emergency", dto.EmergencyContactNo?.Trim(), true);
+
+            var profile = await _db.PersonHrProfiles.FirstOrDefaultAsync(x => x.PersonId == id);
+            if (profile == null)
+            {
+                profile = new PersonHrProfile
+                {
+                    PersonId = id,
+                    TenantId = person.TenantId,
+                    CreatedDate = DateTime.UtcNow
+                };
+                _db.PersonHrProfiles.Add(profile);
+            }
+
+            profile.CnicOrLicense = dto.CnicOrLicense?.Trim();
+            profile.Nationality = dto.Nationality?.Trim();
+            profile.Race = dto.Race?.Trim();
+            profile.Language = dto.Language?.Trim();
+            profile.BloodGroup = dto.BloodGroup?.Trim();
+            profile.Disability = dto.Disability?.Trim();
+            profile.PoliceStation = dto.PoliceStation?.Trim();
+            profile.EmergencyContactNo = dto.EmergencyContactNo?.Trim();
+            profile.MedicalFrom = dto.MedicalFrom;
+            profile.MedicalTo = dto.MedicalTo;
+            profile.Treatment = dto.Treatment?.Trim();
+            profile.DiagnosisDisease = dto.DiagnosisDisease?.Trim();
+            profile.Doctor = dto.Doctor?.Trim();
+            profile.DoctorContactNo = dto.DoctorContactNo?.Trim();
+            profile.BankName = dto.BankName?.Trim();
+            profile.BankBranchName = dto.BankBranchName?.Trim();
+            profile.BankBranchCode = dto.BankBranchCode?.Trim();
+            profile.SwiftCode = dto.SwiftCode?.Trim();
+            profile.AccountTitle = dto.AccountTitle?.Trim();
+            profile.AccountNo = dto.AccountNo?.Trim();
+            profile.IbanNo = dto.IbanNo?.Trim();
+            profile.BankBranchContactNo = dto.BankBranchContactNo?.Trim();
+            profile.TaxNumber = dto.TaxNumber?.Trim();
+            profile.PaymentMode = dto.PaymentMode?.Trim();
+            profile.InductionType = dto.InductionType?.Trim();
+            profile.JoiningDate = dto.JoiningDate;
+            profile.TrainingFrom = dto.TrainingFrom;
+            profile.TrainingTo = dto.TrainingTo;
+            profile.ProbationFrom = dto.ProbationFrom;
+            profile.ProbationTo = dto.ProbationTo;
+            profile.ContractFrom = dto.ContractFrom;
+            profile.ContractTo = dto.ContractTo;
+            profile.WorkingDays = dto.WorkingDays?.Trim();
+            profile.WorkingHours = dto.WorkingHours?.Trim();
+            profile.TimingFrom = dto.TimingFrom?.Trim();
+            profile.TimingTo = dto.TimingTo?.Trim();
+            profile.PostingPerHour = dto.PostingPerHour;
+            profile.PostingPerDay = dto.PostingPerDay;
+            profile.PromotionFrom = dto.PromotionFrom;
+            profile.PromotionTo = dto.PromotionTo;
+            profile.Scale = dto.Scale?.Trim();
+            profile.ScaleDate = dto.ScaleDate;
+            profile.BasicSalary = dto.BasicSalary;
+            profile.IncrementSalary = dto.IncrementSalary;
+            profile.MaxSalary = dto.MaxSalary;
+            profile.CurrentPay = dto.CurrentPay;
+            profile.AccountsPerDay = dto.AccountsPerDay;
+            profile.AccountsPerHour = dto.AccountsPerHour;
+            profile.LeaveFrom = dto.LeaveFrom;
+            profile.LeaveTo = dto.LeaveTo;
+            profile.LeaveEntitled = dto.LeaveEntitled;
+            profile.LeaveAvailed = dto.LeaveAvailed;
+            profile.ModifiedDate = DateTime.UtcNow;
+
+            var oldEducations = await _db.PersonEducations.Where(x => x.PersonId == id).ToListAsync();
+            var oldExperiences = await _db.PersonExperiences.Where(x => x.PersonId == id).ToListAsync();
+            _db.PersonEducations.RemoveRange(oldEducations);
+            _db.PersonExperiences.RemoveRange(oldExperiences);
+
+            var educationRows = dto.Educations
+                .Where(x => !string.IsNullOrWhiteSpace(x.EducationLevel) || !string.IsNullOrWhiteSpace(x.DegreeTitle) || !string.IsNullOrWhiteSpace(x.Institute))
+                .Select((x, index) => new PersonEducation
+                {
+                    TenantId = person.TenantId,
+                    PersonId = id,
+                    EducationLevel = x.EducationLevel?.Trim(),
+                    DegreeTitle = x.DegreeTitle?.Trim(),
+                    Institute = x.Institute?.Trim(),
+                    PassingYear = x.PassingYear?.Trim(),
+                    Grade = x.Grade?.Trim(),
+                    SortOrder = index + 1
+                });
+            var experienceRows = dto.Experiences
+                .Where(x => !string.IsNullOrWhiteSpace(x.CompanyName) || !string.IsNullOrWhiteSpace(x.Role))
+                .Select((x, index) => new PersonExperience
+                {
+                    TenantId = person.TenantId,
+                    PersonId = id,
+                    CompanyName = x.CompanyName?.Trim(),
+                    Role = x.Role?.Trim(),
+                    StartDate = x.StartDate,
+                    EndDate = x.EndDate,
+                    Summary = x.Summary?.Trim(),
+                    SortOrder = index + 1
+                });
+            _db.PersonEducations.AddRange(educationRows);
+            _db.PersonExperiences.AddRange(experienceRows);
+
+            await _db.SaveChangesAsync();
+            return (await GetHrProfileAsync(id), null);
+        }
+
         public async Task<object> GetOrgTreeAsync()
         {
             var all      = await _db.OrganizationTree.OrderBy(n => n.Name).ToListAsync();
@@ -890,6 +1041,33 @@ namespace Accounts.Services.Services
             }
         }
 
+        private void UpsertContact(Person person, string type, string? value, bool isPrimary)
+        {
+            var existing = person.Contacts.FirstOrDefault(c =>
+                c.ContactType == type && (!isPrimary || c.IsPrimary));
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                if (existing != null) _db.PersonContacts.Remove(existing);
+                return;
+            }
+            if (existing != null)
+            {
+                existing.ContactValue = value.Trim();
+                existing.IsPrimary = isPrimary;
+            }
+            else
+            {
+                person.Contacts.Add(new PersonContact
+                {
+                    PersonId = person.PersonId,
+                    ContactType = type,
+                    ContactValue = value.Trim(),
+                    IsPrimary = isPrimary,
+                    CreatedDate = DateTime.UtcNow
+                });
+            }
+        }
+
         /// <summary>
         /// Splits a full name string into (FirstName, MiddleName, LastName).
         /// "Ali"              → ("Ali",  null,  null)
@@ -1002,6 +1180,193 @@ namespace Accounts.Services.Services
                 ShiftStartTime = p.ShiftStartTime, ShiftEndTime = p.ShiftEndTime, TimeZoneId = p.TimeZoneId,
                 CurrentAddress   = ToAddressResponse(cur),
                 PermanentAddress = ToAddressResponse(perm ?? cur)
+            };
+        }
+
+        private static PersonHrProfileDto MapHrProfile(
+            PersonHrProfileReadRow profile,
+            IEnumerable<PersonEducation> educations,
+            IEnumerable<PersonExperience> experiences)
+        {
+            return new PersonHrProfileDto
+            {
+                PersonId = profile.PersonId,
+                FullName = profile.FullName,
+                Phone = profile.Phone,
+                Email = profile.Email,
+                PersonalEmail = profile.PersonalEmail,
+                Gender = profile.Gender,
+                DateOfBirth = profile.DateOfBirth,
+                MaritalStatus = profile.MaritalStatus,
+                ShiftStartTime = profile.ShiftStartTime,
+                ShiftEndTime = profile.ShiftEndTime,
+                TimeZoneId = profile.TimeZoneId,
+                CnicOrLicense = profile.CnicOrLicense,
+                Nationality = profile.Nationality,
+                Race = profile.Race,
+                Language = profile.Language,
+                BloodGroup = profile.BloodGroup,
+                Disability = profile.Disability,
+                PoliceStation = profile.PoliceStation,
+                EmergencyContactNo = profile.EmergencyContactNo,
+                MedicalFrom = profile.MedicalFrom,
+                MedicalTo = profile.MedicalTo,
+                Treatment = profile.Treatment,
+                DiagnosisDisease = profile.DiagnosisDisease,
+                Doctor = profile.Doctor,
+                DoctorContactNo = profile.DoctorContactNo,
+                BankName = profile.BankName,
+                BankBranchName = profile.BankBranchName,
+                BankBranchCode = profile.BankBranchCode,
+                SwiftCode = profile.SwiftCode,
+                AccountTitle = profile.AccountTitle,
+                AccountNo = profile.AccountNo,
+                IbanNo = profile.IbanNo,
+                BankBranchContactNo = profile.BankBranchContactNo,
+                TaxNumber = profile.TaxNumber,
+                PaymentMode = profile.PaymentMode,
+                InductionType = profile.InductionType,
+                JoiningDate = profile.JoiningDate,
+                TrainingFrom = profile.TrainingFrom,
+                TrainingTo = profile.TrainingTo,
+                ProbationFrom = profile.ProbationFrom,
+                ProbationTo = profile.ProbationTo,
+                ContractFrom = profile.ContractFrom,
+                ContractTo = profile.ContractTo,
+                WorkingDays = profile.WorkingDays,
+                WorkingHours = profile.WorkingHours,
+                TimingFrom = profile.TimingFrom,
+                TimingTo = profile.TimingTo,
+                PostingPerHour = profile.PostingPerHour,
+                PostingPerDay = profile.PostingPerDay,
+                PromotionFrom = profile.PromotionFrom,
+                PromotionTo = profile.PromotionTo,
+                Scale = profile.Scale,
+                ScaleDate = profile.ScaleDate,
+                BasicSalary = profile.BasicSalary,
+                IncrementSalary = profile.IncrementSalary,
+                MaxSalary = profile.MaxSalary,
+                CurrentPay = profile.CurrentPay,
+                AccountsPerDay = profile.AccountsPerDay,
+                AccountsPerHour = profile.AccountsPerHour,
+                LeaveFrom = profile.LeaveFrom,
+                LeaveTo = profile.LeaveTo,
+                LeaveEntitled = profile.LeaveEntitled,
+                LeaveAvailed = profile.LeaveAvailed,
+                Educations = educations.Select(x => new PersonEducationDto
+                {
+                    EducationId = x.EducationId,
+                    EducationLevel = x.EducationLevel,
+                    DegreeTitle = x.DegreeTitle,
+                    Institute = x.Institute,
+                    PassingYear = x.PassingYear,
+                    Grade = x.Grade,
+                    SortOrder = x.SortOrder
+                }).ToList(),
+                Experiences = experiences.Select(x => new PersonExperienceDto
+                {
+                    ExperienceId = x.ExperienceId,
+                    CompanyName = x.CompanyName,
+                    Role = x.Role,
+                    StartDate = x.StartDate,
+                    EndDate = x.EndDate,
+                    Summary = x.Summary,
+                    SortOrder = x.SortOrder
+                }).ToList()
+            };
+        }
+
+        private static PersonHrProfileDto MapHrProfile(
+            Person person,
+            PersonHrProfile? profile,
+            IEnumerable<PersonEducation> educations,
+            IEnumerable<PersonExperience> experiences)
+        {
+            return new PersonHrProfileDto
+            {
+                PersonId = person.PersonId,
+                FullName = person.FullName,
+                Phone = person.Phone,
+                Email = person.Email,
+                PersonalEmail = person.PersonalEmail ?? person.Contacts.FirstOrDefault(c => c.ContactType == "PersonalEmail")?.ContactValue,
+                Gender = person.Gender,
+                DateOfBirth = person.DateOfBirth,
+                MaritalStatus = person.MaritalStatus,
+                ShiftStartTime = person.ShiftStartTime,
+                ShiftEndTime = person.ShiftEndTime,
+                TimeZoneId = person.TimeZoneId,
+                CnicOrLicense = profile?.CnicOrLicense,
+                Nationality = profile?.Nationality,
+                Race = profile?.Race,
+                Language = profile?.Language,
+                BloodGroup = profile?.BloodGroup,
+                Disability = profile?.Disability,
+                PoliceStation = profile?.PoliceStation,
+                EmergencyContactNo = profile?.EmergencyContactNo ?? person.Contacts.FirstOrDefault(c => c.ContactType == "Emergency")?.ContactValue,
+                MedicalFrom = profile?.MedicalFrom,
+                MedicalTo = profile?.MedicalTo,
+                Treatment = profile?.Treatment,
+                DiagnosisDisease = profile?.DiagnosisDisease,
+                Doctor = profile?.Doctor,
+                DoctorContactNo = profile?.DoctorContactNo,
+                BankName = profile?.BankName,
+                BankBranchName = profile?.BankBranchName,
+                BankBranchCode = profile?.BankBranchCode,
+                SwiftCode = profile?.SwiftCode,
+                AccountTitle = profile?.AccountTitle,
+                AccountNo = profile?.AccountNo,
+                IbanNo = profile?.IbanNo,
+                BankBranchContactNo = profile?.BankBranchContactNo,
+                TaxNumber = profile?.TaxNumber,
+                PaymentMode = profile?.PaymentMode,
+                InductionType = profile?.InductionType,
+                JoiningDate = profile?.JoiningDate,
+                TrainingFrom = profile?.TrainingFrom,
+                TrainingTo = profile?.TrainingTo,
+                ProbationFrom = profile?.ProbationFrom,
+                ProbationTo = profile?.ProbationTo,
+                ContractFrom = profile?.ContractFrom,
+                ContractTo = profile?.ContractTo,
+                WorkingDays = profile?.WorkingDays,
+                WorkingHours = profile?.WorkingHours,
+                TimingFrom = profile?.TimingFrom,
+                TimingTo = profile?.TimingTo,
+                PostingPerHour = profile?.PostingPerHour,
+                PostingPerDay = profile?.PostingPerDay,
+                PromotionFrom = profile?.PromotionFrom,
+                PromotionTo = profile?.PromotionTo,
+                Scale = profile?.Scale,
+                ScaleDate = profile?.ScaleDate,
+                BasicSalary = profile?.BasicSalary,
+                IncrementSalary = profile?.IncrementSalary,
+                MaxSalary = profile?.MaxSalary,
+                CurrentPay = profile?.CurrentPay,
+                AccountsPerDay = profile?.AccountsPerDay,
+                AccountsPerHour = profile?.AccountsPerHour,
+                LeaveFrom = profile?.LeaveFrom,
+                LeaveTo = profile?.LeaveTo,
+                LeaveEntitled = profile?.LeaveEntitled,
+                LeaveAvailed = profile?.LeaveAvailed,
+                Educations = educations.Select(x => new PersonEducationDto
+                {
+                    EducationId = x.EducationId,
+                    EducationLevel = x.EducationLevel,
+                    DegreeTitle = x.DegreeTitle,
+                    Institute = x.Institute,
+                    PassingYear = x.PassingYear,
+                    Grade = x.Grade,
+                    SortOrder = x.SortOrder
+                }).ToList(),
+                Experiences = experiences.Select(x => new PersonExperienceDto
+                {
+                    ExperienceId = x.ExperienceId,
+                    CompanyName = x.CompanyName,
+                    Role = x.Role,
+                    StartDate = x.StartDate,
+                    EndDate = x.EndDate,
+                    Summary = x.Summary,
+                    SortOrder = x.SortOrder
+                }).ToList()
             };
         }
     }

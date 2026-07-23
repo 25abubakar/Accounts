@@ -1,0 +1,74 @@
+namespace Accounts.Models;
+
+public class PersonHrProfileReadRow
+{
+    public Guid PersonId { get; set; }
+    public int TenantId { get; set; }
+    public string FullName { get; set; } = string.Empty;
+    public string? LoginId { get; set; }
+    public Guid? StaffId { get; set; }
+    public string? VacancyCode { get; set; }
+    public string? JobTitle { get; set; }
+    public string? Department { get; set; }
+    public string? Phone { get; set; }
+    public string? Email { get; set; }
+    public string? PersonalEmail { get; set; }
+    public string? Gender { get; set; }
+    public DateTime? DateOfBirth { get; set; }
+    public string? MaritalStatus { get; set; }
+    public string? ShiftStartTime { get; set; }
+    public string? ShiftEndTime { get; set; }
+    public string? TimeZoneId { get; set; }
+    public string? CnicOrLicense { get; set; }
+    public string? Nationality { get; set; }
+    public string? Race { get; set; }
+    public string? Language { get; set; }
+    public string? BloodGroup { get; set; }
+    public string? Disability { get; set; }
+    public string? PoliceStation { get; set; }
+    public string? EmergencyContactNo { get; set; }
+    public DateTime? MedicalFrom { get; set; }
+    public DateTime? MedicalTo { get; set; }
+    public string? Treatment { get; set; }
+    public string? DiagnosisDisease { get; set; }
+    public string? Doctor { get; set; }
+    public string? DoctorContactNo { get; set; }
+    public string? BankName { get; set; }
+    public string? BankBranchName { get; set; }
+    public string? BankBranchCode { get; set; }
+    public string? SwiftCode { get; set; }
+    public string? AccountTitle { get; set; }
+    public string? AccountNo { get; set; }
+    public string? IbanNo { get; set; }
+    public string? BankBranchContactNo { get; set; }
+    public string? TaxNumber { get; set; }
+    public string? PaymentMode { get; set; }
+    public string? InductionType { get; set; }
+    public DateTime? JoiningDate { get; set; }
+    public DateTime? TrainingFrom { get; set; }
+    public DateTime? TrainingTo { get; set; }
+    public DateTime? ProbationFrom { get; set; }
+    public DateTime? ProbationTo { get; set; }
+    public DateTime? ContractFrom { get; set; }
+    public DateTime? ContractTo { get; set; }
+    public string? WorkingDays { get; set; }
+    public string? WorkingHours { get; set; }
+    public string? TimingFrom { get; set; }
+    public string? TimingTo { get; set; }
+    public decimal? PostingPerHour { get; set; }
+    public decimal? PostingPerDay { get; set; }
+    public DateTime? PromotionFrom { get; set; }
+    public DateTime? PromotionTo { get; set; }
+    public string? Scale { get; set; }
+    public DateTime? ScaleDate { get; set; }
+    public decimal? BasicSalary { get; set; }
+    public decimal? IncrementSalary { get; set; }
+    public decimal? MaxSalary { get; set; }
+    public decimal? CurrentPay { get; set; }
+    public decimal? AccountsPerDay { get; set; }
+    public decimal? AccountsPerHour { get; set; }
+    public DateTime? LeaveFrom { get; set; }
+    public DateTime? LeaveTo { get; set; }
+    public decimal? LeaveEntitled { get; set; }
+    public decimal? LeaveAvailed { get; set; }
+}

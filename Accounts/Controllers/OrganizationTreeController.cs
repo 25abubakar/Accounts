@@ -41,7 +41,7 @@ namespace Accounts.Controllers
             ResolveCallerContextAsync()
         {
             var isSuperAdmin = _tenantService.IsSuperAdmin;
-            var isOrganizationAdmin = _tenantService.IsTenantAdmin || User.IsInRole("CEO");
+            var isOrganizationAdmin = _tenantService.IsTenantAdmin;
 
             int? rootNodeId = null;
 

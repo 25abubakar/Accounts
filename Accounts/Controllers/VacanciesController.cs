@@ -29,7 +29,7 @@ namespace Accounts.Controllers
             string.Equals(User.FindFirstValue(ITenantService.ClaimIsSuperAdmin), "true", StringComparison.OrdinalIgnoreCase));
 
         private Task<bool> CallerIsTenantAdminAsync() => Task.FromResult(
-            User.IsInRole("CEO") ||
+            User.IsInRole("TenantAdmin") ||
             string.Equals(User.FindFirstValue(ITenantService.ClaimIsTenantAdmin), "true", StringComparison.OrdinalIgnoreCase));
 
         [HttpGet]

@@ -33,16 +33,17 @@ namespace Accounts.Services.Services
         /// Checks new 2-tier RBAC (StaffMenuAccess + AccessFeatures) first,
         /// then falls back to legacy RolePermissions / DepartmentAccessMatrix.
         /// </summary>
+#pragma warning disable CS0162
         public async Task<bool> HasAccessAsync(Guid staffId, string featureKey)
         {
-            // Resolve the PermissionId once
             var permissionId = await _db.Features
                 .AsNoTracking()
                 .Where(f => f.FeatureKey == featureKey)
                 .Select(f => (int?)f.PermissionId)
                 .FirstOrDefaultAsync();
 
-            if (permissionId == null) return false;
+            return permissionId.HasValue &&
+                (await GetEffectivePermissionIdsAsync(staffId)).Contains(permissionId.Value);
 
             // ── Check new 2-tier RBAC ─────────────────────────────────────────
             // Load all menu grants for this staff + their feature rows
@@ -102,6 +103,7 @@ namespace Accounts.Services.Services
         }
 
         // ─────────────────────────────────────────────────────────────────────
+#pragma warning restore CS0162
         // BULK PERMISSION LOAD (used at login)
         // ─────────────────────────────────────────────────────────────────────
 

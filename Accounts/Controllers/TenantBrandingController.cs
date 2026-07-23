@@ -85,7 +85,7 @@ public sealed class TenantBrandingController : ControllerBase
     private bool CanView(int tenantId) => IsSuperAdmin() || ClaimTenantId() == tenantId;
 
     private bool CanManage(int tenantId) => IsSuperAdmin()
-        || (ClaimTenantId() == tenantId && (User.HasClaim(ITenantService.ClaimIsTenantAdmin, "true") || User.IsInRole("CEO")));
+        || (ClaimTenantId() == tenantId && (User.HasClaim(ITenantService.ClaimIsTenantAdmin, "true") || User.IsInRole("TenantAdmin")));
 
     private bool IsSuperAdmin() => User.IsInRole("SuperAdmin")
         || User.HasClaim(ITenantService.ClaimIsSuperAdmin, "true");

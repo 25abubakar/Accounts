@@ -1,6 +1,8 @@
 using Accounts.DTOs;
+using Accounts.Data;
 using Accounts.Models;
 using Accounts.Services.Interfaces;
+using Accounts.Services.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc;
@@ -22,18 +24,74 @@ namespace Accounts.Controllers
     {
         private readonly IPersonService               _service;
         private readonly UserManager<ApplicationUser> _userManager;
+        private readonly ApplicationDbContext         _db;
+        private readonly RbacService                  _rbac;
 
         public PersonsController(
             IPersonService               service,
-            UserManager<ApplicationUser> userManager)
+            UserManager<ApplicationUser> userManager,
+            ApplicationDbContext         db,
+            RbacService                  rbac)
         {
             _service     = service;
             _userManager = userManager;
+            _db          = db;
+            _rbac        = rbac;
         }
 
         private Task<bool> CallerIsSuperAdminAsync() => Task.FromResult(
             User.IsInRole("SuperAdmin") ||
             string.Equals(User.FindFirstValue(ITenantService.ClaimIsSuperAdmin), "true", StringComparison.OrdinalIgnoreCase));
+
+        private async Task<bool> HasStaffActionAsync(string action, params string[] semanticKeys)
+        {
+            if (User.IsInRole("Admin") || User.IsInRole("TenantAdmin") ||
+                string.Equals(User.FindFirstValue(ITenantService.ClaimIsTenantAdmin), "true", StringComparison.OrdinalIgnoreCase))
+                return true;
+
+            var identityUserId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+            if (string.IsNullOrWhiteSpace(identityUserId)) return false;
+
+            var staffId = await _db.Persons.AsNoTracking()
+                .Where(person => person.IdentityUserId == identityUserId && person.Staff != null)
+                .Select(person => (Guid?)person.Staff!.StaffId)
+                .FirstOrDefaultAsync();
+            if (!staffId.HasValue) return false;
+
+            var staffMenuId = await _db.Menus.AsNoTracking()
+                .Where(menu => menu.IsActive && menu.Route == "/hr/staff")
+                .Select(menu => (int?)menu.Id)
+                .FirstOrDefaultAsync();
+
+            if (staffMenuId.HasValue && await _rbac.HasAccessAsync(staffId.Value, $"MENU_{staffMenuId.Value}_{action}"))
+                return true;
+
+            foreach (var key in semanticKeys)
+                if (await _rbac.HasAccessAsync(staffId.Value, key)) return true;
+
+            return false;
+        }
+
+        private async Task<bool> HasRegisterActionAsync()
+        {
+            if (await HasStaffActionAsync("ADD", "PERSON_REGISTER")) return true;
+
+            var identityUserId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+            if (string.IsNullOrWhiteSpace(identityUserId)) return false;
+
+            var staffId = await _db.Persons.AsNoTracking()
+                .Where(person => person.IdentityUserId == identityUserId && person.Staff != null)
+                .Select(person => (Guid?)person.Staff!.StaffId)
+                .FirstOrDefaultAsync();
+            if (!staffId.HasValue) return false;
+
+            var registerMenuId = await _db.Menus.AsNoTracking()
+                .Where(menu => menu.IsActive && menu.Route == "/hr/staff/register")
+                .Select(menu => (int?)menu.Id)
+                .FirstOrDefaultAsync();
+
+            return registerMenuId.HasValue && await _rbac.HasAccessAsync(staffId.Value, $"MENU_{registerMenuId.Value}_ADD");
+        }
 
         [HttpGet("profiles")]
         public async Task<IActionResult> GetProfiles()
@@ -65,6 +123,25 @@ namespace Accounts.Controllers
             if (await CallerIsSuperAdminAsync()) return Forbid();
             var profile = await _service.GetProfileAsync(id);
             return profile == null ? NotFound(new { message = $"Person {id} not found." }) : Ok(profile);
+        }
+
+        [HttpGet("{id:guid}/hr-profile")]
+        public async Task<IActionResult> GetHrProfile(Guid id)
+        {
+            if (await CallerIsSuperAdminAsync()) return Forbid();
+            var profile = await _service.GetHrProfileAsync(id);
+            return profile == null ? NotFound(new { message = $"Person {id} not found." }) : Ok(profile);
+        }
+
+        [HttpPut("{id:guid}/hr-profile")]
+        public async Task<IActionResult> UpdateHrProfile(Guid id, [FromBody] PersonHrProfileDto? dto)
+        {
+            if (await CallerIsSuperAdminAsync()) return Forbid();
+            if (!await HasStaffActionAsync("EDIT", "PERSON_EDIT", "EMPLOYEE_EDIT")) return Forbid();
+            if (dto is null) return BadRequest(new { message = "Request body missing." });
+            var (profile, error) = await _service.UpdateHrProfileAsync(id, dto);
+            if (error != null) return error.Contains("not found") ? NotFound(new { message = error }) : BadRequest(new { message = error });
+            return Ok(profile);
         }
 
         // ── Public helpers — needed by registration form ──────────────────────
@@ -153,6 +230,7 @@ namespace Accounts.Controllers
         public async Task<IActionResult> Register([FromBody] RegisterPersonDto? dto)
         {
             if (await CallerIsSuperAdminAsync()) return Forbid();
+            if (!await HasRegisterActionAsync()) return Forbid();
             if (dto is null) return BadRequest(new { message = "Request body missing." });
             var (person, loginId, password, error, statusCode) = await _service.RegisterAsync(dto);
             if (error != null) return StatusCode(statusCode, new { message = error });
@@ -170,6 +248,7 @@ namespace Accounts.Controllers
         public async Task<IActionResult> Update(Guid id, [FromBody] UpdatePersonDto? dto)
         {
             if (await CallerIsSuperAdminAsync()) return Forbid();
+            if (!await HasStaffActionAsync("EDIT", "PERSON_EDIT", "EMPLOYEE_EDIT")) return Forbid();
             if (dto is null) return BadRequest(new { message = "Request body missing." });
             var (person, error) = await _service.UpdateAsync(id, dto);
             if (error != null) return error.Contains("not found") ? NotFound(new { message = error }) : BadRequest(new { message = error });
@@ -181,6 +260,7 @@ namespace Accounts.Controllers
         public async Task<IActionResult> UploadPhoto(Guid id, IFormFile photo)
         {
             if (await CallerIsSuperAdminAsync()) return Forbid();
+            if (!await HasStaffActionAsync("EDIT", "PERSON_EDIT", "EMPLOYEE_EDIT")) return Forbid();
             var baseUrl = $"{Request.Scheme}://{Request.Host}";
             var (photoUrl, fullUrl, error) = await _service.UploadPhotoAsync(id, photo, baseUrl);
             if (error != null) return error.Contains("not found") ? NotFound(new { message = error }) : BadRequest(new { message = error });
@@ -191,6 +271,7 @@ namespace Accounts.Controllers
         public async Task<IActionResult> Delete(Guid id)
         {
             if (await CallerIsSuperAdminAsync()) return Forbid();
+            if (!await HasStaffActionAsync("DELETE", "PERSON_DELETE", "EMPLOYEE_DELETE")) return Forbid();
             var (success, message) = await _service.DeleteAsync(id);
             if (!success) return message.Contains("not found") ? NotFound(new { message }) : BadRequest(new { message });
             return Ok(new { message });
@@ -200,6 +281,7 @@ namespace Accounts.Controllers
         public async Task<IActionResult> SetStatus(Guid id, [FromBody] SetPersonStatusDto dto)
         {
             if (await CallerIsSuperAdminAsync()) return Forbid();
+            if (!await HasStaffActionAsync("DELETE", "PERSON_DELETE", "EMPLOYEE_DELETE")) return Forbid();
             var (success, message, isActive) = await _service.SetActiveAsync(id, dto.IsActive);
             if (!success) return message.Contains("not found") ? NotFound(new { message }) : BadRequest(new { message });
             return Ok(new { message, isActive });
@@ -209,6 +291,7 @@ namespace Accounts.Controllers
         public async Task<IActionResult> ChangePassword(Guid id, [FromBody] ChangePasswordDto dto)
         {
             if (await CallerIsSuperAdminAsync()) return Forbid();
+            if (!await HasStaffActionAsync("EDIT", "PERSON_RESET_PASSWORD", "PERSON_EDIT")) return Forbid();
             if (string.IsNullOrWhiteSpace(dto.CurrentPassword))
                 return BadRequest(new { message = "CurrentPassword is required." });
             if (string.IsNullOrWhiteSpace(dto.NewPassword))
@@ -222,6 +305,7 @@ namespace Accounts.Controllers
         public async Task<IActionResult> ResetPassword(Guid id, [FromBody] ResetPasswordDto? dto)
         {
             if (await CallerIsSuperAdminAsync()) return Forbid();
+            if (!await HasStaffActionAsync("EDIT", "PERSON_RESET_PASSWORD", "PERSON_EDIT")) return Forbid();
             var (success, message, newPassword) = await _service.ResetPasswordAsync(id, dto?.NewPassword);
             if (!success) return message.Contains("not found") ? NotFound(new { message }) : BadRequest(new { message });
             return Ok(new { message, newPassword, note = "Share this password with the employee securely." });
@@ -231,6 +315,7 @@ namespace Accounts.Controllers
         public async Task<IActionResult> ResetToDefaultPassword(Guid id)
         {
             if (await CallerIsSuperAdminAsync()) return Forbid();
+            if (!await HasStaffActionAsync("EDIT", "PERSON_RESET_PASSWORD", "PERSON_EDIT")) return Forbid();
             var (success, message, defaultPassword) = await _service.ResetToDefaultPasswordAsync(id);
             if (!success) return message.Contains("not found") ? NotFound(new { message }) : BadRequest(new { message });
             return Ok(new { message, defaultPassword, note = "Password has been reset to the default (LoginId@)." });

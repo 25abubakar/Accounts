@@ -50,7 +50,7 @@ namespace Accounts.Services.Services
             {
                 var claim = User?.FindFirstValue(ITenantService.ClaimIsTenantAdmin);
                 return string.Equals(claim, "true", StringComparison.OrdinalIgnoreCase) ||
-                    User?.IsInRole("CEO") == true;
+                    User?.IsInRole("TenantAdmin") == true;
             }
         }
 

@@ -30,7 +30,10 @@ namespace Accounts.Controllers
             User.FindFirstValue(ClaimTypes.NameIdentifier);
 
         private bool IsFullAccessUser =>
-            User.IsInRole("SuperAdmin") || User.IsInRole("Admin");
+            User.IsInRole("SuperAdmin") ||
+            User.IsInRole("Admin") ||
+            User.IsInRole("TenantAdmin") ||
+            string.Equals(User.FindFirstValue(ITenantService.ClaimIsTenantAdmin), "true", StringComparison.OrdinalIgnoreCase);
 
         // ── Admin: list all users with StaffId (for permission assignment UI) ─
 

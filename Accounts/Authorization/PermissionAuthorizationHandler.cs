@@ -1,4 +1,5 @@
 using Accounts.Data;
+using Accounts.Services.Interfaces;
 using Accounts.Services.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.EntityFrameworkCore;
@@ -40,7 +41,8 @@ namespace Accounts.Authorization
 
             // SuperAdmin/Admin/TenantAdmin bypass
             // TenantAdmin uses TenantMenuPermissions, not RBAC overrides
-            if (user.IsInRole("SuperAdmin") || user.IsInRole("Admin") || user.IsInRole("CEO") || user.IsInRole("TenantAdmin"))
+            if (user.IsInRole("SuperAdmin") || user.IsInRole("Admin") || user.IsInRole("TenantAdmin") ||
+                string.Equals(user.FindFirstValue(ITenantService.ClaimIsTenantAdmin), "true", StringComparison.OrdinalIgnoreCase))
             {
                 context.Succeed(requirement);
                 return;

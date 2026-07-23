@@ -27,9 +27,9 @@ namespace Accounts.Controllers
         public async Task<IActionResult> GetScope(CancellationToken ct)
         {
             var caller = await GetCallerAsync();
-            if (caller == null || (!caller.IsSuperAdmin && !caller.IsTenantAdmin && !User.IsInRole("CEO"))) return Forbid();
+            if (caller == null || (!caller.IsSuperAdmin && !caller.IsTenantAdmin && !User.IsInRole("TenantAdmin"))) return Forbid();
             if (caller.IsSuperAdmin) return Ok(new { scopeType = "SuperAdmin", items = Array.Empty<object>() });
-            if (!await HasTenantManagementMenuAsync(caller.TenantId!.Value, ct)) return Forbid();
+            if (!caller.TenantId.HasValue) return Forbid();
 
             var tenant = await _db.Tenants.IgnoreQueryFilters().AsNoTracking()
                 .Where(t => t.Id == caller.TenantId.Value)
@@ -101,8 +101,7 @@ namespace Accounts.Controllers
         public async Task<IActionResult> SetStatus(string kind, string id, [FromBody] ManagementStatusDto dto, CancellationToken ct)
         {
             var caller = await GetCallerAsync();
-            if ((caller?.IsTenantAdmin != true && !User.IsInRole("CEO")) || caller?.TenantId == null) return Forbid();
-            if (!await HasTenantManagementMenuAsync(caller.TenantId.Value, ct)) return Forbid();
+            if ((caller?.IsTenantAdmin != true && !User.IsInRole("TenantAdmin")) || caller?.TenantId == null) return Forbid();
             var ownTenant = await _db.Tenants.IgnoreQueryFilters().Include(t => t.OrganizationNode)
                 .SingleAsync(t => t.Id == caller.TenantId.Value, ct);
             var nodes = await _db.OrganizationTree.ToListAsync(ct);
@@ -152,10 +151,6 @@ namespace Accounts.Controllers
 
         private async Task<ApplicationUser?> GetCallerAsync() =>
             await _users.FindByIdAsync(User.FindFirstValue(ClaimTypes.NameIdentifier)!);
-
-        private async Task<bool> HasTenantManagementMenuAsync(int tenantId, CancellationToken ct) =>
-            await _db.TenantMenuPermissions.IgnoreQueryFilters().AnyAsync(p => p.TenantId == tenantId
-                && p.IsAllow && p.CanView && p.Menu != null && p.Menu.Route == "/tenants", ct);
 
         private static bool IsDescendant(int candidate, int ancestor, IReadOnlyDictionary<int, OrganizationTree> nodes)
         {
