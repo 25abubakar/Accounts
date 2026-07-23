@@ -36,6 +36,7 @@ namespace Accounts.Data
         public DbSet<PersonExperience>         PersonExperiences        => Set<PersonExperience>();
         public DbSet<PersonHrProfileReadRow>   PersonHrProfileReadRows  => Set<PersonHrProfileReadRow>();
         public DbSet<JobTitle>                 JobTitles                => Set<JobTitle>();
+        public DbSet<SalaryScale>              SalaryScales             => Set<SalaryScale>();
         public DbSet<ProcessMaster>            Processes                => Set<ProcessMaster>();
         public DbSet<StatusDefinition>         Statuses                 => Set<StatusDefinition>();
         public DbSet<ColorStyle>               ColorStyles              => Set<ColorStyle>();
@@ -47,6 +48,8 @@ namespace Accounts.Data
         public DbSet<StaffDirectoryRow>        StaffDirectoryRows       => Set<StaffDirectoryRow>();
         public DbSet<AttendanceMapRule>        AttendanceMapRules       => Set<AttendanceMapRule>();
         public DbSet<AttendanceMapRuleReadRow> AttendanceMapRuleReadRows => Set<AttendanceMapRuleReadRow>();
+        public DbSet<AttendanceRuleSetting>    AttendanceRuleSettings   => Set<AttendanceRuleSetting>();
+        public DbSet<AttendanceRuleSettingReadRow> AttendanceRuleSettingReadRows => Set<AttendanceRuleSettingReadRow>();
         public DbSet<AttendanceHolidayColorMap> AttendanceHolidayColorMaps => Set<AttendanceHolidayColorMap>();
         public DbSet<AttendanceHolidayColorMapReadRow> AttendanceHolidayColorMapReadRows => Set<AttendanceHolidayColorMapReadRow>();
         public DbSet<AttendanceEntryType>      AttendanceEntryTypes     => Set<AttendanceEntryType>();
@@ -209,6 +212,13 @@ namespace Accounts.Data
                     _tenantService.TenantId == null ||
                     j.TenantId == _tenantService.TenantId);
 
+            builder.Entity<SalaryScale>()
+                .HasQueryFilter(scale =>
+                    _tenantService == null ||
+                    _tenantService.IsSuperAdmin ||
+                    _tenantService.TenantId == null ||
+                    scale.TenantId == _tenantService.TenantId);
+
             builder.Entity<AttendanceRecord>()
                 .HasQueryFilter(a =>
                     _tenantService == null ||
@@ -238,6 +248,20 @@ namespace Accounts.Data
                     rule.TenantId == _tenantService.TenantId);
 
             builder.Entity<AttendanceMapRuleReadRow>()
+                .HasQueryFilter(rule =>
+                    _tenantService == null ||
+                    _tenantService.IsSuperAdmin ||
+                    _tenantService.TenantId == null ||
+                    rule.TenantId == _tenantService.TenantId);
+
+            builder.Entity<AttendanceRuleSetting>()
+                .HasQueryFilter(rule =>
+                    _tenantService == null ||
+                    _tenantService.IsSuperAdmin ||
+                    _tenantService.TenantId == null ||
+                    rule.TenantId == _tenantService.TenantId);
+
+            builder.Entity<AttendanceRuleSettingReadRow>()
                 .HasQueryFilter(rule =>
                     _tenantService == null ||
                     _tenantService.IsSuperAdmin ||
@@ -474,6 +498,29 @@ namespace Accounts.Data
                 // UNIQUE constraint now scoped per tenant
                 // (old global unique on TitleName is replaced by tenant-scoped unique)
                 e.HasIndex(x => new { x.TenantId, x.TitleName }).IsUnique();
+            });
+
+            builder.Entity<SalaryScale>(e =>
+            {
+                e.ToTable("SalaryScales");
+                e.HasKey(x => x.Id);
+                e.Property(x => x.Id).ValueGeneratedOnAdd();
+                e.Property(x => x.TenantId).IsRequired();
+                e.Property(x => x.ScaleName).HasMaxLength(100).IsRequired();
+                e.Property(x => x.BasicSalary).HasColumnType("decimal(18,2)");
+                e.Property(x => x.MaximumSalary).HasColumnType("decimal(18,2)");
+                e.Property(x => x.YearlyIncrement).HasColumnType("decimal(18,2)");
+                e.Property(x => x.MedicalAllowance).HasColumnType("decimal(18,2)");
+                e.Property(x => x.TravellingAllowance).HasColumnType("decimal(18,2)");
+                e.Property(x => x.Other).HasColumnType("decimal(18,2)");
+                e.Property(x => x.IsActive).HasDefaultValue(true);
+                e.Property(x => x.CreatedDate).HasDefaultValueSql("SYSUTCDATETIME()");
+                e.HasIndex(x => x.TenantId);
+                e.HasIndex(x => new { x.TenantId, x.ScaleName }).IsUnique();
+                e.HasOne<Tenant>()
+                 .WithMany()
+                 .HasForeignKey(x => x.TenantId)
+                 .OnDelete(DeleteBehavior.Restrict);
             });
 
             // â”€â”€ AppNote: optional TenantId FK â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -721,6 +768,45 @@ namespace Accounts.Data
                 e.Property(x => x.ShiftName).HasMaxLength(200);
                 e.Property(x => x.TimeFrom).HasMaxLength(5);
                 e.Property(x => x.TimeTo).HasMaxLength(5);
+            });
+
+            builder.Entity<AttendanceRuleSetting>(e =>
+            {
+                e.ToTable("AttendanceRuleSettings");
+                e.HasKey(x => x.Id);
+                e.Property(x => x.Reference).HasMaxLength(50).IsRequired();
+                e.Property(x => x.RuleName).HasMaxLength(150).IsRequired();
+                e.Property(x => x.Remarks).HasMaxLength(500).IsRequired(false);
+                e.Property(x => x.CreatedByUserId).HasMaxLength(450).IsRequired(false);
+                e.Property(x => x.ModifiedByUserId).HasMaxLength(450).IsRequired(false);
+                e.Property(x => x.CreatedDate).HasDefaultValueSql("SYSUTCDATETIME()");
+                e.Property(x => x.WorkingMinutes).HasDefaultValue(540);
+                e.Property(x => x.BeforeCheckInMinutes).HasDefaultValue(5);
+                e.Property(x => x.AfterCheckOutMinutes).HasDefaultValue(0);
+                e.Property(x => x.CheckInAdjustMinutes).HasDefaultValue(5);
+                e.Property(x => x.CheckOutAdjustMinutes).HasDefaultValue(5);
+                e.Property(x => x.AbsentAfterShiftStartMinutes).HasDefaultValue(120);
+                e.Property(x => x.MissingCheckoutAfterShiftEndMinutes).HasDefaultValue(120);
+                e.Property(x => x.WeekendChargeValue).HasColumnType("decimal(6,2)").HasDefaultValue(0m);
+                e.Property(x => x.AccountLockAbsentDays).HasDefaultValue(0);
+                e.Property(x => x.AdjustAbsentDays).HasDefaultValue(0);
+                e.Property(x => x.IsActive).HasDefaultValue(true);
+                e.HasIndex(x => new { x.TenantId, x.AttendanceEntryTypeId }).IsUnique();
+                e.HasIndex(x => new { x.TenantId, x.IsActive, x.IsApproved });
+                e.HasOne(x => x.Tenant).WithMany().HasForeignKey(x => x.TenantId).OnDelete(DeleteBehavior.Restrict);
+                e.HasOne(x => x.AttendanceEntryType).WithMany().HasForeignKey(x => x.AttendanceEntryTypeId).OnDelete(DeleteBehavior.Restrict);
+            });
+
+            builder.Entity<AttendanceRuleSettingReadRow>(e =>
+            {
+                e.HasNoKey();
+                e.ToView("vw_AttendanceRuleSettings", "dbo");
+                e.Property(x => x.AttendanceTypeCode).HasMaxLength(30);
+                e.Property(x => x.AttendanceTypeName).HasMaxLength(100);
+                e.Property(x => x.Reference).HasMaxLength(50);
+                e.Property(x => x.RuleName).HasMaxLength(150);
+                e.Property(x => x.WeekendChargeValue).HasColumnType("decimal(6,2)");
+                e.Property(x => x.Remarks).HasMaxLength(500);
             });
 
             builder.Entity<AttendanceHolidayColorMap>(e =>

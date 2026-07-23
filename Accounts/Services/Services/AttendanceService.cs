@@ -43,13 +43,16 @@ public sealed class AttendanceService : IAttendanceService
         var policy = await LoadPolicyAsync(person.TenantId, cancellationToken);
         var localNow = TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, ResolveTimeZone(person.TimeZoneId));
         var shiftStart = ParseShift(timing.TimeFrom ?? attendanceRule.TimeFrom, new TimeOnly(9, 0));
-        var earliest = shiftStart.AddMinutes(-policy.EarliestCheckInMinutesBefore);
-        var absentAt = shiftStart.AddMinutes(policy.AbsentAfterShiftStartMinutes);
+        var beforeCheckInMinutes = attendanceRule.BeforeCheckInMinutes ?? policy.EarliestCheckInMinutesBefore;
+        var checkInAdjustMinutes = attendanceRule.CheckInAdjustMinutes ?? policy.OnTimeGraceMinutesAfter;
+        var absentAfterShiftStartMinutes = attendanceRule.AbsentAfterShiftStartMinutes ?? policy.AbsentAfterShiftStartMinutes;
+        var earliest = shiftStart.AddMinutes(-beforeCheckInMinutes);
+        var absentAt = shiftStart.AddMinutes(absentAfterShiftStartMinutes);
         var nowTime = TimeOnly.FromDateTime(localNow);
         if (!attendanceRule.IsOpenAttendance && nowTime < earliest)
             throw new InvalidOperationException($"You cannot check in before {earliest:HH:mm}. Your shift starts at {shiftStart:HH:mm}.");
         if (!attendanceRule.IsOpenAttendance && nowTime >= absentAt)
-            throw new InvalidOperationException($"The {policy.AbsentAfterShiftStartMinutes}-minute check-in window has expired and attendance is marked absent.");
+            throw new InvalidOperationException($"The {absentAfterShiftStartMinutes}-minute check-in window has expired and attendance is marked absent.");
         var record = await _db.AttendanceRecords.FirstOrDefaultAsync(x => x.PersonId == person.PersonId && x.AttendanceDate == localDate, cancellationToken);
         if (record?.CheckInUtc is not null) throw new InvalidOperationException("You have already checked in today.");
         var workMode = attendanceRule.EntryTypeCode == "REMOTE"
@@ -61,7 +64,7 @@ public sealed class AttendanceService : IAttendanceService
         record ??= new AttendanceRecord { TenantId = person.TenantId, PersonId = person.PersonId, AttendanceDate = localDate, CreatedDate = DateTime.UtcNow };
         record.AttendanceEntryTypeId = attendanceRule.AttendanceEntryTypeId;
         record.AttendanceWorkMode = workMode;
-        record.AttendanceStatusId = nowTime <= shiftStart.AddMinutes(policy.OnTimeGraceMinutesAfter)
+        record.AttendanceStatusId = nowTime <= shiftStart.AddMinutes(checkInAdjustMinutes)
             ? policy.PresentStatusId : policy.LateStatusId;
         record.CheckInUtc = DateTime.UtcNow;
         record.ModifiedDate = DateTime.UtcNow;
@@ -100,6 +103,7 @@ public sealed class AttendanceService : IAttendanceService
         var record = await _db.AttendanceRecords.Include(x => x.AttendanceEntryType).Include(x => x.AttendanceWorkMode)
             .FirstOrDefaultAsync(x => x.PersonId == person.PersonId && x.AttendanceDate == localDate, cancellationToken)
             ?? throw new InvalidOperationException("Check in before checking out.");
+        if (!record.CheckInUtc.HasValue) throw new InvalidOperationException("Check in before checking out.");
         if (record.CheckOutUtc.HasValue) throw new InvalidOperationException("You have already checked out today.");
         var now = DateTime.UtcNow;
         if (record.BreakStartedUtc.HasValue)
@@ -107,6 +111,14 @@ public sealed class AttendanceService : IAttendanceService
             record.TotalBreakMinutes += Math.Max(0, (int)Math.Floor((now - record.BreakStartedUtc.Value).TotalMinutes));
             record.BreakStartedUtc = null;
         }
+        var requiredMinutes = timing.IsOn
+            ? attendanceRule?.WorkingMinutes is > 0
+                ? attendanceRule.WorkingMinutes.Value
+                : ShiftMinutes(timing.TimeFrom ?? person.ShiftStartTime, timing.TimeTo ?? person.ShiftEndTime)
+            : 0;
+        var workedMinutes = Math.Max(0, (int)Math.Floor((now - record.CheckInUtc.Value).TotalMinutes) - record.TotalBreakMinutes);
+        if (requiredMinutes > 0 && workedMinutes < requiredMinutes)
+            throw new InvalidOperationException($"You must complete {FormatDuration(requiredMinutes)} before check-out. Remaining time: {FormatDuration(requiredMinutes - workedMinutes)}.");
         record.CheckOutUtc = now;
         record.ModifiedDate = now;
         await _db.SaveChangesAsync(cancellationToken);
@@ -929,19 +941,37 @@ public sealed class AttendanceService : IAttendanceService
     private async Task<EffectiveAttendanceRule?> ResolveAttendanceRuleAsync(
         Person person,
         CancellationToken cancellationToken) =>
-        await _db.AttendanceMapRules.AsNoTracking()
-            .Where(rule =>
-                rule.TenantId == person.TenantId &&
-                rule.Staff.PersonId == person.PersonId)
-            .Select(rule => new EffectiveAttendanceRule(
-                rule.AttendanceEntryTypeId,
-                rule.AttendanceEntryType.Code,
-                rule.AttendanceEntryType.Name,
-                rule.AttendanceEntryType.IsActive,
-                rule.ShiftCode,
-                rule.TimeFrom,
-                rule.TimeTo,
-                rule.IsOpenAttendance))
+        await (
+            from mapRule in _db.AttendanceMapRules.AsNoTracking()
+            join ruleSetting in _db.AttendanceRuleSettings.AsNoTracking()
+                on new { mapRule.TenantId, mapRule.AttendanceEntryTypeId }
+                equals new { ruleSetting.TenantId, ruleSetting.AttendanceEntryTypeId }
+                into settingJoin
+            from setting in settingJoin
+                .Where(item => item.IsActive && item.IsApproved)
+                .DefaultIfEmpty()
+            where
+                mapRule.TenantId == person.TenantId &&
+                mapRule.Staff.PersonId == person.PersonId
+            select new EffectiveAttendanceRule(
+                mapRule.AttendanceEntryTypeId,
+                mapRule.AttendanceEntryType.Code,
+                mapRule.AttendanceEntryType.Name,
+                mapRule.AttendanceEntryType.IsActive,
+                mapRule.ShiftCode,
+                mapRule.TimeFrom,
+                mapRule.TimeTo,
+                mapRule.IsOpenAttendance,
+                setting != null ? setting.WorkingMinutes : null,
+                setting != null ? setting.BeforeCheckInMinutes : null,
+                setting != null ? setting.AfterCheckOutMinutes : null,
+                setting != null ? setting.CheckInAdjustMinutes : null,
+                setting != null ? setting.CheckOutAdjustMinutes : null,
+                setting != null ? setting.AbsentAfterShiftStartMinutes : null,
+                setting != null ? setting.MissingCheckoutAfterShiftEndMinutes : null,
+                setting != null ? setting.AccountLockAbsentDays : null,
+                setting != null ? setting.WeekendChargeValue : null,
+                setting != null ? setting.AdjustAbsentDays : null))
             .SingleOrDefaultAsync(cancellationToken);
 
     private static void EnsurePortalCheckInAllowed(EffectiveAttendanceRule attendanceRule)
@@ -1000,7 +1030,17 @@ public sealed class AttendanceService : IAttendanceService
         string ShiftCode,
         string TimeFrom,
         string TimeTo,
-        bool IsOpenAttendance);
+        bool IsOpenAttendance,
+        int? WorkingMinutes,
+        int? BeforeCheckInMinutes,
+        int? AfterCheckOutMinutes,
+        int? CheckInAdjustMinutes,
+        int? CheckOutAdjustMinutes,
+        int? AbsentAfterShiftStartMinutes,
+        int? MissingCheckoutAfterShiftEndMinutes,
+        int? AccountLockAbsentDays,
+        decimal? WeekendChargeValue,
+        int? AdjustAbsentDays);
 
     private sealed record ValidatedTimingSchedule(
         int HolidayTypeId,
@@ -1556,6 +1596,16 @@ public sealed class AttendanceService : IAttendanceService
         if (!TimeOnly.TryParseExact(start, "HH:mm", CultureInfo.InvariantCulture, DateTimeStyles.None, out var from) || !TimeOnly.TryParseExact(end, "HH:mm", CultureInfo.InvariantCulture, DateTimeStyles.None, out var to)) return 540;
         var minutes = (int)(to.ToTimeSpan() - from.ToTimeSpan()).TotalMinutes;
         return minutes > 0 ? minutes : minutes + 1440;
+    }
+
+    private static string FormatDuration(int minutes)
+    {
+        var safeMinutes = Math.Max(0, minutes);
+        var hours = safeMinutes / 60;
+        var remainingMinutes = safeMinutes % 60;
+        if (hours == 0) return $"{remainingMinutes} minute(s)";
+        if (remainingMinutes == 0) return $"{hours} hour(s)";
+        return $"{hours} hour(s) {remainingMinutes} minute(s)";
     }
 
     private static TimeOnly ParseShift(string value, TimeOnly fallback) =>

@@ -169,6 +169,65 @@ public sealed class AttendanceController : ControllerBase
     [HttpPost("me/check-out")]
     public Task<IActionResult> CheckOut(CancellationToken ct) => Execute(() => _service.CheckOutAsync(UserId(), ct));
 
+    [HttpGet("rules/settings")]
+    public async Task<IActionResult> AttendanceRuleSettings(CancellationToken ct)
+    {
+        if (!_tenant.TenantId.HasValue) return Ok(Array.Empty<AttendanceRuleSettingDto>());
+        if (!await HasAttendanceMenuActionAsync("VIEW", ct, "/attendance/rules/list", "/attendance/rules/rule", "/attendance/rules"))
+            return Forbid();
+
+        var rules = await _db.AttendanceRuleSettingReadRows.AsNoTracking()
+            .Where(rule => rule.TenantId == _tenant.RequiredTenantId)
+            .OrderBy(rule => rule.Id)
+            .Select(rule => new AttendanceRuleSettingDto
+            {
+                Id = rule.Id,
+                AttendanceEntryTypeId = rule.AttendanceEntryTypeId,
+                AttendanceTypeCode = rule.AttendanceTypeCode,
+                AttendanceTypeName = rule.AttendanceTypeName,
+                Reference = rule.Reference,
+                RuleName = rule.RuleName,
+                WorkingMinutes = rule.WorkingMinutes,
+                BeforeCheckInMinutes = rule.BeforeCheckInMinutes,
+                AfterCheckOutMinutes = rule.AfterCheckOutMinutes,
+                CheckInAdjustMinutes = rule.CheckInAdjustMinutes,
+                CheckOutAdjustMinutes = rule.CheckOutAdjustMinutes,
+                AbsentAfterShiftStartMinutes = rule.AbsentAfterShiftStartMinutes,
+                MissingCheckoutAfterShiftEndMinutes = rule.MissingCheckoutAfterShiftEndMinutes,
+                AccountLockAbsentDays = rule.AccountLockAbsentDays,
+                WeekendChargeValue = rule.WeekendChargeValue,
+                AdjustAbsentDays = rule.AdjustAbsentDays,
+                IsApproved = rule.IsApproved,
+                IsActive = rule.IsActive,
+                Remarks = rule.Remarks
+            })
+            .ToListAsync(ct);
+
+        return Ok(rules);
+    }
+
+    [HttpPost("rules/settings")]
+    public Task<IActionResult> CreateAttendanceRuleSetting([FromBody] SaveAttendanceRuleSettingDto dto, CancellationToken ct) =>
+        SaveAttendanceRuleSetting(null, dto, ct);
+
+    [HttpPut("rules/settings/{id:int}")]
+    public Task<IActionResult> UpdateAttendanceRuleSetting(int id, [FromBody] SaveAttendanceRuleSettingDto dto, CancellationToken ct) =>
+        SaveAttendanceRuleSetting(id, dto, ct);
+
+    [HttpDelete("rules/settings/{id:int}")]
+    public async Task<IActionResult> DeleteAttendanceRuleSetting(int id, CancellationToken ct)
+    {
+        if (!_tenant.TenantId.HasValue) return Forbid();
+        if (!await HasAttendanceMenuActionAsync("DELETE", ct, "/attendance/rules/list", "/attendance/rules/rule", "/attendance/rules"))
+            return Forbid();
+
+        var rule = await _db.AttendanceRuleSettings.SingleOrDefaultAsync(item => item.Id == id, ct);
+        if (rule == null) return NotFound(new { message = "The attendance rule was not found." });
+        _db.AttendanceRuleSettings.Remove(rule);
+        await _db.SaveChangesAsync(ct);
+        return Ok(new { message = "Attendance rule deleted successfully." });
+    }
+
     [HttpGet("report/staff")]
     public async Task<IActionResult> ReportStaff([FromQuery] int year, [FromQuery] int month, CancellationToken ct)
     {
@@ -527,6 +586,85 @@ public sealed class AttendanceController : ControllerBase
         return Ok(ToHolidayColorMapDto(map, holidayType.DisplayText));
     }
 
+    private async Task<IActionResult> SaveAttendanceRuleSetting(
+        int? id,
+        SaveAttendanceRuleSettingDto dto,
+        CancellationToken ct)
+    {
+        if (!_tenant.TenantId.HasValue) return Forbid();
+        if (!await HasAttendanceMenuActionAsync(id.HasValue ? "EDIT" : "ADD", ct, "/attendance/rules/list", "/attendance/rules/rule", "/attendance/rules"))
+            return Forbid();
+
+        var tenantId = _tenant.RequiredTenantId;
+        var reference = dto.Reference.Trim();
+        var ruleName = dto.RuleName.Trim();
+        if (string.IsNullOrWhiteSpace(reference)) return BadRequest(new { message = "Reference is required." });
+        if (string.IsNullOrWhiteSpace(ruleName)) return BadRequest(new { message = "Rule name is required." });
+
+        if (dto.WorkingMinutes is < 0 or > 1440) return BadRequest(new { message = "Working hours must be between 0 and 24 hours." });
+        if (dto.BeforeCheckInMinutes is < 0 or > 720) return BadRequest(new { message = "Before check-in allowance must be between 0 and 720 minutes." });
+        if (dto.AfterCheckOutMinutes is < 0 or > 720) return BadRequest(new { message = "After check-out allowance must be between 0 and 720 minutes." });
+        if (dto.CheckInAdjustMinutes is < 0 or > 720) return BadRequest(new { message = "Check-in adjust time must be between 0 and 720 minutes." });
+        if (dto.CheckOutAdjustMinutes is < 0 or > 720) return BadRequest(new { message = "Check-out adjust time must be between 0 and 720 minutes." });
+        if (dto.AbsentAfterShiftStartMinutes is < 1 or > 1440) return BadRequest(new { message = "Absent-after time must be between 1 and 1440 minutes." });
+        if (dto.MissingCheckoutAfterShiftEndMinutes is < 1 or > 1440) return BadRequest(new { message = "Missing checkout time must be between 1 and 1440 minutes." });
+        if (dto.AccountLockAbsentDays is < 0 or > 31) return BadRequest(new { message = "Account lock absent days must be between 0 and 31." });
+        if (dto.WeekendChargeValue is < 0 or > 31) return BadRequest(new { message = "Weekend charged value must be between 0 and 31." });
+        if (dto.AdjustAbsentDays is < 0 or > 31) return BadRequest(new { message = "Adjust absent days must be between 0 and 31." });
+
+        var attendanceType = await _db.AttendanceEntryTypes
+            .SingleOrDefaultAsync(type => type.Id == dto.AttendanceEntryTypeId && type.IsActive, ct);
+        if (attendanceType == null) return BadRequest(new { message = "Select an active attendance type." });
+
+        var duplicate = await _db.AttendanceRuleSettings.AsNoTracking()
+            .AnyAsync(rule =>
+                rule.TenantId == tenantId &&
+                rule.AttendanceEntryTypeId == attendanceType.Id &&
+                (!id.HasValue || rule.Id != id.Value), ct);
+        if (duplicate) return BadRequest(new { message = "This attendance type already has a rule. Edit the existing rule instead." });
+
+        var now = DateTime.UtcNow;
+        AttendanceRuleSetting rule;
+        if (id.HasValue)
+        {
+            rule = await _db.AttendanceRuleSettings.SingleOrDefaultAsync(item => item.Id == id.Value, ct)
+                ?? throw new KeyNotFoundException("The attendance rule was not found.");
+            rule.ModifiedByUserId = UserId();
+            rule.ModifiedDate = now;
+        }
+        else
+        {
+            rule = new AttendanceRuleSetting
+            {
+                TenantId = tenantId,
+                CreatedByUserId = UserId(),
+                CreatedDate = now
+            };
+            _db.AttendanceRuleSettings.Add(rule);
+        }
+
+        rule.AttendanceEntryTypeId = attendanceType.Id;
+        rule.AttendanceEntryType = attendanceType;
+        rule.Reference = reference.Length > 50 ? reference[..50] : reference;
+        rule.RuleName = ruleName.Length > 150 ? ruleName[..150] : ruleName;
+        rule.WorkingMinutes = dto.WorkingMinutes;
+        rule.BeforeCheckInMinutes = dto.BeforeCheckInMinutes;
+        rule.AfterCheckOutMinutes = dto.AfterCheckOutMinutes;
+        rule.CheckInAdjustMinutes = dto.CheckInAdjustMinutes;
+        rule.CheckOutAdjustMinutes = dto.CheckOutAdjustMinutes;
+        rule.AbsentAfterShiftStartMinutes = dto.AbsentAfterShiftStartMinutes;
+        rule.MissingCheckoutAfterShiftEndMinutes = dto.MissingCheckoutAfterShiftEndMinutes;
+        rule.AccountLockAbsentDays = dto.AccountLockAbsentDays;
+        rule.WeekendChargeValue = dto.WeekendChargeValue;
+        rule.AdjustAbsentDays = dto.AdjustAbsentDays;
+        rule.IsApproved = dto.IsApproved;
+        rule.IsActive = dto.IsActive;
+        rule.Remarks = string.IsNullOrWhiteSpace(dto.Remarks) ? null : dto.Remarks.Trim();
+
+        await _db.SaveChangesAsync(ct);
+        return Ok(ToAttendanceRuleSettingDto(rule, attendanceType));
+    }
+
     private static AttendanceHolidayColorMapDto ToHolidayColorMapDto(
         AttendanceHolidayColorMap map,
         string holidayTypeName) => new()
@@ -535,6 +673,31 @@ public sealed class AttendanceController : ControllerBase
         HolidayTypeCode = map.HolidayTypeCode,
         HolidayTypeName = holidayTypeName,
         ColorCode = map.ColorCode
+    };
+
+    private static AttendanceRuleSettingDto ToAttendanceRuleSettingDto(
+        AttendanceRuleSetting rule,
+        AttendanceEntryType attendanceType) => new()
+    {
+        Id = rule.Id,
+        AttendanceEntryTypeId = rule.AttendanceEntryTypeId,
+        AttendanceTypeCode = attendanceType.Code,
+        AttendanceTypeName = attendanceType.Name,
+        Reference = rule.Reference,
+        RuleName = rule.RuleName,
+        WorkingMinutes = rule.WorkingMinutes,
+        BeforeCheckInMinutes = rule.BeforeCheckInMinutes,
+        AfterCheckOutMinutes = rule.AfterCheckOutMinutes,
+        CheckInAdjustMinutes = rule.CheckInAdjustMinutes,
+        CheckOutAdjustMinutes = rule.CheckOutAdjustMinutes,
+        AbsentAfterShiftStartMinutes = rule.AbsentAfterShiftStartMinutes,
+        MissingCheckoutAfterShiftEndMinutes = rule.MissingCheckoutAfterShiftEndMinutes,
+        AccountLockAbsentDays = rule.AccountLockAbsentDays,
+        WeekendChargeValue = rule.WeekendChargeValue,
+        AdjustAbsentDays = rule.AdjustAbsentDays,
+        IsApproved = rule.IsApproved,
+        IsActive = rule.IsActive,
+        Remarks = rule.Remarks
     };
 
     private async Task<IActionResult> Execute<T>(Func<Task<T>> action)

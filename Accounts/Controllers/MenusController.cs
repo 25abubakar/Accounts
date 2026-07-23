@@ -281,6 +281,7 @@ namespace Accounts.Controllers
                 new("Menu Manager",         "Menu",               "/settings/menus",       "Platform Settings",   5, new() { "ACCESS_GROUP_EDIT" }),
                 new("Seed Menus",           "Database",           "/settings/seed-menus",  "Platform Settings",   6, new() { "ACCESS_GROUP_EDIT" }),
                 new("Status",               "Palette",            "/settings/statuses",    "Platform Settings",   7, new()),
+                new("Scale",                "BadgeDollarSign",    "/settings/scales",      "Platform Settings",   8, new()),
             };
 
             // Valid feature keys (only save permissions that exist in Features table)
