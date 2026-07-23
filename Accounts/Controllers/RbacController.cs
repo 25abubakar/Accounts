@@ -11,7 +11,7 @@ namespace Accounts.Controllers
 {
     [ApiController]
     [Route("api/rbac")]
-    [Authorize(Roles = "SuperAdmin,Admin,TenantAdmin")]
+    [Authorize]
     [Produces("application/json")]
     public class RbacController : ControllerBase
     {
@@ -33,7 +33,57 @@ namespace Accounts.Controllers
             User.IsInRole("SuperAdmin") ||
             User.IsInRole("Admin") ||
             User.IsInRole("TenantAdmin") ||
+            string.Equals(User.FindFirstValue(ITenantService.ClaimIsSuperAdmin), "true", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(User.FindFirstValue(ITenantService.ClaimIsTenantAdmin), "true", StringComparison.OrdinalIgnoreCase);
+
+        private async Task<Guid?> CurrentStaffIdAsync()
+        {
+            var identityUserId = CurrentUserId;
+            if (string.IsNullOrWhiteSpace(identityUserId)) return null;
+
+            return await _db.Persons
+                .AsNoTracking()
+                .Where(person => person.IdentityUserId == identityUserId && person.Staff != null)
+                .Select(person => (Guid?)person.Staff!.StaffId)
+                .FirstOrDefaultAsync();
+        }
+
+        private async Task<bool> HasAccessControlPermissionAsync(params string[] actions)
+        {
+            if (IsFullAccessUser) return true;
+
+            var staffId = await CurrentStaffIdAsync();
+            if (!staffId.HasValue) return false;
+
+            var normalizedActions = actions
+                .Where(action => !string.IsNullOrWhiteSpace(action))
+                .Select(action => action.Trim().ToUpperInvariant())
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+
+            var accessMenuIds = await _db.Menus.AsNoTracking()
+                .Where(menu => menu.IsActive &&
+                    (menu.Route == "/access/admin" ||
+                     menu.Route == "/access/groups" ||
+                     menu.Title == "Access Control" ||
+                     menu.Title == "Access Groups" ||
+                     menu.Title == "Dept Permissions"))
+                .Select(menu => menu.Id)
+                .ToListAsync();
+
+            foreach (var menuId in accessMenuIds)
+            {
+                if (normalizedActions.Contains("VIEW", StringComparer.OrdinalIgnoreCase) &&
+                    await _rbac.HasAccessAsync(staffId.Value, $"MENU_{menuId}"))
+                    return true;
+
+                foreach (var action in normalizedActions)
+                    if (await _rbac.HasAccessAsync(staffId.Value, $"MENU_{menuId}_{action}"))
+                        return true;
+            }
+
+            return false;
+        }
 
         // ── Admin: list all users with StaffId (for permission assignment UI) ─
 
@@ -48,9 +98,11 @@ namespace Accounts.Controllers
         /// GET /api/rbac/users
         /// </summary>
         [HttpGet("users")]
-        [Authorize(Roles = "SuperAdmin,Admin,TenantAdmin")]
         public async Task<IActionResult> GetAllUsers()
         {
+            if (!await HasAccessControlPermissionAsync("VIEW"))
+                return Forbid();
+
             var identityUserId = User.FindFirstValue(ClaimTypes.NameIdentifier);
             var appUser = await _db.Users
                 .AsNoTracking()
@@ -106,9 +158,11 @@ namespace Accounts.Controllers
         }
 
         [HttpGet("staff-access-overview")]
-        [Authorize(Roles = "SuperAdmin,Admin,TenantAdmin")]
         public async Task<IActionResult> GetStaffAccessOverview()
         {
+            if (!await HasAccessControlPermissionAsync("VIEW"))
+                return Forbid();
+
             var overview = await _rbac.GetStaffAccessOverviewAsync();
             return Ok(overview.Select(item => new { staffId = item.Key, allowedFeatureKeys = item.Value }));
         }
@@ -119,9 +173,11 @@ namespace Accounts.Controllers
         /// GET /api/rbac/staff/{staffId}/permissions-summary
         /// </summary>
         [HttpGet("staff/{staffId:guid}/permissions-summary")]
-        [Authorize(Roles = "SuperAdmin,Admin,TenantAdmin")]
         public async Task<IActionResult> GetPermissionsSummary(Guid staffId)
         {
+            if (!await HasAccessControlPermissionAsync("VIEW"))
+                return Forbid();
+
             var allFeatures = await _db.Features.AsNoTracking()
                 .OrderBy(f => f.Module).ThenBy(f => f.FeatureKey)
                 .ToListAsync();
@@ -142,9 +198,10 @@ namespace Accounts.Controllers
             {
                 if (!grant.AccessFeatures.Any())
                 {
-                    // No feature rows → all features allowed
-                    foreach (var f in allFeatures)
-                        allowSet.Add(f.PermissionId);
+                    // No feature rows means menu visibility only; CRUD/action features must be explicit.
+                    var menuFeature = allFeatures.FirstOrDefault(f =>
+                        string.Equals(f.FeatureKey, $"MENU_{grant.MenuId}", StringComparison.OrdinalIgnoreCase));
+                    if (menuFeature != null) allowSet.Add(menuFeature.PermissionId);
                 }
                 else
                 {
@@ -180,11 +237,13 @@ namespace Accounts.Controllers
         /// POST /api/rbac/staff/{staffId}/bulk-overrides
         /// </summary>
         [HttpPost("staff/{staffId:guid}/bulk-overrides")]
-        [Authorize(Roles = "SuperAdmin,Admin,TenantAdmin")]
         public async Task<IActionResult> BulkSetOverrides(
             Guid staffId,
             [FromBody] Dictionary<string, string> overrides)
         {
+            if (!await HasAccessControlPermissionAsync("EDIT"))
+                return Forbid();
+
             if (overrides == null || overrides.Count == 0)
                 return BadRequest(new { message = "No overrides provided." });
 
@@ -198,9 +257,11 @@ namespace Accounts.Controllers
         }
 
         [HttpPost("staff/bulk-overrides")]
-        [Authorize(Roles = "SuperAdmin,Admin,TenantAdmin")]
         public async Task<IActionResult> BulkSetOverridesForStaff([FromBody] MultiStaffOverridesDto request)
         {
+            if (!await HasAccessControlPermissionAsync("EDIT"))
+                return Forbid();
+
             if (request.StaffIds == null || request.StaffIds.Count == 0)
                 return BadRequest(new { message = "Select at least one staff member." });
             if (request.Overrides == null || request.Overrides.Count == 0)
@@ -215,9 +276,11 @@ namespace Accounts.Controllers
         /// POST /api/rbac/staff/{staffId}/clear-overrides
         /// </summary>
         [HttpPost("staff/{staffId:guid}/clear-overrides")]
-        [Authorize(Roles = "SuperAdmin,Admin,TenantAdmin")]
         public async Task<IActionResult> ClearStaffOverrides(Guid staffId)
         {
+            if (!await HasAccessControlPermissionAsync("DELETE"))
+                return Forbid();
+
             if (!await _db.StaffVacancies.AsNoTracking().AnyAsync(s => s.StaffId == staffId))
                 return NotFound(new { message = "Staff not found." });
 
@@ -263,18 +326,20 @@ namespace Accounts.Controllers
             // Compute the allowed PermissionId set in-memory (same logic as RbacService)
             var allowedPermIds = new HashSet<int>();
             var grantedMenuIds = menuGrants.Select(ma => ma.MenuId).ToHashSet();
-            var linkedPermissions = await _db.MenuPermissions.AsNoTracking()
-                .Where(mp => grantedMenuIds.Contains(mp.MenuId))
-                .Select(mp => new { mp.MenuId, mp.PermissionId })
+            var grantedMenuFeatureKeys = grantedMenuIds.Select(menuId => $"MENU_{menuId}").ToArray();
+            var menuFeatureIds = await _db.Features.AsNoTracking()
+                .Where(feature => grantedMenuFeatureKeys.Contains(feature.FeatureKey))
+                .Select(feature => new { feature.FeatureKey, feature.PermissionId })
                 .ToListAsync();
 
             foreach (var grant in menuGrants)
             {
                 if (!grant.AccessFeatures.Any())
                 {
-                    // No feature-level rows → all features allowed for this grant
-                    foreach (var pid in linkedPermissions.Where(x => x.MenuId == grant.MenuId).Select(x => x.PermissionId))
-                        allowedPermIds.Add(pid);
+                    // No feature-level rows means menu visibility only; CRUD/action features must be explicit.
+                    var feature = menuFeatureIds.FirstOrDefault(item =>
+                        string.Equals(item.FeatureKey, $"MENU_{grant.MenuId}", StringComparison.OrdinalIgnoreCase));
+                    if (feature != null) allowedPermIds.Add(feature.PermissionId);
                 }
                 else
                 {
@@ -344,8 +409,13 @@ namespace Accounts.Controllers
         /// Optimized — no N+1 queries.
         /// </summary>
         [HttpGet("matrix/{deptId:int}")]
-        public async Task<IActionResult> GetMatrix(int deptId) =>
-            Ok(await _rbac.GetDepartmentMatrixAsync(deptId));
+        public async Task<IActionResult> GetMatrix(int deptId)
+        {
+            if (!await HasAccessControlPermissionAsync("VIEW"))
+                return Forbid();
+
+            return Ok(await _rbac.GetDepartmentMatrixAsync(deptId));
+        }
 
         // ── Role Permissions ──────────────────────────────────────────────────
 
@@ -355,8 +425,13 @@ namespace Accounts.Controllers
         /// </summary>
         [HttpGet("roles/{jobTitle}/permissions")]
         public async Task<IActionResult> GetRolePermissions(
-            string jobTitle, [FromQuery] int? deptId) =>
-            Ok(await _rbac.GetRolePermissionsAsync(jobTitle, deptId));
+            string jobTitle, [FromQuery] int? deptId)
+        {
+            if (!await HasAccessControlPermissionAsync("VIEW"))
+                return Forbid();
+
+            return Ok(await _rbac.GetRolePermissionsAsync(jobTitle, deptId));
+        }
 
         /// <summary>
         /// Set default permissions for a job title in a department.
@@ -369,6 +444,9 @@ namespace Accounts.Controllers
             [FromQuery] int? deptId,
             [FromBody] Dictionary<string, bool> permissions)
         {
+            if (!await HasAccessControlPermissionAsync("EDIT"))
+                return Forbid();
+
             if (permissions == null || !permissions.Any())
                 return BadRequest(new { message = "No permissions provided." });
 
@@ -411,6 +489,9 @@ namespace Accounts.Controllers
         [HttpGet("staff/{staffId:guid}/overrides")]
         public async Task<IActionResult> GetOverrides(Guid staffId)
         {
+            if (!await HasAccessControlPermissionAsync("VIEW"))
+                return Forbid();
+
             var grants = await _db.StaffMenuAccesses
                 .AsNoTracking()
                 .Include(ma => ma.Menu)
@@ -484,6 +565,9 @@ namespace Accounts.Controllers
             [FromQuery] string? key,
             [FromBody] SetOverrideDto dto)
         {
+            if (!await HasAccessControlPermissionAsync("EDIT"))
+                return Forbid();
+
             var resolvedKey = ResolveFeatureKey(featureKey ?? key);
             if (string.IsNullOrWhiteSpace(resolvedKey))
                 return BadRequest(new { message = "featureKey is required in route or query string." });
@@ -511,6 +595,9 @@ namespace Accounts.Controllers
             string? featureKey,
             [FromQuery] string? key)
         {
+            if (!await HasAccessControlPermissionAsync("DELETE"))
+                return Forbid();
+
             var resolvedKey = ResolveFeatureKey(featureKey ?? key);
             if (string.IsNullOrWhiteSpace(resolvedKey))
                 return BadRequest(new { message = "featureKey is required in route or query string." });
@@ -532,16 +619,22 @@ namespace Accounts.Controllers
         /// <summary>
         /// Menu tree with all permission keys per item (for admin access UI).
         /// </summary>
-        [Authorize(Roles = "SuperAdmin,Admin,TenantAdmin")]
         [HttpGet("menu-permissions")]
-        public async Task<IActionResult> GetMenuPermissionTree() =>
-            Ok(await _rbac.GetMenuPermissionTreeAsync());
+        public async Task<IActionResult> GetMenuPermissionTree()
+        {
+            if (!await HasAccessControlPermissionAsync("VIEW"))
+                return Forbid();
 
-        [Authorize(Roles = "SuperAdmin,Admin,TenantAdmin")]
+            return Ok(await _rbac.GetMenuPermissionTreeAsync());
+        }
+
         [HttpPost("staff/{staffId:guid}/grant-menu/{menuId:int}")]
         public async Task<IActionResult> GrantMenuAccess(
             Guid staffId, int menuId, [FromBody] GrantMenuAccessDto? dto)
         {
+            if (!await HasAccessControlPermissionAsync("ADD"))
+                return Forbid();
+
             var personId = await _db.StaffVacancies.AsNoTracking()
                 .Where(s => s.StaffId == staffId)
                 .Select(s => s.PersonId)
@@ -559,11 +652,13 @@ namespace Accounts.Controllers
         }
 
         /// <summary>Grant menu + features by PersonId (preferred — saves PersonMenus + PersonFeatures).</summary>
-        [Authorize(Roles = "SuperAdmin,Admin,TenantAdmin")]
         [HttpPost("persons/{personId:guid}/grant-menu/{menuId:int}")]
         public async Task<IActionResult> GrantMenuToPerson(
             Guid personId, int menuId, [FromBody] GrantMenuAccessDto? dto)
         {
+            if (!await HasAccessControlPermissionAsync("ADD"))
+                return Forbid();
+
             var (ok, msg, menuIds, keys) = await _personAccess.GrantMenuAsync(
                 personId, menuId, CurrentUserId, dto?.Reason);
 
@@ -573,18 +668,24 @@ namespace Accounts.Controllers
         }
 
         /// <summary>View menus and features granted to a person.</summary>
-        [Authorize(Roles = "SuperAdmin,Admin,TenantAdmin")]
         [HttpGet("persons/{personId:guid}/access")]
-        public async Task<IActionResult> GetPersonAccess(Guid personId) =>
-            Ok(await _personAccess.GetPersonAccessSummaryAsync(personId));
+        public async Task<IActionResult> GetPersonAccess(Guid personId)
+        {
+            if (!await HasAccessControlPermissionAsync("VIEW"))
+                return Forbid();
+
+            return Ok(await _personAccess.GetPersonAccessSummaryAsync(personId));
+        }
 
         /// <summary>
         /// Revoke menu-bundle (PersonMenus + PersonFeatures).
         /// </summary>
-        [Authorize(Roles = "SuperAdmin,Admin,TenantAdmin")]
         [HttpPost("staff/{staffId:guid}/revoke-menu/{menuId:int}")]
         public async Task<IActionResult> RevokeMenuAccess(Guid staffId, int menuId)
         {
+            if (!await HasAccessControlPermissionAsync("DELETE"))
+                return Forbid();
+
             var personId = await _db.StaffVacancies.AsNoTracking()
                 .Where(s => s.StaffId == staffId)
                 .Select(s => s.PersonId)
@@ -599,10 +700,12 @@ namespace Accounts.Controllers
                 : BadRequest(new { message = msg });
         }
 
-        [Authorize(Roles = "SuperAdmin,Admin,TenantAdmin")]
         [HttpPost("persons/{personId:guid}/revoke-menu/{menuId:int}")]
         public async Task<IActionResult> RevokeMenuFromPerson(Guid personId, int menuId)
         {
+            if (!await HasAccessControlPermissionAsync("DELETE"))
+                return Forbid();
+
             var (ok, msg) = await _personAccess.RevokeMenuAsync(personId, menuId);
             return ok ? Ok(new { message = msg, personId, menuId }) : BadRequest(new { message = msg });
         }
@@ -610,10 +713,14 @@ namespace Accounts.Controllers
         /// <summary>
         /// Preview feature keys that would be granted for a menu subtree.
         /// </summary>
-        [Authorize(Roles = "SuperAdmin,Admin,TenantAdmin")]
         [HttpGet("menus/{menuId:int}/feature-keys")]
-        public async Task<IActionResult> GetMenuFeatureKeys(int menuId) =>
-            Ok(new { menuId, featureKeys = await _rbac.GetMenuFeatureKeysAsync(menuId) });
+        public async Task<IActionResult> GetMenuFeatureKeys(int menuId)
+        {
+            if (!await HasAccessControlPermissionAsync("VIEW"))
+                return Forbid();
+
+            return Ok(new { menuId, featureKeys = await _rbac.GetMenuFeatureKeysAsync(menuId) });
+        }
 
         // ── Seed Features ─────────────────────────────────────────────────────
 
@@ -779,3 +886,4 @@ namespace Accounts.Controllers
         public Dictionary<string, string> Overrides { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     }
 }
+

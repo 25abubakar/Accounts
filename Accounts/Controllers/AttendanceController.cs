@@ -2,6 +2,7 @@ using Accounts.DTOs;
 using Accounts.Data;
 using Accounts.Models;
 using Accounts.Services.Interfaces;
+using Accounts.Services.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using System.Security.Claims;
@@ -17,12 +18,14 @@ public sealed class AttendanceController : ControllerBase
     private readonly IAttendanceService _service;
     private readonly ApplicationDbContext _db;
     private readonly ITenantService _tenant;
+    private readonly RbacService _rbac;
 
-    public AttendanceController(IAttendanceService service, ApplicationDbContext db, ITenantService tenant)
+    public AttendanceController(IAttendanceService service, ApplicationDbContext db, ITenantService tenant, RbacService rbac)
     {
         _service = service;
         _db = db;
         _tenant = tenant;
+        _rbac = rbac;
     }
 
     [HttpGet("me/today")]
@@ -48,6 +51,7 @@ public sealed class AttendanceController : ControllerBase
         if (!_tenant.TenantId.HasValue) return Ok(Array.Empty<AttendanceMapRuleDto>());
 
         var rules = await _db.AttendanceMapRuleReadRows.AsNoTracking()
+            .Where(rule => rule.TenantId == _tenant.RequiredTenantId)
             .OrderBy(rule => rule.Id)
             .Select(rule => new AttendanceMapRuleDto
             {
@@ -71,7 +75,7 @@ public sealed class AttendanceController : ControllerBase
     [HttpPost("rules/map-attendance")]
     public async Task<IActionResult> SaveMapAttendanceRule([FromBody] SaveAttendanceMapRuleDto dto, CancellationToken ct)
     {
-        if (!CanViewOrganization() || !_tenant.TenantId.HasValue) return Forbid();
+        if (!_tenant.TenantId.HasValue) return Forbid();
         if (dto.StaffId == Guid.Empty) return BadRequest(new { message = "A staff member is required." });
 
         var tenantId = _tenant.RequiredTenantId;
@@ -96,7 +100,12 @@ public sealed class AttendanceController : ControllerBase
             return BadRequest(new { message = "Valid Time From and Time To values are required." });
 
         var rule = await _db.AttendanceMapRules
-            .SingleOrDefaultAsync(item => item.StaffId == dto.StaffId, ct);
+            .SingleOrDefaultAsync(item => item.TenantId == tenantId && item.StaffId == dto.StaffId, ct);
+
+        var requiredAction = rule == null ? "ADD" : "EDIT";
+        if (!await HasAttendanceMenuActionAsync(requiredAction, ct, "/attendance/rules/map-attendance", "/attendance/map-attendance"))
+            return Forbid();
+
         var now = DateTime.UtcNow;
         if (rule == null)
         {
@@ -377,6 +386,48 @@ public sealed class AttendanceController : ControllerBase
     private string UserId() => User.FindFirstValue(ClaimTypes.NameIdentifier) ?? throw new UnauthorizedAccessException();
     private bool CanViewOthers() => User.IsInRole("SuperAdmin") || User.IsInRole("Admin") || User.IsInRole("TenantAdmin") || User.HasClaim(ITenantService.ClaimIsTenantAdmin, "true");
     private bool CanViewOrganization() => User.IsInRole("SuperAdmin") || User.IsInRole("Admin") || User.IsInRole("TenantAdmin") || User.HasClaim(ITenantService.ClaimIsTenantAdmin, "true");
+
+    private async Task<Guid?> CurrentStaffIdAsync(CancellationToken ct)
+    {
+        var identityUserId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+        if (string.IsNullOrWhiteSpace(identityUserId)) return null;
+
+        return await _db.Persons.AsNoTracking()
+            .Where(person => person.IdentityUserId == identityUserId && person.Staff != null)
+            .Select(person => (Guid?)person.Staff!.StaffId)
+            .FirstOrDefaultAsync(ct);
+    }
+
+    private async Task<bool> HasAttendanceMenuActionAsync(string action, CancellationToken ct, params string[] routes)
+    {
+        if (CanViewOrganization()) return true;
+
+        var staffId = await CurrentStaffIdAsync(ct);
+        if (!staffId.HasValue) return false;
+
+        var normalizedAction = action.Trim().ToUpperInvariant();
+        var normalizedRoutes = routes
+            .Where(route => !string.IsNullOrWhiteSpace(route))
+            .Select(route => route.Trim().ToLowerInvariant())
+            .ToArray();
+
+        var menuIds = await _db.Menus.AsNoTracking()
+            .Where(menu => menu.IsActive && menu.Route != null && normalizedRoutes.Contains(menu.Route.ToLower()))
+            .Select(menu => menu.Id)
+            .ToListAsync(ct);
+
+        foreach (var menuId in menuIds)
+        {
+            if (normalizedAction == "VIEW" && await _rbac.HasAccessAsync(staffId.Value, $"MENU_{menuId}"))
+                return true;
+
+            if (await _rbac.HasAccessAsync(staffId.Value, $"MENU_{menuId}_{normalizedAction}"))
+                return true;
+        }
+
+        return false;
+    }
+
     private static TimeZoneInfo ResolveTimeZone(string? timeZoneId)
     {
         if (string.IsNullOrWhiteSpace(timeZoneId)) return TimeZoneInfo.Local;
