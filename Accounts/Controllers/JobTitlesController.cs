@@ -1,7 +1,10 @@
 using Accounts.Services.Interfaces;
 using Accounts.Services.Services;
+using Accounts.Data;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
+using System.Security.Claims;
 
 namespace Accounts.Controllers
 {
@@ -13,11 +16,42 @@ namespace Accounts.Controllers
     {
         private readonly JobTitleService _service;
         private readonly ITenantService _tenantService;
+        private readonly ApplicationDbContext _db;
+        private readonly RbacService _rbac;
 
-        public JobTitlesController(JobTitleService service, ITenantService tenantService)
+        public JobTitlesController(JobTitleService service, ITenantService tenantService, ApplicationDbContext db, RbacService rbac)
         {
             _service = service;
             _tenantService = tenantService;
+            _db = db;
+            _rbac = rbac;
+        }
+
+        private async Task<bool> HasJobTitleActionAsync(string action)
+        {
+            if (_tenantService.IsTenantAdmin || User.IsInRole("Admin") || User.IsInRole("TenantAdmin"))
+                return true;
+            if (!_tenantService.TenantId.HasValue) return false;
+
+            var identityUserId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+            if (string.IsNullOrWhiteSpace(identityUserId)) return false;
+
+            var staffId = await _db.Persons.AsNoTracking()
+                .Where(person => person.IdentityUserId == identityUserId && person.Staff != null)
+                .Select(person => (Guid?)person.Staff!.StaffId)
+                .FirstOrDefaultAsync();
+            if (!staffId.HasValue) return false;
+
+            var menuId = await _db.Menus.AsNoTracking()
+                .Where(menu => menu.IsActive && menu.Route == "/settings/job-titles")
+                .Select(menu => (int?)menu.Id)
+                .FirstOrDefaultAsync();
+            if (!menuId.HasValue) return false;
+
+            var normalizedAction = action.Trim().ToUpperInvariant();
+            if (normalizedAction == "VIEW" && await _rbac.HasAccessAsync(staffId.Value, $"MENU_{menuId.Value}"))
+                return true;
+            return await _rbac.HasAccessAsync(staffId.Value, $"MENU_{menuId.Value}_{normalizedAction}");
         }
 
         [HttpGet]
@@ -26,13 +60,14 @@ namespace Accounts.Controllers
             // Keep the menu/page visible to Super Admin without exposing tenant data.
             if (_tenantService.IsSuperAdmin) return Ok(Array.Empty<JobTitleResponseDto>());
             if (!_tenantService.TenantId.HasValue) return Forbid();
+            if (!await HasJobTitleActionAsync("VIEW")) return Forbid();
             return Ok(await _service.GetAllWithCountAsync());
         }
 
         [HttpPost("upsert")]
         public async Task<IActionResult> Upsert([FromBody] UpsertJobTitleDto dto)
         {
-            if (!_tenantService.IsTenantAdmin) return Forbid();
+            if (!await HasJobTitleActionAsync("ADD")) return Forbid();
             if (string.IsNullOrWhiteSpace(dto.TitleName))
                 return BadRequest(new { message = "TitleName is required." });
 
@@ -44,7 +79,7 @@ namespace Accounts.Controllers
         [HttpPut("{id:int}")]
         public async Task<IActionResult> Update(int id, [FromBody] UpsertJobTitleDto dto)
         {
-            if (!_tenantService.IsTenantAdmin) return Forbid();
+            if (!await HasJobTitleActionAsync("EDIT")) return Forbid();
             if (string.IsNullOrWhiteSpace(dto.TitleName))
                 return BadRequest(new { message = "TitleName is required." });
 
@@ -57,7 +92,7 @@ namespace Accounts.Controllers
         [HttpDelete("{id:int}")]
         public async Task<IActionResult> Delete(int id)
         {
-            if (!_tenantService.IsTenantAdmin) return Forbid();
+            if (!await HasJobTitleActionAsync("DELETE")) return Forbid();
             try
             {
                 var success = await _service.DeleteAsync(id);
@@ -74,7 +109,7 @@ namespace Accounts.Controllers
         [HttpPut("{id:int}/attendance-scope")]
         public async Task<IActionResult> UpdateAttendanceScope(int id, [FromBody] UpdateAttendanceScopeDto dto)
         {
-            if (!_tenantService.IsTenantAdmin) return Forbid();
+            if (!await HasJobTitleActionAsync("EDIT")) return Forbid();
             if (!Enum.IsDefined(dto.Scope)) return BadRequest(new { message = "Invalid attendance visibility scope." });
             var success = await _service.UpdateAttendanceScopeAsync(id, dto.Scope);
             return success ? Ok(new { id, attendanceVisibilityScope = dto.Scope }) : NotFound(new { message = "Job Title not found." });

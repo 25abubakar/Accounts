@@ -141,6 +141,7 @@ public sealed class AttendanceController : ControllerBase
         if (!_tenant.TenantId.HasValue) return Ok(Array.Empty<AttendanceHolidayColorMapDto>());
 
         var maps = await _db.AttendanceHolidayColorMapReadRows.AsNoTracking()
+            .Where(map => map.TenantId == _tenant.RequiredTenantId)
             .OrderBy(map => map.Id)
             .Select(map => new AttendanceHolidayColorMapDto
             {
@@ -198,21 +199,31 @@ public sealed class AttendanceController : ControllerBase
             UserId(), CanViewOrganization(), year, month, ct));
 
     [HttpPut("report/timing-chart/staff/{staffId:guid}/schedules/{holidayDate}")]
-    public Task<IActionResult> SaveTimingChartSchedule(
+    public async Task<IActionResult> SaveTimingChartSchedule(
         Guid staffId,
         DateOnly holidayDate,
         [FromBody] SaveTimingChartScheduleDto dto,
-        CancellationToken ct) =>
-        Execute(() => _service.SaveTimingChartScheduleAsync(
+        CancellationToken ct)
+    {
+        if (!await HasAttendanceMenuActionAsync("EDIT", ct, "/attendance/timing-chart"))
+            return Forbid();
+
+        return await Execute(() => _service.SaveTimingChartScheduleAsync(
             UserId(), CanViewOrganization(), staffId, holidayDate, dto, ct));
+    }
 
     [HttpPost("report/timing-chart/staff/{staffId:guid}/schedules/range")]
-    public Task<IActionResult> SaveTimingChartScheduleRange(
+    public async Task<IActionResult> SaveTimingChartScheduleRange(
         Guid staffId,
         [FromBody] SaveTimingChartScheduleRangeDto dto,
-        CancellationToken ct) =>
-        Execute(() => _service.SaveTimingChartScheduleRangeAsync(
+        CancellationToken ct)
+    {
+        if (!await HasAttendanceMenuActionAsync("EDIT", ct, "/attendance/timing-chart"))
+            return Forbid();
+
+        return await Execute(() => _service.SaveTimingChartScheduleRangeAsync(
             UserId(), CanViewOrganization(), staffId, dto, ct));
+    }
 
     [HttpGet("report/monthly")]
     public Task<IActionResult> MonthlyReport([FromQuery] int year, [FromQuery] int month, [FromQuery] Guid? personId, CancellationToken ct) =>
@@ -317,7 +328,9 @@ public sealed class AttendanceController : ControllerBase
     [HttpPost("types/camera/entries")]
     public async Task<IActionResult> SaveCameraAttendance([FromBody] SaveCameraAttendanceDto dto, CancellationToken ct)
     {
-        if (!CanViewOrganization() || !_tenant.TenantId.HasValue) return Forbid();
+        if (!_tenant.TenantId.HasValue) return Forbid();
+        if (!await HasAttendanceMenuActionAsync("ADD", ct, "/attendance/types/camera"))
+            return Forbid();
         if (dto.PersonId == Guid.Empty) return BadRequest(new { message = "Select a staff member." });
         if (string.IsNullOrWhiteSpace(dto.CheckInTime) && string.IsNullOrWhiteSpace(dto.CheckOutTime))
             return BadRequest(new { message = "Enter at least check-in or check-out time." });
@@ -460,7 +473,9 @@ public sealed class AttendanceController : ControllerBase
         SaveAttendanceHolidayColorMapDto dto,
         CancellationToken ct)
     {
-        if (!CanViewOrganization() || !_tenant.TenantId.HasValue) return Forbid();
+        if (!_tenant.TenantId.HasValue) return Forbid();
+        if (!await HasAttendanceMenuActionAsync(id.HasValue ? "EDIT" : "ADD", ct, "/attendance/rules/map-color"))
+            return Forbid();
 
         var holidayTypeCode = dto.HolidayTypeCode?.Trim() ?? string.Empty;
         var holidayType = await _db.AppLookupValues.AsNoTracking()

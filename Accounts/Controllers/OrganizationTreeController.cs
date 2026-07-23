@@ -2,6 +2,7 @@ using Accounts.Authorization;
 using Accounts.Data;
 using Accounts.Models;
 using Accounts.Services.Interfaces;
+using Accounts.Services.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -18,15 +19,18 @@ namespace Accounts.Controllers
         private readonly IOrganizationService         _service;
         private readonly ApplicationDbContext         _db;
         private readonly ITenantService               _tenantService;
+        private readonly RbacService                  _rbac;
 
         public OrganizationTreeController(
             IOrganizationService          service,
             ApplicationDbContext          db,
-            ITenantService                tenantService)
+            ITenantService                tenantService,
+            RbacService                   rbac)
         {
             _service     = service;
             _db          = db;
             _tenantService = tenantService;
+            _rbac        = rbac;
         }
 
         // ── Caller context helper ─────────────────────────────────────────────
@@ -54,6 +58,40 @@ namespace Accounts.Controllers
             }
 
             return (isSuperAdmin, isOrganizationAdmin, rootNodeId);
+        }
+
+        private async Task<bool> HasOrganizationActionAsync(string action)
+        {
+            if (_tenantService.IsSuperAdmin || _tenantService.IsTenantAdmin || User.IsInRole("Admin") || User.IsInRole("TenantAdmin"))
+                return true;
+
+            var identityUserId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+            if (string.IsNullOrWhiteSpace(identityUserId)) return false;
+
+            var staffId = await _db.Persons.AsNoTracking()
+                .Where(person => person.IdentityUserId == identityUserId && person.Staff != null)
+                .Select(person => (Guid?)person.Staff!.StaffId)
+                .FirstOrDefaultAsync();
+            if (!staffId.HasValue) return false;
+
+            var normalizedAction = action.Trim().ToUpperInvariant();
+            var menuIds = await _db.Menus.AsNoTracking()
+                .Where(menu => menu.IsActive &&
+                    (menu.Route == "/groups/companies" ||
+                     menu.Route == "/organization" ||
+                     menu.Route == "/groups/hierarchy"))
+                .Select(menu => menu.Id)
+                .ToListAsync();
+
+            foreach (var menuId in menuIds)
+            {
+                if (normalizedAction == "VIEW" && await _rbac.HasAccessAsync(staffId.Value, $"MENU_{menuId}"))
+                    return true;
+                if (await _rbac.HasAccessAsync(staffId.Value, $"MENU_{menuId}_{normalizedAction}"))
+                    return true;
+            }
+
+            return false;
         }
 
         // ── Country Lookup — available to all authenticated users ─────────────
@@ -215,6 +253,7 @@ namespace Accounts.Controllers
         public async Task<IActionResult> Create([FromBody] CreateOrgNodeDto dto)
         {
             if (!ModelState.IsValid) return BadRequest(ModelState);
+            if (!await HasOrganizationActionAsync("ADD")) return Forbid();
 
             var (isSuperAdmin, isTenantAdmin, tenantRootId) = await ResolveCallerContextAsync();
 
@@ -250,6 +289,7 @@ namespace Accounts.Controllers
         public async Task<IActionResult> Update(int id, [FromBody] UpdateOrgNodeDto dto)
         {
             if (!ModelState.IsValid) return BadRequest(ModelState);
+            if (!await HasOrganizationActionAsync("EDIT")) return Forbid();
 
             if (dto.ParentId.HasValue)
             {
@@ -269,6 +309,7 @@ namespace Accounts.Controllers
         [HttpDelete("{id:int}")]
         public async Task<IActionResult> Delete(int id)
         {
+            if (!await HasOrganizationActionAsync("DELETE")) return Forbid();
             var (success, message) = await _service.DeleteAsync(id);
             if (!success)
                 return message.Contains("not found")

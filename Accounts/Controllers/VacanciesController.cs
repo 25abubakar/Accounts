@@ -1,7 +1,10 @@
 using Accounts.Models;
+using Accounts.Data;
 using Accounts.Services.Interfaces;
+using Accounts.Services.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
 using System.Security.Claims;
 
 namespace Accounts.Controllers
@@ -18,10 +21,14 @@ namespace Accounts.Controllers
     public class VacanciesController : ControllerBase
     {
         private readonly IVacancyService              _service;
+        private readonly ApplicationDbContext         _db;
+        private readonly RbacService                  _rbac;
 
-        public VacanciesController(IVacancyService service)
+        public VacanciesController(IVacancyService service, ApplicationDbContext db, RbacService rbac)
         {
             _service     = service;
+            _db          = db;
+            _rbac        = rbac;
         }
 
         private Task<bool> CallerIsSuperAdminAsync() => Task.FromResult(
@@ -32,10 +39,50 @@ namespace Accounts.Controllers
             User.IsInRole("TenantAdmin") ||
             string.Equals(User.FindFirstValue(ITenantService.ClaimIsTenantAdmin), "true", StringComparison.OrdinalIgnoreCase));
 
+        private bool CallerHasFullTenantAccess() =>
+            User.IsInRole("Admin") ||
+            User.IsInRole("TenantAdmin") ||
+            string.Equals(User.FindFirstValue(ITenantService.ClaimIsTenantAdmin), "true", StringComparison.OrdinalIgnoreCase);
+
+        private async Task<bool> HasVacancyActionAsync(string action, params string[] semanticKeys)
+        {
+            if (CallerHasFullTenantAccess()) return true;
+
+            var identityUserId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+            if (string.IsNullOrWhiteSpace(identityUserId)) return false;
+
+            var staffId = await _db.Persons.AsNoTracking()
+                .Where(person => person.IdentityUserId == identityUserId && person.Staff != null)
+                .Select(person => (Guid?)person.Staff!.StaffId)
+                .FirstOrDefaultAsync();
+            if (!staffId.HasValue) return false;
+
+            var menuId = await _db.Menus.AsNoTracking()
+                .Where(menu => menu.IsActive && (menu.Route == "/hr/vacancies" || menu.Route == "/positions"))
+                .OrderBy(menu => menu.Route == "/hr/vacancies" ? 0 : 1)
+                .Select(menu => (int?)menu.Id)
+                .FirstOrDefaultAsync();
+
+            var normalizedAction = action.Trim().ToUpperInvariant();
+            if (menuId.HasValue)
+            {
+                if (normalizedAction == "VIEW" && await _rbac.HasAccessAsync(staffId.Value, $"MENU_{menuId.Value}"))
+                    return true;
+                if (await _rbac.HasAccessAsync(staffId.Value, $"MENU_{menuId.Value}_{normalizedAction}"))
+                    return true;
+            }
+
+            foreach (var key in semanticKeys)
+                if (await _rbac.HasAccessAsync(staffId.Value, key)) return true;
+
+            return false;
+        }
+
         [HttpGet]
         public async Task<IActionResult> GetAll()
         {
             if (await CallerIsSuperAdminAsync()) return Forbid();
+            if (!await HasVacancyActionAsync("VIEW", "VACANCY_VIEW")) return Forbid();
             return Ok(await _service.GetAllAsync());
         }
 
@@ -43,6 +90,7 @@ namespace Accounts.Controllers
         public async Task<IActionResult> GetById(Guid id)
         {
             if (await CallerIsSuperAdminAsync()) return Forbid();
+            if (!await HasVacancyActionAsync("VIEW", "VACANCY_VIEW")) return Forbid();
             var v = await _service.GetByIdAsync(id);
             return v == null ? NotFound(new { message = $"Position {id} not found." }) : Ok(v);
         }
@@ -51,6 +99,7 @@ namespace Accounts.Controllers
         public async Task<IActionResult> GetVacant()
         {
             if (await CallerIsSuperAdminAsync()) return Forbid();
+            if (!await HasVacancyActionAsync("VIEW", "VACANCY_VIEW")) return Forbid();
             return Ok(await _service.GetVacantAsync());
         }
 
@@ -58,6 +107,7 @@ namespace Accounts.Controllers
         public async Task<IActionResult> GetFilled()
         {
             if (await CallerIsSuperAdminAsync()) return Forbid();
+            if (!await HasVacancyActionAsync("VIEW", "VACANCY_VIEW")) return Forbid();
             return Ok(await _service.GetFilledAsync());
         }
 
@@ -65,6 +115,7 @@ namespace Accounts.Controllers
         public async Task<IActionResult> GetByNode(int orgId)
         {
             if (await CallerIsSuperAdminAsync()) return Forbid();
+            if (!await HasVacancyActionAsync("VIEW", "VACANCY_VIEW")) return Forbid();
             return Ok(await _service.GetByNodeAsync(orgId));
         }
 
@@ -72,12 +123,15 @@ namespace Accounts.Controllers
         public async Task<IActionResult> GetReport()
         {
             if (await CallerIsSuperAdminAsync()) return Forbid();
+            if (!await HasVacancyActionAsync("VIEW", "VACANCY_VIEW")) return Forbid();
             return Ok(await _service.GetReportAsync());
         }
 
         [HttpGet("preview-code")]
         public async Task<IActionResult> PreviewCode([FromQuery] int organizationId, [FromQuery] string jobTitle)
         {
+            if (await CallerIsSuperAdminAsync()) return Forbid();
+            if (!await HasVacancyActionAsync("ADD", "VACANCY_CREATE")) return Forbid();
             if (organizationId <= 0 || string.IsNullOrWhiteSpace(jobTitle))
                 return BadRequest(new { message = "organizationId and jobTitle are required." });
             var code = await _service.PreviewCodeAsync(organizationId, jobTitle);
@@ -90,6 +144,7 @@ namespace Accounts.Controllers
         public async Task<IActionResult> Create([FromBody] CreateVacancyDto dto)
         {
             if (await CallerIsSuperAdminAsync()) return Forbid();
+            if (!await HasVacancyActionAsync("ADD", "VACANCY_CREATE")) return Forbid();
             if (!ModelState.IsValid) return BadRequest(ModelState);
             if (await CallerIsTenantAdminAsync() && !dto.JobTitleId.HasValue)
                 return BadRequest(new { message = "Tenant Admins must select an existing job title from the Job Titles catalog." });
@@ -109,6 +164,7 @@ namespace Accounts.Controllers
         public async Task<IActionResult> CreateBulk([FromBody] CreateVacancyDto dto)
         {
             if (await CallerIsSuperAdminAsync()) return Forbid();
+            if (!await HasVacancyActionAsync("ADD", "VACANCY_CREATE")) return Forbid();
             if (!ModelState.IsValid) return BadRequest(ModelState);
             if (dto.VacancyCount < 1) return BadRequest(new { message = "VacancyCount must be at least 1." });
             var (created, errors) = await _service.CreateBulkAsync(dto);
@@ -120,6 +176,7 @@ namespace Accounts.Controllers
         public async Task<IActionResult> Update(Guid id, [FromBody] UpdateVacancyDto dto)
         {
             if (await CallerIsSuperAdminAsync()) return Forbid();
+            if (!await HasVacancyActionAsync("EDIT", "VACANCY_EDIT")) return Forbid();
             if (!ModelState.IsValid) return BadRequest(ModelState);
             var (vacancy, error) = await _service.UpdateAsync(id, dto);
             if (error != null) return error.Contains("not found") ? NotFound(new { message = error }) : BadRequest(new { message = error });
@@ -130,6 +187,7 @@ namespace Accounts.Controllers
         public async Task<IActionResult> Delete(Guid id)
         {
             if (await CallerIsSuperAdminAsync()) return Forbid();
+            if (!await HasVacancyActionAsync("DELETE", "VACANCY_DELETE")) return Forbid();
             var (success, message) = await _service.DeleteAsync(id);
             if (!success) return message.Contains("not found") ? NotFound(new { message }) : BadRequest(new { message });
             return Ok(new { message });
