@@ -96,7 +96,86 @@ namespace Accounts.Controllers
                         note           = "Tenant Admin account"
                     })
                     .ToListAsync();
-                return Ok(tenantAdmins);
+
+                var tenantIds = tenantAdmins
+                    .Where(admin => admin.tenantId.HasValue)
+                    .Select(admin => admin.tenantId!.Value)
+                    .Distinct()
+                    .ToArray();
+
+                var tenants = await _db.Tenants
+                    .AsNoTracking()
+                    .Where(tenant => tenantIds.Contains(tenant.Id))
+                    .Select(tenant => new
+                    {
+                        tenant.Id,
+                        tenant.TenantName,
+                        tenant.OrganizationTreeId
+                    })
+                    .ToListAsync();
+
+                var organizationNodes = await _db.OrganizationTree
+                    .AsNoTracking()
+                    .Select(node => new
+                    {
+                        node.Id,
+                        node.ParentId,
+                        node.Name,
+                        node.Label
+                    })
+                    .ToListAsync();
+
+                var tenantMap = tenants.ToDictionary(tenant => tenant.Id);
+                var organizationMap = organizationNodes.ToDictionary(node => node.Id);
+
+                string? FindOrgName(int organizationTreeId, params string[] labels)
+                {
+                    var labelSet = labels.ToHashSet(StringComparer.OrdinalIgnoreCase);
+                    var guard = 0;
+                    int? currentId = organizationTreeId;
+                    while (currentId.HasValue && organizationMap.TryGetValue(currentId.Value, out var node) && guard++ < 100)
+                    {
+                        if (labelSet.Contains(node.Label))
+                            return node.Name;
+                        currentId = node.ParentId;
+                    }
+                    return null;
+                }
+
+                var enrichedTenantAdmins = tenantAdmins.Select(admin =>
+                {
+                    var tenant = admin.tenantId.HasValue && tenantMap.TryGetValue(admin.tenantId.Value, out var foundTenant)
+                        ? foundTenant
+                        : null;
+
+                    var countryName = tenant == null ? null : FindOrgName(tenant.OrganizationTreeId, "Country");
+                    var groupName = tenant == null ? null : FindOrgName(tenant.OrganizationTreeId, "Group");
+                    var branchName = tenant == null ? null : FindOrgName(tenant.OrganizationTreeId, "Branch");
+
+                    return new
+                    {
+                        admin.staffId,
+                        admin.identityUserId,
+                        admin.loginId,
+                        admin.fullName,
+                        admin.email,
+                        admin.phone,
+                        admin.vacancyId,
+                        admin.vacancyCode,
+                        admin.jobTitle,
+                        admin.department,
+                        branchName,
+                        companyName = tenant?.TenantName,
+                        countryName,
+                        groupName,
+                        admin.joiningDate,
+                        admin.isTenantAdmin,
+                        admin.tenantId,
+                        admin.note
+                    };
+                });
+
+                return Ok(enrichedTenantAdmins);
             }
             return Ok(await _service.GetAllAsync());
         }

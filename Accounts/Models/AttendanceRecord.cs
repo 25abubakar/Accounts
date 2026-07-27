@@ -16,6 +16,8 @@ public sealed class AttendanceRecord : ITenantEntity
     public int? AttendanceWorkModeId { get; set; }
     public DateTime? CheckInUtc { get; set; }
     public DateTime? CheckOutUtc { get; set; }
+    public DateTime? CameraCheckInUtc { get; set; }
+    public DateTime? CameraCheckOutUtc { get; set; }
     public DateTime? BreakStartedUtc { get; set; }
     public int TotalBreakMinutes { get; set; }
     public DateTime CreatedDate { get; set; }

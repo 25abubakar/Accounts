@@ -41,6 +41,7 @@ namespace Accounts.Data
         public DbSet<StatusDefinition>         Statuses                 => Set<StatusDefinition>();
         public DbSet<ColorStyle>               ColorStyles              => Set<ColorStyle>();
         public DbSet<ProcessStatusStyle>       ProcessStatusStyles      => Set<ProcessStatusStyle>();
+        public DbSet<StatusConfigurationManagementRow> StatusConfigurationManagementRows => Set<StatusConfigurationManagementRow>();
         public IQueryable<ProcessStatusStyle> AttendanceStatuses =>
             ProcessStatusStyles.Where(x => x.Process.ProcessName == "Attendance");
         public DbSet<AttendanceRecord>         AttendanceRecords        => Set<AttendanceRecord>();
@@ -50,11 +51,13 @@ namespace Accounts.Data
         public DbSet<AttendanceMapRuleReadRow> AttendanceMapRuleReadRows => Set<AttendanceMapRuleReadRow>();
         public DbSet<AttendanceRuleSetting>    AttendanceRuleSettings   => Set<AttendanceRuleSetting>();
         public DbSet<AttendanceRuleSettingReadRow> AttendanceRuleSettingReadRows => Set<AttendanceRuleSettingReadRow>();
+        public DbSet<AttendanceDeductionRequest> AttendanceDeductionRequests => Set<AttendanceDeductionRequest>();
         public DbSet<AttendanceHolidayColorMap> AttendanceHolidayColorMaps => Set<AttendanceHolidayColorMap>();
         public DbSet<AttendanceHolidayColorMapReadRow> AttendanceHolidayColorMapReadRows => Set<AttendanceHolidayColorMapReadRow>();
         public DbSet<AttendanceEntryType>      AttendanceEntryTypes     => Set<AttendanceEntryType>();
         public DbSet<AttendanceWorkMode>       AttendanceWorkModes      => Set<AttendanceWorkMode>();
         public DbSet<AttendanceDailyReportRow> AttendanceDailyReportRows => Set<AttendanceDailyReportRow>();
+        public DbSet<AttendanceDeductionReportRow> AttendanceDeductionReportRows => Set<AttendanceDeductionReportRow>();
         public DbSet<ApplicationLoginSession>  ApplicationLoginSessions => Set<ApplicationLoginSession>();
         public DbSet<AttendancePolicy> AttendancePolicies => Set<AttendancePolicy>();
         public DbSet<VacancyCounter>           VacancyCounters          => Set<VacancyCounter>();
@@ -695,6 +698,20 @@ namespace Accounts.Data
                 e.HasOne(x => x.Tenant).WithMany().HasForeignKey(x => x.TenantId).OnDelete(DeleteBehavior.Restrict);
             });
 
+            builder.Entity<StatusConfigurationManagementRow>(e =>
+            {
+                e.HasNoKey();
+                e.ToView("vw_StatusConfigurationsForManagement", "dbo");
+                e.Property(x => x.ProcessName).HasMaxLength(100);
+                e.Property(x => x.StatusName).HasMaxLength(100);
+                e.Property(x => x.Code).HasMaxLength(10);
+                e.Property(x => x.Description).HasMaxLength(500);
+                e.Property(x => x.ColorName).HasMaxLength(100);
+                e.Property(x => x.ColorCode).HasMaxLength(20);
+                e.Property(x => x.FontColor).HasMaxLength(20);
+                e.Property(x => x.FontSize).HasMaxLength(20);
+            });
+
             builder.Entity<AttendanceRecord>(e =>
             {
                 e.ToTable("AttendanceRecords");
@@ -786,6 +803,7 @@ namespace Accounts.Data
                 e.Property(x => x.CheckInAdjustMinutes).HasDefaultValue(5);
                 e.Property(x => x.CheckOutAdjustMinutes).HasDefaultValue(5);
                 e.Property(x => x.AbsentAfterShiftStartMinutes).HasDefaultValue(120);
+                e.Property(x => x.EarlyCheckoutAbsentAfterMinutes).HasDefaultValue(120);
                 e.Property(x => x.MissingCheckoutAfterShiftEndMinutes).HasDefaultValue(120);
                 e.Property(x => x.WeekendChargeValue).HasColumnType("decimal(6,2)").HasDefaultValue(0m);
                 e.Property(x => x.AccountLockAbsentDays).HasDefaultValue(0);
@@ -807,6 +825,18 @@ namespace Accounts.Data
                 e.Property(x => x.RuleName).HasMaxLength(150);
                 e.Property(x => x.WeekendChargeValue).HasColumnType("decimal(6,2)");
                 e.Property(x => x.Remarks).HasMaxLength(500);
+            });
+
+            builder.Entity<AttendanceDeductionRequest>(e =>
+            {
+                e.ToTable("AttendanceDeductionRequests");
+                e.HasKey(x => x.Id);
+                e.Property(x => x.Id).ValueGeneratedOnAdd();
+                e.Property(x => x.Name).HasMaxLength(200).IsRequired();
+                e.Property(x => x.UserId).HasMaxLength(100).IsRequired();
+                e.Property(x => x.CreatedDate).HasDefaultValueSql("SYSUTCDATETIME()");
+                e.HasIndex(x => new { x.TenantId, x.DeductionYear, x.DeductionMonth });
+                e.HasOne<Tenant>().WithMany().HasForeignKey(x => x.TenantId).OnDelete(DeleteBehavior.Restrict);
             });
 
             builder.Entity<AttendanceHolidayColorMap>(e =>
@@ -848,6 +878,22 @@ namespace Accounts.Data
             {
                 e.HasNoKey();
                 e.ToView(null);
+            });
+
+            builder.Entity<AttendanceDeductionReportRow>(e =>
+            {
+                e.HasNoKey();
+                e.ToView(null);
+                e.Property(x => x.StaffNumber).HasMaxLength(50);
+                e.Property(x => x.EmployeeName).HasMaxLength(200);
+                e.Property(x => x.JobTitle).HasMaxLength(150);
+                e.Property(x => x.Department).HasMaxLength(200);
+                e.Property(x => x.DeductionDays).HasColumnType("decimal(18,2)");
+                e.Property(x => x.GrossDeduction).HasColumnType("decimal(18,2)");
+                e.Property(x => x.AdjustAmount).HasColumnType("decimal(18,2)");
+                e.Property(x => x.NetDeduction).HasColumnType("decimal(18,2)");
+                e.Property(x => x.PerHour).HasColumnType("decimal(18,2)");
+                e.Property(x => x.PerDay).HasColumnType("decimal(18,2)");
             });
 
             builder.Entity<AttendancePolicy>(e =>

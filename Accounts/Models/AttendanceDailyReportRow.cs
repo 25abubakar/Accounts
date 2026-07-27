@@ -22,9 +22,14 @@ public sealed class AttendanceDailyReportRow
     public string? AttendanceWorkMode { get; set; }
     public DateTime? CheckInUtc { get; set; }
     public DateTime? CheckOutUtc { get; set; }
+    public DateTime? CameraCheckInUtc { get; set; }
+    public DateTime? CameraCheckOutUtc { get; set; }
     public int? TotalBreakMinutes { get; set; }
     public string ShiftStartTime { get; set; } = "09:00";
     public string ShiftEndTime { get; set; } = "18:00";
     public string TimeZoneId { get; set; } = "Asia/Karachi";
     public Guid? ReportsToPersonId { get; set; }
+    public int? AbsentAfterShiftStartMinutes { get; set; }
+    public int? EarlyCheckoutAbsentAfterMinutes { get; set; }
+    public int? MissingCheckoutAfterShiftEndMinutes { get; set; }
 }

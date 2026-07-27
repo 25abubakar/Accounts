@@ -140,6 +140,8 @@ public sealed class AttendanceController : ControllerBase
     {
         if (!_tenant.TenantId.HasValue) return Ok(Array.Empty<AttendanceHolidayColorMapDto>());
 
+        await EnsureDefaultHolidayColorMapsAsync(ct);
+
         var maps = await _db.AttendanceHolidayColorMapReadRows.AsNoTracking()
             .Where(map => map.TenantId == _tenant.RequiredTenantId)
             .OrderBy(map => map.Id)
@@ -193,6 +195,7 @@ public sealed class AttendanceController : ControllerBase
                 CheckInAdjustMinutes = rule.CheckInAdjustMinutes,
                 CheckOutAdjustMinutes = rule.CheckOutAdjustMinutes,
                 AbsentAfterShiftStartMinutes = rule.AbsentAfterShiftStartMinutes,
+                EarlyCheckoutAbsentAfterMinutes = rule.EarlyCheckoutAbsentAfterMinutes,
                 MissingCheckoutAfterShiftEndMinutes = rule.MissingCheckoutAfterShiftEndMinutes,
                 AccountLockAbsentDays = rule.AccountLockAbsentDays,
                 WeekendChargeValue = rule.WeekendChargeValue,
@@ -297,96 +300,64 @@ public sealed class AttendanceController : ControllerBase
         Execute(() => _service.GetRemoteAttendanceReportAsync(UserId(), CanViewOrganization(), dateFrom, dateTo, ct));
 
     [HttpGet("report/login")]
-    public async Task<IActionResult> LoginAttendanceReport([FromQuery] DateOnly dateFrom, [FromQuery] DateOnly dateTo, CancellationToken ct)
+    public Task<IActionResult> LoginAttendanceReport([FromQuery] DateOnly dateFrom, [FromQuery] DateOnly dateTo, CancellationToken ct) =>
+        Execute(() => _service.GetLoginAttendanceReportAsync(UserId(), CanViewOrganization(), dateFrom, dateTo, ct));
+
+    [HttpGet("report/deduction")]
+    public Task<IActionResult> DeductionReport([FromQuery] int year, [FromQuery] int month, CancellationToken ct) =>
+        Execute(() => _service.GetDeductionReportAsync(UserId(), CanViewOrganization(), year, month, ct));
+
+    [HttpPost("deductions/requests")]
+    public async Task<IActionResult> CreateDeductionRequest([FromBody] SaveAttendanceDeductionRequestDto dto, CancellationToken ct)
     {
-        if (dateFrom > dateTo) return BadRequest(new { message = "Date From cannot be later than Date To." });
+        if (!_tenant.TenantId.HasValue) return Forbid();
+        if (!await HasAttendanceMenuActionAsync("ADD", ct, "/attendance/deduction"))
+            return Forbid();
 
-        var userId = UserId();
-        var canViewOrganization = CanViewOrganization();
-        await ApplicationLoginSessionSchema.EnsureCreatedAsync(_db, ct);
-        var query = _db.ApplicationLoginSessions
-            .AsNoTracking()
-            .Include(session => session.Person)
-            .ThenInclude(person => person!.Staff)
-            .ThenInclude(staff => staff!.Vacancy)
-            .ThenInclude(vacancy => vacancy!.JobTitleNav)
-            .Where(session =>
-                session.SessionDate >= dateFrom &&
-                session.SessionDate <= dateTo &&
-                !_db.Users.Any(user =>
-                    user.Id == session.IdentityUserId &&
-                    (user.IsTenantAdmin || user.IsSuperAdmin)));
+        if (string.IsNullOrWhiteSpace(dto.Name)) return BadRequest(new { message = "Name is required." });
+        if (string.IsNullOrWhiteSpace(dto.UserId)) return BadRequest(new { message = "User ID is required." });
+        if (dto.DeductionMonth is < 1 or > 12) return BadRequest(new { message = "Select a valid deduction month." });
+        if (dto.DeductionYear is < 2000 or > 2100) return BadRequest(new { message = "Select a valid deduction year." });
+        if (string.IsNullOrWhiteSpace(dto.ActionName)) return BadRequest(new { message = "Select an action." });
 
-        if (!canViewOrganization)
-            query = query.Where(session => session.IdentityUserId == userId);
+        await AttendanceRecordSchema.EnsureDeductionRequestTableAsync(_db, ct);
 
-        var rows = await query
-            .OrderByDescending(session => session.LoginUtc)
-            .ThenBy(session => session.Person != null ? session.Person.FullName : session.IdentityUserId)
-            .Select(session => new
-            {
-                session.Id,
-                session.StaffId,
-                session.PersonId,
-                session.SessionDate,
-                session.LoginUtc,
-                session.LogoutUtc,
-                session.WorkingMinutes,
-                session.IdentityUserId,
-                session.Source,
-                session.IpAddress,
-                session.Remarks,
-                PersonName = session.Person != null ? session.Person.FullName : string.Empty,
-                TimeZoneId = session.Person != null ? session.Person.TimeZoneId : null,
-                StaffNumber = session.Person != null && session.Person.Staff != null ? session.Person.Staff.LoginId : null,
-                Department = session.Person != null && session.Person.Staff != null && session.Person.Staff.Vacancy != null
-                    ? session.Person.Staff.Vacancy.Department
-                    : string.Empty,
-                Designation = session.Person != null && session.Person.Staff != null && session.Person.Staff.Vacancy != null
-                    ? (session.Person.Staff.Vacancy.JobTitleNav != null
-                        ? session.Person.Staff.Vacancy.JobTitleNav.TitleName
-                        : session.Person.Staff.Vacancy.JobTitle)
-                    : string.Empty,
-            })
-            .ToListAsync(ct);
-
-        var result = rows.Select(row =>
+        var request = new AttendanceDeductionRequest
         {
-            var zone = ResolveTimeZone(row.TimeZoneId);
-            return new LoginAttendanceSessionDto
-            {
-                Id = row.Id,
-                StaffId = row.StaffId,
-                PersonId = row.PersonId,
-                EmployeeNumber = row.StaffNumber ?? string.Empty,
-                EmployeeName = string.IsNullOrWhiteSpace(row.PersonName) ? row.IdentityUserId : row.PersonName,
-                Department = row.Department ?? string.Empty,
-                Designation = row.Designation ?? string.Empty,
-                Date = row.SessionDate,
-                LoginTime = TimeZoneInfo.ConvertTimeFromUtc(row.LoginUtc, zone).ToString("HH:mm", CultureInfo.InvariantCulture),
-                LogoutTime = row.LogoutUtc.HasValue
-                    ? TimeZoneInfo.ConvertTimeFromUtc(row.LogoutUtc.Value, zone).ToString("HH:mm", CultureInfo.InvariantCulture)
-                    : null,
-                WorkingMinutes = row.LogoutUtc.HasValue
-                    ? Math.Max(0, (int)Math.Floor((row.LogoutUtc.Value - row.LoginUtc).TotalMinutes))
-                    : Math.Max(0, (int)Math.Floor((DateTime.UtcNow - row.LoginUtc).TotalMinutes)),
-                Source = row.Source,
-                IpAddress = row.IpAddress,
-                Remarks = row.Remarks,
-            };
-        }).ToList();
+            TenantId = _tenant.RequiredTenantId,
+            RegNo = Trim(dto.RegNo, 50),
+            Name = TrimRequired(dto.Name, 200),
+            UserId = TrimRequired(dto.UserId, 100),
+            DateOfBirth = dto.DateOfBirth,
+            Phone = Trim(dto.Phone, 50),
+            Email = Trim(dto.Email, 256),
+            Office = Trim(dto.Office, 150),
+            Department = Trim(dto.Department, 150),
+            Designation = Trim(dto.Designation, 150),
+            Classification = Trim(dto.Classification, 100),
+            Routing = Trim(dto.Routing, 150),
+            Authority = Trim(dto.Authority, 150),
+            Subject = Trim(dto.Subject, 250),
+            DocumentName = Trim(dto.DocumentName, 260),
+            DeductionMonth = dto.DeductionMonth,
+            DeductionYear = dto.DeductionYear,
+            ActionRouting = Trim(dto.ActionRouting, 150),
+            ActionName = Trim(dto.ActionName, 100),
+            Comments = Trim(dto.Comments, 1000),
+            CreatedByUserId = UserId(),
+            CreatedDate = DateTime.UtcNow
+        };
 
-        return Ok(new LoginAttendanceReportDto
-        {
-            DateFrom = dateFrom,
-            DateTo = dateTo,
-            Rows = result,
-        });
+        _db.AttendanceDeductionRequests.Add(request);
+        await _db.SaveChangesAsync(ct);
+
+        return Ok(new { id = request.Id, message = "Deduction request submitted successfully." });
     }
 
     [HttpPost("types/camera/entries")]
     public async Task<IActionResult> SaveCameraAttendance([FromBody] SaveCameraAttendanceDto dto, CancellationToken ct)
     {
+        await AttendanceRecordSchema.EnsureCameraColumnsAsync(_db, ct);
         if (!_tenant.TenantId.HasValue) return Forbid();
         if (!await HasAttendanceMenuActionAsync("ADD", ct, "/attendance/types/camera"))
             return Forbid();
@@ -439,8 +410,8 @@ public sealed class AttendanceController : ControllerBase
 
         record.AttendanceEntryTypeId = entryType.Id;
         record.AttendanceWorkModeId = workMode?.Id;
-        if (checkInUtc.HasValue) record.CheckInUtc = checkInUtc.Value;
-        if (checkOutUtc.HasValue) record.CheckOutUtc = checkOutUtc.Value;
+        if (checkInUtc.HasValue) record.CameraCheckInUtc = checkInUtc.Value;
+        if (checkOutUtc.HasValue) record.CameraCheckOutUtc = checkOutUtc.Value;
         record.ModifiedDate = now;
         await _db.SaveChangesAsync(ct);
 
@@ -555,14 +526,18 @@ public sealed class AttendanceController : ControllerBase
         if (!colorIsAllowed) return BadRequest(new { message = "Select an active color from the map color list." });
 
         var duplicate = await _db.AttendanceHolidayColorMaps.AsNoTracking()
-            .AnyAsync(map => map.HolidayTypeCode == holidayType.ValueCode && (!id.HasValue || map.Id != id.Value), ct);
+            .AnyAsync(map =>
+                map.TenantId == _tenant.RequiredTenantId &&
+                map.HolidayTypeCode == holidayType.ValueCode &&
+                (!id.HasValue || map.Id != id.Value), ct);
         if (duplicate) return BadRequest(new { message = "This holiday type already has a color mapping." });
 
         AttendanceHolidayColorMap map;
         var now = DateTime.UtcNow;
         if (id.HasValue)
         {
-            var existingMap = await _db.AttendanceHolidayColorMaps.SingleOrDefaultAsync(item => item.Id == id.Value, ct);
+            var existingMap = await _db.AttendanceHolidayColorMaps.SingleOrDefaultAsync(
+                item => item.Id == id.Value && item.TenantId == _tenant.RequiredTenantId, ct);
             if (existingMap == null) return NotFound(new { message = "The color mapping was not found." });
             map = existingMap;
             map.ModifiedByUserId = UserId();
@@ -586,6 +561,52 @@ public sealed class AttendanceController : ControllerBase
         return Ok(ToHolidayColorMapDto(map, holidayType.DisplayText));
     }
 
+    private async Task EnsureDefaultHolidayColorMapsAsync(CancellationToken ct)
+    {
+        var tenantId = _tenant.RequiredTenantId;
+        var now = DateTime.UtcNow;
+        var userId = UserId();
+        var defaults = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["HOLIDAY"] = "#3B82F6",
+            ["WORKING_DAY"] = "#10B981",
+            ["ANNUAL_HOLIDAY"] = "#F59E0B",
+            ["DAY_OFF"] = "#06B6D4",
+        };
+
+        var activeHolidayCodes = await _db.AppLookupValues.AsNoTracking()
+            .Where(value => value.IsActive &&
+                value.LookupType != null &&
+                value.LookupType.IsActive &&
+                value.LookupType.LookupTypeCode == "TIMING_HOLIDAY_TYPE" &&
+                defaults.Keys.Contains(value.ValueCode))
+            .Select(value => value.ValueCode)
+            .ToListAsync(ct);
+
+        if (activeHolidayCodes.Count == 0) return;
+
+        var existingCodes = await _db.AttendanceHolidayColorMaps.AsNoTracking()
+            .Where(map => map.TenantId == tenantId && activeHolidayCodes.Contains(map.HolidayTypeCode))
+            .Select(map => map.HolidayTypeCode)
+            .ToListAsync(ct);
+
+        var existingSet = existingCodes.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        foreach (var holidayCode in activeHolidayCodes)
+        {
+            if (existingSet.Contains(holidayCode)) continue;
+            _db.AttendanceHolidayColorMaps.Add(new AttendanceHolidayColorMap
+            {
+                TenantId = tenantId,
+                HolidayTypeCode = holidayCode,
+                ColorCode = defaults.TryGetValue(holidayCode, out var colorCode) ? colorCode : "#0EA5E9",
+                CreatedByUserId = userId,
+                CreatedDate = now
+            });
+        }
+
+        await _db.SaveChangesAsync(ct);
+    }
+
     private async Task<IActionResult> SaveAttendanceRuleSetting(
         int? id,
         SaveAttendanceRuleSettingDto dto,
@@ -607,6 +628,7 @@ public sealed class AttendanceController : ControllerBase
         if (dto.CheckInAdjustMinutes is < 0 or > 720) return BadRequest(new { message = "Check-in adjust time must be between 0 and 720 minutes." });
         if (dto.CheckOutAdjustMinutes is < 0 or > 720) return BadRequest(new { message = "Check-out adjust time must be between 0 and 720 minutes." });
         if (dto.AbsentAfterShiftStartMinutes is < 1 or > 1440) return BadRequest(new { message = "Absent-after time must be between 1 and 1440 minutes." });
+        if (dto.EarlyCheckoutAbsentAfterMinutes is < 1 or > 1440) return BadRequest(new { message = "Early checkout absent-after time must be between 1 and 1440 minutes." });
         if (dto.MissingCheckoutAfterShiftEndMinutes is < 1 or > 1440) return BadRequest(new { message = "Missing checkout time must be between 1 and 1440 minutes." });
         if (dto.AccountLockAbsentDays is < 0 or > 31) return BadRequest(new { message = "Account lock absent days must be between 0 and 31." });
         if (dto.WeekendChargeValue is < 0 or > 31) return BadRequest(new { message = "Weekend charged value must be between 0 and 31." });
@@ -653,6 +675,7 @@ public sealed class AttendanceController : ControllerBase
         rule.CheckInAdjustMinutes = dto.CheckInAdjustMinutes;
         rule.CheckOutAdjustMinutes = dto.CheckOutAdjustMinutes;
         rule.AbsentAfterShiftStartMinutes = dto.AbsentAfterShiftStartMinutes;
+        rule.EarlyCheckoutAbsentAfterMinutes = dto.EarlyCheckoutAbsentAfterMinutes;
         rule.MissingCheckoutAfterShiftEndMinutes = dto.MissingCheckoutAfterShiftEndMinutes;
         rule.AccountLockAbsentDays = dto.AccountLockAbsentDays;
         rule.WeekendChargeValue = dto.WeekendChargeValue;
@@ -691,6 +714,7 @@ public sealed class AttendanceController : ControllerBase
         CheckInAdjustMinutes = rule.CheckInAdjustMinutes,
         CheckOutAdjustMinutes = rule.CheckOutAdjustMinutes,
         AbsentAfterShiftStartMinutes = rule.AbsentAfterShiftStartMinutes,
+        EarlyCheckoutAbsentAfterMinutes = rule.EarlyCheckoutAbsentAfterMinutes,
         MissingCheckoutAfterShiftEndMinutes = rule.MissingCheckoutAfterShiftEndMinutes,
         AccountLockAbsentDays = rule.AccountLockAbsentDays,
         WeekendChargeValue = rule.WeekendChargeValue,
@@ -707,5 +731,18 @@ public sealed class AttendanceController : ControllerBase
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
         catch (ArgumentOutOfRangeException ex) { return BadRequest(new { message = ex.Message }); }
         catch (UnauthorizedAccessException) { return Unauthorized(); }
+    }
+
+    private static string? Trim(string? value, int maxLength)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return null;
+        var trimmed = value.Trim();
+        return trimmed.Length > maxLength ? trimmed[..maxLength] : trimmed;
+    }
+
+    private static string TrimRequired(string value, int maxLength)
+    {
+        var trimmed = value.Trim();
+        return trimmed.Length > maxLength ? trimmed[..maxLength] : trimmed;
     }
 }

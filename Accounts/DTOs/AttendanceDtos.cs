@@ -205,6 +205,8 @@ public sealed class DailyAttendanceRowDto
     public string? WorkMode { get; set; }
     public string? CheckInTime { get; set; }
     public string? CheckOutTime { get; set; }
+    public string? CameraCheckInTime { get; set; }
+    public string? CameraCheckOutTime { get; set; }
     public int WorkingMinutes { get; set; }
     public int LateMinutes { get; set; }
     public int EarlyDepartureMinutes { get; set; }
@@ -283,6 +285,64 @@ public sealed class LoginAttendanceReportDto
     public IReadOnlyList<LoginAttendanceSessionDto> Rows { get; set; } = Array.Empty<LoginAttendanceSessionDto>();
 }
 
+public sealed class AttendanceDeductionRowDto
+{
+    public long Id { get; set; }
+    public Guid PersonId { get; set; }
+    public Guid StaffId { get; set; }
+    public string StaffNumber { get; set; } = string.Empty;
+    public string EmployeeName { get; set; } = string.Empty;
+    public string JobTitle { get; set; } = string.Empty;
+    public string Department { get; set; } = string.Empty;
+    public int Day { get; set; }
+    public int Month { get; set; }
+    public int Year { get; set; }
+    public int TotalWorkingMinutes { get; set; }
+    public int TotalAttendanceMinutes { get; set; }
+    public int HoursDiffMinutes { get; set; }
+    public int DeductionMinutes { get; set; }
+    public decimal DeductionDays { get; set; }
+    public int HoursAdjustMinutes { get; set; }
+    public int NetStandardMinutes { get; set; }
+    public decimal GrossDeduction { get; set; }
+    public decimal AdjustAmount { get; set; }
+    public decimal NetDeduction { get; set; }
+    public decimal PerHour { get; set; }
+    public decimal PerDay { get; set; }
+    public bool Approved { get; set; }
+    public bool Pending { get; set; }
+}
+
+public sealed class AttendanceDeductionReportDto
+{
+    public int Year { get; set; }
+    public int Month { get; set; }
+    public IReadOnlyList<AttendanceDeductionRowDto> Rows { get; set; } = Array.Empty<AttendanceDeductionRowDto>();
+}
+
+public sealed class SaveAttendanceDeductionRequestDto
+{
+    public string? RegNo { get; set; }
+    public string Name { get; set; } = string.Empty;
+    public string UserId { get; set; } = string.Empty;
+    public DateOnly? DateOfBirth { get; set; }
+    public string? Phone { get; set; }
+    public string? Email { get; set; }
+    public string? Office { get; set; }
+    public string? Department { get; set; }
+    public string? Designation { get; set; }
+    public string? Classification { get; set; }
+    public string? Routing { get; set; }
+    public string? Authority { get; set; }
+    public string? Subject { get; set; }
+    public string? DocumentName { get; set; }
+    public int DeductionMonth { get; set; }
+    public int DeductionYear { get; set; }
+    public string? ActionRouting { get; set; }
+    public string? ActionName { get; set; }
+    public string? Comments { get; set; }
+}
+
 public sealed class MonthlyAttendanceChartCellDto
 {
     public long? AttendanceId { get; set; }
@@ -322,6 +382,17 @@ public sealed class MonthlyAttendanceChartEmployeeDto
     public IReadOnlyList<MonthlyAttendanceChartCellDto> Days { get; set; } = Array.Empty<MonthlyAttendanceChartCellDto>();
 }
 
+public sealed class MonthlyAttendanceChartLegendItemDto
+{
+    public int Id { get; set; }
+    public string Code { get; set; } = string.Empty;
+    public string StatusName { get; set; } = string.Empty;
+    public string ColorCode { get; set; } = string.Empty;
+    public string FontColor { get; set; } = "#FFFFFF";
+    public string FontSize { get; set; } = "12px";
+    public int DisplayOrder { get; set; }
+}
+
 public sealed class MonthlyAttendanceChartDto
 {
     public int Year { get; set; }
@@ -330,6 +401,7 @@ public sealed class MonthlyAttendanceChartDto
     public DateOnly DateTo { get; set; }
     public int DaysInMonth { get; set; }
     public DailyAttendanceSummaryDto Summary { get; set; } = new();
+    public IReadOnlyList<MonthlyAttendanceChartLegendItemDto> Legend { get; set; } = Array.Empty<MonthlyAttendanceChartLegendItemDto>();
     public IReadOnlyList<MonthlyAttendanceChartEmployeeDto> Employees { get; set; } = Array.Empty<MonthlyAttendanceChartEmployeeDto>();
 }
 
@@ -385,6 +457,7 @@ public sealed class AttendanceRuleSettingDto
     public int CheckInAdjustMinutes { get; set; }
     public int CheckOutAdjustMinutes { get; set; }
     public int AbsentAfterShiftStartMinutes { get; set; }
+    public int EarlyCheckoutAbsentAfterMinutes { get; set; }
     public int MissingCheckoutAfterShiftEndMinutes { get; set; }
     public int AccountLockAbsentDays { get; set; }
     public decimal WeekendChargeValue { get; set; }
@@ -405,6 +478,7 @@ public sealed class SaveAttendanceRuleSettingDto
     public int CheckInAdjustMinutes { get; set; }
     public int CheckOutAdjustMinutes { get; set; }
     public int AbsentAfterShiftStartMinutes { get; set; }
+    public int EarlyCheckoutAbsentAfterMinutes { get; set; }
     public int MissingCheckoutAfterShiftEndMinutes { get; set; }
     public int AccountLockAbsentDays { get; set; }
     public decimal WeekendChargeValue { get; set; }

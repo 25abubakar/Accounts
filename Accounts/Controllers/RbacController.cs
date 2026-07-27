@@ -36,6 +36,10 @@ namespace Accounts.Controllers
             string.Equals(User.FindFirstValue(ITenantService.ClaimIsSuperAdmin), "true", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(User.FindFirstValue(ITenantService.ClaimIsTenantAdmin), "true", StringComparison.OrdinalIgnoreCase);
 
+        private bool IsSuperAdminUser =>
+            User.IsInRole("SuperAdmin") ||
+            string.Equals(User.FindFirstValue(ITenantService.ClaimIsSuperAdmin), "true", StringComparison.OrdinalIgnoreCase);
+
         private async Task<Guid?> CurrentStaffIdAsync()
         {
             var identityUserId = CurrentUserId;
@@ -162,6 +166,49 @@ namespace Accounts.Controllers
         {
             if (!await HasAccessControlPermissionAsync("VIEW"))
                 return Forbid();
+
+            if (IsSuperAdminUser)
+            {
+                var tenantAdmins = await _db.Users
+                    .AsNoTracking()
+                    .OfType<ApplicationUser>()
+                    .Where(user => user.IsTenantAdmin && user.TenantId.HasValue)
+                    .Select(user => new { user.Id, TenantId = user.TenantId!.Value })
+                    .ToListAsync();
+
+                var tenantIds = tenantAdmins.Select(user => user.TenantId).Distinct().ToArray();
+                var tenantGrants = await _db.TenantMenuPermissions
+                    .AsNoTracking()
+                    .Where(permission => tenantIds.Contains(permission.TenantId) && permission.IsAllow)
+                    .Select(permission => new
+                    {
+                        permission.TenantId,
+                        permission.MenuId,
+                        permission.CanView,
+                        permission.CanAdd,
+                        permission.CanEdit,
+                        permission.CanDelete
+                    })
+                    .ToListAsync();
+
+                var grantsByTenant = tenantGrants.ToLookup(permission => permission.TenantId);
+                var result = tenantAdmins.Select(user =>
+                {
+                    var keys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                    foreach (var grant in grantsByTenant[user.TenantId])
+                    {
+                        keys.Add($"MENU_{grant.MenuId}");
+                        if (grant.CanView) keys.Add($"MENU_{grant.MenuId}_VIEW");
+                        if (grant.CanAdd) keys.Add($"MENU_{grant.MenuId}_ADD");
+                        if (grant.CanEdit) keys.Add($"MENU_{grant.MenuId}_EDIT");
+                        if (grant.CanDelete) keys.Add($"MENU_{grant.MenuId}_DELETE");
+                    }
+
+                    return new { staffId = user.Id, allowedFeatureKeys = keys.OrderBy(key => key).ToArray() };
+                });
+
+                return Ok(result);
+            }
 
             var overview = await _rbac.GetStaffAccessOverviewAsync();
             return Ok(overview.Select(item => new { staffId = item.Key, allowedFeatureKeys = item.Value }));

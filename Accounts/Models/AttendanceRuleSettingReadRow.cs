@@ -16,6 +16,7 @@ public sealed class AttendanceRuleSettingReadRow
     public int CheckInAdjustMinutes { get; set; }
     public int CheckOutAdjustMinutes { get; set; }
     public int AbsentAfterShiftStartMinutes { get; set; }
+    public int EarlyCheckoutAbsentAfterMinutes { get; set; }
     public int MissingCheckoutAfterShiftEndMinutes { get; set; }
     public int AccountLockAbsentDays { get; set; }
     public decimal WeekendChargeValue { get; set; }

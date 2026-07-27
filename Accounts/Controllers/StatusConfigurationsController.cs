@@ -20,12 +20,13 @@ public sealed class StatusConfigurationsController : ControllerBase
     public async Task<IActionResult> GetAll(CancellationToken ct)
     {
         var tenantId = _tenant.TenantId;
-        var query = _db.ProcessStatusStyles.AsNoTracking()
-            .Where(x => x.TenantId == null || (tenantId.HasValue && x.TenantId == tenantId));
-        var rows = await query
-        .Include(x => x.Process).Include(x => x.Status).Include(x => x.ColorStyle)
-        .OrderBy(x => x.Process.ProcessName).ThenBy(x => x.TenantId == null ? 0 : 1).ThenBy(x => x.DisplayOrder)
-        .ToListAsync(ct);
+        var rows = await _db.StatusConfigurationManagementRows.AsNoTracking()
+            .Where(x => x.TenantId == null || (tenantId.HasValue && x.TenantId == tenantId))
+            .OrderBy(x => x.ProcessName)
+            .ThenBy(x => x.TenantId == null ? 0 : 1)
+            .ThenBy(x => x.DisplayOrder)
+            .ToListAsync(ct);
+
         return Ok(rows.Select(ToDto));
     }
 
@@ -68,21 +69,58 @@ public sealed class StatusConfigurationsController : ControllerBase
 
     private async Task<string?> ApplyAsync(ProcessStatusStyle entity, StatusConfigurationWriteDto dto, int? excludingId, CancellationToken ct)
     {
-        var processName=dto.ProcessName.Trim(); var statusName=dto.StatusName.Trim(); var code=dto.Code.Trim().ToUpperInvariant();
+        var processName=dto.ProcessName.Trim();
+        var statusName=dto.StatusName.Trim();
         var ownerTenantId = entity.TenantId;
+        var code=await ResolveCodeAsync(statusName, dto.Code, ownerTenantId, excludingId, ct);
         var duplicate=await _db.ProcessStatusStyles.AnyAsync(
             x => (!excludingId.HasValue || x.Id != excludingId.Value)
-                 && x.TenantId == ownerTenantId
+                 && ((ownerTenantId == null && x.TenantId == null) || (ownerTenantId != null && x.TenantId == ownerTenantId))
                  && x.Process.ProcessName == processName && x.Code == code, ct);
         if(duplicate) return $"Code '{code}' already exists for process '{processName}'.";
         var process=await _db.Processes.FirstOrDefaultAsync(x=>x.ProcessName==processName,ct) ?? new ProcessMaster{ProcessName=processName};
         var status=await _db.Statuses.FirstOrDefaultAsync(x=>x.StatusName==statusName,ct) ?? new StatusDefinition{StatusName=statusName};
-        var color=dto.ColorCode.Trim().ToUpperInvariant(); var font=dto.FontColor.Trim().ToUpperInvariant(); var size=dto.FontSize.Trim();
+        var color=string.IsNullOrWhiteSpace(dto.ColorCode) ? "#64748B" : dto.ColorCode.Trim().ToUpperInvariant();
+        var font=string.IsNullOrWhiteSpace(dto.FontColor) ? "#FFFFFF" : dto.FontColor.Trim().ToUpperInvariant();
+        var size=string.IsNullOrWhiteSpace(dto.FontSize) ? "12px" : dto.FontSize.Trim();
         var colorName=dto.ColorName.Trim();
         var style=await _db.ColorStyles.FirstOrDefaultAsync(x=>x.ColorName==colorName&&x.ColorCode==color&&x.FontColor==font&&x.FontSize==size,ct)
             ?? new ColorStyle{ColorName=colorName,ColorCode=color,FontColor=font,FontSize=size};
         entity.Process=process; entity.Status=status; entity.ColorStyle=style; entity.Code=code; entity.Description=dto.Description?.Trim();
         entity.DisplayOrder=dto.DisplayOrder; entity.IsPaid=dto.IsPaid; entity.IsActive=dto.IsActive; return null;
+    }
+
+    private async Task<string> ResolveCodeAsync(string statusName, string? requestedCode, int? ownerTenantId, int? excludingId, CancellationToken ct)
+    {
+        if (!string.IsNullOrWhiteSpace(requestedCode))
+            return requestedCode.Trim().ToUpperInvariant();
+
+        var existingCode = await _db.ProcessStatusStyles.AsNoTracking()
+            .Where(x => (!excludingId.HasValue || x.Id != excludingId.Value)
+                && x.IsActive
+                && x.Status.StatusName == statusName
+                && (
+                    (ownerTenantId == null && x.TenantId == null) ||
+                    (ownerTenantId != null && (x.TenantId == ownerTenantId || x.TenantId == null))
+                ))
+            .OrderByDescending(x => ownerTenantId != null && x.TenantId == ownerTenantId)
+            .ThenBy(x => x.DisplayOrder)
+            .Select(x => x.Code)
+            .FirstOrDefaultAsync(ct);
+
+        return string.IsNullOrWhiteSpace(existingCode)
+            ? BuildAbbreviation(statusName)
+            : existingCode.Trim().ToUpperInvariant();
+    }
+
+    private static string BuildAbbreviation(string value)
+    {
+        var code = string.Concat(value
+            .Split(new[] { ' ', '-', '_', '/' }, StringSplitOptions.RemoveEmptyEntries)
+            .Select(part => part[0]))
+            .Trim();
+        if (string.IsNullOrWhiteSpace(code)) code = "STAT";
+        return code.Length <= 10 ? code : code[..10];
     }
     private async Task<object?> LoadDto(int id,CancellationToken ct)
     {
@@ -90,6 +128,7 @@ public sealed class StatusConfigurationsController : ControllerBase
         return row==null?null:ToDto(row);
     }
     private StatusConfigurationDto ToDto(ProcessStatusStyle x)=>new(x.Id,x.Process.ProcessName,x.Status.StatusName,x.Code,x.Description,x.ColorStyle.ColorName,x.ColorStyle.ColorCode,x.ColorStyle.FontColor,x.ColorStyle.FontSize,x.DisplayOrder,x.IsPaid,x.IsActive,x.IsSystem,x.TenantId,x.IsSystem?"Platform default":"Company custom",_tenant.IsSuperAdmin?x.TenantId==null:x.TenantId==_tenant.TenantId);
+    private StatusConfigurationDto ToDto(StatusConfigurationManagementRow x)=>new(x.Id,x.ProcessName,x.StatusName,x.Code,x.Description,x.ColorName,x.ColorCode,x.FontColor,x.FontSize,x.DisplayOrder,x.IsPaid,x.IsActive,x.IsSystem,x.TenantId,x.IsSystem?"Platform default":"Company custom",_tenant.IsSuperAdmin?x.TenantId==null:x.TenantId==_tenant.TenantId);
 
     private Task<ProcessStatusStyle?> EditableRow(int id, CancellationToken ct)
     {
@@ -124,11 +163,11 @@ public sealed class StatusConfigurationWriteDto
 {
     [Required,MaxLength(100)] public string ProcessName{get;set;}=string.Empty;
     [Required,MaxLength(100)] public string StatusName{get;set;}=string.Empty;
-    [Required,MaxLength(10)] public string Code{get;set;}=string.Empty;
+    [MaxLength(10)] public string Code{get;set;}=string.Empty;
     [MaxLength(500)] public string? Description{get;set;}
     [Required,MaxLength(100)] public string ColorName{get;set;}=string.Empty;
-    [Required,MaxLength(20)] public string ColorCode{get;set;}="#64748B";
-    [Required,MaxLength(20)] public string FontColor{get;set;}="#FFFFFF";
-    [Required,MaxLength(20)] public string FontSize{get;set;}="12px";
+    [MaxLength(20)] public string ColorCode{get;set;}="#64748B";
+    [MaxLength(20)] public string FontColor{get;set;}="#FFFFFF";
+    [MaxLength(20)] public string FontSize{get;set;}="12px";
     public int DisplayOrder{get;set;} public bool IsPaid{get;set;} public bool IsActive{get;set;}=true;
 }
