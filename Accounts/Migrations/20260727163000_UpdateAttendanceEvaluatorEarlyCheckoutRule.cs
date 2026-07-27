@@ -14,6 +14,16 @@ public sealed class UpdateAttendanceEvaluatorEarlyCheckoutRule : Migration
     {
         migrationBuilder.Sql(
             """
+            IF OBJECT_ID(N'dbo.AttendanceRuleSettings', N'U') IS NOT NULL
+               AND COL_LENGTH(N'dbo.AttendanceRuleSettings', N'EarlyCheckoutAbsentAfterMinutes') IS NULL
+            BEGIN
+                ALTER TABLE dbo.AttendanceRuleSettings ADD EarlyCheckoutAbsentAfterMinutes int NOT NULL
+                    CONSTRAINT DF_AttendanceRuleSettings_EarlyCheckoutAbsentAfterMinutes DEFAULT(120);
+            END;
+            """);
+
+        migrationBuilder.Sql(
+            """
             CREATE OR ALTER PROCEDURE dbo.usp_Attendance_EvaluateStatuses
                 @TenantId int, @DateFrom date, @DateTo date, @AsOfUtc datetime2
             AS
