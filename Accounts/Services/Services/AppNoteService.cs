@@ -474,6 +474,52 @@ namespace Accounts.Services.Services
                             user?.IsSuperAdmin == true ||
                             user?.IsTenantAdmin == true;
 
+            if (_tenantService.IsSuperAdmin || user?.IsSuperAdmin == true)
+            {
+                var tenantAdminRows = await (
+                    from admin in _db.Users.AsNoTracking()
+                    where admin.IsTenantAdmin && !admin.IsSuperAdmin
+                    join tenant in _db.Tenants.AsNoTracking()
+                        on admin.TenantId equals tenant.Id into tenantJoin
+                    from tenant in tenantJoin.DefaultIfEmpty()
+                    orderby tenant != null ? tenant.TenantName : admin.UserName
+                    select new
+                    {
+                        admin.Id,
+                        admin.UserName,
+                        admin.Email,
+                        admin.TenantId,
+                        TenantName = tenant != null ? tenant.TenantName : null,
+                        OrganizationTreeId = tenant != null ? (int?)tenant.OrganizationTreeId : null
+                    })
+                    .ToListAsync(ct);
+
+                var tenantAdmins = tenantAdminRows
+                    .Select(admin => new InstructionTargetStaffDto
+                    {
+                        TargetId = admin.Id,
+                        StaffId = Guid.Empty,
+                        PersonId = Guid.Empty,
+                        FullName = admin.UserName ?? admin.Email ?? admin.Id,
+                        LoginId = admin.UserName,
+                        JobTitle = "Tenant Admin",
+                        Department = "Administration",
+                        BranchName = null,
+                        CompanyName = admin.TenantName,
+                        CountryName = null,
+                        OrganizationId = admin.OrganizationTreeId,
+                        TenantId = admin.TenantId
+                    })
+                    .ToList();
+
+                return new InstructionAudienceScopeDto
+                {
+                    CanBroadcastToEveryone = true,
+                    ScopeLabel = "Tenant admins",
+                    Staff = tenantAdmins
+                };
+            }
+
             var caller = await _db.Persons.AsNoTracking()
                 .Where(person => person.IdentityUserId == identityUserId && person.IsActive)
                 .Select(person => new
@@ -591,6 +637,7 @@ namespace Accounts.Services.Services
                 .OrderBy(person => person.FullName)
                 .Select(person => new InstructionTargetStaffDto
                 {
+                    TargetId = person.StaffId.ToString(),
                     StaffId = person.StaffId,
                     PersonId = person.PersonId,
                     FullName = person.FullName,
@@ -615,27 +662,15 @@ namespace Accounts.Services.Services
 
         public async Task<List<AdminInstructionDto>> GetAdminInstructionsAsync(string identityUserId, CancellationToken ct)
         {
-            var targetScope = await GetInstructionAudienceScopeAsync(identityUserId, ct);
-            var allowedStaffIds = targetScope.Staff
-                .Select(staff => NormalizeIdentifier(staff.StaffId.ToString()))
-                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var normalizedCreatorId = NormalizeIdentifier(identityUserId);
 
             var notes = await _db.AppNotes
                 .AsNoTracking()
                 .Include(n => n.Targets)
                 .Where(n => n.SourceTypeCode == "ADMIN" && !n.IsDeleted)
+                .Where(n => n.CreatedBy != null && n.CreatedBy.ToLower() == normalizedCreatorId)
                 .OrderByDescending(n => n.CreatedOnUtc)
                 .ToListAsync(ct);
-
-            if (!targetScope.CanBroadcastToEveryone)
-            {
-                notes = notes.Where(note =>
-                    string.Equals(note.CreatedBy, identityUserId, StringComparison.OrdinalIgnoreCase) ||
-                    note.Targets.Any(target =>
-                        target.TargetTypeCode.Equals("STAFF", StringComparison.OrdinalIgnoreCase) &&
-                        allowedStaffIds.Contains(NormalizeIdentifier(target.TargetValue))))
-                    .ToList();
-            }
 
             return notes.Select(n => new AdminInstructionDto
             {
@@ -683,7 +718,9 @@ namespace Accounts.Services.Services
             var requestedTargets = request.Targets ?? new List<AppNoteTargetRequest>();
             var allowAll = scope.CanBroadcastToEveryone;
             var allowedStaffIds = scope.Staff
-                .Select(staff => NormalizeIdentifier(staff.StaffId.ToString()))
+                .Select(staff => NormalizeIdentifier(string.IsNullOrWhiteSpace(staff.TargetId)
+                    ? staff.StaffId.ToString()
+                    : staff.TargetId))
                 .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
             if (requestedTargets.Count == 0)
@@ -851,8 +888,8 @@ namespace Accounts.Services.Services
                 foreach (var t in r.Targets.Where(t =>
                     t.TargetTypeCode.Equals("STAFF", StringComparison.OrdinalIgnoreCase)))
                 {
-                    if (!Guid.TryParse(t.TargetValue?.Trim(), out _))
-                        errors.Add($"Invalid staff target '{t.TargetValue}'. Use StaffVacancy.StaffId (GUID), not a numeric id.");
+                    if (string.IsNullOrWhiteSpace(t.TargetValue))
+                        errors.Add("Instruction staff target is required.");
                 }
             }
 

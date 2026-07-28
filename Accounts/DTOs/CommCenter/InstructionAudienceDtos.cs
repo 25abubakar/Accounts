@@ -2,6 +2,7 @@ namespace Accounts.DTOs.CommCenter
 {
     public class InstructionTargetStaffDto
     {
+        public string TargetId { get; set; } = string.Empty;
         public Guid StaffId { get; set; }
         public Guid PersonId { get; set; }
         public string FullName { get; set; } = string.Empty;
