@@ -15,7 +15,7 @@ public interface IAttendanceService
     Task<TimingChartScheduleRowDto> SaveTimingChartScheduleAsync(string identityUserId, bool organizationWide, Guid staffId, DateOnly holidayDate, SaveTimingChartScheduleDto dto, CancellationToken cancellationToken = default);
     Task<TimingChartScheduleRangeResultDto> SaveTimingChartScheduleRangeAsync(string identityUserId, bool organizationWide, Guid staffId, SaveTimingChartScheduleRangeDto dto, CancellationToken cancellationToken = default);
     Task<MonthlyAttendanceReportDto> GetMonthlyReportAsync(string identityUserId, bool canViewOthers, Guid? requestedPersonId, int year, int month, CancellationToken cancellationToken = default);
-    Task<DailyAttendanceReportDto> GetDailyReportAsync(string identityUserId, bool organizationWide, DateOnly dateFrom, DateOnly dateTo, CancellationToken cancellationToken = default);
+    Task<DailyAttendanceReportDto> GetDailyReportAsync(string identityUserId, bool organizationWide, DateOnly dateFrom, DateOnly dateTo, bool includeAllAttendanceTypes = false, CancellationToken cancellationToken = default);
     Task<DailyAttendanceReportDto> GetRemoteAttendanceReportAsync(string identityUserId, bool organizationWide, DateOnly dateFrom, DateOnly dateTo, CancellationToken cancellationToken = default);
     Task<LoginAttendanceReportDto> GetLoginAttendanceReportAsync(string identityUserId, bool organizationWide, DateOnly dateFrom, DateOnly dateTo, CancellationToken cancellationToken = default);
     Task<DailyAttendanceReportDto> GetStaffAttendanceReportAsync(string identityUserId, bool organizationWide, DateOnly dateFrom, DateOnly dateTo, CancellationToken cancellationToken = default);

@@ -292,8 +292,12 @@ public sealed class AttendanceController : ControllerBase
         Execute(() => _service.GetMonthlyReportAsync(UserId(), CanViewOthers(), personId, year, month, ct));
 
     [HttpGet("report/daily")]
-    public Task<IActionResult> DailyReport([FromQuery] DateOnly dateFrom, [FromQuery] DateOnly dateTo, CancellationToken ct) =>
-        Execute(() => _service.GetDailyReportAsync(UserId(), CanViewOrganization(), dateFrom, dateTo, ct));
+    public Task<IActionResult> DailyReport(
+        [FromQuery] DateOnly dateFrom,
+        [FromQuery] DateOnly dateTo,
+        [FromQuery] bool includeAllTypes,
+        CancellationToken ct) =>
+        Execute(() => _service.GetDailyReportAsync(UserId(), CanViewOrganization(), dateFrom, dateTo, includeAllTypes, ct));
 
     [HttpGet("report/remote")]
     public Task<IActionResult> RemoteAttendanceReport([FromQuery] DateOnly dateFrom, [FromQuery] DateOnly dateTo, CancellationToken ct) =>
@@ -388,9 +392,22 @@ public sealed class AttendanceController : ControllerBase
         if (checkInUtc.HasValue && checkOutUtc.HasValue && checkOutUtc.Value < checkInUtc.Value)
             return BadRequest(new { message = "Check-out time cannot be earlier than check-in time." });
 
-        var entryType = await _db.AttendanceEntryTypes.SingleOrDefaultAsync(x => x.Code == "CAMERA" && x.IsActive, ct)
-            ?? await _db.AttendanceEntryTypes.SingleOrDefaultAsync(x => x.Code == "MANUAL" && x.IsActive, ct);
-        if (entryType == null) return BadRequest(new { message = "Camera attendance type is not configured." });
+        var checkEntryType = await _db.AttendanceEntryTypes.SingleOrDefaultAsync(x => x.Code == "CHECK" && x.IsActive, ct);
+        if (checkEntryType == null) return BadRequest(new { message = "Check in/Out attendance type is not configured." });
+        var cameraEntryTypeId = await _db.AttendanceEntryTypes
+            .AsNoTracking()
+            .Where(x => x.Code == "CAMERA")
+            .Select(x => (int?)x.Id)
+            .SingleOrDefaultAsync(ct);
+        var isMappedForCheckInOut = await _db.AttendanceMapRules
+            .AsNoTracking()
+            .AnyAsync(rule =>
+                rule.TenantId == person.TenantId &&
+                rule.StaffId == person.Staff.StaffId &&
+                rule.AttendanceEntryTypeId == checkEntryType.Id,
+                ct);
+        if (!isMappedForCheckInOut)
+            return BadRequest(new { message = "Camera verification is only available for staff mapped to Check in/Out attendance." });
         var workMode = await _db.AttendanceWorkModes.SingleOrDefaultAsync(x => x.Code == "ONSITE" && x.IsActive, ct);
 
         var record = await _db.AttendanceRecords
@@ -408,8 +425,12 @@ public sealed class AttendanceController : ControllerBase
             _db.AttendanceRecords.Add(record);
         }
 
-        record.AttendanceEntryTypeId = entryType.Id;
-        record.AttendanceWorkModeId = workMode?.Id;
+        if (!record.AttendanceEntryTypeId.HasValue ||
+            (cameraEntryTypeId.HasValue && record.AttendanceEntryTypeId.Value == cameraEntryTypeId.Value))
+        {
+            record.AttendanceEntryTypeId = checkEntryType.Id;
+        }
+        record.AttendanceWorkModeId ??= workMode?.Id;
         if (checkInUtc.HasValue) record.CameraCheckInUtc = checkInUtc.Value;
         if (checkOutUtc.HasValue) record.CameraCheckOutUtc = checkOutUtc.Value;
         record.ModifiedDate = now;

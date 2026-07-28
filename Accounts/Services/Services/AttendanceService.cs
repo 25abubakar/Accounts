@@ -13,6 +13,7 @@ public sealed class AttendanceService : IAttendanceService
 {
     private const string TimingHolidayTypeLookupCode = "TIMING_HOLIDAY_TYPE";
     private const string AttendanceDisplayStatusProcessName = "Attendance Display Status";
+    private const string CheckInOutAttendanceTypeCode = "CHECK";
     private const string HolidayCode = "HOLIDAY";
     private const string WorkingDayCode = "WORKING_DAY";
     private const string DayOffCode = "DAY_OFF";
@@ -549,10 +550,63 @@ public sealed class AttendanceService : IAttendanceService
         };
     }
 
-    public Task<DailyAttendanceReportDto> GetDailyReportAsync(
+    public async Task<DailyAttendanceReportDto> GetDailyReportAsync(
         string identityUserId, bool organizationWide, DateOnly dateFrom, DateOnly dateTo,
-        CancellationToken cancellationToken = default) =>
-        GetAttendanceReportAsync(identityUserId, organizationWide, selfOnly: false, dateFrom, dateTo, cancellationToken);
+        bool includeAllAttendanceTypes = false,
+        CancellationToken cancellationToken = default)
+    {
+        var report = await GetAttendanceReportAsync(
+            identityUserId, organizationWide, selfOnly: false, dateFrom, dateTo, cancellationToken);
+
+        if (includeAllAttendanceTypes)
+            return report;
+
+        var checkInOutTypeId = await _db.AttendanceEntryTypes.AsNoTracking()
+            .Where(type => type.IsActive && type.Code == CheckInOutAttendanceTypeCode)
+            .Select(type => (int?)type.Id)
+            .SingleOrDefaultAsync(cancellationToken);
+
+        var reportPersonIds = report.Rows
+            .Select(row => row.PersonId)
+            .Distinct()
+            .ToList();
+
+        var checkTypeId = checkInOutTypeId.GetValueOrDefault();
+        var checkMappedPersonIds = checkInOutTypeId.HasValue
+            ? await (
+                from staff in _db.StaffVacancies.AsNoTracking()
+                join mapRule in _db.AttendanceMapRules.AsNoTracking()
+                    on staff.StaffId equals mapRule.StaffId
+                where
+                    staff.PersonId.HasValue &&
+                    mapRule.AttendanceEntryTypeId == checkTypeId &&
+                    reportPersonIds.Contains(staff.PersonId.GetValueOrDefault())
+                select staff.PersonId.GetValueOrDefault())
+                .Distinct()
+                .ToListAsync(cancellationToken)
+            : new List<Guid>();
+        var checkMappedSet = checkMappedPersonIds.ToHashSet();
+
+        var rows = checkInOutTypeId.HasValue
+            ? report.Rows.Where(row => row.AttendanceEntryTypeId == checkInOutTypeId.Value || checkMappedSet.Contains(row.PersonId)).ToList()
+            : report.Rows
+                .Where(row => row.AttendanceType.Equals("Check in/Out", StringComparison.OrdinalIgnoreCase) ||
+                              row.AttendanceType.Equals("Check In / Out", StringComparison.OrdinalIgnoreCase))
+                .ToList();
+        foreach (var row in rows.Where(row => checkInOutTypeId.HasValue && checkMappedSet.Contains(row.PersonId)))
+        {
+            row.AttendanceEntryTypeId = checkInOutTypeId;
+            row.AttendanceType = "Check in/Out";
+        }
+
+        return new DailyAttendanceReportDto
+        {
+            DateFrom = report.DateFrom,
+            DateTo = report.DateTo,
+            Rows = rows,
+            Summary = BuildDailyAttendanceSummary(rows)
+        };
+    }
 
     public async Task<DailyAttendanceReportDto> GetRemoteAttendanceReportAsync(
         string identityUserId, bool organizationWide, DateOnly dateFrom, DateOnly dateTo,
@@ -1154,21 +1208,22 @@ public sealed class AttendanceService : IAttendanceService
             });
         }
 
-        var summary = new DailyAttendanceSummaryDto
-        {
-            TotalEmployees = rows.Select(r => r.PersonId).Distinct().Count(),
-            Present = rows.Count(r => r.Present),
-            Absent = rows.Count(r => r.Absent),
-            Late = rows.Count(r => r.LateMinutes > 0),
-            OnLeave = rows.Count(r => r.OnLeave),
-            Remote = rows.Count(r => r.Remote),
-            MissingCheckIn = rows.Count(r => r.MissingCheckIn),
-            MissingCheckOut = rows.Count(r => r.MissingCheckOut),
-            TotalWorkingMinutes = rows.Sum(r => r.WorkingMinutes),
-            TotalOvertimeMinutes = rows.Sum(r => r.OvertimeMinutes)
-        };
-        return new DailyAttendanceReportDto { DateFrom = dateFrom, DateTo = dateTo, Rows = rows, Summary = summary };
+        return new DailyAttendanceReportDto { DateFrom = dateFrom, DateTo = dateTo, Rows = rows, Summary = BuildDailyAttendanceSummary(rows) };
     }
+
+    private static DailyAttendanceSummaryDto BuildDailyAttendanceSummary(IReadOnlyCollection<DailyAttendanceRowDto> rows) => new()
+    {
+        TotalEmployees = rows.Select(row => row.PersonId).Distinct().Count(),
+        Present = rows.Count(row => row.Present),
+        Absent = rows.Count(row => row.Absent),
+        Late = rows.Count(row => row.LateMinutes > 0),
+        OnLeave = rows.Count(row => row.OnLeave),
+        Remote = rows.Count(row => row.Remote),
+        MissingCheckIn = rows.Count(row => row.MissingCheckIn),
+        MissingCheckOut = rows.Count(row => row.MissingCheckOut),
+        TotalWorkingMinutes = rows.Sum(row => row.WorkingMinutes),
+        TotalOvertimeMinutes = rows.Sum(row => row.OvertimeMinutes)
+    };
 
     private async Task<List<AttendanceDailyReportRow>> LoadDailyReportRowsAsync(
         int tenantId,
