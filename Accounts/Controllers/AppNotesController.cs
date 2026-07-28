@@ -293,6 +293,9 @@ namespace Accounts.Controllers
             var canCreateAdminInstruction = await HasInstructionPermissionAsync("ADD", ct);
             if (!canCreateAdminInstruction)
             {
+                if (request.SourceTypeCode.Trim().Equals("ADMIN", StringComparison.OrdinalIgnoreCase))
+                    return StatusCode(StatusCodes.Status403Forbidden, new { message = "You do not have permission to create instructions." });
+
                 // Regular users can only create personal notes
                 request.SourceTypeCode     = "USER";
                 request.VisibilityTypeCode = "PRIVATE";
