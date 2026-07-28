@@ -145,6 +145,9 @@ namespace Accounts.Services.Services
                 // ── ADMIN notes — filter by VisibilityTypeCode + Targets ──────
                 if (n.SourceTypeCode == "ADMIN")
                 {
+                    if (string.Equals(n.CreatedBy, identityUserId, StringComparison.OrdinalIgnoreCase))
+                        return true;
+
                     var audienceTargets = n.Targets.Where(t =>
                         t.TargetTypeCode.Equals("ALL", StringComparison.OrdinalIgnoreCase) ||
                         t.TargetTypeCode.Equals("STAFF", StringComparison.OrdinalIgnoreCase)).ToList();
