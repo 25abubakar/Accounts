@@ -374,8 +374,10 @@ namespace Accounts.Controllers
             if (!canEditInstruction && existing.CreatedBy != identityUserId)
                 return Forbid();
 
-            // Admin instructions are read-only for recipients — only admin can edit
-            if (!canEditInstruction && existing.SourceTypeCode == "ADMIN")
+            // Admin instructions are managed only by the person who posted them.
+            // Recipients can see them in the notification panel, not edit them from management.
+            if (existing.SourceTypeCode == "ADMIN" &&
+                !string.Equals(existing.CreatedBy, identityUserId, StringComparison.OrdinalIgnoreCase))
                 return Forbid();
 
             try
@@ -412,7 +414,8 @@ namespace Accounts.Controllers
             if (!canDeleteInstruction && existing.CreatedBy != identityUserId)
                 return Forbid();
 
-            if (!canDeleteInstruction && existing.SourceTypeCode == "ADMIN")
+            if (existing.SourceTypeCode == "ADMIN" &&
+                !string.Equals(existing.CreatedBy, identityUserId, StringComparison.OrdinalIgnoreCase))
                 return Forbid();
 
             await _service.DeleteAsync(id, identityUserId, CancellationToken.None);
@@ -420,3 +423,4 @@ namespace Accounts.Controllers
         }
     }
 }
+
