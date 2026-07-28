@@ -38,7 +38,10 @@ namespace Accounts.Services.Interfaces
         Task<List<AppNoteDto>> GetLoginInstructionsAsync(
             string staffId, string identityUserId, CancellationToken ct);
 
-        /// <summary>All admin instructions for management UI (admin only).</summary>
-        Task<List<AdminInstructionDto>> GetAdminInstructionsAsync(CancellationToken ct);
+        /// <summary>Instruction audience available to the current administrator/manager.</summary>
+        Task<InstructionAudienceScopeDto> GetInstructionAudienceScopeAsync(string identityUserId, CancellationToken ct);
+
+        /// <summary>Admin instructions visible in the management UI for this administrator/manager scope.</summary>
+        Task<List<AdminInstructionDto>> GetAdminInstructionsAsync(string identityUserId, CancellationToken ct);
     }
 }

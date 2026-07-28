@@ -265,6 +265,8 @@ namespace Accounts.Services.Services
             CreateAppNoteRequest request, string createdByUserId, CancellationToken ct)
         {
             Validate(request);
+            var targetScope = await GetInstructionAudienceScopeAsync(createdByUserId, ct);
+            var targets = NormalizeInstructionTargets(request, targetScope);
 
             var note = new AppNote
             {
@@ -296,9 +298,9 @@ namespace Accounts.Services.Services
             if (note.SourceTypeCode == "USER")
             {
             }
-            else if (request.Targets != null && request.Targets.Count > 0)
+            else if (targets.Count > 0)
             {
-                foreach (var t in request.Targets)
+                foreach (var t in targets)
                     note.Targets.Add(new AppNoteTarget
                     {
                         TargetTypeCode = t.TargetTypeCode.Trim(),
@@ -328,6 +330,11 @@ namespace Accounts.Services.Services
         {
             Validate(request);
             var note = await LoadNoteAsync(noteId, ct);
+            var targetScope = await GetInstructionAudienceScopeAsync(updatedByUserId, ct);
+            if (!targetScope.CanBroadcastToEveryone &&
+                !string.Equals(note.CreatedBy, updatedByUserId, StringComparison.OrdinalIgnoreCase))
+                throw new UnauthorizedAccessException("You can only update instructions created by you.");
+            var targets = NormalizeInstructionTargets(request, targetScope);
 
             note.Title = request.Title.Trim();
             note.NoteBody = request.NoteBody.Trim();
@@ -360,9 +367,9 @@ namespace Accounts.Services.Services
             if (note.SourceTypeCode == "USER")
             {
             }
-            else if (request.Targets != null && request.Targets.Count > 0)
+            else if (targets.Count > 0)
             {
-                foreach (var t in request.Targets)
+                foreach (var t in targets)
                     note.Targets.Add(new AppNoteTarget
                     {
                         TargetTypeCode = t.TargetTypeCode.Trim(),
@@ -447,14 +454,185 @@ namespace Accounts.Services.Services
                 .ToList();
         }
 
-        public async Task<List<AdminInstructionDto>> GetAdminInstructionsAsync(CancellationToken ct)
+        public async Task<InstructionAudienceScopeDto> GetInstructionAudienceScopeAsync(string identityUserId, CancellationToken ct)
         {
+            var user = await _db.Users.AsNoTracking()
+                .Where(u => u.Id == identityUserId)
+                .Select(u => new
+                {
+                    u.Id,
+                    u.TenantId,
+                    u.IsSuperAdmin,
+                    u.IsTenantAdmin
+                })
+                .FirstOrDefaultAsync(ct);
+
+            var fullScope = _tenantService.IsSuperAdmin ||
+                            user?.IsSuperAdmin == true ||
+                            user?.IsTenantAdmin == true;
+
+            var caller = await _db.Persons.AsNoTracking()
+                .Where(person => person.IdentityUserId == identityUserId && person.IsActive)
+                .Select(person => new
+                {
+                    person.PersonId,
+                    person.TenantId,
+                    StaffId = person.Staff != null ? (Guid?)person.Staff.StaffId : null,
+                    OrganizationId = person.Staff != null && person.Staff.Vacancy != null
+                        ? (int?)person.Staff.Vacancy.OrganizationId
+                        : null,
+                    JobTitle = person.Staff != null && person.Staff.Vacancy != null
+                        ? (person.Staff.Vacancy.JobTitleNav != null
+                            ? person.Staff.Vacancy.JobTitleNav.TitleName
+                            : person.Staff.Vacancy.JobTitle)
+                        : null,
+                    InstructionScope = person.Staff != null &&
+                        person.Staff.Vacancy != null &&
+                        person.Staff.Vacancy.JobTitleNav != null
+                            ? person.Staff.Vacancy.JobTitleNav.AttendanceVisibilityScope
+                            : AttendanceVisibilityScope.Self
+                })
+                .FirstOrDefaultAsync(ct);
+
+            var tenantId = user?.TenantId ?? caller?.TenantId ?? _tenantService.TenantId;
+            var peopleQuery = _db.Persons.AsNoTracking()
+                .Where(person =>
+                    person.Staff != null &&
+                    person.IsActive &&
+                    !_db.Users.Any(u => u.Id == person.IdentityUserId && (u.IsTenantAdmin || u.IsSuperAdmin)));
+
+            if (!_tenantService.IsSuperAdmin || tenantId.HasValue)
+                peopleQuery = peopleQuery.Where(person => person.TenantId == tenantId);
+
+            var people = await peopleQuery
+                .Select(person => new
+                {
+                    person.PersonId,
+                    person.FullName,
+                    person.TenantId,
+                    person.Staff!.StaffId,
+                    person.Staff.LoginId,
+                    person.Staff.VacancyId,
+                    OrganizationId = person.Staff.Vacancy != null ? (int?)person.Staff.Vacancy.OrganizationId : null,
+                    JobTitle = person.Staff.Vacancy != null
+                        ? (person.Staff.Vacancy.JobTitleNav != null
+                            ? person.Staff.Vacancy.JobTitleNav.TitleName
+                            : person.Staff.Vacancy.JobTitle)
+                        : null,
+                    Department = person.Staff.Vacancy != null ? person.Staff.Vacancy.Department : null
+                })
+                .ToListAsync(ct);
+
+            var orgs = await _db.OrganizationTree.AsNoTracking()
+                .Where(node => node.IsActive)
+                .Select(node => new { node.Id, node.ParentId, node.Name, node.Label })
+                .ToListAsync(ct);
+            var orgById = orgs.ToDictionary(node => node.Id);
+
+            var visiblePersonIds = new HashSet<Guid>();
+            if (fullScope)
+            {
+                visiblePersonIds = people.Select(person => person.PersonId).ToHashSet();
+            }
+            else if (caller?.OrganizationId.HasValue == true)
+            {
+                var callerRank = InstructionRoleRank(caller.JobTitle);
+                var derivedScope = callerRank switch
+                {
+                    >= 300 => AttendanceVisibilityScope.OrganizationNodeAndDescendants,
+                    >= 200 => AttendanceVisibilityScope.OrganizationNode,
+                    _ => AttendanceVisibilityScope.Self
+                };
+                var effectiveScope = (AttendanceVisibilityScope)Math.Max(
+                    (int)caller.InstructionScope,
+                    (int)derivedScope);
+
+                if (effectiveScope != AttendanceVisibilityScope.Self && callerRank >= 200)
+                {
+                    var visibleNodeIds = new HashSet<int> { caller.OrganizationId.Value };
+
+                    if (effectiveScope == AttendanceVisibilityScope.OrganizationNodeAndDescendants)
+                    {
+                        var nodeChildren = orgs
+                            .Where(node => node.ParentId.HasValue)
+                            .ToLookup(node => node.ParentId!.Value, node => node.Id);
+                        var pendingNodes = new Queue<int>();
+                        pendingNodes.Enqueue(caller.OrganizationId.Value);
+                        while (pendingNodes.TryDequeue(out var parentNodeId))
+                            foreach (var childNodeId in nodeChildren[parentNodeId])
+                                if (visibleNodeIds.Add(childNodeId)) pendingNodes.Enqueue(childNodeId);
+                    }
+
+                    foreach (var person in people)
+                        if (person.OrganizationId.HasValue &&
+                            visibleNodeIds.Contains(person.OrganizationId.Value) &&
+                            InstructionRoleRank(person.JobTitle) < callerRank)
+                            visiblePersonIds.Add(person.PersonId);
+                }
+            }
+
+            string? FindOrgName(int? organizationId, string label)
+            {
+                var currentId = organizationId;
+                while (currentId.HasValue && orgById.TryGetValue(currentId.Value, out var node))
+                {
+                    if (string.Equals(node.Label, label, StringComparison.OrdinalIgnoreCase))
+                        return node.Name;
+                    currentId = node.ParentId;
+                }
+                return null;
+            }
+
+            var staff = people
+                .Where(person => visiblePersonIds.Contains(person.PersonId))
+                .OrderBy(person => person.FullName)
+                .Select(person => new InstructionTargetStaffDto
+                {
+                    StaffId = person.StaffId,
+                    PersonId = person.PersonId,
+                    FullName = person.FullName,
+                    LoginId = person.LoginId,
+                    JobTitle = person.JobTitle,
+                    Department = FindOrgName(person.OrganizationId, "Department") ?? person.Department,
+                    BranchName = FindOrgName(person.OrganizationId, "Branch"),
+                    CompanyName = FindOrgName(person.OrganizationId, "Company") ?? FindOrgName(person.OrganizationId, "Group"),
+                    CountryName = FindOrgName(person.OrganizationId, "Country"),
+                    OrganizationId = person.OrganizationId,
+                    TenantId = person.TenantId
+                })
+                .ToList();
+
+            return new InstructionAudienceScopeDto
+            {
+                CanBroadcastToEveryone = fullScope,
+                ScopeLabel = fullScope ? "Company" : "Organization node hierarchy",
+                Staff = staff
+            };
+        }
+
+        public async Task<List<AdminInstructionDto>> GetAdminInstructionsAsync(string identityUserId, CancellationToken ct)
+        {
+            var targetScope = await GetInstructionAudienceScopeAsync(identityUserId, ct);
+            var allowedStaffIds = targetScope.Staff
+                .Select(staff => NormalizeIdentifier(staff.StaffId.ToString()))
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
             var notes = await _db.AppNotes
                 .AsNoTracking()
                 .Include(n => n.Targets)
                 .Where(n => n.SourceTypeCode == "ADMIN" && !n.IsDeleted)
                 .OrderByDescending(n => n.CreatedOnUtc)
                 .ToListAsync(ct);
+
+            if (!targetScope.CanBroadcastToEveryone)
+            {
+                notes = notes.Where(note =>
+                    string.Equals(note.CreatedBy, identityUserId, StringComparison.OrdinalIgnoreCase) ||
+                    note.Targets.Any(target =>
+                        target.TargetTypeCode.Equals("STAFF", StringComparison.OrdinalIgnoreCase) &&
+                        allowedStaffIds.Contains(NormalizeIdentifier(target.TargetValue))))
+                    .ToList();
+            }
 
             return notes.Select(n => new AdminInstructionDto
             {
@@ -491,6 +669,65 @@ namespace Accounts.Services.Services
         }
 
         // ── Private helpers ───────────────────────────────────────────────────
+
+        private static List<AppNoteTargetRequest> NormalizeInstructionTargets(
+            CreateAppNoteRequest request,
+            InstructionAudienceScopeDto scope)
+        {
+            if (!request.SourceTypeCode.Trim().Equals("ADMIN", StringComparison.OrdinalIgnoreCase))
+                return new List<AppNoteTargetRequest>();
+
+            var requestedTargets = request.Targets ?? new List<AppNoteTargetRequest>();
+            var allowAll = scope.CanBroadcastToEveryone;
+            var allowedStaffIds = scope.Staff
+                .Select(staff => NormalizeIdentifier(staff.StaffId.ToString()))
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+            if (requestedTargets.Count == 0)
+            {
+                if (allowAll) return new List<AppNoteTargetRequest> { new() { TargetTypeCode = "ALL", TargetValue = "*" } };
+                throw new UnauthorizedAccessException("Select at least one staff member from your organization hierarchy.");
+            }
+
+            var normalized = new List<AppNoteTargetRequest>();
+            foreach (var target in requestedTargets)
+            {
+                var type = target.TargetTypeCode.Trim().ToUpperInvariant();
+                var value = target.TargetValue.Trim();
+
+                if (type == "ALL")
+                {
+                    if (!allowAll)
+                        throw new UnauthorizedAccessException("Your account can only send instructions to staff in your organization hierarchy.");
+                    normalized.Add(new AppNoteTargetRequest { TargetTypeCode = "ALL", TargetValue = "*" });
+                    continue;
+                }
+
+                if (type == "STAFF")
+                {
+                    if (!allowedStaffIds.Contains(NormalizeIdentifier(value)))
+                        throw new UnauthorizedAccessException("One or more selected staff members are outside your instruction scope.");
+                    normalized.Add(new AppNoteTargetRequest { TargetTypeCode = "STAFF", TargetValue = value });
+                    continue;
+                }
+
+                if (type is "MENU" or "RECORD")
+                {
+                    normalized.Add(new AppNoteTargetRequest { TargetTypeCode = type, TargetValue = value });
+                    continue;
+                }
+
+                throw new InvalidOperationException($"Unsupported instruction target type: {target.TargetTypeCode}");
+            }
+
+            if (!allowAll && !normalized.Any(target => target.TargetTypeCode == "STAFF"))
+                throw new UnauthorizedAccessException("Select at least one staff member from your organization hierarchy.");
+
+            return normalized
+                .GroupBy(target => $"{target.TargetTypeCode}:{NormalizeIdentifier(target.TargetValue)}")
+                .Select(group => group.First())
+                .ToList();
+        }
 
         private async Task<AppNote> LoadNoteAsync(int noteId, CancellationToken ct)
         {
@@ -550,6 +787,28 @@ namespace Accounts.Services.Services
         private static string NormalizeIdentifier(string? value)
         {
             return (value ?? string.Empty).Trim().ToLowerInvariant();
+        }
+
+        private static int InstructionRoleRank(string? title)
+        {
+            if (string.IsNullOrWhiteSpace(title)) return 0;
+            var value = new string(title.Trim().ToLowerInvariant()
+                .Where(char.IsLetterOrDigit).ToArray());
+
+            var isDutyCeo = value.Contains("dutyceo");
+            var isDeputyManager = value.Contains("deputymanager") || value.Contains("deptymanager");
+            var isAssistantManager = value.Contains("assistantmanager") ||
+                                     value.Contains("asstmanager") ||
+                                     value.Contains("assistmanager");
+
+            if (!isDutyCeo && (value.Contains("ceo") || value.Contains("chiefexecutive"))) return 700;
+            if (isDutyCeo) return 600;
+            if (!isDeputyManager && !isAssistantManager && value.Contains("manager")) return 500;
+            if (isDeputyManager) return 400;
+            if (isAssistantManager) return 300;
+            if (value.Contains("supervisor") || value.Contains("teamlead")) return 200;
+            if (value.Contains("agent") || value.Contains("bellboy")) return 100;
+            return 0;
         }
 
         private static void AddIdentifier(ISet<string> identifiers, string? value)

@@ -76,7 +76,35 @@ namespace Accounts.Controllers
         }
 
         private bool IsAdmin =>
-            User.IsInRole("SuperAdmin") || User.IsInRole("Admin") || User.IsInRole("TenantAdmin");
+            User.IsInRole("SuperAdmin") ||
+            User.IsInRole("Admin") ||
+            User.IsInRole("TenantAdmin") ||
+            string.Equals(User.FindFirstValue(ITenantService.ClaimIsTenantAdmin), "true", StringComparison.OrdinalIgnoreCase);
+
+        private async Task<bool> HasInstructionPermissionAsync(string action, CancellationToken ct)
+        {
+            if (IsAdmin) return true;
+
+            var normalizedAction = action.Trim().ToUpperInvariant();
+            if (normalizedAction is not ("VIEW" or "ADD" or "EDIT" or "DELETE"))
+                return false;
+
+            var staffId = await GetCurrentStaffIdAsync();
+            if (!Guid.TryParse(staffId, out var staffGuid))
+                return false;
+
+            return await _db.StaffMenuAccesses.AsNoTracking()
+                .Where(access => access.StaffId == staffGuid && access.IsAllow)
+                .Where(access => access.Menu != null &&
+                    (access.Menu.Route == "/settings/instruction" || access.Menu.Route == "/instructions"))
+                .AnyAsync(access =>
+                    !access.AccessFeatures.Any() ||
+                    access.AccessFeatures.Any(feature =>
+                        feature.IsAllow &&
+                        feature.Feature != null &&
+                        feature.Feature.FeatureKey == "MENU_" + access.MenuId + "_" + normalizedAction),
+                    ct);
+        }
 
         /// <summary>
         /// Resolves the StaffId (Guid as string) for the currently logged-in user.
@@ -169,11 +197,29 @@ namespace Accounts.Controllers
         [HttpGet("admin/instructions")]
         public async Task<IActionResult> GetAdminInstructions(CancellationToken ct)
         {
-            if (!IsAdmin)
+            if (!await HasInstructionPermissionAsync("VIEW", ct))
                 return Forbid();
 
-            var data = await _service.GetAdminInstructionsAsync(ct);
+            var identityUserId = await ResolveIdentityUserIdAsync();
+            if (string.IsNullOrWhiteSpace(identityUserId))
+                return Unauthorized(new { message = "Unable to resolve logged-in user identity." });
+
+            var data = await _service.GetAdminInstructionsAsync(identityUserId, ct);
             return Ok(CommApiResponse<List<AdminInstructionDto>>.Ok(data));
+        }
+
+        [HttpGet("admin/audience-scope")]
+        public async Task<IActionResult> GetInstructionAudienceScope(CancellationToken ct)
+        {
+            if (!await HasInstructionPermissionAsync("VIEW", ct))
+                return Forbid();
+
+            var identityUserId = await ResolveIdentityUserIdAsync();
+            if (string.IsNullOrWhiteSpace(identityUserId))
+                return Unauthorized(new { message = "Unable to resolve logged-in user identity." });
+
+            var data = await _service.GetInstructionAudienceScopeAsync(identityUserId, ct);
+            return Ok(CommApiResponse<InstructionAudienceScopeDto>.Ok(data));
         }
 
         /// <summary>Get a single note by ID.</summary>
@@ -244,7 +290,8 @@ namespace Accounts.Controllers
             if (string.IsNullOrWhiteSpace(identityUserId))
                 return Unauthorized(new { message = "Unable to resolve logged-in user identity." });
 
-            if (!IsAdmin)
+            var canCreateAdminInstruction = await HasInstructionPermissionAsync("ADD", ct);
+            if (!canCreateAdminInstruction)
             {
                 // Regular users can only create personal notes
                 request.SourceTypeCode     = "USER";
@@ -258,8 +305,15 @@ namespace Accounts.Controllers
             }
 
             // Use CancellationToken.None for writes so notes still save even if client aborts request.
-            var data = await _service.CreateAsync(request, identityUserId, CancellationToken.None);
-            return Ok(CommApiResponse<AppNoteDto>.Ok(data, "Note created successfully."));
+            try
+            {
+                var data = await _service.CreateAsync(request, identityUserId, CancellationToken.None);
+                return Ok(CommApiResponse<AppNoteDto>.Ok(data, "Note created successfully."));
+            }
+            catch (UnauthorizedAccessException ex)
+            {
+                return Forbid(ex.Message);
+            }
         }
 
         // ── Status actions ────────────────────────────────────────────────────
@@ -313,15 +367,23 @@ namespace Accounts.Controllers
                 return Forbid();
             }
 
-            if (!IsAdmin && existing.CreatedBy != identityUserId)
+            var canEditInstruction = await HasInstructionPermissionAsync("EDIT", ct);
+            if (!canEditInstruction && existing.CreatedBy != identityUserId)
                 return Forbid();
 
             // Admin instructions are read-only for recipients — only admin can edit
-            if (!IsAdmin && existing.SourceTypeCode == "ADMIN")
+            if (!canEditInstruction && existing.SourceTypeCode == "ADMIN")
                 return Forbid();
 
-            var data = await _service.UpdateAsync(id, request, identityUserId, CancellationToken.None);
-            return Ok(CommApiResponse<AppNoteDto>.Ok(data, "Note updated successfully."));
+            try
+            {
+                var data = await _service.UpdateAsync(id, request, identityUserId, CancellationToken.None);
+                return Ok(CommApiResponse<AppNoteDto>.Ok(data, "Note updated successfully."));
+            }
+            catch (UnauthorizedAccessException ex)
+            {
+                return Forbid(ex.Message);
+            }
         }
 
         /// <summary>Delete a note. Only the creator or an admin can delete.</summary>
@@ -343,10 +405,11 @@ namespace Accounts.Controllers
                 return Forbid();
             }
 
-            if (!IsAdmin && existing.CreatedBy != identityUserId)
+            var canDeleteInstruction = await HasInstructionPermissionAsync("DELETE", ct);
+            if (!canDeleteInstruction && existing.CreatedBy != identityUserId)
                 return Forbid();
 
-            if (!IsAdmin && existing.SourceTypeCode == "ADMIN")
+            if (!canDeleteInstruction && existing.SourceTypeCode == "ADMIN")
                 return Forbid();
 
             await _service.DeleteAsync(id, identityUserId, CancellationToken.None);

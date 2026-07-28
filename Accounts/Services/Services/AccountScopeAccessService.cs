@@ -18,6 +18,7 @@ namespace Accounts.Services.Services
                 .Select(u => new
                 {
                     u.IsSuperAdmin,
+                    u.IsTenantAdmin,
                     u.TenantId,
                     u.LockoutEnabled,
                     u.LockoutEnd,
@@ -46,14 +47,14 @@ namespace Accounts.Services.Services
             if (user == null)
                 return AccountScopeAccessResult.Denied("This account no longer exists.");
 
-            if (user.LockoutEnabled && user.LockoutEnd.HasValue && user.LockoutEnd > DateTimeOffset.UtcNow)
-                return AccountScopeAccessResult.Denied("This account is disabled or locked.");
-
-            if (user.PersonIsActive == false)
-                return AccountScopeAccessResult.Denied("Your staff account is inactive. Contact your administrator.");
-
             if (user.IsSuperAdmin)
                 return AccountScopeAccessResult.Allowed();
+
+            if (!user.IsTenantAdmin && user.LockoutEnabled && user.LockoutEnd.HasValue && user.LockoutEnd > DateTimeOffset.UtcNow)
+                return AccountScopeAccessResult.Denied("This account is disabled or locked.");
+
+            if (!user.IsTenantAdmin && user.PersonIsActive == false)
+                return AccountScopeAccessResult.Denied("Your staff account is inactive. Contact your administrator.");
 
             if (!user.TenantId.HasValue)
                 return AccountScopeAccessResult.Denied("This account is not assigned to an active tenant.");

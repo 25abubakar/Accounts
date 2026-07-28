@@ -170,6 +170,12 @@ public sealed class UpdateAttendanceEvaluatorEarlyCheckoutRule : Migration
                 WHERE attendance.TenantId=@TenantId
                   AND attendance.AttendanceDate BETWEEN @DateFrom AND @DateTo;
 
+                DECLARE @LockedPeople table
+                (
+                    PersonId uniqueidentifier NOT NULL PRIMARY KEY,
+                    IdentityUserId nvarchar(450) NULL
+                );
+
                 ;WITH LockCandidates AS(
                     SELECT person.PersonId,person.IdentityUserId,setting.AccountLockAbsentDays
                     FROM dbo.Persons person
@@ -185,10 +191,19 @@ public sealed class UpdateAttendanceEvaluatorEarlyCheckoutRule : Migration
                       ON identityUser.Id=person.IdentityUserId
                     WHERE person.TenantId=@TenantId
                       AND person.IsActive=1
+                      AND 1=0 -- Attendance reports must not directly lock application login accounts.
                       AND setting.AccountLockAbsentDays>0
                       AND ISNULL(identityUser.IsTenantAdmin,0)=0
                       AND ISNULL(identityUser.IsSuperAdmin,0)=0
-                ), LockedPeople AS(
+                      AND NOT EXISTS (
+                          SELECT 1
+                          FROM dbo.AspNetUserRoles userRole
+                          JOIN dbo.AspNetRoles role ON role.Id=userRole.RoleId
+                          WHERE userRole.UserId=identityUser.Id
+                            AND role.Name IN (N'SuperAdmin',N'Admin',N'TenantAdmin')
+                      )
+                )
+                INSERT @LockedPeople(PersonId,IdentityUserId)
                     SELECT candidate.PersonId,candidate.IdentityUserId
                     FROM LockCandidates candidate
                     CROSS APPLY(
@@ -205,20 +220,19 @@ public sealed class UpdateAttendanceEvaluatorEarlyCheckoutRule : Migration
                     ) recent
                     GROUP BY candidate.PersonId,candidate.IdentityUserId,candidate.AccountLockAbsentDays
                     HAVING COUNT_BIG(1)=candidate.AccountLockAbsentDays
-                       AND SUM(CASE WHEN recent.AttendanceStatusId=@Absent THEN 1 ELSE 0 END)=candidate.AccountLockAbsentDays
-                )
+                       AND SUM(CASE WHEN recent.AttendanceStatusId=@Absent THEN 1 ELSE 0 END)=candidate.AccountLockAbsentDays;
+
                 UPDATE person
-                   SET IsActive=0,
-                       ModifiedDate=@AsOfUtc
+                   SET IsActive=0
                 FROM dbo.Persons person
-                JOIN LockedPeople locked
+                JOIN @LockedPeople locked
                   ON locked.PersonId=person.PersonId;
 
                 UPDATE identityUser
                    SET LockoutEnabled=1,
                        LockoutEnd='9999-12-31T23:59:59.9999999+00:00'
                 FROM dbo.AspNetUsers identityUser
-                JOIN LockedPeople locked
+                JOIN @LockedPeople locked
                   ON locked.IdentityUserId=identityUser.Id
                 WHERE locked.IdentityUserId IS NOT NULL;
             END

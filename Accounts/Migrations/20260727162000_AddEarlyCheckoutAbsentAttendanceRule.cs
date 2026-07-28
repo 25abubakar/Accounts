@@ -15,11 +15,17 @@ public sealed class AddEarlyCheckoutAbsentAttendanceRule : Migration
         migrationBuilder.Sql(
             """
             IF OBJECT_ID(N'dbo.AttendanceRuleSettings', N'U') IS NOT NULL
+               AND COL_LENGTH(N'dbo.AttendanceRuleSettings', N'EarlyCheckoutAbsentAfterMinutes') IS NULL
             BEGIN
-                IF COL_LENGTH(N'dbo.AttendanceRuleSettings', N'EarlyCheckoutAbsentAfterMinutes') IS NULL
-                    ALTER TABLE dbo.AttendanceRuleSettings ADD EarlyCheckoutAbsentAfterMinutes int NOT NULL
-                        CONSTRAINT DF_AttendanceRuleSettings_EarlyCheckoutAbsentAfterMinutes DEFAULT(120);
+                ALTER TABLE dbo.AttendanceRuleSettings ADD EarlyCheckoutAbsentAfterMinutes int NOT NULL
+                    CONSTRAINT DF_AttendanceRuleSettings_EarlyCheckoutAbsentAfterMinutes DEFAULT(120);
+            END;
+            """);
 
+        migrationBuilder.Sql(
+            """
+            IF OBJECT_ID(N'dbo.AttendanceRuleSettings', N'U') IS NOT NULL
+            BEGIN
                 IF EXISTS (
                     SELECT 1
                     FROM sys.check_constraints

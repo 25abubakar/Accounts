@@ -7,148 +7,19 @@ using Microsoft.EntityFrameworkCore.Migrations;
 namespace Accounts.Migrations;
 
 [DbContext(typeof(ApplicationDbContext))]
-[Migration("20260723110000_AddAttendanceRuleSettings")]
-public sealed class AddAttendanceRuleSettings : Migration
+[Migration("20260727164500_RepairAttendanceEvaluatorLockedPeopleScope")]
+public sealed class RepairAttendanceEvaluatorLockedPeopleScope : Migration
 {
     protected override void Up(MigrationBuilder migrationBuilder)
     {
         migrationBuilder.Sql(
             """
-            IF OBJECT_ID(N'dbo.AttendanceRuleSettings', N'U') IS NULL
+            IF OBJECT_ID(N'dbo.AttendanceRuleSettings', N'U') IS NOT NULL
+               AND COL_LENGTH(N'dbo.AttendanceRuleSettings', N'EarlyCheckoutAbsentAfterMinutes') IS NULL
             BEGIN
-                CREATE TABLE dbo.AttendanceRuleSettings
-                (
-                    Id int IDENTITY(1,1) NOT NULL CONSTRAINT PK_AttendanceRuleSettings PRIMARY KEY,
-                    TenantId int NOT NULL,
-                    AttendanceEntryTypeId int NOT NULL,
-                    Reference nvarchar(50) NOT NULL,
-                    RuleName nvarchar(150) NOT NULL,
-                    WorkingMinutes int NOT NULL CONSTRAINT DF_AttendanceRuleSettings_WorkingMinutes DEFAULT(540),
-                    BeforeCheckInMinutes int NOT NULL CONSTRAINT DF_AttendanceRuleSettings_BeforeCheckInMinutes DEFAULT(5),
-                    AfterCheckOutMinutes int NOT NULL CONSTRAINT DF_AttendanceRuleSettings_AfterCheckOutMinutes DEFAULT(0),
-                    CheckInAdjustMinutes int NOT NULL CONSTRAINT DF_AttendanceRuleSettings_CheckInAdjustMinutes DEFAULT(5),
-                    CheckOutAdjustMinutes int NOT NULL CONSTRAINT DF_AttendanceRuleSettings_CheckOutAdjustMinutes DEFAULT(5),
-                    AbsentAfterShiftStartMinutes int NOT NULL CONSTRAINT DF_AttendanceRuleSettings_AbsentAfterShiftStartMinutes DEFAULT(120),
-                    MissingCheckoutAfterShiftEndMinutes int NOT NULL CONSTRAINT DF_AttendanceRuleSettings_MissingCheckoutAfterShiftEndMinutes DEFAULT(120),
-                    AccountLockAbsentDays int NOT NULL CONSTRAINT DF_AttendanceRuleSettings_AccountLockAbsentDays DEFAULT(0),
-                    WeekendChargeValue decimal(6,2) NOT NULL CONSTRAINT DF_AttendanceRuleSettings_WeekendChargeValue DEFAULT(0),
-                    AdjustAbsentDays int NOT NULL CONSTRAINT DF_AttendanceRuleSettings_AdjustAbsentDays DEFAULT(0),
-                    IsApproved bit NOT NULL CONSTRAINT DF_AttendanceRuleSettings_IsApproved DEFAULT(0),
-                    IsActive bit NOT NULL CONSTRAINT DF_AttendanceRuleSettings_IsActive DEFAULT(1),
-                    Remarks nvarchar(500) NULL,
-                    CreatedByUserId nvarchar(450) NULL,
-                    ModifiedByUserId nvarchar(450) NULL,
-                    CreatedDate datetime2 NOT NULL CONSTRAINT DF_AttendanceRuleSettings_CreatedDate DEFAULT(SYSUTCDATETIME()),
-                    ModifiedDate datetime2 NULL,
-                    CONSTRAINT FK_AttendanceRuleSettings_Tenants FOREIGN KEY(TenantId) REFERENCES dbo.Tenants(Id),
-                    CONSTRAINT FK_AttendanceRuleSettings_AttendanceEntryTypes FOREIGN KEY(AttendanceEntryTypeId) REFERENCES dbo.AttendanceEntryTypes(Id),
-                    CONSTRAINT CK_AttendanceRuleSettings_Minutes CHECK
-                    (
-                        WorkingMinutes BETWEEN 0 AND 1440
-                        AND BeforeCheckInMinutes BETWEEN 0 AND 720
-                        AND AfterCheckOutMinutes BETWEEN 0 AND 720
-                        AND CheckInAdjustMinutes BETWEEN 0 AND 720
-                        AND CheckOutAdjustMinutes BETWEEN 0 AND 720
-                        AND AbsentAfterShiftStartMinutes BETWEEN 1 AND 1440
-                        AND MissingCheckoutAfterShiftEndMinutes BETWEEN 1 AND 1440
-                        AND AccountLockAbsentDays BETWEEN 0 AND 31
-                        AND WeekendChargeValue BETWEEN 0 AND 31
-                        AND AdjustAbsentDays BETWEEN 0 AND 31
-                    )
-                );
-            END
-
-            IF OBJECT_ID(N'dbo.AttendanceRuleSettings', N'U') IS NOT NULL
-               AND EXISTS (
-                    SELECT 1
-                    FROM sys.check_constraints
-                    WHERE name = N'CK_AttendanceRuleSettings_Minutes'
-                      AND parent_object_id = OBJECT_ID(N'dbo.AttendanceRuleSettings'))
-                ALTER TABLE dbo.AttendanceRuleSettings DROP CONSTRAINT CK_AttendanceRuleSettings_Minutes;
-
-            IF OBJECT_ID(N'dbo.AttendanceRuleSettings', N'U') IS NOT NULL
-            BEGIN
-                IF COL_LENGTH(N'dbo.AttendanceRuleSettings', N'AccountLocked') IS NOT NULL
-                   AND COL_LENGTH(N'dbo.AttendanceRuleSettings', N'AccountLockAbsentDays') IS NULL
-                    EXEC sp_rename N'dbo.AttendanceRuleSettings.AccountLocked', N'AccountLockAbsentDays', N'COLUMN';
-
-                IF COL_LENGTH(N'dbo.AttendanceRuleSettings', N'WeekendCharged') IS NOT NULL
-                   AND COL_LENGTH(N'dbo.AttendanceRuleSettings', N'WeekendChargeValue') IS NULL
-                    EXEC sp_rename N'dbo.AttendanceRuleSettings.WeekendCharged', N'WeekendChargeValue', N'COLUMN';
-
-                IF COL_LENGTH(N'dbo.AttendanceRuleSettings', N'AdjustAbsent') IS NOT NULL
-                   AND COL_LENGTH(N'dbo.AttendanceRuleSettings', N'AdjustAbsentDays') IS NULL
-                    EXEC sp_rename N'dbo.AttendanceRuleSettings.AdjustAbsent', N'AdjustAbsentDays', N'COLUMN';
-
-                IF COL_LENGTH(N'dbo.AttendanceRuleSettings', N'AccountLockAbsentDays') IS NULL
-                    ALTER TABLE dbo.AttendanceRuleSettings ADD AccountLockAbsentDays int NOT NULL CONSTRAINT DF_AttendanceRuleSettings_AccountLockAbsentDays DEFAULT(0);
-                IF COL_LENGTH(N'dbo.AttendanceRuleSettings', N'WeekendChargeValue') IS NULL
-                    ALTER TABLE dbo.AttendanceRuleSettings ADD WeekendChargeValue decimal(6,2) NOT NULL CONSTRAINT DF_AttendanceRuleSettings_WeekendChargeValue DEFAULT(0);
-                IF COL_LENGTH(N'dbo.AttendanceRuleSettings', N'AdjustAbsentDays') IS NULL
-                    ALTER TABLE dbo.AttendanceRuleSettings ADD AdjustAbsentDays int NOT NULL CONSTRAINT DF_AttendanceRuleSettings_AdjustAbsentDays DEFAULT(0);
-
-                EXEC(N'ALTER TABLE dbo.AttendanceRuleSettings ALTER COLUMN AccountLockAbsentDays int NOT NULL');
-                EXEC(N'ALTER TABLE dbo.AttendanceRuleSettings ALTER COLUMN WeekendChargeValue decimal(6,2) NOT NULL');
-                EXEC(N'ALTER TABLE dbo.AttendanceRuleSettings ALTER COLUMN AdjustAbsentDays int NOT NULL');
-            END
-
-            IF OBJECT_ID(N'dbo.AttendanceRuleSettings', N'U') IS NOT NULL
-               AND NOT EXISTS (
-                    SELECT 1
-                    FROM sys.check_constraints
-                    WHERE name = N'CK_AttendanceRuleSettings_Minutes'
-                      AND parent_object_id = OBJECT_ID(N'dbo.AttendanceRuleSettings'))
-                EXEC(N'ALTER TABLE dbo.AttendanceRuleSettings ADD CONSTRAINT CK_AttendanceRuleSettings_Minutes CHECK
-                (
-                    WorkingMinutes BETWEEN 0 AND 1440
-                    AND BeforeCheckInMinutes BETWEEN 0 AND 720
-                    AND AfterCheckOutMinutes BETWEEN 0 AND 720
-                    AND CheckInAdjustMinutes BETWEEN 0 AND 720
-                    AND CheckOutAdjustMinutes BETWEEN 0 AND 720
-                    AND AbsentAfterShiftStartMinutes BETWEEN 1 AND 1440
-                    AND MissingCheckoutAfterShiftEndMinutes BETWEEN 1 AND 1440
-                    AND AccountLockAbsentDays BETWEEN 0 AND 31
-                    AND WeekendChargeValue BETWEEN 0 AND 31
-                    AND AdjustAbsentDays BETWEEN 0 AND 31
-                )');
-
-            IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'UX_AttendanceRuleSettings_Tenant_AttendanceType' AND object_id = OBJECT_ID(N'dbo.AttendanceRuleSettings'))
-                CREATE UNIQUE INDEX UX_AttendanceRuleSettings_Tenant_AttendanceType
-                ON dbo.AttendanceRuleSettings(TenantId, AttendanceEntryTypeId);
-
-            IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_AttendanceRuleSettings_Tenant_ActiveApproved' AND object_id = OBJECT_ID(N'dbo.AttendanceRuleSettings'))
-                EXEC(N'CREATE INDEX IX_AttendanceRuleSettings_Tenant_ActiveApproved
-                ON dbo.AttendanceRuleSettings(TenantId, IsActive, IsApproved)
-                INCLUDE (AttendanceEntryTypeId, WorkingMinutes, BeforeCheckInMinutes, CheckInAdjustMinutes, CheckOutAdjustMinutes, AbsentAfterShiftStartMinutes, MissingCheckoutAfterShiftEndMinutes, AccountLockAbsentDays, WeekendChargeValue, AdjustAbsentDays)');
-            """);
-
-        migrationBuilder.Sql(
-            """
-            CREATE OR ALTER VIEW dbo.vw_AttendanceRuleSettings
-            AS
-            SELECT ruleSetting.Id,
-                   ruleSetting.TenantId,
-                   ruleSetting.AttendanceEntryTypeId,
-                   entryType.Code AS AttendanceTypeCode,
-                   entryType.Name AS AttendanceTypeName,
-                   ruleSetting.Reference,
-                   ruleSetting.RuleName,
-                   ruleSetting.WorkingMinutes,
-                   ruleSetting.BeforeCheckInMinutes,
-                   ruleSetting.AfterCheckOutMinutes,
-                   ruleSetting.CheckInAdjustMinutes,
-                   ruleSetting.CheckOutAdjustMinutes,
-                   ruleSetting.AbsentAfterShiftStartMinutes,
-                   ruleSetting.MissingCheckoutAfterShiftEndMinutes,
-                   ruleSetting.AccountLockAbsentDays,
-                   ruleSetting.WeekendChargeValue,
-                   ruleSetting.AdjustAbsentDays,
-                   ruleSetting.IsApproved,
-                   ruleSetting.IsActive,
-                   ruleSetting.Remarks
-            FROM dbo.AttendanceRuleSettings AS ruleSetting
-            JOIN dbo.AttendanceEntryTypes AS entryType
-              ON entryType.Id = ruleSetting.AttendanceEntryTypeId;
+                ALTER TABLE dbo.AttendanceRuleSettings ADD EarlyCheckoutAbsentAfterMinutes int NOT NULL
+                    CONSTRAINT DF_AttendanceRuleSettings_EarlyCheckoutAbsentAfterMinutes DEFAULT(120);
+            END;
             """);
 
         migrationBuilder.Sql(
@@ -245,6 +116,8 @@ public sealed class AddAttendanceRuleSettings : Migration
                       AND CONVERT(time,(@AsOfUtc AT TIME ZONE 'UTC') AT TIME ZONE @TimeZoneId)>
                           CONVERT(time,DATEADD(minute,effective.CheckInAdjustMinutes,effective.ShiftStart)) THEN @Late
                     WHEN attendance.CheckOutUtc IS NULL THEN @Present
+                    WHEN DATEDIFF(minute,effective.CheckOutLocal, effective.ShiftEndLocal) > effective.EarlyCheckoutAbsentAfterMinutes
+                        THEN @Absent
                     WHEN DATEDIFF(minute,attendance.CheckInUtc,attendance.CheckOutUtc)-attendance.TotalBreakMinutes
                       < COALESCE(NULLIF(timing.WorkingMinutes,0),
                           NULLIF(setting.WorkingMinutes,0),
@@ -278,8 +151,12 @@ public sealed class AddAttendanceRuleSettings : Migration
                     COALESCE(TRY_CONVERT(time(0),timing.TimeTo),TRY_CONVERT(time(0),mapRule.TimeTo),TRY_CONVERT(time(0),person.ShiftEndTime)) ShiftEnd,
                     COALESCE(setting.CheckInAdjustMinutes,@Grace) CheckInAdjustMinutes,
                     COALESCE(setting.CheckOutAdjustMinutes,@Tolerance) CheckOutAdjustMinutes,
+                    COALESCE(setting.EarlyCheckoutAbsentAfterMinutes,@MissingOutAfter) EarlyCheckoutAbsentAfterMinutes,
                     COALESCE(setting.MissingCheckoutAfterShiftEndMinutes,@MissingOutAfter) MissingCheckoutAfterMinutes,
                     COALESCE(setting.AdjustAbsentDays,0) AdjustAbsentDays,
+                    CONVERT(datetime2,(attendance.CheckOutUtc AT TIME ZONE 'UTC') AT TIME ZONE @TimeZoneId) CheckOutLocal,
+                    DATEADD(day,CASE WHEN COALESCE(TRY_CONVERT(time(0),timing.TimeTo),TRY_CONVERT(time(0),mapRule.TimeTo),TRY_CONVERT(time(0),person.ShiftEndTime))<=COALESCE(TRY_CONVERT(time(0),timing.TimeFrom),TRY_CONVERT(time(0),mapRule.TimeFrom),TRY_CONVERT(time(0),person.ShiftStartTime)) THEN 1 ELSE 0 END,
+                        DATEADD(minute,DATEDIFF(minute,'00:00',COALESCE(TRY_CONVERT(time(0),timing.TimeTo),TRY_CONVERT(time(0),mapRule.TimeTo),TRY_CONVERT(time(0),person.ShiftEndTime))),CONVERT(datetime2,attendance.AttendanceDate))) ShiftEndLocal,
                     (
                         SELECT COUNT_BIG(1)
                         FROM dbo.AttendanceRecords monthlyAbsent
@@ -364,7 +241,6 @@ public sealed class AddAttendanceRuleSettings : Migration
 
     protected override void Down(MigrationBuilder migrationBuilder)
     {
-        migrationBuilder.Sql("DROP VIEW IF EXISTS dbo.vw_AttendanceRuleSettings;");
-        migrationBuilder.Sql("DROP TABLE IF EXISTS dbo.AttendanceRuleSettings;");
     }
 }
+

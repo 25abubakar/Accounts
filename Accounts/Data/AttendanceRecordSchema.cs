@@ -5,13 +5,18 @@ namespace Accounts.Data;
 public static class AttendanceRecordSchema
 {
     private static readonly SemaphoreSlim LocalGate = new(1, 1);
+    private static bool CameraReportSchemaEnsured;
     private static bool DeductionReportProcedureEnsured;
 
     public static async Task EnsureCameraColumnsAsync(ApplicationDbContext db, CancellationToken ct = default)
     {
+        if (CameraReportSchemaEnsured) return;
+
         await LocalGate.WaitAsync(ct);
         try
         {
+            if (CameraReportSchemaEnsured) return;
+
             await db.Database.ExecuteSqlRawAsync(
                 """
                 DECLARE @lockResult int;
@@ -153,6 +158,8 @@ public static class AttendanceRecordSchema
                 END CATCH;
                 """,
                 ct);
+
+            CameraReportSchemaEnsured = true;
         }
         finally
         {

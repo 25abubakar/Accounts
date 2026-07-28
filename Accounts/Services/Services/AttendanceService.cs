@@ -1068,15 +1068,12 @@ public sealed class AttendanceService : IAttendanceService
         DateOnly dateTo,
         CancellationToken cancellationToken)
     {
-        var sqlRows = await _db.AttendanceDailyReportRows
-            .FromSqlRaw(
-                "EXEC dbo.usp_Attendance_DailyReport @TenantId, @DateFrom, @DateTo, @VisiblePersonIds",
-                new SqlParameter("@TenantId", tenantId),
-                new SqlParameter("@DateFrom", dateFrom.ToDateTime(TimeOnly.MinValue)),
-                new SqlParameter("@DateTo", dateTo.ToDateTime(TimeOnly.MinValue)),
-                new SqlParameter("@VisiblePersonIds", JsonSerializer.Serialize(visiblePersonIds)))
-            .AsNoTracking()
-            .ToListAsync(cancellationToken);
+        var sqlRows = await LoadDailyReportRowsAsync(
+            tenantId,
+            visiblePersonIds,
+            dateFrom,
+            dateTo,
+            cancellationToken);
 
         var policy = await LoadPolicyAsync(tenantId, cancellationToken);
         var displayStyles = await GetAttendanceDisplayStyleMapAsync(cancellationToken);
@@ -1172,6 +1169,51 @@ public sealed class AttendanceService : IAttendanceService
         };
         return new DailyAttendanceReportDto { DateFrom = dateFrom, DateTo = dateTo, Rows = rows, Summary = summary };
     }
+
+    private async Task<List<AttendanceDailyReportRow>> LoadDailyReportRowsAsync(
+        int tenantId,
+        IReadOnlyCollection<Guid> visiblePersonIds,
+        DateOnly dateFrom,
+        DateOnly dateTo,
+        CancellationToken cancellationToken)
+    {
+        var previousTimeout = _db.Database.GetCommandTimeout();
+        _db.Database.SetCommandTimeout(Math.Max(previousTimeout ?? 30, 120));
+
+        try
+        {
+            return await CreateDailyReportQuery(tenantId, visiblePersonIds, dateFrom, dateTo)
+                .ToListAsync(cancellationToken);
+        }
+        catch (SqlException ex) when (IsSqlClientCanceledCommand(ex) && !cancellationToken.IsCancellationRequested)
+        {
+            return await CreateDailyReportQuery(tenantId, visiblePersonIds, dateFrom, dateTo)
+                .ToListAsync(CancellationToken.None);
+        }
+        finally
+        {
+            _db.Database.SetCommandTimeout(previousTimeout);
+        }
+    }
+
+    private IQueryable<AttendanceDailyReportRow> CreateDailyReportQuery(
+        int tenantId,
+        IReadOnlyCollection<Guid> visiblePersonIds,
+        DateOnly dateFrom,
+        DateOnly dateTo) =>
+        _db.AttendanceDailyReportRows
+            .FromSqlRaw(
+                "EXEC dbo.usp_Attendance_DailyReport @TenantId, @DateFrom, @DateTo, @VisiblePersonIds",
+                new SqlParameter("@TenantId", tenantId),
+                new SqlParameter("@DateFrom", dateFrom.ToDateTime(TimeOnly.MinValue)),
+                new SqlParameter("@DateTo", dateTo.ToDateTime(TimeOnly.MinValue)),
+                new SqlParameter("@VisiblePersonIds", JsonSerializer.Serialize(visiblePersonIds)))
+            .AsNoTracking();
+
+    private static bool IsSqlClientCanceledCommand(SqlException ex) =>
+        ex.Message.Contains("Operation canceled by user", StringComparison.OrdinalIgnoreCase) ||
+        ex.Errors.Cast<SqlError>().Any(error =>
+            error.Message.Contains("Operation canceled by user", StringComparison.OrdinalIgnoreCase));
 
     private async Task<EffectiveTiming> ResolveEffectiveTimingAsync(
         Person person,

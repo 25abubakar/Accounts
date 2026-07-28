@@ -104,6 +104,8 @@ namespace Accounts.Services.Services
             // Step 2: Ensure tenant claims are up-to-date before signing in
 
             // Step 3: Sign in — cookie will carry the claims stamped above
+            await EnsureAdministrativeAccountIsNotAttendanceLockedAsync(user);
+
             var result = await _signInManager.CheckPasswordSignInAsync(
                 user, dto.Password, lockoutOnFailure: true);
 
@@ -149,6 +151,38 @@ namespace Accounts.Services.Services
         }
 
         // ── Logout ────────────────────────────────────────────────────────────
+
+        private async Task EnsureAdministrativeAccountIsNotAttendanceLockedAsync(ApplicationUser user)
+        {
+            if (!await IsAdministrativeIdentityAsync(user))
+                return;
+
+            var changed = false;
+            if (user.LockoutEnd.HasValue)
+            {
+                user.LockoutEnd = null;
+                changed = true;
+            }
+
+            if (user.AccessFailedCount != 0)
+            {
+                user.AccessFailedCount = 0;
+                changed = true;
+            }
+
+            if (changed)
+                await _userManager.UpdateAsync(user);
+        }
+
+        private async Task<bool> IsAdministrativeIdentityAsync(ApplicationUser user)
+        {
+            if (user.IsSuperAdmin || user.IsTenantAdmin)
+                return true;
+
+            return await _userManager.IsInRoleAsync(user, "SuperAdmin") ||
+                   await _userManager.IsInRoleAsync(user, "Admin") ||
+                   await _userManager.IsInRoleAsync(user, "TenantAdmin");
+        }
 
         public async Task LogoutAsync()
         {
