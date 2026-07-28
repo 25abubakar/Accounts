@@ -572,19 +572,25 @@ public sealed class AttendanceService : IAttendanceService
             .ToList();
 
         var checkTypeId = checkInOutTypeId.GetValueOrDefault();
-        var checkMappedPersonIds = checkInOutTypeId.HasValue
+        var mappedPersonIds = checkInOutTypeId.HasValue
             ? await (
                 from staff in _db.StaffVacancies.AsNoTracking()
                 join mapRule in _db.AttendanceMapRules.AsNoTracking()
                     on staff.StaffId equals mapRule.StaffId
                 where
+                    staff.TenantId == mapRule.TenantId &&
                     staff.PersonId.HasValue &&
-                    mapRule.AttendanceEntryTypeId == checkTypeId &&
-                    reportPersonIds.Contains(staff.PersonId.GetValueOrDefault())
-                select staff.PersonId.GetValueOrDefault())
+                    mapRule.AttendanceEntryTypeId == checkTypeId
+                select staff.PersonId)
                 .Distinct()
                 .ToListAsync(cancellationToken)
-            : new List<Guid>();
+            : new List<Guid?>();
+        var reportPersonSet = reportPersonIds.ToHashSet();
+        var checkMappedPersonIds = mappedPersonIds
+            .Where(personId => personId.HasValue && reportPersonSet.Contains(personId.Value))
+            .Select(personId => personId!.Value)
+            .Distinct()
+            .ToList();
         var checkMappedSet = checkMappedPersonIds.ToHashSet();
 
         var rows = checkInOutTypeId.HasValue
