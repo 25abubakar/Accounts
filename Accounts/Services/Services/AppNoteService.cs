@@ -780,7 +780,9 @@ namespace Accounts.Services.Services
                 IsDismissed = state?.IsDismissed ?? false,
                 IsReadOnly = note.SourceTypeCode == "ADMIN",
                 CreatedBy = note.CreatedBy,
-                CreatedOnUtc = note.CreatedOnUtc
+                CreatedOnUtc = note.CreatedOnUtc,
+                StartDateUtc = note.StartDateUtc,
+                EndDateUtc = note.EndDateUtc
             };
         }
 

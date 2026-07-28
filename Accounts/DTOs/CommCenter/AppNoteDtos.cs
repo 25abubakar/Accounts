@@ -27,6 +27,8 @@ namespace Accounts.DTOs.CommCenter
         public bool    IsReadOnly           { get; set; }
         public string? CreatedBy            { get; set; }
         public DateTime CreatedOnUtc        { get; set; }
+        public DateTime? StartDateUtc       { get; set; }
+        public DateTime? EndDateUtc         { get; set; }
     }
 
     // ── Target DTO ───────────────────────────────────────────────────────────

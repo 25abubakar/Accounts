@@ -44,8 +44,6 @@ namespace Accounts.Models
     public class AdminInstructionDto : AppNoteDto
     {
         public List<AppNoteTargetRequest> Targets { get; set; } = new();
-        public DateTime? StartDateUtc { get; set; }
-        public DateTime? EndDateUtc { get; set; }
         public bool IsActive { get; set; }
     }
 }
