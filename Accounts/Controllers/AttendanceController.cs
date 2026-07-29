@@ -106,7 +106,7 @@ public sealed class AttendanceController : ControllerBase
         if (!await HasAttendanceMenuActionAsync(requiredAction, ct, "/attendance/rules/map-attendance", "/attendance/map-attendance"))
             return Forbid();
 
-        var now = DateTime.UtcNow;
+        var now = PakistanClock.Now();
         if (rule == null)
         {
             rule = new AttendanceMapRule
@@ -349,7 +349,7 @@ public sealed class AttendanceController : ControllerBase
             ActionName = Trim(dto.ActionName, 100),
             Comments = Trim(dto.Comments, 1000),
             CreatedByUserId = UserId(),
-            CreatedDate = DateTime.UtcNow
+            CreatedDate = PakistanClock.Now()
         };
 
         _db.AttendanceDeductionRequests.Add(request);
@@ -374,20 +374,19 @@ public sealed class AttendanceController : ControllerBase
             .SingleOrDefaultAsync(p => p.PersonId == dto.PersonId && p.TenantId == _tenant.RequiredTenantId, ct);
         if (person?.Staff == null) return NotFound(new { message = "Staff member was not found in the current organization." });
 
-        var zone = ResolveTimeZone(person.TimeZoneId);
         DateTime? checkInUtc = null;
         DateTime? checkOutUtc = null;
         if (!string.IsNullOrWhiteSpace(dto.CheckInTime))
         {
             if (!TimeOnly.TryParseExact(dto.CheckInTime, "HH:mm", CultureInfo.InvariantCulture, DateTimeStyles.None, out var time))
                 return BadRequest(new { message = "Check-in time must be in HH:mm format." });
-            checkInUtc = ToUtc(dto.AttendanceDate, time, zone);
+            checkInUtc = PakistanClock.AsDatabaseLocal(dto.AttendanceDate.ToDateTime(time));
         }
         if (!string.IsNullOrWhiteSpace(dto.CheckOutTime))
         {
             if (!TimeOnly.TryParseExact(dto.CheckOutTime, "HH:mm", CultureInfo.InvariantCulture, DateTimeStyles.None, out var time))
                 return BadRequest(new { message = "Check-out time must be in HH:mm format." });
-            checkOutUtc = ToUtc(dto.AttendanceDate, time, zone);
+            checkOutUtc = PakistanClock.AsDatabaseLocal(dto.AttendanceDate.ToDateTime(time));
         }
         if (checkInUtc.HasValue && checkOutUtc.HasValue && checkOutUtc.Value < checkInUtc.Value)
             return BadRequest(new { message = "Check-out time cannot be earlier than check-in time." });
@@ -412,7 +411,7 @@ public sealed class AttendanceController : ControllerBase
 
         var record = await _db.AttendanceRecords
             .SingleOrDefaultAsync(x => x.PersonId == person.PersonId && x.AttendanceDate == dto.AttendanceDate, ct);
-        var now = DateTime.UtcNow;
+        var now = PakistanClock.Now();
         if (record == null)
         {
             record = new AttendanceRecord
@@ -492,19 +491,6 @@ public sealed class AttendanceController : ControllerBase
         return false;
     }
 
-    private static TimeZoneInfo ResolveTimeZone(string? timeZoneId)
-    {
-        if (string.IsNullOrWhiteSpace(timeZoneId)) return TimeZoneInfo.Local;
-        try { return TimeZoneInfo.FindSystemTimeZoneById(timeZoneId); }
-        catch { return TimeZoneInfo.Local; }
-    }
-
-    private static DateTime ToUtc(DateOnly date, TimeOnly time, TimeZoneInfo zone)
-    {
-        var local = DateTime.SpecifyKind(date.ToDateTime(time), DateTimeKind.Unspecified);
-        return TimeZoneInfo.ConvertTimeToUtc(local, zone);
-    }
-
     private static AttendanceMapRuleDto ToMapRuleDto(AttendanceMapRule rule, string shiftName) => new()
     {
         Id = rule.Id,
@@ -554,7 +540,7 @@ public sealed class AttendanceController : ControllerBase
         if (duplicate) return BadRequest(new { message = "This holiday type already has a color mapping." });
 
         AttendanceHolidayColorMap map;
-        var now = DateTime.UtcNow;
+        var now = PakistanClock.Now();
         if (id.HasValue)
         {
             var existingMap = await _db.AttendanceHolidayColorMaps.SingleOrDefaultAsync(
@@ -585,7 +571,7 @@ public sealed class AttendanceController : ControllerBase
     private async Task EnsureDefaultHolidayColorMapsAsync(CancellationToken ct)
     {
         var tenantId = _tenant.RequiredTenantId;
-        var now = DateTime.UtcNow;
+        var now = PakistanClock.Now();
         var userId = UserId();
         var defaults = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
         {
@@ -666,7 +652,7 @@ public sealed class AttendanceController : ControllerBase
                 (!id.HasValue || rule.Id != id.Value), ct);
         if (duplicate) return BadRequest(new { message = "This attendance type already has a rule. Edit the existing rule instead." });
 
-        var now = DateTime.UtcNow;
+        var now = PakistanClock.Now();
         AttendanceRuleSetting rule;
         if (id.HasValue)
         {

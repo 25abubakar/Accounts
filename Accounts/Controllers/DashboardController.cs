@@ -27,6 +27,7 @@ public sealed class DashboardController : ControllerBase
                 filledSeats = 0,
                 vacantSeats = 0,
                 fillRate = 0,
+                trend = Array.Empty<object>(),
                 topCountries = Array.Empty<object>(),
                 topRoles = Array.Empty<object>()
             });
@@ -69,6 +70,41 @@ public sealed class DashboardController : ControllerBase
             .Take(5)
             .ToListAsync(cancellationToken);
 
+        var today = GetPakistanToday();
+        var trendStart = today.AddDays(-6);
+        var trendDates = Enumerable.Range(0, 7)
+            .Select(offset => trendStart.AddDays(offset))
+            .ToArray();
+
+        var vacancyTrendSource = await _db.Vacancies.AsNoTracking()
+            .Where(vacancy => vacancy.CreatedDate.Date <= today)
+            .Select(vacancy => new
+            {
+                CreatedDate = vacancy.CreatedDate.Date,
+                vacancy.IsFilled,
+                FilledDate = vacancy.Staff != null && vacancy.Staff.Person != null
+                    ? (DateTime?)vacancy.Staff.Person.CreatedDate.Date
+                    : null
+            })
+            .ToListAsync(cancellationToken);
+
+        var trend = trendDates.Select(date =>
+        {
+            var totalForDate = vacancyTrendSource.Count(vacancy => vacancy.CreatedDate <= date);
+            var filledForDate = vacancyTrendSource.Count(vacancy =>
+                vacancy.IsFilled &&
+                (vacancy.FilledDate == null || vacancy.FilledDate.Value.Date <= date));
+
+            return new
+            {
+                date = date.ToString("yyyy-MM-dd"),
+                label = date.ToString("dd MMM"),
+                totalSeats = totalForDate,
+                filledSeats = filledForDate,
+                vacantSeats = Math.Max(0, totalForDate - filledForDate)
+            };
+        }).ToArray();
+
         var vacantSeats = totalSeats - filledSeats;
         return Ok(new
         {
@@ -79,8 +115,22 @@ public sealed class DashboardController : ControllerBase
             fillRate = totalSeats == 0
                 ? 0
                 : (int)Math.Round(filledSeats * 100d / totalSeats),
+            trend,
             topCountries,
             topRoles
         });
+    }
+
+    private static DateTime GetPakistanToday()
+    {
+        var zone = FindPakistanTimeZone();
+        return TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, zone).Date;
+    }
+
+    private static TimeZoneInfo FindPakistanTimeZone()
+    {
+        try { return TimeZoneInfo.FindSystemTimeZoneById("Pakistan Standard Time"); }
+        catch (TimeZoneNotFoundException) { return TimeZoneInfo.FindSystemTimeZoneById("Asia/Karachi"); }
+        catch (InvalidTimeZoneException) { return TimeZoneInfo.FindSystemTimeZoneById("Asia/Karachi"); }
     }
 }

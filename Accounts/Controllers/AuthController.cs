@@ -102,10 +102,10 @@ namespace Accounts.Controllers
 
             if (session != null)
             {
-                var nowUtc = DateTime.UtcNow;
-                session.LogoutUtc = nowUtc;
-                session.WorkingMinutes = Math.Max(0, (int)Math.Floor((nowUtc - session.LoginUtc).TotalMinutes));
-                session.ModifiedDate = nowUtc;
+                var nowLocal = PakistanClock.Now();
+                session.LogoutUtc = nowLocal;
+                session.WorkingMinutes = Math.Max(0, (int)Math.Floor((nowLocal - session.LoginUtc).TotalMinutes));
+                session.ModifiedDate = nowLocal;
                 await _db.SaveChangesAsync(CancellationToken.None);
             }
 
@@ -150,9 +150,7 @@ namespace Accounts.Controllers
                 })
                 .FirstOrDefaultAsync(CancellationToken.None);
 
-            var nowUtc = DateTime.UtcNow;
-            var zone = ResolveTimeZone(staffInfo?.TimeZoneId);
-            var localNow = TimeZoneInfo.ConvertTimeFromUtc(nowUtc, zone);
+            var localNow = PakistanClock.Now();
             var userAgent = Request.Headers.UserAgent.ToString();
             if (userAgent.Length > 300) userAgent = userAgent[..300];
 
@@ -163,11 +161,11 @@ namespace Accounts.Controllers
                 PersonId = staffInfo?.PersonId,
                 IdentityUserId = identityUserId,
                 SessionDate = DateOnly.FromDateTime(localNow),
-                LoginUtc = nowUtc,
+                LoginUtc = localNow,
                 IpAddress = HttpContext.Connection.RemoteIpAddress?.ToString(),
                 UserAgent = userAgent,
                 Source = "Software",
-                CreatedDate = nowUtc,
+                CreatedDate = localNow,
             });
 
             await _db.SaveChangesAsync(CancellationToken.None);

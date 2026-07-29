@@ -12,6 +12,7 @@ namespace Accounts.Services.Services;
 public sealed class AttendanceService : IAttendanceService
 {
     private const string TimingHolidayTypeLookupCode = "TIMING_HOLIDAY_TYPE";
+    private const string AttendanceStatusProcessName = "Attendance";
     private const string AttendanceDisplayStatusProcessName = "Attendance Display Status";
     private const string CheckInOutAttendanceTypeCode = "CHECK";
     private const string HolidayCode = "HOLIDAY";
@@ -25,12 +26,19 @@ public sealed class AttendanceService : IAttendanceService
         await AttendanceRecordSchema.EnsureCameraColumnsAsync(_db, cancellationToken);
         var (person, localDate) = await ResolvePersonAsync(identityUserId, cancellationToken);
         var attendanceRule = await ResolveAttendanceRuleAsync(person, cancellationToken);
-        var timing = await ResolveEffectiveTimingAsync(person, localDate, attendanceRule, cancellationToken);
-        await EvaluateStatusesAsync(person.TenantId, localDate, localDate, cancellationToken);
         var record = await _db.AttendanceRecords.AsNoTracking()
             .Include(x => x.AttendanceEntryType).Include(x => x.AttendanceWorkMode)
-            .FirstOrDefaultAsync(x => x.PersonId == person.PersonId && x.AttendanceDate == localDate, cancellationToken);
-        return Map(person, record, DateTime.UtcNow, timing, attendanceRule);
+            .Where(x =>
+                x.PersonId == person.PersonId &&
+                (x.AttendanceDate == localDate ||
+                 (x.AttendanceDate == localDate.AddDays(-1) && x.CheckInUtc != null && x.CheckOutUtc == null)))
+            .OrderByDescending(x => x.CheckInUtc != null && x.CheckOutUtc == null)
+            .ThenByDescending(x => x.AttendanceDate)
+            .FirstOrDefaultAsync(cancellationToken);
+        var effectiveDate = record?.AttendanceDate ?? localDate;
+        var timing = await ResolveEffectiveTimingAsync(person, effectiveDate, attendanceRule, cancellationToken);
+        await EvaluateStatusesAsync(person.TenantId, effectiveDate, localDate, cancellationToken);
+        return Map(person, record, PakistanClock.Now(), timing, attendanceRule);
     }
 
     public async Task<MyAttendanceTodayDto> CheckInAsync(string identityUserId, int? workModeId = null, CancellationToken cancellationToken = default)
@@ -45,7 +53,7 @@ public sealed class AttendanceService : IAttendanceService
         if (!timing.IsOn && !attendanceRule.IsOpenAttendance)
             throw new InvalidOperationException($"Timing Chart marks {localDate:dd MMM yyyy} as {timing.HolidayType}; check-in is disabled.");
         var policy = await LoadPolicyAsync(person.TenantId, cancellationToken);
-        var localNow = TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, ResolveTimeZone(person.TimeZoneId));
+        var localNow = PakistanClock.Now();
         var shiftStart = ParseShift(timing.TimeFrom ?? attendanceRule.TimeFrom, new TimeOnly(9, 0));
         var beforeCheckInMinutes = attendanceRule.BeforeCheckInMinutes ?? policy.EarliestCheckInMinutesBefore;
         var checkInAdjustMinutes = attendanceRule.CheckInAdjustMinutes ?? policy.OnTimeGraceMinutesAfter;
@@ -65,17 +73,17 @@ public sealed class AttendanceService : IAttendanceService
                 ? await _db.AttendanceWorkModes.FirstOrDefaultAsync(x => x.Id == workModeId.Value && x.IsActive, cancellationToken)
                 : await _db.AttendanceWorkModes.FirstOrDefaultAsync(x => x.Code == "ONSITE" && x.IsActive, cancellationToken);
         if (workMode == null) throw new InvalidOperationException("Select a valid active work mode.");
-        record ??= new AttendanceRecord { TenantId = person.TenantId, PersonId = person.PersonId, AttendanceDate = localDate, CreatedDate = DateTime.UtcNow };
+        record ??= new AttendanceRecord { TenantId = person.TenantId, PersonId = person.PersonId, AttendanceDate = localDate, CreatedDate = localNow };
         record.AttendanceEntryTypeId = attendanceRule.AttendanceEntryTypeId;
         record.AttendanceWorkMode = workMode;
         record.AttendanceStatusId = nowTime <= shiftStart.AddMinutes(checkInAdjustMinutes)
             ? policy.PresentStatusId : policy.LateStatusId;
-        record.CheckInUtc = DateTime.UtcNow;
-        record.ModifiedDate = DateTime.UtcNow;
+        record.CheckInUtc = localNow;
+        record.ModifiedDate = localNow;
         if (record.Id == 0) _db.AttendanceRecords.Add(record);
         await _db.SaveChangesAsync(cancellationToken);
         await EvaluateStatusesAsync(person.TenantId, localDate, localDate, cancellationToken);
-        return Map(person, record, DateTime.UtcNow, timing, attendanceRule);
+        return Map(person, record, localNow, timing, attendanceRule);
     }
 
     public async Task<MyAttendanceTodayDto> ToggleBreakAsync(string identityUserId, CancellationToken cancellationToken = default)
@@ -83,12 +91,37 @@ public sealed class AttendanceService : IAttendanceService
         await AttendanceRecordSchema.EnsureCameraColumnsAsync(_db, cancellationToken);
         var (person, localDate) = await ResolvePersonAsync(identityUserId, cancellationToken);
         var attendanceRule = await ResolveAttendanceRuleAsync(person, cancellationToken);
-        var timing = await ResolveEffectiveTimingAsync(person, localDate, attendanceRule, cancellationToken);
         var record = await _db.AttendanceRecords.Include(x => x.AttendanceEntryType).Include(x => x.AttendanceWorkMode)
-            .FirstOrDefaultAsync(x => x.PersonId == person.PersonId && x.AttendanceDate == localDate, cancellationToken)
+            .Where(x =>
+                x.PersonId == person.PersonId &&
+                x.CheckInUtc != null &&
+                x.CheckOutUtc == null &&
+                x.AttendanceDate >= localDate.AddDays(-1) &&
+                x.AttendanceDate <= localDate)
+            .OrderByDescending(x => x.AttendanceDate)
+            .FirstOrDefaultAsync(cancellationToken)
             ?? throw new InvalidOperationException("Check in before starting a break.");
+        var timing = await ResolveEffectiveTimingAsync(person, record.AttendanceDate, attendanceRule, cancellationToken);
         if (record.CheckOutUtc.HasValue) throw new InvalidOperationException("Attendance is already closed for today.");
-        var now = DateTime.UtcNow;
+        var now = PakistanClock.Now();
+        var policy = await LoadPolicyAsync(person.TenantId, cancellationToken);
+        var checkoutExpiryMinutes = attendanceRule?.MissingCheckoutAfterShiftEndMinutes
+            ?? policy.MissingCheckoutAfterShiftEndMinutes;
+        if (IsMissingCheckoutExpired(record.AttendanceDate, timing, attendanceRule, person, now, checkoutExpiryMinutes))
+        {
+            if (record.BreakStartedUtc.HasValue)
+            {
+                record.TotalBreakMinutes += Math.Max(0, (int)Math.Floor((now - record.BreakStartedUtc.Value).TotalMinutes));
+                record.BreakStartedUtc = null;
+            }
+
+            record.AttendanceStatusId = policy.AbsentStatusId;
+            record.ModifiedDate = now;
+            await _db.SaveChangesAsync(cancellationToken);
+            await EvaluateStatusesAsync(person.TenantId, record.AttendanceDate, record.AttendanceDate, cancellationToken);
+            throw new InvalidOperationException($"The checkout window expired {checkoutExpiryMinutes} minute(s) after shift end. This attendance is marked absent.");
+        }
+
         if (record.BreakStartedUtc.HasValue)
         {
             record.TotalBreakMinutes += Math.Max(0, (int)Math.Floor((now - record.BreakStartedUtc.Value).TotalMinutes));
@@ -105,12 +138,19 @@ public sealed class AttendanceService : IAttendanceService
         await AttendanceRecordSchema.EnsureCameraColumnsAsync(_db, cancellationToken);
         var (person, localDate) = await ResolvePersonAsync(identityUserId, cancellationToken);
         var attendanceRule = await ResolveAttendanceRuleAsync(person, cancellationToken);
-        var timing = await ResolveEffectiveTimingAsync(person, localDate, attendanceRule, cancellationToken);
         var record = await _db.AttendanceRecords.Include(x => x.AttendanceEntryType).Include(x => x.AttendanceWorkMode)
-            .FirstOrDefaultAsync(x => x.PersonId == person.PersonId && x.AttendanceDate == localDate, cancellationToken)
+            .Where(x =>
+                x.PersonId == person.PersonId &&
+                x.CheckInUtc != null &&
+                x.CheckOutUtc == null &&
+                x.AttendanceDate >= localDate.AddDays(-1) &&
+                x.AttendanceDate <= localDate)
+            .OrderByDescending(x => x.AttendanceDate)
+            .FirstOrDefaultAsync(cancellationToken)
             ?? throw new InvalidOperationException("Check in before checking out.");
+        var timing = await ResolveEffectiveTimingAsync(person, record.AttendanceDate, attendanceRule, cancellationToken);
         if (record.CheckOutUtc.HasValue) throw new InvalidOperationException("You have already checked out today.");
-        var now = DateTime.UtcNow;
+        var now = PakistanClock.Now();
         if (record.BreakStartedUtc.HasValue)
         {
             record.TotalBreakMinutes += Math.Max(0, (int)Math.Floor((now - record.BreakStartedUtc.Value).TotalMinutes));
@@ -119,7 +159,7 @@ public sealed class AttendanceService : IAttendanceService
         record.CheckOutUtc = now;
         record.ModifiedDate = now;
         await _db.SaveChangesAsync(cancellationToken);
-        await EvaluateStatusesAsync(person.TenantId, localDate, localDate, cancellationToken);
+        await EvaluateStatusesAsync(person.TenantId, record.AttendanceDate, record.AttendanceDate, cancellationToken);
         await _db.Entry(record).Reference(x => x.AttendanceStatus).LoadAsync(cancellationToken);
         return Map(person, record, now, timing, attendanceRule);
     }
@@ -159,9 +199,8 @@ public sealed class AttendanceService : IAttendanceService
             var worked = employeeRecords.Sum(r => r.CheckInUtc.HasValue && r.CheckOutUtc.HasValue
                 ? Math.Max(0, (int)Math.Floor((r.CheckOutUtc.Value - r.CheckInUtc.Value).TotalMinutes) - r.TotalBreakMinutes) : 0);
             var checkIns = employeeRecords.Where(r => r.CheckInUtc.HasValue).ToList();
-            var zone = ResolveTimeZone(row.TimeZoneId);
             var shiftStart = TimeOnly.TryParseExact(row.ShiftStartTime, "HH:mm", CultureInfo.InvariantCulture, DateTimeStyles.None, out var start) ? start : new TimeOnly(9, 0);
-            var onTime = checkIns.Count(r => TimeOnly.FromDateTime(TimeZoneInfo.ConvertTimeFromUtc(r.CheckInUtc!.Value, zone)) <= shiftStart);
+            var onTime = checkIns.Count(r => TimeOnly.FromDateTime(r.CheckInUtc!.Value) <= shiftStart);
             row.Dto.AttendanceDays = employeeRecords.Count;
             row.Dto.CompletedDays = employeeRecords.Count(r => r.CheckOutUtc.HasValue);
             row.Dto.AttendancePercentage = workdays == 0 ? 0 : Math.Round(Math.Min(100, employeeRecords.Count * 100d / workdays), 1);
@@ -436,7 +475,7 @@ public sealed class AttendanceService : IAttendanceService
                     ScheduleYear = holidayDate.Year,
                     ScheduleMonth = holidayDate.Month,
                     CreatedByUserId = identityUserId,
-                    CreatedDate = DateTime.UtcNow
+                    CreatedDate = PakistanClock.Now()
                 };
                 _db.EmployeeTimingSchedules.Add(schedule);
             }
@@ -447,7 +486,7 @@ public sealed class AttendanceService : IAttendanceService
             schedule.IsOn = timing.IsOn;
             schedule.WorkingMinutes = timing.WorkingMinutes;
             schedule.ModifiedByUserId = identityUserId;
-            schedule.ModifiedDate = DateTime.UtcNow;
+            schedule.ModifiedDate = PakistanClock.Now();
             await _db.SaveChangesAsync(cancellationToken);
             await _db.Entry(schedule).Reference(item => item.HolidayType).LoadAsync(cancellationToken);
             await EvaluateStatusesAsync(employee.TenantId, holidayDate, holidayDate, cancellationToken);
@@ -506,7 +545,7 @@ public sealed class AttendanceService : IAttendanceService
                     schedule.ScheduleDate >= dto.DateFrom &&
                     schedule.ScheduleDate <= dto.DateTo)
                 .ToDictionaryAsync(schedule => schedule.ScheduleDate, cancellationToken);
-            var now = DateTime.UtcNow;
+            var now = PakistanClock.Now();
 
             foreach (var date in dates)
             {
@@ -713,7 +752,6 @@ public sealed class AttendanceService : IAttendanceService
 
         var result = rows.Select(row =>
         {
-            var zone = ResolveTimeZone(row.TimeZoneId);
             return new LoginAttendanceSessionDto
             {
                 Id = row.Id,
@@ -724,13 +762,13 @@ public sealed class AttendanceService : IAttendanceService
                 Department = row.Department ?? string.Empty,
                 Designation = row.Designation ?? string.Empty,
                 Date = row.SessionDate,
-                LoginTime = TimeZoneInfo.ConvertTimeFromUtc(row.LoginUtc, zone).ToString("HH:mm", CultureInfo.InvariantCulture),
+                LoginTime = row.LoginUtc.ToString("HH:mm", CultureInfo.InvariantCulture),
                 LogoutTime = row.LogoutUtc.HasValue
-                    ? TimeZoneInfo.ConvertTimeFromUtc(row.LogoutUtc.Value, zone).ToString("HH:mm", CultureInfo.InvariantCulture)
+                    ? row.LogoutUtc.Value.ToString("HH:mm", CultureInfo.InvariantCulture)
                     : null,
                 WorkingMinutes = row.LogoutUtc.HasValue
                     ? Math.Max(0, (int)Math.Floor((row.LogoutUtc.Value - row.LoginUtc).TotalMinutes))
-                    : Math.Max(0, (int)Math.Floor((DateTime.UtcNow - row.LoginUtc).TotalMinutes)),
+                    : Math.Max(0, (int)Math.Floor((PakistanClock.Now() - row.LoginUtc).TotalMinutes)),
                 Source = row.Source,
                 IpAddress = row.IpAddress,
                 Remarks = row.Remarks,
@@ -913,7 +951,10 @@ public sealed class AttendanceService : IAttendanceService
 
     private async Task<IReadOnlyList<MonthlyAttendanceChartLegendItemDto>> GetAttendanceDisplayLegendAsync(CancellationToken cancellationToken)
     {
-        var legend = await GetLegendForProcessAsync(AttendanceDisplayStatusProcessName, cancellationToken);
+        var legend = await GetLegendForProcessAsync(AttendanceStatusProcessName, cancellationToken);
+        if (legend.Count > 0) return legend;
+
+        legend = await GetLegendForProcessAsync(AttendanceDisplayStatusProcessName, cancellationToken);
         if (legend.Count > 0) return legend;
 
         return await GetLegendForProcessAsync("Monthly Attendance Chart", cancellationToken);
@@ -941,7 +982,10 @@ public sealed class AttendanceService : IAttendanceService
     private async Task<Dictionary<string, MonthlyAttendanceChartLegendItemDto>> GetAttendanceDisplayStyleMapAsync(CancellationToken cancellationToken)
     {
         var legend = await GetAttendanceDisplayLegendAsync(cancellationToken);
-        return legend.ToDictionary(item => item.Code.Trim().ToUpperInvariant(), StringComparer.OrdinalIgnoreCase);
+        return legend
+            .Where(item => !string.IsNullOrWhiteSpace(item.Code))
+            .GroupBy(item => item.Code.Trim().ToUpperInvariant(), StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(group => group.Key, group => group.First(), StringComparer.OrdinalIgnoreCase);
     }
 
     private static string? ResolveMonthlyChartStatusCode(DailyAttendanceRowDto row)
@@ -1055,10 +1099,9 @@ public sealed class AttendanceService : IAttendanceService
 
         foreach (var employee in staff)
         {
-            var zone = ResolveTimeZone(employee.TimeZoneId);
             if (!todayByZone.TryGetValue(employee.TimeZoneId, out var localToday))
             {
-                localToday = DateOnly.FromDateTime(TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, zone));
+                localToday = PakistanClock.Today();
                 todayByZone[employee.TimeZoneId] = localToday;
             }
             var shiftStart = ParseShift(employee.ShiftStartTime, new TimeOnly(9, 0));
@@ -1070,10 +1113,10 @@ public sealed class AttendanceService : IAttendanceService
                 if ((date.DayOfWeek is DayOfWeek.Saturday or DayOfWeek.Sunday) &&
                     !recordsByPersonAndDate.ContainsKey((employee.PersonId, date))) continue;
                 recordsByPersonAndDate.TryGetValue((employee.PersonId, date), out var record);
-                var checkInLocal = record?.CheckInUtc is DateTime checkIn ? TimeZoneInfo.ConvertTimeFromUtc(checkIn, zone) : (DateTime?)null;
-                var checkOutLocal = record?.CheckOutUtc is DateTime checkOut ? TimeZoneInfo.ConvertTimeFromUtc(checkOut, zone) : (DateTime?)null;
-                var cameraCheckInLocal = record?.CameraCheckInUtc is DateTime cameraCheckIn ? TimeZoneInfo.ConvertTimeFromUtc(cameraCheckIn, zone) : (DateTime?)null;
-                var cameraCheckOutLocal = record?.CameraCheckOutUtc is DateTime cameraCheckOut ? TimeZoneInfo.ConvertTimeFromUtc(cameraCheckOut, zone) : (DateTime?)null;
+                var checkInLocal = record?.CheckInUtc;
+                var checkOutLocal = record?.CheckOutUtc;
+                var cameraCheckInLocal = record?.CameraCheckInUtc;
+                var cameraCheckOutLocal = record?.CameraCheckOutUtc;
                 var working = record?.CheckInUtc is DateTime startUtc && record.CheckOutUtc is DateTime endUtc
                     ? Math.Max(0, (int)Math.Floor((endUtc - startUtc).TotalMinutes) - record.TotalBreakMinutes) : 0;
                 var late = checkInLocal.HasValue ? Math.Max(0, (int)(TimeOnly.FromDateTime(checkInLocal.Value).ToTimeSpan() - shiftStart.ToTimeSpan()).TotalMinutes) : 0;
@@ -1141,14 +1184,14 @@ public sealed class AttendanceService : IAttendanceService
         var rows = new List<DailyAttendanceRowDto>(sqlRows.Count);
         foreach (var source in sqlRows)
         {
-            var zone = ResolveTimeZone(source.TimeZoneId);
-            var localToday = DateOnly.FromDateTime(TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, zone));
-            var checkInLocal = source.CheckInUtc.HasValue ? TimeZoneInfo.ConvertTimeFromUtc(source.CheckInUtc.Value, zone) : (DateTime?)null;
-            var checkOutLocal = source.CheckOutUtc.HasValue ? TimeZoneInfo.ConvertTimeFromUtc(source.CheckOutUtc.Value, zone) : (DateTime?)null;
-            var cameraCheckInLocal = source.CameraCheckInUtc.HasValue ? TimeZoneInfo.ConvertTimeFromUtc(source.CameraCheckInUtc.Value, zone) : (DateTime?)null;
-            var cameraCheckOutLocal = source.CameraCheckOutUtc.HasValue ? TimeZoneInfo.ConvertTimeFromUtc(source.CameraCheckOutUtc.Value, zone) : (DateTime?)null;
+            var localToday = PakistanClock.Today();
+            var checkInLocal = source.CheckInUtc;
+            var checkOutLocal = source.CheckOutUtc;
+            var cameraCheckInLocal = source.CameraCheckInUtc;
+            var cameraCheckOutLocal = source.CameraCheckOutUtc;
             var shiftStart = ParseShift(source.ShiftStartTime, new TimeOnly(9, 0));
             var shiftEnd = ParseShift(source.ShiftEndTime, new TimeOnly(18, 0));
+            var shiftWindow = ResolveShiftWindow(source.AttendanceDate, source.ShiftStartTime, source.ShiftEndTime);
             var working = source.CheckInUtc.HasValue && source.CheckOutUtc.HasValue
                 ? Math.Max(0, (int)Math.Floor((source.CheckOutUtc.Value - source.CheckInUtc.Value).TotalMinutes) - (source.TotalBreakMinutes ?? 0)) : 0;
             var statusName = source.StatusName ?? string.Empty;
@@ -1161,11 +1204,21 @@ public sealed class AttendanceService : IAttendanceService
             var early = !isScheduledOff && checkOutLocal.HasValue ? Math.Max(0, (int)(shiftEnd.ToTimeSpan() - TimeOnly.FromDateTime(checkOutLocal.Value).ToTimeSpan()).TotalMinutes) : 0;
             var absentAfterShiftStartMinutes = source.AbsentAfterShiftStartMinutes ?? policy.AbsentAfterShiftStartMinutes;
             var earlyCheckoutAbsentMinutes = source.EarlyCheckoutAbsentAfterMinutes ?? policy.MissingCheckoutAfterShiftEndMinutes;
+            var missingCheckoutAfterMinutes = source.MissingCheckoutAfterShiftEndMinutes ?? policy.MissingCheckoutAfterShiftEndMinutes;
+            var nowLocal = PakistanClock.Now();
+            var checkInAbsentDeadline = shiftWindow.Start.AddMinutes(absentAfterShiftStartMinutes);
+            var checkoutMissingDeadline = shiftWindow.End.AddMinutes(missingCheckoutAfterMinutes);
             var missingCheckIn = source.Id.HasValue && !source.CheckInUtc.HasValue &&
-                statusCode?.Equals("L", StringComparison.OrdinalIgnoreCase) != true && !isScheduledOff;
-            var missingCheckOut = source.CheckInUtc.HasValue && !source.CheckOutUtc.HasValue && source.AttendanceDate < localToday;
+                statusCode?.Equals("L", StringComparison.OrdinalIgnoreCase) != true &&
+                !isScheduledOff &&
+                nowLocal >= checkInAbsentDeadline;
+            var missingCheckOut = source.CheckInUtc.HasValue &&
+                !source.CheckOutUtc.HasValue &&
+                !isScheduledOff &&
+                nowLocal >= checkoutMissingDeadline;
             var absentByRule = !isScheduledOff &&
-                ((late > 0 && late >= absentAfterShiftStartMinutes) ||
+                (missingCheckOut ||
+                 (late > 0 && late >= absentAfterShiftStartMinutes) ||
                  (early > earlyCheckoutAbsentMinutes));
             var displayCode = ResolveDailyAttendanceDisplayStatusCode(statusCode, late, early, missingCheckIn || absentByRule, statusName);
             displayStyles.TryGetValue(displayCode ?? string.Empty, out var displayStyle);
@@ -1865,7 +1918,6 @@ public sealed class AttendanceService : IAttendanceService
         var records = await _db.AttendanceRecords.AsNoTracking().Include(r => r.AttendanceStatus)
             .Where(r => r.PersonId == personId && r.AttendanceDate >= dateFrom && r.AttendanceDate < dateTo)
             .OrderByDescending(r => r.AttendanceDate).ToListAsync(cancellationToken);
-        var zone = ResolveTimeZone(person.TimeZoneId);
         var rows = records.Select(r =>
         {
             var end = r.CheckOutUtc;
@@ -1882,8 +1934,8 @@ public sealed class AttendanceService : IAttendanceService
                 Id = r.Id, PersonId = personId, StaffId = employee.StaffId, EmployeeId = employee.EmployeeId,
                 FullName = employee.FullName, Department = employee.Department, Designation = employee.Designation,
                 AttendanceDate = r.AttendanceDate,
-                CheckIn = r.CheckInUtc.HasValue ? TimeZoneInfo.ConvertTimeFromUtc(r.CheckInUtc.Value, zone).ToString("HH:mm") : null,
-                CheckOut = r.CheckOutUtc.HasValue ? TimeZoneInfo.ConvertTimeFromUtc(r.CheckOutUtc.Value, zone).ToString("HH:mm") : null,
+                CheckIn = r.CheckInUtc.HasValue ? r.CheckInUtc.Value.ToString("HH:mm") : null,
+                CheckOut = r.CheckOutUtc.HasValue ? r.CheckOutUtc.Value.ToString("HH:mm") : null,
                 WorkingMinutes = worked, BreakMinutes = r.TotalBreakMinutes, RequiredMinutes = required,
                 ShortMinutes = r.CheckOutUtc.HasValue ? Math.Max(0, required - worked) : 0,
                 AttendanceStatusId = r.AttendanceStatusId, StatusCode = r.AttendanceStatus?.Code,
@@ -1897,7 +1949,7 @@ public sealed class AttendanceService : IAttendanceService
     {
         var person = await _db.Persons.AsNoTracking().FirstOrDefaultAsync(x => x.IdentityUserId == identityUserId, cancellationToken)
             ?? throw new KeyNotFoundException("No employee profile is linked to this account.");
-        var localNow = TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, ResolveTimeZone(person.TimeZoneId));
+        var localNow = PakistanClock.Now();
         return (person, DateOnly.FromDateTime(localNow));
     }
 
@@ -1915,7 +1967,7 @@ public sealed class AttendanceService : IAttendanceService
                 new SqlParameter("@TenantId", tenantId),
                 new SqlParameter("@DateFrom", dateFrom.ToDateTime(TimeOnly.MinValue)),
                 new SqlParameter("@DateTo", dateTo.ToDateTime(TimeOnly.MinValue)),
-                new SqlParameter("@AsOfUtc", DateTime.UtcNow)
+                new SqlParameter("@AsOfUtc", PakistanClock.Now())
             }, cancellationToken);
 
     private static MyAttendanceTodayDto Map(
@@ -1928,24 +1980,27 @@ public sealed class AttendanceService : IAttendanceService
         var shiftStart = timing.TimeFrom ?? person.ShiftStartTime;
         var shiftEnd = timing.TimeTo ?? person.ShiftEndTime;
         var required = timing.IsOn ? ShiftMinutes(shiftStart, shiftEnd) : 0;
-        var end = record?.CheckOutUtc ?? (record?.CheckInUtc.HasValue == true ? utcNow : null);
-        var activeBreak = record?.BreakStartedUtc.HasValue == true ? Math.Max(0, (int)Math.Floor((utcNow - record.BreakStartedUtc.Value).TotalMinutes)) : 0;
+        var openCheckoutExpired = record?.CheckInUtc.HasValue == true &&
+            record.CheckOutUtc.HasValue == false &&
+            !attendanceRule?.IsOpenAttendance == true &&
+            attendanceRule?.MissingCheckoutAfterShiftEndMinutes is int missingCheckoutAfter &&
+            IsMissingCheckoutExpired(record.AttendanceDate, timing, attendanceRule, person, utcNow, missingCheckoutAfter);
+        var end = record?.CheckOutUtc ??
+            (record?.CheckInUtc.HasValue == true && !openCheckoutExpired ? utcNow : null);
+        var activeBreak = record?.BreakStartedUtc.HasValue == true && !openCheckoutExpired ? Math.Max(0, (int)Math.Floor((utcNow - record.BreakStartedUtc.Value).TotalMinutes)) : 0;
         var gross = record?.CheckInUtc.HasValue == true && end.HasValue ? Math.Max(0, (int)Math.Floor((end.Value - record.CheckInUtc.Value).TotalMinutes)) : 0;
         var worked = Math.Max(0, gross - (record?.TotalBreakMinutes ?? 0) - activeBreak);
         var checkInRestriction = PortalCheckInRestriction(attendanceRule);
         return new MyAttendanceTodayDto
         {
-            Id = record?.Id, AttendanceDate = record?.AttendanceDate ?? DateOnly.FromDateTime(TimeZoneInfo.ConvertTimeFromUtc(utcNow, ResolveTimeZone(person.TimeZoneId))),
+            Id = record?.Id, AttendanceDate = record?.AttendanceDate ?? DateOnly.FromDateTime(utcNow),
             EmployeeName = person.FullName, ShiftStartTime = shiftStart, ShiftEndTime = shiftEnd, TimeZoneId = person.TimeZoneId,
-            // SQL Server datetime2 does not preserve DateTime.Kind. Mark persisted UTC
-            // values explicitly so JSON includes the UTC designator and clients do not
-            // interpret them as local wall-clock values.
-            CheckInUtc = AsUtc(record?.CheckInUtc),
-            CheckOutUtc = AsUtc(record?.CheckOutUtc),
-            BreakStartedUtc = AsUtc(record?.BreakStartedUtc),
+            CheckInUtc = PakistanClock.AsDatabaseLocal(record?.CheckInUtc),
+            CheckOutUtc = PakistanClock.AsDatabaseLocal(record?.CheckOutUtc),
+            BreakStartedUtc = PakistanClock.AsDatabaseLocal(record?.BreakStartedUtc),
             TotalBreakMinutes = record?.TotalBreakMinutes ?? 0, WorkedMinutes = worked, RequiredMinutes = required,
             ShortMinutes = record?.CheckOutUtc.HasValue == true ? Math.Max(0, required - worked) : 0,
-            RemainingMinutes = record?.CheckInUtc.HasValue == true && !record.CheckOutUtc.HasValue ? Math.Max(0, required - worked) : 0,
+            RemainingMinutes = record?.CheckInUtc.HasValue == true && !record.CheckOutUtc.HasValue && !openCheckoutExpired ? Math.Max(0, required - worked) : 0,
             ProgressPercent = required == 0 ? 0 : Math.Round(Math.Min(100, worked * 100d / required), 1),
             IsWorkingDay = timing.IsOn,
             HolidayType = timing.HolidayType
@@ -1964,6 +2019,32 @@ public sealed class AttendanceService : IAttendanceService
         };
     }
 
+    private static bool IsMissingCheckoutExpired(
+        DateOnly attendanceDate,
+        EffectiveTiming timing,
+        EffectiveAttendanceRule? attendanceRule,
+        Person person,
+        DateTime localNow,
+        int missingCheckoutAfterMinutes)
+    {
+        if (!timing.IsOn || attendanceRule?.IsOpenAttendance == true) return false;
+
+        var shiftStart = timing.TimeFrom ?? attendanceRule?.TimeFrom ?? person.ShiftStartTime;
+        var shiftEnd = timing.TimeTo ?? attendanceRule?.TimeTo ?? person.ShiftEndTime;
+        var window = ResolveShiftWindow(attendanceDate, shiftStart, shiftEnd);
+        return localNow >= window.End.AddMinutes(missingCheckoutAfterMinutes);
+    }
+
+    private static (DateTime Start, DateTime End) ResolveShiftWindow(DateOnly attendanceDate, string start, string end)
+    {
+        var startTime = ParseShift(start, new TimeOnly(9, 0));
+        var endTime = ParseShift(end, new TimeOnly(18, 0));
+        var startDateTime = attendanceDate.ToDateTime(startTime);
+        var endDateTime = attendanceDate.ToDateTime(endTime);
+        if (endDateTime <= startDateTime) endDateTime = endDateTime.AddDays(1);
+        return (startDateTime, endDateTime);
+    }
+
     private static int ShiftMinutes(string start, string end)
     {
         if (!TimeOnly.TryParseExact(start, "HH:mm", CultureInfo.InvariantCulture, DateTimeStyles.None, out var from) || !TimeOnly.TryParseExact(end, "HH:mm", CultureInfo.InvariantCulture, DateTimeStyles.None, out var to)) return 540;
@@ -1977,7 +2058,7 @@ public sealed class AttendanceService : IAttendanceService
     private static int CountWorkingDays(int year, int month)
     {
         var end = new DateOnly(year, month, DateTime.DaysInMonth(year, month));
-        var today = DateOnly.FromDateTime(DateTime.UtcNow);
+        var today = PakistanClock.Today();
         if (year == today.Year && month == today.Month && today < end) end = today;
         var count = 0;
         for (var day = new DateOnly(year, month, 1); day <= end; day = day.AddDays(1))
@@ -1988,10 +2069,6 @@ public sealed class AttendanceService : IAttendanceService
     private static TimeZoneInfo ResolveTimeZone(string id)
     {
         try { return TimeZoneInfo.FindSystemTimeZoneById(id); }
-        catch { return TimeZoneInfo.FindSystemTimeZoneById("Pakistan Standard Time"); }
+        catch { return PakistanClock.TimeZone; }
     }
-
-    private static DateTime? AsUtc(DateTime? value) => value.HasValue
-        ? DateTime.SpecifyKind(value.Value, DateTimeKind.Utc)
-        : null;
 }

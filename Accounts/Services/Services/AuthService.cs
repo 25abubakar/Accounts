@@ -325,9 +325,7 @@ namespace Accounts.Services.Services
                 })
                 .FirstOrDefaultAsync();
 
-            var nowUtc = DateTime.UtcNow;
-            var zone = ResolveTimeZone(staffInfo?.TimeZoneId);
-            var localNow = TimeZoneInfo.ConvertTimeFromUtc(nowUtc, zone);
+            var localNow = PakistanClock.Now();
             var context = _httpContextAccessor.HttpContext;
             var userAgent = context?.Request.Headers.UserAgent.ToString();
             if (userAgent?.Length > 300) userAgent = userAgent[..300];
@@ -339,11 +337,11 @@ namespace Accounts.Services.Services
                 PersonId = staffInfo?.PersonId,
                 IdentityUserId = user.Id,
                 SessionDate = DateOnly.FromDateTime(localNow),
-                LoginUtc = nowUtc,
+                LoginUtc = localNow,
                 IpAddress = context?.Connection.RemoteIpAddress?.ToString(),
                 UserAgent = userAgent,
                 Source = "Software",
-                CreatedDate = nowUtc,
+                CreatedDate = localNow,
             });
 
             await _db.SaveChangesAsync();
@@ -365,10 +363,10 @@ namespace Accounts.Services.Services
 
             if (session == null) return;
 
-            var nowUtc = DateTime.UtcNow;
-            session.LogoutUtc = nowUtc;
-            session.WorkingMinutes = Math.Max(0, (int)Math.Floor((nowUtc - session.LoginUtc).TotalMinutes));
-            session.ModifiedDate = nowUtc;
+            var nowLocal = PakistanClock.Now();
+            session.LogoutUtc = nowLocal;
+            session.WorkingMinutes = Math.Max(0, (int)Math.Floor((nowLocal - session.LoginUtc).TotalMinutes));
+            session.ModifiedDate = nowLocal;
             await _db.SaveChangesAsync();
         }
 
