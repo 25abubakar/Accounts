@@ -151,6 +151,24 @@ public sealed class AttendanceService : IAttendanceService
         var timing = await ResolveEffectiveTimingAsync(person, record.AttendanceDate, attendanceRule, cancellationToken);
         if (record.CheckOutUtc.HasValue) throw new InvalidOperationException("You have already checked out today.");
         var now = PakistanClock.Now();
+        var policy = await LoadPolicyAsync(person.TenantId, cancellationToken);
+        var checkoutExpiryMinutes = attendanceRule?.MissingCheckoutAfterShiftEndMinutes
+            ?? policy.MissingCheckoutAfterShiftEndMinutes;
+        if (IsMissingCheckoutExpired(record.AttendanceDate, timing, attendanceRule, person, now, checkoutExpiryMinutes))
+        {
+            if (record.BreakStartedUtc.HasValue)
+            {
+                record.TotalBreakMinutes += Math.Max(0, (int)Math.Floor((now - record.BreakStartedUtc.Value).TotalMinutes));
+                record.BreakStartedUtc = null;
+            }
+
+            record.AttendanceStatusId = policy.AbsentStatusId;
+            record.ModifiedDate = now;
+            await _db.SaveChangesAsync(cancellationToken);
+            await EvaluateStatusesAsync(person.TenantId, record.AttendanceDate, record.AttendanceDate, cancellationToken);
+            throw new InvalidOperationException($"The checkout window expired {checkoutExpiryMinutes} minute(s) after shift end. This attendance is marked absent.");
+        }
+
         if (record.BreakStartedUtc.HasValue)
         {
             record.TotalBreakMinutes += Math.Max(0, (int)Math.Floor((now - record.BreakStartedUtc.Value).TotalMinutes));
@@ -1982,7 +2000,7 @@ public sealed class AttendanceService : IAttendanceService
         var required = timing.IsOn ? ShiftMinutes(shiftStart, shiftEnd) : 0;
         var openCheckoutExpired = record?.CheckInUtc.HasValue == true &&
             record.CheckOutUtc.HasValue == false &&
-            !attendanceRule?.IsOpenAttendance == true &&
+            attendanceRule?.IsOpenAttendance != true &&
             attendanceRule?.MissingCheckoutAfterShiftEndMinutes is int missingCheckoutAfter &&
             IsMissingCheckoutExpired(record.AttendanceDate, timing, attendanceRule, person, utcNow, missingCheckoutAfter);
         var end = record?.CheckOutUtc ??

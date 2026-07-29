@@ -510,9 +510,13 @@ namespace Accounts.Data
                 e.Property(x => x.Id).ValueGeneratedOnAdd();
                 e.Property(x => x.TenantId).IsRequired();
                 e.Property(x => x.ScaleName).HasMaxLength(100).IsRequired();
+                e.Property(x => x.DisplayOrder).HasDefaultValue(0);
+                e.Property(x => x.ScaleType).HasMaxLength(50).HasDefaultValue("Regular");
+                e.Property(x => x.PayMode).HasMaxLength(20).HasDefaultValue("PM");
                 e.Property(x => x.BasicSalary).HasColumnType("decimal(18,2)");
                 e.Property(x => x.MaximumSalary).HasColumnType("decimal(18,2)");
                 e.Property(x => x.YearlyIncrement).HasColumnType("decimal(18,2)");
+                e.Property(x => x.GrossSalary).HasColumnType("decimal(18,2)");
                 e.Property(x => x.MedicalAllowance).HasColumnType("decimal(18,2)");
                 e.Property(x => x.TravellingAllowance).HasColumnType("decimal(18,2)");
                 e.Property(x => x.Other).HasColumnType("decimal(18,2)");

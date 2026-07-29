@@ -35,7 +35,8 @@ public sealed class SalaryScalesController : ControllerBase
         if (!await HasScaleActionAsync("VIEW", ct)) return Forbid();
 
         var rows = await _db.SalaryScales.AsNoTracking()
-            .OrderBy(scale => scale.ScaleName)
+            .OrderBy(scale => scale.DisplayOrder == 0 ? int.MaxValue : scale.DisplayOrder)
+            .ThenBy(scale => scale.ScaleName)
             .Select(scale => ToDto(scale))
             .ToListAsync(ct);
         return Ok(rows);
@@ -59,9 +60,13 @@ public sealed class SalaryScalesController : ControllerBase
         {
             TenantId = _tenantService.RequiredTenantId,
             ScaleName = scaleName,
+            DisplayOrder = dto.DisplayOrder,
+            ScaleType = NormalizeText(dto.ScaleType, "Regular", 50),
+            PayMode = NormalizeText(dto.PayMode, "PM", 20),
             BasicSalary = dto.BasicSalary,
             MaximumSalary = dto.MaximumSalary,
             YearlyIncrement = dto.YearlyIncrement,
+            GrossSalary = dto.GrossSalary,
             MedicalAllowance = dto.MedicalAllowance,
             TravellingAllowance = dto.TravellingAllowance,
             Other = dto.Other,
@@ -91,9 +96,13 @@ public sealed class SalaryScalesController : ControllerBase
         if (duplicate) return BadRequest(new { message = "This scale name already exists." });
 
         scale.ScaleName = scaleName;
+        scale.DisplayOrder = dto.DisplayOrder;
+        scale.ScaleType = NormalizeText(dto.ScaleType, "Regular", 50);
+        scale.PayMode = NormalizeText(dto.PayMode, "PM", 20);
         scale.BasicSalary = dto.BasicSalary;
         scale.MaximumSalary = dto.MaximumSalary;
         scale.YearlyIncrement = dto.YearlyIncrement;
+        scale.GrossSalary = dto.GrossSalary;
         scale.MedicalAllowance = dto.MedicalAllowance;
         scale.TravellingAllowance = dto.TravellingAllowance;
         scale.Other = dto.Other;
@@ -148,19 +157,31 @@ public sealed class SalaryScalesController : ControllerBase
     {
         if (string.IsNullOrWhiteSpace(dto.ScaleName)) return "Scale name is required.";
         if (dto.ScaleName.Trim().Length > 100) return "Scale name must be 100 characters or less.";
+        if (!string.IsNullOrWhiteSpace(dto.ScaleType) && dto.ScaleType.Trim().Length > 50) return "Scale type must be 50 characters or less.";
+        if (!string.IsNullOrWhiteSpace(dto.PayMode) && dto.PayMode.Trim().Length > 20) return "Pay mode must be 20 characters or less.";
         if (dto.MaximumSalary > 0 && dto.MaximumSalary < dto.BasicSalary) return "Maximum salary must be greater than or equal to basic salary.";
-        if (new[] { dto.BasicSalary, dto.MaximumSalary, dto.YearlyIncrement, dto.MedicalAllowance, dto.TravellingAllowance, dto.Other }.Any(value => value < 0))
+        if (new[] { dto.BasicSalary, dto.MaximumSalary, dto.YearlyIncrement, dto.GrossSalary, dto.MedicalAllowance, dto.TravellingAllowance, dto.Other }.Any(value => value < 0))
             return "Salary and allowance values cannot be negative.";
         return null;
+    }
+
+    private static string NormalizeText(string? value, string fallback, int maxLength)
+    {
+        var trimmed = string.IsNullOrWhiteSpace(value) ? fallback : value.Trim();
+        return trimmed.Length <= maxLength ? trimmed : trimmed[..maxLength];
     }
 
     private static SalaryScaleDto ToDto(SalaryScale scale) => new()
     {
         Id = scale.Id,
         ScaleName = scale.ScaleName,
+        DisplayOrder = scale.DisplayOrder,
+        ScaleType = scale.ScaleType,
+        PayMode = scale.PayMode,
         BasicSalary = scale.BasicSalary,
         MaximumSalary = scale.MaximumSalary,
         YearlyIncrement = scale.YearlyIncrement,
+        GrossSalary = scale.GrossSalary,
         MedicalAllowance = scale.MedicalAllowance,
         TravellingAllowance = scale.TravellingAllowance,
         Other = scale.Other,
@@ -172,9 +193,13 @@ public sealed class SalaryScaleDto
 {
     public int Id { get; set; }
     public string ScaleName { get; set; } = string.Empty;
+    public int DisplayOrder { get; set; }
+    public string ScaleType { get; set; } = "Regular";
+    public string PayMode { get; set; } = "PM";
     public decimal BasicSalary { get; set; }
     public decimal MaximumSalary { get; set; }
     public decimal YearlyIncrement { get; set; }
+    public decimal GrossSalary { get; set; }
     public decimal MedicalAllowance { get; set; }
     public decimal TravellingAllowance { get; set; }
     public decimal Other { get; set; }
@@ -184,9 +209,13 @@ public sealed class SalaryScaleDto
 public sealed class SaveSalaryScaleDto
 {
     public string ScaleName { get; set; } = string.Empty;
+    public int DisplayOrder { get; set; }
+    public string? ScaleType { get; set; }
+    public string? PayMode { get; set; }
     public decimal BasicSalary { get; set; }
     public decimal MaximumSalary { get; set; }
     public decimal YearlyIncrement { get; set; }
+    public decimal GrossSalary { get; set; }
     public decimal MedicalAllowance { get; set; }
     public decimal TravellingAllowance { get; set; }
     public decimal Other { get; set; }

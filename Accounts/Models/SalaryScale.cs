@@ -16,6 +16,14 @@ public class SalaryScale : ITenantEntity
     [MaxLength(100)]
     public string ScaleName { get; set; } = string.Empty;
 
+    public int DisplayOrder { get; set; }
+
+    [MaxLength(50)]
+    public string ScaleType { get; set; } = "Regular";
+
+    [MaxLength(20)]
+    public string PayMode { get; set; } = "PM";
+
     [Column(TypeName = "decimal(18,2)")]
     public decimal BasicSalary { get; set; }
 
@@ -24,6 +32,9 @@ public class SalaryScale : ITenantEntity
 
     [Column(TypeName = "decimal(18,2)")]
     public decimal YearlyIncrement { get; set; }
+
+    [Column(TypeName = "decimal(18,2)")]
+    public decimal GrossSalary { get; set; }
 
     [Column(TypeName = "decimal(18,2)")]
     public decimal MedicalAllowance { get; set; }
