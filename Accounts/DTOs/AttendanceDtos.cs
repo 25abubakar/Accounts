@@ -29,6 +29,10 @@ public sealed class MyAttendanceTodayDto
     public string? AttendanceShiftCode { get; set; }
     public bool IsOpenAttendance { get; set; }
     public bool CanSelfCheckIn { get; set; }
+    public bool CanCheckOut { get; set; }
+    public bool CanToggleBreak { get; set; }
+    public bool IsAttendanceClosed { get; set; }
+    public string? AttendanceStatus { get; set; }
     public string? CheckInRestrictionReason { get; set; }
     public bool IsOnBreak => BreakStartedUtc.HasValue;
 }
@@ -207,6 +211,18 @@ public sealed class DailyAttendanceRowDto
     public string? CheckOutTime { get; set; }
     public string? CameraCheckInTime { get; set; }
     public string? CameraCheckOutTime { get; set; }
+    public string? EffectiveCheckInTime { get; set; }
+    public string? EffectiveCheckOutTime { get; set; }
+    public int? VerificationStatusId { get; set; }
+    public string? VerificationStatus { get; set; }
+    public string? VerificationStatusCode { get; set; }
+    public string? VerificationColorCode { get; set; }
+    public string? VerificationFontColor { get; set; }
+    public bool HasVerificationAnomaly { get; set; }
+    public int? VerificationDifferenceMinutes { get; set; }
+    public int VerifiedWorkingMinutes { get; set; }
+    public long? ApprovalRequestId { get; set; }
+    public string? ApprovalStatusCode { get; set; }
     public int WorkingMinutes { get; set; }
     public int LateMinutes { get; set; }
     public int EarlyDepartureMinutes { get; set; }
@@ -258,6 +274,14 @@ public sealed class SaveCameraAttendanceDto
     public string? CheckInTime { get; set; }
     public string? CheckOutTime { get; set; }
     public string? Remarks { get; set; }
+}
+
+public sealed class ReviewCameraAttendanceDto
+{
+    public string DecisionCode { get; set; } = string.Empty;
+    public string? ManualCheckInTime { get; set; }
+    public string? ManualCheckOutTime { get; set; }
+    public string? Comments { get; set; }
 }
 
 public sealed class LoginAttendanceSessionDto
@@ -459,6 +483,7 @@ public sealed class AttendanceRuleSettingDto
     public int AbsentAfterShiftStartMinutes { get; set; }
     public int EarlyCheckoutAbsentAfterMinutes { get; set; }
     public int MissingCheckoutAfterShiftEndMinutes { get; set; }
+    public int CameraVerificationToleranceMinutes { get; set; }
     public int AccountLockAbsentDays { get; set; }
     public decimal WeekendChargeValue { get; set; }
     public int AdjustAbsentDays { get; set; }
@@ -480,6 +505,7 @@ public sealed class SaveAttendanceRuleSettingDto
     public int AbsentAfterShiftStartMinutes { get; set; }
     public int EarlyCheckoutAbsentAfterMinutes { get; set; }
     public int MissingCheckoutAfterShiftEndMinutes { get; set; }
+    public int CameraVerificationToleranceMinutes { get; set; } = 10;
     public int AccountLockAbsentDays { get; set; }
     public decimal WeekendChargeValue { get; set; }
     public int AdjustAbsentDays { get; set; }

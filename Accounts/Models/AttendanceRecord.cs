@@ -18,6 +18,14 @@ public sealed class AttendanceRecord : ITenantEntity
     public DateTime? CheckOutUtc { get; set; }
     public DateTime? CameraCheckInUtc { get; set; }
     public DateTime? CameraCheckOutUtc { get; set; }
+    public DateTime? EffectiveCheckInUtc { get; set; }
+    public DateTime? EffectiveCheckOutUtc { get; set; }
+    public int? VerificationStatusId { get; set; }
+    public bool HasVerificationAnomaly { get; set; }
+    public int? VerificationDifferenceMinutes { get; set; }
+    public long? ApprovalRequestId { get; set; }
+    [MaxLength(1000)]
+    public string? CameraRemarks { get; set; }
     public DateTime? BreakStartedUtc { get; set; }
     public int TotalBreakMinutes { get; set; }
     public DateTime CreatedDate { get; set; }
@@ -27,4 +35,6 @@ public sealed class AttendanceRecord : ITenantEntity
     public ProcessStatusStyle? AttendanceStatus { get; set; }
     public AttendanceEntryType? AttendanceEntryType { get; set; }
     public AttendanceWorkMode? AttendanceWorkMode { get; set; }
+    public ProcessStatusStyle? VerificationStatus { get; set; }
+    public WorkflowApprovalRequest? ApprovalRequest { get; set; }
 }

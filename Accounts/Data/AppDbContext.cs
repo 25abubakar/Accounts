@@ -50,6 +50,7 @@ namespace Accounts.Data
         public DbSet<AttendanceMapRule>        AttendanceMapRules       => Set<AttendanceMapRule>();
         public DbSet<AttendanceMapRuleReadRow> AttendanceMapRuleReadRows => Set<AttendanceMapRuleReadRow>();
         public DbSet<AttendanceRuleSetting>    AttendanceRuleSettings   => Set<AttendanceRuleSetting>();
+        public DbSet<WorkflowApprovalRequest> WorkflowApprovalRequests => Set<WorkflowApprovalRequest>();
         public DbSet<AttendanceRuleSettingReadRow> AttendanceRuleSettingReadRows => Set<AttendanceRuleSettingReadRow>();
         public DbSet<AttendanceDeductionRequest> AttendanceDeductionRequests => Set<AttendanceDeductionRequest>();
         public DbSet<AttendanceHolidayColorMap> AttendanceHolidayColorMaps => Set<AttendanceHolidayColorMap>();
@@ -263,6 +264,13 @@ namespace Accounts.Data
                     _tenantService.IsSuperAdmin ||
                     _tenantService.TenantId == null ||
                     rule.TenantId == _tenantService.TenantId);
+
+            builder.Entity<WorkflowApprovalRequest>()
+                .HasQueryFilter(request =>
+                    _tenantService == null ||
+                    _tenantService.IsSuperAdmin ||
+                    _tenantService.TenantId == null ||
+                    request.TenantId == _tenantService.TenantId);
 
             builder.Entity<AttendanceRuleSettingReadRow>()
                 .HasQueryFilter(rule =>
@@ -728,6 +736,8 @@ namespace Accounts.Data
                 e.HasOne(x => x.AttendanceStatus).WithMany().HasForeignKey(x => x.AttendanceStatusId).OnDelete(DeleteBehavior.Restrict);
                 e.HasOne(x => x.AttendanceEntryType).WithMany(x => x.Records).HasForeignKey(x => x.AttendanceEntryTypeId).OnDelete(DeleteBehavior.Restrict);
                 e.HasOne(x => x.AttendanceWorkMode).WithMany(x => x.Records).HasForeignKey(x => x.AttendanceWorkModeId).OnDelete(DeleteBehavior.Restrict);
+                e.HasOne(x => x.VerificationStatus).WithMany().HasForeignKey(x => x.VerificationStatusId).OnDelete(DeleteBehavior.Restrict);
+                e.HasOne(x => x.ApprovalRequest).WithMany().HasForeignKey(x => x.ApprovalRequestId).OnDelete(DeleteBehavior.Restrict);
             });
 
             builder.Entity<StaffDirectoryRow>(e =>
@@ -809,6 +819,7 @@ namespace Accounts.Data
                 e.Property(x => x.AbsentAfterShiftStartMinutes).HasDefaultValue(120);
                 e.Property(x => x.EarlyCheckoutAbsentAfterMinutes).HasDefaultValue(120);
                 e.Property(x => x.MissingCheckoutAfterShiftEndMinutes).HasDefaultValue(120);
+                e.Property(x => x.CameraVerificationToleranceMinutes).HasDefaultValue(10);
                 e.Property(x => x.WeekendChargeValue).HasColumnType("decimal(6,2)").HasDefaultValue(0m);
                 e.Property(x => x.AccountLockAbsentDays).HasDefaultValue(0);
                 e.Property(x => x.AdjustAbsentDays).HasDefaultValue(0);
@@ -817,6 +828,24 @@ namespace Accounts.Data
                 e.HasIndex(x => new { x.TenantId, x.IsActive, x.IsApproved });
                 e.HasOne(x => x.Tenant).WithMany().HasForeignKey(x => x.TenantId).OnDelete(DeleteBehavior.Restrict);
                 e.HasOne(x => x.AttendanceEntryType).WithMany().HasForeignKey(x => x.AttendanceEntryTypeId).OnDelete(DeleteBehavior.Restrict);
+            });
+
+            builder.Entity<WorkflowApprovalRequest>(e =>
+            {
+                e.ToTable("WorkflowApprovalRequests");
+                e.HasKey(x => x.Id);
+                e.Property(x => x.Id).ValueGeneratedOnAdd();
+                e.Property(x => x.ProcessCode).HasMaxLength(80).IsRequired();
+                e.Property(x => x.EntityType).HasMaxLength(80).IsRequired();
+                e.Property(x => x.EntityId).HasMaxLength(100).IsRequired();
+                e.Property(x => x.RequestedByUserId).HasMaxLength(450).IsRequired();
+                e.Property(x => x.StatusCode).HasMaxLength(20).IsRequired();
+                e.Property(x => x.DecisionCode).HasMaxLength(40);
+                e.Property(x => x.DecisionByUserId).HasMaxLength(450);
+                e.Property(x => x.Comments).HasMaxLength(1000);
+                e.Property(x => x.CreatedDate).HasDefaultValueSql("SYSUTCDATETIME()");
+                e.HasIndex(x => new { x.TenantId, x.ProcessCode, x.EntityType, x.EntityId, x.StatusCode });
+                e.HasIndex(x => new { x.TenantId, x.StatusCode, x.CreatedDate });
             });
 
             builder.Entity<AttendanceRuleSettingReadRow>(e =>

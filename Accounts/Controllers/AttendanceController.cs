@@ -7,6 +7,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using System.Security.Claims;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Data.SqlClient;
 using System.Globalization;
 using System.Text.RegularExpressions;
 
@@ -197,6 +198,7 @@ public sealed class AttendanceController : ControllerBase
                 AbsentAfterShiftStartMinutes = rule.AbsentAfterShiftStartMinutes,
                 EarlyCheckoutAbsentAfterMinutes = rule.EarlyCheckoutAbsentAfterMinutes,
                 MissingCheckoutAfterShiftEndMinutes = rule.MissingCheckoutAfterShiftEndMinutes,
+                CameraVerificationToleranceMinutes = rule.CameraVerificationToleranceMinutes,
                 AccountLockAbsentDays = rule.AccountLockAbsentDays,
                 WeekendChargeValue = rule.WeekendChargeValue,
                 AdjustAbsentDays = rule.AdjustAbsentDays,
@@ -389,7 +391,7 @@ public sealed class AttendanceController : ControllerBase
             checkOutUtc = PakistanClock.AsDatabaseLocal(dto.AttendanceDate.ToDateTime(time));
         }
         if (checkInUtc.HasValue && checkOutUtc.HasValue && checkOutUtc.Value < checkInUtc.Value)
-            return BadRequest(new { message = "Check-out time cannot be earlier than check-in time." });
+            checkOutUtc = checkOutUtc.Value.AddDays(1);
 
         var checkEntryType = await _db.AttendanceEntryTypes.SingleOrDefaultAsync(x => x.Code == "CHECK" && x.IsActive, ct);
         if (checkEntryType == null) return BadRequest(new { message = "Check in/Out attendance type is not configured." });
@@ -432,10 +434,102 @@ public sealed class AttendanceController : ControllerBase
         record.AttendanceWorkModeId ??= workMode?.Id;
         if (checkInUtc.HasValue) record.CameraCheckInUtc = checkInUtc.Value;
         if (checkOutUtc.HasValue) record.CameraCheckOutUtc = checkOutUtc.Value;
+        record.CameraRemarks = string.IsNullOrWhiteSpace(dto.Remarks) ? null : dto.Remarks.Trim();
         record.ModifiedDate = now;
         await _db.SaveChangesAsync(ct);
 
-        return Ok(new { message = "Camera attendance saved successfully." });
+        await _db.Database.ExecuteSqlRawAsync(
+            "EXEC dbo.usp_Attendance_ApplyCameraVerification @TenantId, @AttendanceRecordId, @ActorUserId",
+            new SqlParameter("@TenantId", person.TenantId),
+            new SqlParameter("@AttendanceRecordId", record.Id),
+            new SqlParameter("@ActorUserId", UserId()));
+
+        await _db.Entry(record).ReloadAsync(ct);
+        return Ok(new
+        {
+            message = record.HasVerificationAnomaly
+                ? "Camera evidence saved. A mismatch was detected and sent for independent approval."
+                : "Camera attendance saved and verified successfully.",
+            record.ApprovalRequestId,
+            record.HasVerificationAnomaly,
+            record.VerificationDifferenceMinutes
+        });
+    }
+
+    [HttpPost("types/camera/verifications/{requestId:long}/decision")]
+    public async Task<IActionResult> ReviewCameraAttendance(
+        long requestId,
+        [FromBody] ReviewCameraAttendanceDto dto,
+        CancellationToken ct)
+    {
+        if (!_tenant.TenantId.HasValue) return Forbid();
+        if (!await HasAttendanceMenuActionAsync("EDIT", ct, "/attendance/types/camera"))
+            return Forbid();
+
+        var decision = dto.DecisionCode?.Trim().ToUpperInvariant() ?? string.Empty;
+        var request = await _db.WorkflowApprovalRequests.AsNoTracking()
+            .SingleOrDefaultAsync(item => item.Id == requestId, ct);
+        if (request == null) return NotFound(new { message = "The approval request was not found." });
+
+        var reviewerId = UserId();
+        var subjectUserId = request.SubjectPersonId.HasValue
+            ? await _db.Persons.AsNoTracking()
+                .Where(person => person.PersonId == request.SubjectPersonId.Value)
+                .Select(person => person.IdentityUserId)
+                .SingleOrDefaultAsync(ct)
+            : null;
+        if (reviewerId == request.RequestedByUserId || reviewerId == subjectUserId)
+            return Conflict(new { message = "Self-approval is not allowed. A different authorized approver must review this entry." });
+
+        DateTime? manualIn = null;
+        DateTime? manualOut = null;
+        if (decision == "MANUAL_CORRECTION")
+        {
+            var attendanceDate = await _db.AttendanceRecords.AsNoTracking()
+                .Where(record => record.ApprovalRequestId == requestId)
+                .Select(record => (DateOnly?)record.AttendanceDate)
+                .SingleOrDefaultAsync(ct);
+            if (!attendanceDate.HasValue) return NotFound(new { message = "The linked attendance record was not found." });
+            try
+            {
+                manualIn = ParseCameraDecisionTime(dto.ManualCheckInTime, attendanceDate.Value);
+                manualOut = ParseCameraDecisionTime(dto.ManualCheckOutTime, attendanceDate.Value);
+            }
+            catch (ArgumentException ex)
+            {
+                return BadRequest(new { message = ex.Message });
+            }
+            if (!manualIn.HasValue && !manualOut.HasValue)
+                return BadRequest(new { message = "Enter at least one corrected check-in or check-out time." });
+            if (manualIn.HasValue && manualOut.HasValue && manualOut < manualIn) manualOut = manualOut.Value.AddDays(1);
+        }
+
+        try
+        {
+            await _db.Database.ExecuteSqlRawAsync(
+                "EXEC dbo.usp_WorkflowApproval_DecideCameraAttendance @TenantId, @RequestId, @ReviewerUserId, @DecisionCode, @ManualCheckIn, @ManualCheckOut, @Comments",
+                new SqlParameter("@TenantId", _tenant.RequiredTenantId),
+                new SqlParameter("@RequestId", requestId),
+                new SqlParameter("@ReviewerUserId", reviewerId),
+                new SqlParameter("@DecisionCode", decision),
+                new SqlParameter("@ManualCheckIn", (object?)manualIn ?? DBNull.Value),
+                new SqlParameter("@ManualCheckOut", (object?)manualOut ?? DBNull.Value),
+                new SqlParameter("@Comments", (object?)dto.Comments?.Trim() ?? DBNull.Value));
+        }
+        catch (SqlException ex) when (ex.Number is 51021 or 51022 or 51023 or 51024)
+        {
+            return Conflict(new { message = ex.Message });
+        }
+
+        return Ok(new { message = "Camera attendance verification decision saved successfully." });
+    }
+
+    private static DateTime? ParseCameraDecisionTime(string? value, DateOnly date)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return null;
+        if (!TimeOnly.TryParseExact(value, "HH:mm", CultureInfo.InvariantCulture, DateTimeStyles.None, out var time))
+            throw new ArgumentException("Manual attendance time must be in HH:mm format.");
+        return PakistanClock.AsDatabaseLocal(date.ToDateTime(time));
     }
 
     [HttpGet("report/staff-attendance")]
@@ -637,6 +731,7 @@ public sealed class AttendanceController : ControllerBase
         if (dto.AbsentAfterShiftStartMinutes is < 1 or > 1440) return BadRequest(new { message = "Absent-after time must be between 1 and 1440 minutes." });
         if (dto.EarlyCheckoutAbsentAfterMinutes is < 1 or > 1440) return BadRequest(new { message = "Early checkout absent-after time must be between 1 and 1440 minutes." });
         if (dto.MissingCheckoutAfterShiftEndMinutes is < 1 or > 1440) return BadRequest(new { message = "Missing checkout time must be between 1 and 1440 minutes." });
+        if (dto.CameraVerificationToleranceMinutes is < 0 or > 240) return BadRequest(new { message = "Camera verification tolerance must be between 0 and 240 minutes." });
         if (dto.AccountLockAbsentDays is < 0 or > 31) return BadRequest(new { message = "Account lock absent days must be between 0 and 31." });
         if (dto.WeekendChargeValue is < 0 or > 31) return BadRequest(new { message = "Weekend charged value must be between 0 and 31." });
         if (dto.AdjustAbsentDays is < 0 or > 31) return BadRequest(new { message = "Adjust absent days must be between 0 and 31." });
@@ -684,6 +779,7 @@ public sealed class AttendanceController : ControllerBase
         rule.AbsentAfterShiftStartMinutes = dto.AbsentAfterShiftStartMinutes;
         rule.EarlyCheckoutAbsentAfterMinutes = dto.EarlyCheckoutAbsentAfterMinutes;
         rule.MissingCheckoutAfterShiftEndMinutes = dto.MissingCheckoutAfterShiftEndMinutes;
+        rule.CameraVerificationToleranceMinutes = dto.CameraVerificationToleranceMinutes;
         rule.AccountLockAbsentDays = dto.AccountLockAbsentDays;
         rule.WeekendChargeValue = dto.WeekendChargeValue;
         rule.AdjustAbsentDays = dto.AdjustAbsentDays;
@@ -723,6 +819,7 @@ public sealed class AttendanceController : ControllerBase
         AbsentAfterShiftStartMinutes = rule.AbsentAfterShiftStartMinutes,
         EarlyCheckoutAbsentAfterMinutes = rule.EarlyCheckoutAbsentAfterMinutes,
         MissingCheckoutAfterShiftEndMinutes = rule.MissingCheckoutAfterShiftEndMinutes,
+        CameraVerificationToleranceMinutes = rule.CameraVerificationToleranceMinutes,
         AccountLockAbsentDays = rule.AccountLockAbsentDays,
         WeekendChargeValue = rule.WeekendChargeValue,
         AdjustAbsentDays = rule.AdjustAbsentDays,

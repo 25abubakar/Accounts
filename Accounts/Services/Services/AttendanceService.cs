@@ -26,19 +26,49 @@ public sealed class AttendanceService : IAttendanceService
         await AttendanceRecordSchema.EnsureCameraColumnsAsync(_db, cancellationToken);
         var (person, localDate) = await ResolvePersonAsync(identityUserId, cancellationToken);
         var attendanceRule = await ResolveAttendanceRuleAsync(person, cancellationToken);
-        var record = await _db.AttendanceRecords.AsNoTracking()
-            .Include(x => x.AttendanceEntryType).Include(x => x.AttendanceWorkMode)
+        var policy = await LoadPolicyAsync(person.TenantId, cancellationToken);
+        var localNow = PakistanClock.Now();
+
+        await EvaluateStatusesAsync(person.TenantId, localDate.AddDays(-1), localDate, cancellationToken);
+        var records = await _db.AttendanceRecords.AsNoTracking()
+            .Include(x => x.AttendanceEntryType)
+            .Include(x => x.AttendanceWorkMode)
+            .Include(x => x.AttendanceStatus).ThenInclude(x => x!.Status)
             .Where(x =>
                 x.PersonId == person.PersonId &&
                 (x.AttendanceDate == localDate ||
                  (x.AttendanceDate == localDate.AddDays(-1) && x.CheckInUtc != null && x.CheckOutUtc == null)))
-            .OrderByDescending(x => x.CheckInUtc != null && x.CheckOutUtc == null)
-            .ThenByDescending(x => x.AttendanceDate)
-            .FirstOrDefaultAsync(cancellationToken);
+            .OrderByDescending(x => x.AttendanceDate)
+            .ToListAsync(cancellationToken);
+
+        var record = records.FirstOrDefault(x => x.AttendanceDate == localDate);
+        var previousOpenRecord = records.FirstOrDefault(x =>
+            x.AttendanceDate == localDate.AddDays(-1) &&
+            x.CheckInUtc.HasValue &&
+            !x.CheckOutUtc.HasValue);
+        if (previousOpenRecord != null)
+        {
+            var previousTiming = await ResolveEffectiveTimingAsync(
+                person, previousOpenRecord.AttendanceDate, attendanceRule, cancellationToken);
+            var checkoutExpiryMinutes = attendanceRule?.MissingCheckoutAfterShiftEndMinutes
+                ?? policy.MissingCheckoutAfterShiftEndMinutes;
+
+            // Previous-date attendance is carried only while an overnight
+            // checkout window is still active. Once expired, it must not
+            // block the next business date's fresh check-in.
+            if (!IsMissingCheckoutExpired(
+                    previousOpenRecord.AttendanceDate,
+                    previousTiming,
+                    attendanceRule,
+                    person,
+                    localNow,
+                    checkoutExpiryMinutes))
+                record = previousOpenRecord;
+        }
+
         var effectiveDate = record?.AttendanceDate ?? localDate;
         var timing = await ResolveEffectiveTimingAsync(person, effectiveDate, attendanceRule, cancellationToken);
-        await EvaluateStatusesAsync(person.TenantId, effectiveDate, localDate, cancellationToken);
-        return Map(person, record, PakistanClock.Now(), timing, attendanceRule);
+        return Map(person, record, localNow, timing, attendanceRule, policy.MissingCheckoutAfterShiftEndMinutes);
     }
 
     public async Task<MyAttendanceTodayDto> CheckInAsync(string identityUserId, int? workModeId = null, CancellationToken cancellationToken = default)
@@ -120,7 +150,7 @@ public sealed class AttendanceService : IAttendanceService
             record.ModifiedDate = now;
             await _db.SaveChangesAsync(cancellationToken);
             await EvaluateStatusesAsync(person.TenantId, record.AttendanceDate, record.AttendanceDate, cancellationToken);
-            throw new InvalidOperationException($"The checkout window expired {checkoutExpiryMinutes} minute(s) after shift end. This attendance is marked absent.");
+            return await GetTodayAsync(identityUserId, cancellationToken);
         }
 
         if (record.BreakStartedUtc.HasValue)
@@ -167,7 +197,7 @@ public sealed class AttendanceService : IAttendanceService
             record.ModifiedDate = now;
             await _db.SaveChangesAsync(cancellationToken);
             await EvaluateStatusesAsync(person.TenantId, record.AttendanceDate, record.AttendanceDate, cancellationToken);
-            throw new InvalidOperationException($"The checkout window expired {checkoutExpiryMinutes} minute(s) after shift end. This attendance is marked absent.");
+            return await GetTodayAsync(identityUserId, cancellationToken);
         }
 
         if (record.BreakStartedUtc.HasValue)
@@ -1140,7 +1170,7 @@ public sealed class AttendanceService : IAttendanceService
                     ? Math.Max(0, (int)Math.Floor((endUtc - startUtc).TotalMinutes) - record.TotalBreakMinutes) : 0;
                 var late = checkInLocal.HasValue ? Math.Max(0, (int)(TimeOnly.FromDateTime(checkInLocal.Value).ToTimeSpan() - shiftStart.ToTimeSpan()).TotalMinutes) : 0;
                 var early = checkOutLocal.HasValue ? Math.Max(0, (int)(shiftEnd.ToTimeSpan() - TimeOnly.FromDateTime(checkOutLocal.Value).ToTimeSpan()).TotalMinutes) : 0;
-                var statusName = record?.AttendanceStatus?.Status.StatusName;
+                var statusName = record?.AttendanceStatus?.Status?.StatusName;
                 var hasCheckIn = record?.CheckInUtc.HasValue == true;
                 var hasCheckOut = record?.CheckOutUtc.HasValue == true;
                 var isPast = date < localToday;
@@ -1160,7 +1190,8 @@ public sealed class AttendanceService : IAttendanceService
                     WorkingMinutes = working, LateMinutes = late, EarlyDepartureMinutes = early,
                     OvertimeMinutes = hasCheckOut ? Math.Max(0, working - required) : 0,
                     AttendanceStatusId = record?.AttendanceStatusId, AttendanceStatus = statusName ?? fallbackStatus,
-                    StatusCode = record?.AttendanceStatus?.Code, StatusColorCode = record?.AttendanceStatus?.ColorStyle.ColorCode,
+                    StatusCode = record?.AttendanceStatus?.Code,
+                    StatusColorCode = record?.AttendanceStatus?.ColorStyle?.ColorCode,
                     Present = hasCheckIn, Absent = record is null && isPast, OnLeave = isLeave,
                     Remote = isRemote, MissingCheckIn = record is not null && !hasCheckIn && !isLeave,
                     MissingCheckOut = hasCheckIn && !hasCheckOut && isPast,
@@ -1204,10 +1235,26 @@ public sealed class AttendanceService : IAttendanceService
             .GroupBy(rule => rule.AttendanceEntryTypeId)
             .Select(group => new { AttendanceEntryTypeId = group.Key, WorkingMinutes = group.Max(rule => rule.WorkingMinutes) })
             .ToDictionaryAsync(item => item.AttendanceEntryTypeId, item => item.WorkingMinutes, cancellationToken);
+        var recordIds = sqlRows
+            .Where(row => row.Id.HasValue)
+            .Select(row => row.Id!.Value)
+            .Distinct()
+            .ToArray();
+        var verificationByRecordId = recordIds.Length == 0
+            ? new Dictionary<long, AttendanceRecord>()
+            : await _db.AttendanceRecords.AsNoTracking()
+                .Where(record => recordIds.Contains(record.Id))
+                .Include(record => record.VerificationStatus)
+                    .ThenInclude(style => style!.Status)
+                .Include(record => record.VerificationStatus)
+                    .ThenInclude(style => style!.ColorStyle)
+                .Include(record => record.ApprovalRequest)
+                .ToDictionaryAsync(record => record.Id, cancellationToken);
 
         var rows = new List<DailyAttendanceRowDto>(sqlRows.Count);
         foreach (var source in sqlRows)
         {
+            verificationByRecordId.TryGetValue(source.Id ?? 0, out var verification);
             var localToday = PakistanClock.Today();
             var checkInLocal = source.CheckInUtc;
             var checkOutLocal = source.CheckOutUtc;
@@ -1260,6 +1307,12 @@ public sealed class AttendanceService : IAttendanceService
             var displayColor = displayStyle?.ColorCode ?? source.StatusColorCode;
             var displayFontColor = displayStyle?.FontColor ?? source.StatusFontColor;
             var displayFontSize = displayStyle?.FontSize ?? source.StatusFontSize;
+            var verifiedWorkingMinutes =
+                verification?.EffectiveCheckInUtc is DateTime effectiveStart &&
+                verification.EffectiveCheckOutUtc is DateTime effectiveEnd &&
+                effectiveEnd >= effectiveStart
+                    ? Math.Max(0, (int)Math.Floor((effectiveEnd - effectiveStart).TotalMinutes) - (source.TotalBreakMinutes ?? 0))
+                    : 0;
 
             rows.Add(new DailyAttendanceRowDto
             {
@@ -1279,6 +1332,18 @@ public sealed class AttendanceService : IAttendanceService
                 CheckOutTime = checkOutLocal?.ToString("HH:mm"),
                 CameraCheckInTime = cameraCheckInLocal?.ToString("HH:mm"),
                 CameraCheckOutTime = cameraCheckOutLocal?.ToString("HH:mm"),
+                EffectiveCheckInTime = verification?.EffectiveCheckInUtc?.ToString("HH:mm"),
+                EffectiveCheckOutTime = verification?.EffectiveCheckOutUtc?.ToString("HH:mm"),
+                VerificationStatusId = verification?.VerificationStatusId,
+                VerificationStatus = verification?.VerificationStatus?.Status?.StatusName,
+                VerificationStatusCode = verification?.VerificationStatus?.Code,
+                VerificationColorCode = verification?.VerificationStatus?.ColorStyle?.ColorCode,
+                VerificationFontColor = verification?.VerificationStatus?.ColorStyle?.FontColor,
+                HasVerificationAnomaly = verification?.HasVerificationAnomaly == true,
+                VerificationDifferenceMinutes = verification?.VerificationDifferenceMinutes,
+                VerifiedWorkingMinutes = verifiedWorkingMinutes,
+                ApprovalRequestId = verification?.ApprovalRequestId,
+                ApprovalStatusCode = verification?.ApprovalRequest?.StatusCode,
                 WorkingMinutes = working,
                 LateMinutes = late,
                 EarlyDepartureMinutes = early,
@@ -1297,7 +1362,8 @@ public sealed class AttendanceService : IAttendanceService
                 OnLeave = displayCode?.Equals("L", StringComparison.OrdinalIgnoreCase) == true,
                 Remote = source.AttendanceWorkMode?.Equals("Remote", StringComparison.OrdinalIgnoreCase) == true,
                 MissingCheckIn = missingCheckIn,
-                MissingCheckOut = missingCheckOut
+                MissingCheckOut = missingCheckOut,
+                Comments = verification?.CameraRemarks
             });
         }
 
@@ -1978,7 +2044,8 @@ public sealed class AttendanceService : IAttendanceService
                 WorkingMinutes = worked, BreakMinutes = r.TotalBreakMinutes, RequiredMinutes = required,
                 ShortMinutes = r.CheckOutUtc.HasValue ? Math.Max(0, required - worked) : 0,
                 AttendanceStatusId = r.AttendanceStatusId, StatusCode = r.AttendanceStatus?.Code,
-                StatusName = r.AttendanceStatus?.Status.StatusName, StatusColorCode = r.AttendanceStatus?.ColorStyle.ColorCode
+                StatusName = r.AttendanceStatus?.Status?.StatusName,
+                StatusColorCode = r.AttendanceStatus?.ColorStyle?.ColorCode
             };
         }).ToList();
         return new MonthlyAttendanceReportDto { Employee = employee, Year = year, Month = month, Rows = rows };
@@ -2014,7 +2081,8 @@ public sealed class AttendanceService : IAttendanceService
         AttendanceRecord? record,
         DateTime utcNow,
         EffectiveTiming timing,
-        EffectiveAttendanceRule? attendanceRule)
+        EffectiveAttendanceRule? attendanceRule,
+        int fallbackMissingCheckoutAfterMinutes = 0)
     {
         var shiftStart = timing.TimeFrom ?? person.ShiftStartTime;
         var shiftEnd = timing.TimeTo ?? person.ShiftEndTime;
@@ -2026,8 +2094,13 @@ public sealed class AttendanceService : IAttendanceService
         var openCheckoutExpired = record?.CheckInUtc.HasValue == true &&
             record.CheckOutUtc.HasValue == false &&
             attendanceRule?.IsOpenAttendance != true &&
-            attendanceRule?.MissingCheckoutAfterShiftEndMinutes is int missingCheckoutAfter &&
-            IsMissingCheckoutExpired(record.AttendanceDate, timing, attendanceRule, person, utcNow, missingCheckoutAfter);
+            IsMissingCheckoutExpired(
+                record.AttendanceDate,
+                timing,
+                attendanceRule,
+                person,
+                utcNow,
+                attendanceRule?.MissingCheckoutAfterShiftEndMinutes ?? fallbackMissingCheckoutAfterMinutes);
         var end = record?.CheckOutUtc ??
             (record?.CheckInUtc.HasValue == true && !openCheckoutExpired ? utcNow : null);
         var activeBreak = record?.BreakStartedUtc.HasValue == true && !openCheckoutExpired ? Math.Max(0, (int)Math.Floor((utcNow - record.BreakStartedUtc.Value).TotalMinutes)) : 0;
@@ -2058,6 +2131,10 @@ public sealed class AttendanceService : IAttendanceService
             ,AttendanceShiftCode = attendanceRule?.ShiftCode
             ,IsOpenAttendance = attendanceRule?.IsOpenAttendance ?? false
             ,CanSelfCheckIn = checkInRestriction == null
+            ,CanCheckOut = record?.CheckInUtc.HasValue == true && !record.CheckOutUtc.HasValue && !openCheckoutExpired
+            ,CanToggleBreak = record?.CheckInUtc.HasValue == true && !record.CheckOutUtc.HasValue && !openCheckoutExpired
+            ,IsAttendanceClosed = record?.CheckOutUtc.HasValue == true || openCheckoutExpired
+            ,AttendanceStatus = record?.AttendanceStatus?.Status?.StatusName
             ,CheckInRestrictionReason = checkInRestriction
         };
     }
