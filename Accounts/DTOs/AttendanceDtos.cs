@@ -211,6 +211,14 @@ public sealed class DailyAttendanceRowDto
     public string? CheckOutTime { get; set; }
     public string? CameraCheckInTime { get; set; }
     public string? CameraCheckOutTime { get; set; }
+    public string? CameraAttendanceStatus { get; set; }
+    public string? CameraAttendanceStatusCode { get; set; }
+    public string? CameraAttendanceStatusColorCode { get; set; }
+    public string? CameraAttendanceStatusFontColor { get; set; }
+    public int CameraWorkingMinutes { get; set; }
+    public int CameraLateMinutes { get; set; }
+    public int CameraEarlyDepartureMinutes { get; set; }
+    public int? CameraSystemDifferenceMinutes { get; set; }
     public string? EffectiveCheckInTime { get; set; }
     public string? EffectiveCheckOutTime { get; set; }
     public int? VerificationStatusId { get; set; }

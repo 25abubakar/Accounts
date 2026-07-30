@@ -432,8 +432,10 @@ public sealed class AttendanceController : ControllerBase
             record.AttendanceEntryTypeId = checkEntryType.Id;
         }
         record.AttendanceWorkModeId ??= workMode?.Id;
-        if (checkInUtc.HasValue) record.CameraCheckInUtc = checkInUtc.Value;
-        if (checkOutUtc.HasValue) record.CameraCheckOutUtc = checkOutUtc.Value;
+        // The form is the only source of camera evidence. A blank camera time must
+        // remain NULL; never infer it from the portal punch or the scheduled shift.
+        record.CameraCheckInUtc = checkInUtc;
+        record.CameraCheckOutUtc = checkOutUtc;
         record.CameraRemarks = string.IsNullOrWhiteSpace(dto.Remarks) ? null : dto.Remarks.Trim();
         record.ModifiedDate = now;
         await _db.SaveChangesAsync(ct);

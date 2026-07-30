@@ -1030,11 +1030,40 @@ public sealed class AttendanceService : IAttendanceService
 
     private async Task<Dictionary<string, MonthlyAttendanceChartLegendItemDto>> GetAttendanceDisplayStyleMapAsync(CancellationToken cancellationToken)
     {
-        var legend = await GetAttendanceDisplayLegendAsync(cancellationToken);
+        // Combine the configured attendance processes instead of stopping at the
+        // first non-empty one. Older databases may keep TP under Attendance while
+        // newer display codes such as T-P live under Attendance Display Status.
+        var legend = (await GetLegendForProcessAsync(AttendanceStatusProcessName, cancellationToken))
+            .Concat(await GetLegendForProcessAsync(AttendanceDisplayStatusProcessName, cancellationToken))
+            .Concat(await GetLegendForProcessAsync("Monthly Attendance Chart", cancellationToken))
+            .ToList();
+
         return legend
             .Where(item => !string.IsNullOrWhiteSpace(item.Code))
             .GroupBy(item => item.Code.Trim().ToUpperInvariant(), StringComparer.OrdinalIgnoreCase)
             .ToDictionary(group => group.Key, group => group.First(), StringComparer.OrdinalIgnoreCase);
+    }
+
+    private static bool TryGetAttendanceDisplayStyle(
+        IReadOnlyDictionary<string, MonthlyAttendanceChartLegendItemDto> styles,
+        string? code,
+        out MonthlyAttendanceChartLegendItemDto? style)
+    {
+        style = null;
+        if (string.IsNullOrWhiteSpace(code)) return false;
+        if (styles.TryGetValue(code.Trim(), out var exact))
+        {
+            style = exact;
+            return true;
+        }
+
+        // Database codes remain authoritative. Treat punctuation-only differences
+        // such as TP and T-P as the same key without hardcoding any status label.
+        var normalized = string.Concat(code.Where(char.IsLetterOrDigit)).ToUpperInvariant();
+        style = styles.Values.FirstOrDefault(item =>
+            string.Concat(item.Code.Where(char.IsLetterOrDigit))
+                .Equals(normalized, StringComparison.OrdinalIgnoreCase));
+        return style is not null;
     }
 
     private static string? ResolveMonthlyChartStatusCode(DailyAttendanceRowDto row)
@@ -1084,6 +1113,48 @@ public sealed class AttendanceService : IAttendanceService
         if (earlyDepartureMinutes > 0) return earlyDepartureMinutes >= 120 ? "2-E" : "1-E";
         if (lateMinutes > 0) return lateMinutes >= 120 ? "2-L" : "1-L";
         return null;
+    }
+
+    private static string? ResolveCameraAttendanceDisplayStatusCode(
+        bool isScheduledOff,
+        string? scheduledStatusCode,
+        bool hasCameraCheckIn,
+        bool missingCameraCheckInExpired,
+        bool hasCameraCheckOut,
+        bool invalidInterval,
+        bool missingCheckoutExpired,
+        int cameraWorkingMinutes,
+        int requiredCompletionMinutes,
+        int cameraLateMinutes,
+        int cameraEarlyDepartureMinutes,
+        int absentAfterShiftStartMinutes,
+        int earlyCheckoutAbsentMinutes)
+    {
+        if (isScheduledOff)
+            return scheduledStatusCode?.Equals("H", StringComparison.OrdinalIgnoreCase) == true ? "HO" : "DO";
+        if (!hasCameraCheckIn)
+            return missingCameraCheckInExpired ? "A" : null;
+        if (invalidInterval || missingCheckoutExpired)
+            return "A";
+        if (cameraLateMinutes > absentAfterShiftStartMinutes ||
+            cameraEarlyDepartureMinutes > earlyCheckoutAbsentMinutes)
+            return "A";
+
+        // A completed shift is Present when arrival was on time, and T-Present
+        // only when a late arrival was compensated by completing required time.
+        if (hasCameraCheckOut &&
+            requiredCompletionMinutes > 0 &&
+            cameraWorkingMinutes >= requiredCompletionMinutes)
+            return cameraLateMinutes > 0 ? "T-P" : "P";
+
+        // Arrival is the primary violation when the employee is both late and
+        // short of hours. A 1-hour band is up to 60 minutes; the second band is
+        // over 60 minutes up to the configured absence threshold.
+        if (cameraLateMinutes > 0)
+            return cameraLateMinutes > 60 ? "2-L" : "1-L";
+        if (cameraEarlyDepartureMinutes > 0)
+            return cameraEarlyDepartureMinutes > 60 ? "2-E" : "1-E";
+        return "P";
     }
 
     private async Task<DailyAttendanceReportDto> GetAttendanceReportAsync(
@@ -1230,11 +1301,17 @@ public sealed class AttendanceService : IAttendanceService
 
         var policy = await LoadPolicyAsync(tenantId, cancellationToken);
         var displayStyles = await GetAttendanceDisplayStyleMapAsync(cancellationToken);
-        var ruleWorkingMinutes = await _db.AttendanceRuleSettings.AsNoTracking()
+        var ruleSettingsByEntryType = await _db.AttendanceRuleSettings.AsNoTracking()
             .Where(rule => rule.TenantId == tenantId && rule.IsActive && rule.IsApproved && rule.WorkingMinutes > 0)
             .GroupBy(rule => rule.AttendanceEntryTypeId)
-            .Select(group => new { AttendanceEntryTypeId = group.Key, WorkingMinutes = group.Max(rule => rule.WorkingMinutes) })
-            .ToDictionaryAsync(item => item.AttendanceEntryTypeId, item => item.WorkingMinutes, cancellationToken);
+            .Select(group => new
+            {
+                AttendanceEntryTypeId = group.Key,
+                WorkingMinutes = group.Max(rule => rule.WorkingMinutes),
+                CheckInAdjustMinutes = group.Max(rule => rule.CheckInAdjustMinutes),
+                CheckOutAdjustMinutes = group.Max(rule => rule.CheckOutAdjustMinutes)
+            })
+            .ToDictionaryAsync(item => item.AttendanceEntryTypeId, cancellationToken);
         var recordIds = sqlRows
             .Where(row => row.Id.HasValue)
             .Select(row => row.Id!.Value)
@@ -1273,8 +1350,8 @@ public sealed class AttendanceService : IAttendanceService
                  statusCode.Equals("H", StringComparison.OrdinalIgnoreCase));
             var required = isScheduledOff ? 0 :
                 source.AttendanceEntryTypeId.HasValue &&
-                ruleWorkingMinutes.TryGetValue(source.AttendanceEntryTypeId.Value, out var configuredWorkingMinutes)
-                    ? configuredWorkingMinutes
+                ruleSettingsByEntryType.TryGetValue(source.AttendanceEntryTypeId.Value, out var configuredRule)
+                    ? configuredRule.WorkingMinutes
                     : ShiftMinutes(source.ShiftStartTime, source.ShiftEndTime);
             var late = !isScheduledOff && checkInLocal.HasValue
                 ? Math.Max(0, (int)Math.Floor((checkInLocal.Value - shiftWindow.Start).TotalMinutes))
@@ -1298,15 +1375,83 @@ public sealed class AttendanceService : IAttendanceService
                 nowLocal >= checkoutMissingDeadline;
             var absentByRule = !isScheduledOff &&
                 (missingCheckOut ||
-                 (late > 0 && late >= absentAfterShiftStartMinutes) ||
+                 (late > absentAfterShiftStartMinutes) ||
                  !hasValidClosedInterval && source.CheckOutUtc.HasValue ||
                  (early > earlyCheckoutAbsentMinutes));
             var displayCode = ResolveDailyAttendanceDisplayStatusCode(statusCode, late, early, missingCheckIn || absentByRule, statusName);
-            displayStyles.TryGetValue(displayCode ?? string.Empty, out var displayStyle);
+            TryGetAttendanceDisplayStyle(displayStyles, displayCode, out var displayStyle);
             var displayName = displayStyle?.StatusName ?? (missingCheckIn || absentByRule ? "Absent" : statusName);
             var displayColor = displayStyle?.ColorCode ?? source.StatusColorCode;
             var displayFontColor = displayStyle?.FontColor ?? source.StatusFontColor;
             var displayFontSize = displayStyle?.FontSize ?? source.StatusFontSize;
+            var hasCameraCheckIn = cameraCheckInLocal.HasValue;
+            var hasCameraCheckOut = cameraCheckOutLocal.HasValue;
+            var hasValidCameraInterval = hasCameraCheckIn && hasCameraCheckOut &&
+                cameraCheckOutLocal!.Value >= cameraCheckInLocal!.Value;
+            var invalidCameraInterval = hasCameraCheckOut &&
+                (!hasCameraCheckIn || cameraCheckOutLocal!.Value < cameraCheckInLocal!.Value);
+            var cameraWorkingMinutes = hasValidCameraInterval
+                ? Math.Max(0, (int)Math.Floor((cameraCheckOutLocal!.Value - cameraCheckInLocal!.Value).TotalMinutes))
+                : 0;
+            var rawCameraLateMinutes = !isScheduledOff && hasCameraCheckIn
+                ? Math.Max(0, (int)Math.Floor((cameraCheckInLocal!.Value - shiftWindow.Start).TotalMinutes))
+                : 0;
+            var cameraCheckInAdjustMinutes =
+                source.AttendanceEntryTypeId.HasValue &&
+                ruleSettingsByEntryType.TryGetValue(source.AttendanceEntryTypeId.Value, out var cameraRule)
+                    ? cameraRule.CheckInAdjustMinutes
+                    : policy.OnTimeGraceMinutesAfter;
+            var cameraCheckOutAdjustMinutes =
+                source.AttendanceEntryTypeId.HasValue &&
+                ruleSettingsByEntryType.TryGetValue(source.AttendanceEntryTypeId.Value, out var cameraCheckoutRule)
+                    ? cameraCheckoutRule.CheckOutAdjustMinutes
+                    : policy.FullDayToleranceMinutes;
+            var cameraLateMinutes = rawCameraLateMinutes <= cameraCheckInAdjustMinutes
+                ? 0
+                : rawCameraLateMinutes;
+            var rawCameraEarlyDepartureMinutes = !isScheduledOff && hasCameraCheckOut
+                ? Math.Max(0, (int)Math.Floor((shiftWindow.End - cameraCheckOutLocal!.Value).TotalMinutes))
+                : 0;
+            var cameraShortMinutes = hasCameraCheckOut && required > 0
+                ? Math.Max(0, required - cameraWorkingMinutes)
+                : 0;
+            var cameraEarlyDepartureMinutes =
+                rawCameraEarlyDepartureMinutes <= cameraCheckOutAdjustMinutes &&
+                cameraShortMinutes <= cameraCheckOutAdjustMinutes
+                    ? 0
+                    : Math.Max(rawCameraEarlyDepartureMinutes, cameraShortMinutes);
+            var cameraRequiredCompletionMinutes = Math.Max(0, required - cameraCheckOutAdjustMinutes);
+            var cameraMissingCheckoutExpired = hasCameraCheckIn && !hasCameraCheckOut &&
+                !isScheduledOff && nowLocal >= checkoutMissingDeadline;
+            var cameraMissingCheckInExpired = !hasCameraCheckIn &&
+                !isScheduledOff && nowLocal >= checkInAbsentDeadline;
+            var checkInDifference = hasCameraCheckIn && checkInLocal.HasValue
+                ? Math.Abs((int)Math.Round((cameraCheckInLocal!.Value - checkInLocal.Value).TotalMinutes))
+                : (int?)null;
+            var checkOutDifference = hasCameraCheckOut && checkOutLocal.HasValue
+                ? Math.Abs((int)Math.Round((cameraCheckOutLocal!.Value - checkOutLocal.Value).TotalMinutes))
+                : (int?)null;
+            var cameraSystemDifferenceMinutes = new[] { checkInDifference, checkOutDifference }
+                .Where(value => value.HasValue)
+                .Select(value => value!.Value)
+                .DefaultIfEmpty()
+                .Max();
+            var hasCameraSystemComparison = checkInDifference.HasValue || checkOutDifference.HasValue;
+            var cameraDisplayCode = ResolveCameraAttendanceDisplayStatusCode(
+                isScheduledOff,
+                statusCode,
+                hasCameraCheckIn,
+                cameraMissingCheckInExpired,
+                hasCameraCheckOut,
+                invalidCameraInterval,
+                cameraMissingCheckoutExpired,
+                cameraWorkingMinutes,
+                cameraRequiredCompletionMinutes,
+                cameraLateMinutes,
+                cameraEarlyDepartureMinutes,
+                absentAfterShiftStartMinutes,
+                earlyCheckoutAbsentMinutes);
+            TryGetAttendanceDisplayStyle(displayStyles, cameraDisplayCode, out var cameraDisplayStyle);
             var verifiedWorkingMinutes =
                 verification?.EffectiveCheckInUtc is DateTime effectiveStart &&
                 verification.EffectiveCheckOutUtc is DateTime effectiveEnd &&
@@ -1332,6 +1477,14 @@ public sealed class AttendanceService : IAttendanceService
                 CheckOutTime = checkOutLocal?.ToString("HH:mm"),
                 CameraCheckInTime = cameraCheckInLocal?.ToString("HH:mm"),
                 CameraCheckOutTime = cameraCheckOutLocal?.ToString("HH:mm"),
+                CameraAttendanceStatus = cameraDisplayStyle?.StatusName,
+                CameraAttendanceStatusCode = cameraDisplayCode,
+                CameraAttendanceStatusColorCode = cameraDisplayStyle?.ColorCode,
+                CameraAttendanceStatusFontColor = cameraDisplayStyle?.FontColor,
+                CameraWorkingMinutes = cameraWorkingMinutes,
+                CameraLateMinutes = cameraLateMinutes,
+                CameraEarlyDepartureMinutes = cameraEarlyDepartureMinutes,
+                CameraSystemDifferenceMinutes = hasCameraSystemComparison ? cameraSystemDifferenceMinutes : null,
                 EffectiveCheckInTime = verification?.EffectiveCheckInUtc?.ToString("HH:mm"),
                 EffectiveCheckOutTime = verification?.EffectiveCheckOutUtc?.ToString("HH:mm"),
                 VerificationStatusId = verification?.VerificationStatusId,
