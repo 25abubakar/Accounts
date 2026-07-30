@@ -301,6 +301,19 @@ public sealed class AttendanceController : ControllerBase
         CancellationToken ct) =>
         Execute(() => _service.GetDailyReportAsync(UserId(), CanViewOrganization(), dateFrom, dateTo, includeAllTypes, ct));
 
+    [HttpGet("report/comparative")]
+    public async Task<IActionResult> ComparativeAttendanceReport(
+        [FromQuery] DateOnly dateFrom,
+        [FromQuery] DateOnly dateTo,
+        CancellationToken ct)
+    {
+        if (!await HasAttendanceMenuActionAsync("VIEW", ct, "/attendance/types/comparative"))
+            return Forbid();
+
+        return await Execute(() =>
+            _service.GetDailyReportAsync(UserId(), CanViewOrganization(), dateFrom, dateTo, true, ct));
+    }
+
     [HttpGet("report/remote")]
     public Task<IActionResult> RemoteAttendanceReport([FromQuery] DateOnly dateFrom, [FromQuery] DateOnly dateTo, CancellationToken ct) =>
         Execute(() => _service.GetRemoteAttendanceReportAsync(UserId(), CanViewOrganization(), dateFrom, dateTo, ct));
