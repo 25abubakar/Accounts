@@ -97,6 +97,7 @@ public sealed class AddProcessReportWorkflow : Migration
             MERGE dbo.ProcessWorkflowStatuses AS target
             USING (VALUES
                 (N'PENDING', N'Pending Approval', N'#F59E0B', 0, 10),
+                (N'FORWARDED', N'Forwarded for Approval', N'#0EA5E9', 0, 15),
                 (N'PENDING_RESOLUTION', N'Pending Resolution', N'#2563EB', 0, 20),
                 (N'RETURNED', N'Returned for Correction', N'#F97316', 0, 30),
                 (N'ESCALATED', N'Escalated', N'#7C3AED', 0, 40),

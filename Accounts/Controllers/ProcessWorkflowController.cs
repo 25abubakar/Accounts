@@ -42,7 +42,7 @@ public sealed class ProcessWorkflowController : ControllerBase
                     Name = reader.GetString(reader.GetOrdinal("Name")),
                     ColorCode = DbString(reader, "ColorCode"),
                     DisplayOrder = reader.GetInt32(reader.GetOrdinal("DisplayOrder")),
-                    RequiresComments = reader.GetBoolean(reader.GetOrdinal("RequiresComments"))
+                    RequiresComments = DbBoolean(reader, "RequiresComments")
                 });
             }
         }, ct);
@@ -163,32 +163,33 @@ public sealed class ProcessWorkflowController : ControllerBase
             });
 
         object? result = null;
-        try
+        var failure = await TryWithCommandAsync("dbo.usp_ProcessReport_Action", async command =>
         {
-            await WithCommandAsync("dbo.usp_ProcessReport_Action", async command =>
-            {
-                AddScope(command);
-                command.Parameters.Add("@ReportId", SqlDbType.BigInt).Value = reportId;
-                command.Parameters.Add("@ActionCode", SqlDbType.NVarChar, 40).Value = dto.ActionCode.Trim();
-                command.Parameters.Add("@Comments", SqlDbType.NVarChar, 2000).Value =
-                    string.IsNullOrWhiteSpace(dto.Comments) ? DBNull.Value : dto.Comments.Trim();
-                command.Parameters.Add("@ExpectedRowVersionHex", SqlDbType.VarChar, 24).Value = rowVersionHex;
-                await using var reader = await command.ExecuteReaderAsync(ct);
-                if (await reader.ReadAsync(ct))
-                    result = new
-                    {
-                        id = reader.GetInt64(reader.GetOrdinal("Id")),
-                        requestNumber = DbString(reader, "RequestNumber"),
-                        statusCode = reader.GetString(reader.GetOrdinal("StatusCode")),
-                        statusName = reader.GetString(reader.GetOrdinal("StatusName")),
-                        rowVersion = reader.GetString(reader.GetOrdinal("RowVersion"))
-                    };
-            }, ct);
-        }
-        catch (ProcessWorkflowException ex) when (ex.SqlErrorNumber == 51232)
+            AddScope(command);
+            command.Parameters.Add("@ReportId", SqlDbType.BigInt).Value = reportId;
+            command.Parameters.Add("@ActionCode", SqlDbType.NVarChar, 40).Value = dto.ActionCode.Trim();
+            command.Parameters.Add("@Comments", SqlDbType.NVarChar, 2000).Value =
+                string.IsNullOrWhiteSpace(dto.Comments) ? DBNull.Value : dto.Comments.Trim();
+            command.Parameters.Add("@ExpectedRowVersionHex", SqlDbType.VarChar, 24).Value = rowVersionHex;
+            await using var reader = await command.ExecuteReaderAsync(ct);
+            if (await reader.ReadAsync(ct))
+                result = new
+                {
+                    id = reader.GetInt64(reader.GetOrdinal("Id")),
+                    requestNumber = DbString(reader, "RequestNumber"),
+                    statusCode = reader.GetString(reader.GetOrdinal("StatusCode")),
+                    statusName = reader.GetString(reader.GetOrdinal("StatusName")),
+                    rowVersion = reader.GetString(reader.GetOrdinal("RowVersion"))
+                };
+        }, ct);
+
+        if (failure is not null)
         {
-            return Conflict(new { message = ex.Message });
+            return failure.SqlErrorNumber == 51232
+                ? Conflict(new { message = failure.Message })
+                : BadRequest(new { message = failure.Message });
         }
+
         return Ok(result);
     }
 
@@ -248,6 +249,38 @@ public sealed class ProcessWorkflowController : ControllerBase
         }
     }
 
+    private async Task<ProcessWorkflowFailure?> TryWithCommandAsync(
+        string procedure,
+        Func<SqlCommand, Task> execute,
+        CancellationToken ct)
+    {
+        if (!_db.Database.IsSqlServer())
+            throw new InvalidOperationException("Process workflow procedures require SQL Server.");
+
+        var connection = (SqlConnection)_db.Database.GetDbConnection();
+        var shouldClose = connection.State != ConnectionState.Open;
+        if (shouldClose) await connection.OpenAsync(ct);
+        try
+        {
+            await using var command = connection.CreateCommand();
+            command.CommandText = procedure;
+            command.CommandType = CommandType.StoredProcedure;
+            command.CommandTimeout = 30;
+            await execute(command);
+            return null;
+        }
+        catch (SqlException ex) when (ex.Number is >= 51200 and <= 51299)
+        {
+            // Business validation is an expected API outcome. Returning it avoids
+            // surfacing a user-unhandled exception in Visual Studio.
+            return new ProcessWorkflowFailure(ex.Message, ex.Number);
+        }
+        finally
+        {
+            if (shouldClose) await connection.CloseAsync();
+        }
+    }
+
     private static ProcessReportListDto MapReport(SqlDataReader reader) => new()
     {
         Id = reader.GetInt64(reader.GetOrdinal("Id")),
@@ -289,7 +322,21 @@ public sealed class ProcessWorkflowController : ControllerBase
         var ordinal = reader.GetOrdinal(name);
         return reader.IsDBNull(ordinal) ? null : reader.GetDateTime(ordinal);
     }
+
+    private static bool DbBoolean(SqlDataReader reader, string name)
+    {
+        for (var ordinal = 0; ordinal < reader.FieldCount; ordinal++)
+        {
+            if (!reader.GetName(ordinal).Equals(name, StringComparison.OrdinalIgnoreCase))
+                continue;
+            return !reader.IsDBNull(ordinal) && reader.GetBoolean(ordinal);
+        }
+
+        return false;
+    }
 }
+
+public sealed record ProcessWorkflowFailure(string Message, int SqlErrorNumber);
 
 public sealed class ProcessWorkflowException : Exception
 {
