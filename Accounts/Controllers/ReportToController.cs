@@ -153,8 +153,9 @@ namespace Accounts.Controllers
             if (!staffId.HasValue) return false;
 
             var normalizedAction = action.Trim().ToUpperInvariant();
+            var reportRoutes = new[] { "/hr/process/report", "/hr/reports" };
             var menuIds = await _db.Menus.AsNoTracking()
-                .Where(menu => menu.IsActive && menu.Route == "/hr/reports")
+                .Where(menu => menu.IsActive && menu.Route != null && reportRoutes.Contains(menu.Route))
                 .Select(menu => menu.Id)
                 .ToListAsync(ct);
 

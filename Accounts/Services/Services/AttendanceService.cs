@@ -49,23 +49,24 @@ public sealed class AttendanceService : IAttendanceService
             ?? throw new InvalidOperationException("Your attendance rule has not been configured. Ask an attendance administrator to map your attendance type and shift.");
         EnsurePortalCheckInAllowed(attendanceRule);
 
-        var timing = await ResolveEffectiveTimingAsync(person, localDate, attendanceRule, cancellationToken);
-        if (!timing.IsOn && !attendanceRule.IsOpenAttendance)
-            throw new InvalidOperationException($"Timing Chart marks {localDate:dd MMM yyyy} as {timing.HolidayType}; check-in is disabled.");
         var policy = await LoadPolicyAsync(person.TenantId, cancellationToken);
         var localNow = PakistanClock.Now();
-        var shiftStart = ParseShift(timing.TimeFrom ?? attendanceRule.TimeFrom, new TimeOnly(9, 0));
         var beforeCheckInMinutes = attendanceRule.BeforeCheckInMinutes ?? policy.EarliestCheckInMinutesBefore;
         var checkInAdjustMinutes = attendanceRule.CheckInAdjustMinutes ?? policy.OnTimeGraceMinutesAfter;
         var absentAfterShiftStartMinutes = attendanceRule.AbsentAfterShiftStartMinutes ?? policy.AbsentAfterShiftStartMinutes;
-        var earliest = shiftStart.AddMinutes(-beforeCheckInMinutes);
-        var absentAt = shiftStart.AddMinutes(absentAfterShiftStartMinutes);
-        var nowTime = TimeOnly.FromDateTime(localNow);
-        if (!attendanceRule.IsOpenAttendance && nowTime < earliest)
-            throw new InvalidOperationException($"You cannot check in before {earliest:HH:mm}. Your shift starts at {shiftStart:HH:mm}.");
-        if (!attendanceRule.IsOpenAttendance && nowTime >= absentAt)
+        var checkInContext = await ResolveCheckInContextAsync(
+            person, attendanceRule, localDate, localNow, beforeCheckInMinutes,
+            absentAfterShiftStartMinutes, cancellationToken);
+        var effectiveDate = checkInContext.AttendanceDate;
+        var timing = checkInContext.Timing;
+        var shiftWindow = checkInContext.ShiftWindow;
+        if (!timing.IsOn && !attendanceRule.IsOpenAttendance)
+            throw new InvalidOperationException($"Timing Chart marks {effectiveDate:dd MMM yyyy} as {timing.HolidayType}; check-in is disabled.");
+        if (!attendanceRule.IsOpenAttendance && localNow < shiftWindow.Start.AddMinutes(-beforeCheckInMinutes))
+            throw new InvalidOperationException($"You cannot check in before {shiftWindow.Start.AddMinutes(-beforeCheckInMinutes):dd MMM yyyy HH:mm}. Your shift starts at {shiftWindow.Start:dd MMM yyyy HH:mm}.");
+        if (!attendanceRule.IsOpenAttendance && localNow > shiftWindow.Start.AddMinutes(absentAfterShiftStartMinutes))
             throw new InvalidOperationException($"The {absentAfterShiftStartMinutes}-minute check-in window has expired and attendance is marked absent.");
-        var record = await _db.AttendanceRecords.FirstOrDefaultAsync(x => x.PersonId == person.PersonId && x.AttendanceDate == localDate, cancellationToken);
+        var record = await _db.AttendanceRecords.FirstOrDefaultAsync(x => x.PersonId == person.PersonId && x.AttendanceDate == effectiveDate, cancellationToken);
         if (record?.CheckInUtc is not null) throw new InvalidOperationException("You have already checked in today.");
         var workMode = attendanceRule.EntryTypeCode == "REMOTE"
             ? await _db.AttendanceWorkModes.FirstOrDefaultAsync(x => x.Code == "REMOTE" && x.IsActive, cancellationToken)
@@ -73,16 +74,16 @@ public sealed class AttendanceService : IAttendanceService
                 ? await _db.AttendanceWorkModes.FirstOrDefaultAsync(x => x.Id == workModeId.Value && x.IsActive, cancellationToken)
                 : await _db.AttendanceWorkModes.FirstOrDefaultAsync(x => x.Code == "ONSITE" && x.IsActive, cancellationToken);
         if (workMode == null) throw new InvalidOperationException("Select a valid active work mode.");
-        record ??= new AttendanceRecord { TenantId = person.TenantId, PersonId = person.PersonId, AttendanceDate = localDate, CreatedDate = localNow };
+        record ??= new AttendanceRecord { TenantId = person.TenantId, PersonId = person.PersonId, AttendanceDate = effectiveDate, CreatedDate = localNow };
         record.AttendanceEntryTypeId = attendanceRule.AttendanceEntryTypeId;
         record.AttendanceWorkMode = workMode;
-        record.AttendanceStatusId = nowTime <= shiftStart.AddMinutes(checkInAdjustMinutes)
+        record.AttendanceStatusId = attendanceRule.IsOpenAttendance || localNow <= shiftWindow.Start.AddMinutes(checkInAdjustMinutes)
             ? policy.PresentStatusId : policy.LateStatusId;
         record.CheckInUtc = localNow;
         record.ModifiedDate = localNow;
         if (record.Id == 0) _db.AttendanceRecords.Add(record);
         await _db.SaveChangesAsync(cancellationToken);
-        await EvaluateStatusesAsync(person.TenantId, localDate, localDate, cancellationToken);
+        await EvaluateStatusesAsync(person.TenantId, effectiveDate, effectiveDate, cancellationToken);
         return Map(person, record, localNow, timing, attendanceRule);
     }
 
@@ -1122,8 +1123,8 @@ public sealed class AttendanceService : IAttendanceService
                 localToday = PakistanClock.Today();
                 todayByZone[employee.TimeZoneId] = localToday;
             }
-            var shiftStart = ParseShift(employee.ShiftStartTime, new TimeOnly(9, 0));
-            var shiftEnd = ParseShift(employee.ShiftEndTime, new TimeOnly(18, 0));
+            var shiftStart = ParseShift(employee.ShiftStartTime);
+            var shiftEnd = ParseShift(employee.ShiftEndTime);
             var required = ShiftMinutes(employee.ShiftStartTime, employee.ShiftEndTime);
 
             for (var date = dateFrom; date <= dateTo && date <= localToday; date = date.AddDays(1))
@@ -1198,6 +1199,11 @@ public sealed class AttendanceService : IAttendanceService
 
         var policy = await LoadPolicyAsync(tenantId, cancellationToken);
         var displayStyles = await GetAttendanceDisplayStyleMapAsync(cancellationToken);
+        var ruleWorkingMinutes = await _db.AttendanceRuleSettings.AsNoTracking()
+            .Where(rule => rule.TenantId == tenantId && rule.IsActive && rule.IsApproved && rule.WorkingMinutes > 0)
+            .GroupBy(rule => rule.AttendanceEntryTypeId)
+            .Select(group => new { AttendanceEntryTypeId = group.Key, WorkingMinutes = group.Max(rule => rule.WorkingMinutes) })
+            .ToDictionaryAsync(item => item.AttendanceEntryTypeId, item => item.WorkingMinutes, cancellationToken);
 
         var rows = new List<DailyAttendanceRowDto>(sqlRows.Count);
         foreach (var source in sqlRows)
@@ -1207,19 +1213,28 @@ public sealed class AttendanceService : IAttendanceService
             var checkOutLocal = source.CheckOutUtc;
             var cameraCheckInLocal = source.CameraCheckInUtc;
             var cameraCheckOutLocal = source.CameraCheckOutUtc;
-            var shiftStart = ParseShift(source.ShiftStartTime, new TimeOnly(9, 0));
-            var shiftEnd = ParseShift(source.ShiftEndTime, new TimeOnly(18, 0));
             var shiftWindow = ResolveShiftWindow(source.AttendanceDate, source.ShiftStartTime, source.ShiftEndTime);
-            var working = source.CheckInUtc.HasValue && source.CheckOutUtc.HasValue
-                ? Math.Max(0, (int)Math.Floor((source.CheckOutUtc.Value - source.CheckInUtc.Value).TotalMinutes) - (source.TotalBreakMinutes ?? 0)) : 0;
+            var hasValidClosedInterval = source.CheckInUtc.HasValue && source.CheckOutUtc.HasValue &&
+                source.CheckOutUtc.Value >= source.CheckInUtc.Value;
+            var working = hasValidClosedInterval
+                ? Math.Max(0, (int)Math.Floor((source.CheckOutUtc!.Value - source.CheckInUtc!.Value).TotalMinutes) - (source.TotalBreakMinutes ?? 0))
+                : 0;
             var statusName = source.StatusName ?? string.Empty;
             var statusCode = source.StatusCode;
             var isScheduledOff = statusCode is not null &&
                 (statusCode.Equals("DO", StringComparison.OrdinalIgnoreCase) ||
                  statusCode.Equals("H", StringComparison.OrdinalIgnoreCase));
-            var required = isScheduledOff ? 0 : ShiftMinutes(source.ShiftStartTime, source.ShiftEndTime);
-            var late = !isScheduledOff && checkInLocal.HasValue ? Math.Max(0, (int)(TimeOnly.FromDateTime(checkInLocal.Value).ToTimeSpan() - shiftStart.ToTimeSpan()).TotalMinutes) : 0;
-            var early = !isScheduledOff && checkOutLocal.HasValue ? Math.Max(0, (int)(shiftEnd.ToTimeSpan() - TimeOnly.FromDateTime(checkOutLocal.Value).ToTimeSpan()).TotalMinutes) : 0;
+            var required = isScheduledOff ? 0 :
+                source.AttendanceEntryTypeId.HasValue &&
+                ruleWorkingMinutes.TryGetValue(source.AttendanceEntryTypeId.Value, out var configuredWorkingMinutes)
+                    ? configuredWorkingMinutes
+                    : ShiftMinutes(source.ShiftStartTime, source.ShiftEndTime);
+            var late = !isScheduledOff && checkInLocal.HasValue
+                ? Math.Max(0, (int)Math.Floor((checkInLocal.Value - shiftWindow.Start).TotalMinutes))
+                : 0;
+            var early = !isScheduledOff && checkOutLocal.HasValue
+                ? Math.Max(0, (int)Math.Floor((shiftWindow.End - checkOutLocal.Value).TotalMinutes))
+                : 0;
             var absentAfterShiftStartMinutes = source.AbsentAfterShiftStartMinutes ?? policy.AbsentAfterShiftStartMinutes;
             var earlyCheckoutAbsentMinutes = source.EarlyCheckoutAbsentAfterMinutes ?? policy.MissingCheckoutAfterShiftEndMinutes;
             var missingCheckoutAfterMinutes = source.MissingCheckoutAfterShiftEndMinutes ?? policy.MissingCheckoutAfterShiftEndMinutes;
@@ -1237,6 +1252,7 @@ public sealed class AttendanceService : IAttendanceService
             var absentByRule = !isScheduledOff &&
                 (missingCheckOut ||
                  (late > 0 && late >= absentAfterShiftStartMinutes) ||
+                 !hasValidClosedInterval && source.CheckOutUtc.HasValue ||
                  (early > earlyCheckoutAbsentMinutes));
             var displayCode = ResolveDailyAttendanceDisplayStatusCode(statusCode, late, early, missingCheckIn || absentByRule, statusName);
             displayStyles.TryGetValue(displayCode ?? string.Empty, out var displayStyle);
@@ -1485,6 +1501,11 @@ public sealed class AttendanceService : IAttendanceService
         decimal? WeekendChargeValue,
         int? AdjustAbsentDays);
 
+    private sealed record CheckInContext(
+        DateOnly AttendanceDate,
+        EffectiveTiming Timing,
+        (DateTime Start, DateTime End) ShiftWindow);
+
     private sealed record ValidatedTimingSchedule(
         int HolidayTypeId,
         string HolidayTypeCode,
@@ -1548,7 +1569,7 @@ public sealed class AttendanceService : IAttendanceService
                 effectiveHolidayTypeId = workingDay.LookupValueId;
                 holidayTypeCode = workingDay.ValueCode;
             }
-            workingMinutes = ShiftMinutes(timeFrom, timeTo);
+            workingMinutes = ShiftMinutes(timeFrom!, timeTo!);
         }
         else if (holidayTypeCode == WorkingDayCode)
         {
@@ -1997,7 +2018,11 @@ public sealed class AttendanceService : IAttendanceService
     {
         var shiftStart = timing.TimeFrom ?? person.ShiftStartTime;
         var shiftEnd = timing.TimeTo ?? person.ShiftEndTime;
-        var required = timing.IsOn ? ShiftMinutes(shiftStart, shiftEnd) : 0;
+        var required = timing.IsOn && attendanceRule?.IsOpenAttendance != true
+            ? attendanceRule?.WorkingMinutes is > 0
+                ? attendanceRule.WorkingMinutes.Value
+                : ShiftMinutes(shiftStart, shiftEnd)
+            : 0;
         var openCheckoutExpired = record?.CheckInUtc.HasValue == true &&
             record.CheckOutUtc.HasValue == false &&
             attendanceRule?.IsOpenAttendance != true &&
@@ -2050,13 +2075,54 @@ public sealed class AttendanceService : IAttendanceService
         var shiftStart = timing.TimeFrom ?? attendanceRule?.TimeFrom ?? person.ShiftStartTime;
         var shiftEnd = timing.TimeTo ?? attendanceRule?.TimeTo ?? person.ShiftEndTime;
         var window = ResolveShiftWindow(attendanceDate, shiftStart, shiftEnd);
-        return localNow >= window.End.AddMinutes(missingCheckoutAfterMinutes);
+        // The configured value is a complete grace window. At exactly the
+        // deadline checkout is still valid; it becomes absent after it passes.
+        return localNow > window.End.AddMinutes(missingCheckoutAfterMinutes);
+    }
+
+    private async Task<CheckInContext> ResolveCheckInContextAsync(
+        Person person,
+        EffectiveAttendanceRule attendanceRule,
+        DateOnly localDate,
+        DateTime localNow,
+        int beforeCheckInMinutes,
+        int absentAfterShiftStartMinutes,
+        CancellationToken cancellationToken)
+    {
+        var todayTiming = await ResolveEffectiveTimingAsync(person, localDate, attendanceRule, cancellationToken);
+        if (attendanceRule.IsOpenAttendance)
+            return new CheckInContext(
+                localDate,
+                todayTiming,
+                ResolveShiftWindow(localDate, todayTiming.TimeFrom ?? attendanceRule.TimeFrom, todayTiming.TimeTo ?? attendanceRule.TimeTo));
+
+        // A shift that begins before midnight belongs to that starting/business date,
+        // even when its permitted check-in window continues into the next calendar day.
+        var previousDate = localDate.AddDays(-1);
+        var previousTiming = await ResolveEffectiveTimingAsync(person, previousDate, attendanceRule, cancellationToken);
+        if (previousTiming.IsOn)
+        {
+            var previousWindow = ResolveShiftWindow(
+                previousDate,
+                previousTiming.TimeFrom ?? attendanceRule.TimeFrom,
+                previousTiming.TimeTo ?? attendanceRule.TimeTo);
+            if (previousWindow.End.Date > previousWindow.Start.Date &&
+                localNow >= previousWindow.Start.AddMinutes(-beforeCheckInMinutes) &&
+                localNow <= previousWindow.Start.AddMinutes(absentAfterShiftStartMinutes))
+                return new CheckInContext(previousDate, previousTiming, previousWindow);
+        }
+
+        var todayWindow = ResolveShiftWindow(
+            localDate,
+            todayTiming.TimeFrom ?? attendanceRule.TimeFrom,
+            todayTiming.TimeTo ?? attendanceRule.TimeTo);
+        return new CheckInContext(localDate, todayTiming, todayWindow);
     }
 
     private static (DateTime Start, DateTime End) ResolveShiftWindow(DateOnly attendanceDate, string start, string end)
     {
-        var startTime = ParseShift(start, new TimeOnly(9, 0));
-        var endTime = ParseShift(end, new TimeOnly(18, 0));
+        var startTime = ParseShift(start);
+        var endTime = ParseShift(end);
         var startDateTime = attendanceDate.ToDateTime(startTime);
         var endDateTime = attendanceDate.ToDateTime(endTime);
         if (endDateTime <= startDateTime) endDateTime = endDateTime.AddDays(1);
@@ -2065,13 +2131,17 @@ public sealed class AttendanceService : IAttendanceService
 
     private static int ShiftMinutes(string start, string end)
     {
-        if (!TimeOnly.TryParseExact(start, "HH:mm", CultureInfo.InvariantCulture, DateTimeStyles.None, out var from) || !TimeOnly.TryParseExact(end, "HH:mm", CultureInfo.InvariantCulture, DateTimeStyles.None, out var to)) return 540;
+        if (!TimeOnly.TryParseExact(start, "HH:mm", CultureInfo.InvariantCulture, DateTimeStyles.None, out var from) ||
+            !TimeOnly.TryParseExact(end, "HH:mm", CultureInfo.InvariantCulture, DateTimeStyles.None, out var to))
+            return 0;
         var minutes = (int)(to.ToTimeSpan() - from.ToTimeSpan()).TotalMinutes;
         return minutes > 0 ? minutes : minutes + 1440;
     }
 
-    private static TimeOnly ParseShift(string value, TimeOnly fallback) =>
-        TimeOnly.TryParseExact(value, "HH:mm", CultureInfo.InvariantCulture, DateTimeStyles.None, out var parsed) ? parsed : fallback;
+    private static TimeOnly ParseShift(string value) =>
+        TimeOnly.TryParseExact(value, "HH:mm", CultureInfo.InvariantCulture, DateTimeStyles.None, out var parsed)
+            ? parsed
+            : throw new InvalidOperationException("The mapped shift time is missing or invalid. Configure it in Map Attendance or Timing Chart.");
 
     private static int CountWorkingDays(int year, int month)
     {

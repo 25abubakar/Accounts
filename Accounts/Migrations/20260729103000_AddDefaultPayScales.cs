@@ -30,7 +30,13 @@ public sealed class AddDefaultPayScales : Migration
 
                 IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_SalaryScales_Tenant_DisplayOrder' AND object_id = OBJECT_ID(N'dbo.SalaryScales'))
                     CREATE INDEX IX_SalaryScales_Tenant_DisplayOrder ON dbo.SalaryScales(TenantId, DisplayOrder);
+            END
+            """);
 
+        migrationBuilder.Sql(
+            """
+            IF OBJECT_ID(N'dbo.SalaryScales', N'U') IS NOT NULL
+            BEGIN
                 DECLARE @DefaultPayScales TABLE
                 (
                     DisplayOrder int NOT NULL,

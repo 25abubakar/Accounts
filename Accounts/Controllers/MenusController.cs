@@ -263,7 +263,9 @@ namespace Accounts.Controllers
                 new("Staff & Persons",      "UserCheck",          "/hr/staff",             "HR Management",       1, new() { "EMPLOYEE_VIEW", "PERSON_VIEW" }),
                 new("Register Person",      "UserPlus",           "/hr/staff/register",    "HR Management",       2, new() { "PERSON_REGISTER" }),
                 new("Positions",            "Briefcase",          "/hr/vacancies",         "HR Management",       3, new() { "VACANCY_VIEW" }),
-                new("Reports",              "BarChart2",          "/hr/reports",           "HR Management",       4, new() { "EMPLOYEE_VIEW" }),
+                new("Process",              "Workflow",           null,                    "HR Management",       4, new() { "EMPLOYEE_VIEW" }),
+                new("Reports",              "BarChart2",          "/hr/process/report",    "Process",             1, new() { "EMPLOYEE_VIEW" }),
+                new("Task List",            "ListTodo",           "/hr/process/task-list", "Process",             2, new() { "EMPLOYEE_VIEW" }),
 
                 // Access Control (parent group)
                 new("Access Control",       "Shield",             null,                    null,                  4, new()),
@@ -290,51 +292,121 @@ namespace Accounts.Controllers
                 .Where(f => validKeys.Contains(f.FeatureKey))
                 .ToDictionaryAsync(f => f.FeatureKey, f => f.PermissionId);
 
-            // Existing menus — for idempotency checks (Protected against DB duplicates)
-            var existingByRoute = await _db.Menus
-                .Where(m => m.Route != null)
-                .GroupBy(m => m.Route!)
-                .ToDictionaryAsync(g => g.Key, g => g.First().Id);
+            var hrMenu = await _db.Menus
+                .FirstOrDefaultAsync(m => m.ParentId == null && m.Title == "HR Management");
 
-            var existingByTitle = await _db.Menus
-                .GroupBy(m => m.Title)
-                .ToDictionaryAsync(g => g.Key, g => g.First().Id);
+            if (hrMenu != null)
+            {
+                var legacyReports = await _db.Menus
+                    .FirstOrDefaultAsync(m =>
+                        m.ParentId == hrMenu.Id &&
+                        (m.Title == "Reports" || m.Route == "/hr/reports"));
+
+                var existingProcess = await _db.Menus
+                    .FirstOrDefaultAsync(m =>
+                        m.ParentId == hrMenu.Id &&
+                        m.Title == "Process");
+
+                if (legacyReports != null && existingProcess == null)
+                {
+                    legacyReports.Title = "Process";
+                    legacyReports.Icon = "Workflow";
+                    legacyReports.Route = null;
+                    legacyReports.ParentId = hrMenu.Id;
+                    legacyReports.SortOrder = 4;
+                    legacyReports.IsActive = true;
+                    await _db.SaveChangesAsync();
+                }
+                else if (legacyReports != null && existingProcess != null && legacyReports.Id != existingProcess.Id)
+                {
+                    legacyReports.Title = "Reports";
+                    legacyReports.Icon = "BarChart2";
+                    legacyReports.Route = "/hr/process/report";
+                    legacyReports.ParentId = existingProcess.Id;
+                    legacyReports.SortOrder = 1;
+                    legacyReports.IsActive = true;
+                    await _db.SaveChangesAsync();
+                }
+            }
+
+            // Existing menus — for idempotency checks (Protected against DB duplicates)
+            async Task<int?> ResolveParentIdAsync(string? parentTitle)
+            {
+                if (string.IsNullOrWhiteSpace(parentTitle)) return null;
+
+                return await _db.Menus
+                    .Where(menu => menu.IsActive && menu.Route == null && menu.Title == parentTitle)
+                    .OrderBy(menu => menu.ParentId == null ? 0 : 1)
+                    .ThenBy(menu => menu.SortOrder)
+                    .Select(menu => (int?)menu.Id)
+                    .FirstOrDefaultAsync();
+            }
 
             int added = 0, skipped = 0;
-            var addedParents = new List<Menu>();
-
-            // Pass 1: parent groups (no route, no parent)
-            foreach (var item in definitions.Where(d => d.Route == null && d.ParentTitle == null))
+            // Pass 1: parent groups (no route). This also supports nested groups such as HR Management > Process.
+            foreach (var item in definitions.Where(d => d.Route == null))
             {
-                if (existingByTitle.ContainsKey(item.Title)) { skipped++; continue; }
+                var parentId = await ResolveParentIdAsync(item.ParentTitle);
+
+                var existing = await _db.Menus
+                    .FirstOrDefaultAsync(menu =>
+                        menu.ParentId == parentId &&
+                        menu.Route == null &&
+                        menu.Title == item.Title);
+
+                if (existing != null)
+                {
+                    existing.Icon = item.Icon;
+                    existing.Route = null;
+                    existing.ParentId = parentId;
+                    existing.SortOrder = item.SortOrder;
+                    existing.IsActive = true;
+                    skipped++;
+                    continue;
+                }
 
                 var menu = new Menu
                 {
                     Title = item.Title,
                     Icon = item.Icon,
+                    ParentId = parentId,
                     SortOrder = item.SortOrder,
                     IsActive = true
                 };
                 _db.Menus.Add(menu);
-                addedParents.Add(menu);
                 added++;
-            }
-
-            if (addedParents.Count > 0)
-            {
                 await _db.SaveChangesAsync();
-                foreach (var parent in addedParents)
-                    existingByTitle[parent.Title] = parent.Id;
             }
 
             // Pass 2: leaf items (have a route)
             foreach (var item in definitions.Where(d => d.Route != null))
             {
-                if (existingByRoute.ContainsKey(item.Route!)) { skipped++; continue; }
+                var parentId = await ResolveParentIdAsync(item.ParentTitle);
 
-                int? parentId = null;
-                if (item.ParentTitle != null && existingByTitle.TryGetValue(item.ParentTitle, out int pid))
-                    parentId = pid;
+                var existing = await _db.Menus
+                    .Include(m => m.MenuPermissions)
+                    .FirstOrDefaultAsync(m =>
+                        m.Route == item.Route ||
+                        (m.ParentId == parentId && m.Title == item.Title));
+
+                if (existing != null)
+                {
+                    existing.Title = item.Title;
+                    existing.Icon = item.Icon;
+                    existing.Route = item.Route;
+                    existing.ParentId = parentId;
+                    existing.SortOrder = item.SortOrder;
+                    existing.IsActive = true;
+
+                    foreach (var key in item.Permissions.Where(k => featureMap.ContainsKey(k)))
+                    {
+                        var permissionId = featureMap[key];
+                        if (existing.MenuPermissions.All(p => p.PermissionId != permissionId))
+                            existing.MenuPermissions.Add(new MenuPermission { PermissionId = permissionId });
+                    }
+                    skipped++;
+                    continue;
+                }
 
                 var menu = new Menu
                 {
@@ -383,7 +455,10 @@ namespace Accounts.Controllers
                 ["/groups/registration"] = "/hr/vacancies",
                 ["/groups/staff"] = "/hr/staff",
                 ["/staff/register"] = "/hr/staff/register",
-                ["/hr/positions"] = "/hr/vacancies"
+                ["/hr/positions"] = "/hr/vacancies",
+                ["/hr/reports"] = "/hr/process/report",
+                ["/HR/REPORTS"] = "/hr/process/report",
+                ["/Hr/Reports"] = "/hr/process/report"
             };
 
             var menus = await _db.Menus.Where(m => m.Route != null).ToListAsync();

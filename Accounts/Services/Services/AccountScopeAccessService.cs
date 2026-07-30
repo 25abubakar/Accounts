@@ -1,5 +1,6 @@
 using Accounts.Data;
 using Accounts.Services.Interfaces;
+using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 
 namespace Accounts.Services.Services
@@ -13,6 +14,26 @@ namespace Accounts.Services.Services
         public async Task<AccountScopeAccessResult> ValidateAsync(
             string userId, CancellationToken cancellationToken = default)
         {
+            if (_db.Database.IsSqlServer())
+            {
+                var decisions = await _db.Database.SqlQueryRaw<AccountScopeValidationRow>(
+                    "EXEC dbo.usp_AccountScope_ValidateAccess @UserId",
+                    new SqlParameter("@UserId", userId))
+                    .ToListAsync(cancellationToken);
+
+                var decision = decisions.FirstOrDefault();
+
+                if (decision == null)
+                    return AccountScopeAccessResult.Denied("Unable to validate this account. Contact your administrator.");
+
+                return decision.IsAllowed
+                    ? AccountScopeAccessResult.Allowed()
+                    : new AccountScopeAccessResult(
+                        false,
+                        string.IsNullOrWhiteSpace(decision.Code) ? "ACCOUNT_SCOPE_DISABLED" : decision.Code,
+                        string.IsNullOrWhiteSpace(decision.Message) ? "This account is disabled or locked." : decision.Message);
+            }
+
             var user = await _db.Users.AsNoTracking()
                 .Where(u => u.Id == userId)
                 .Select(u => new
@@ -21,26 +42,7 @@ namespace Accounts.Services.Services
                     u.IsTenantAdmin,
                     u.TenantId,
                     u.LockoutEnabled,
-                    u.LockoutEnd,
-                    PersonIsActive = _db.Persons.IgnoreQueryFilters()
-                        .Where(p => p.IdentityUserId == u.Id)
-                        .Select(p => (bool?)p.IsActive)
-                        .FirstOrDefault(),
-                    EmployeeOrganizationId = _db.Persons.IgnoreQueryFilters()
-                        .Where(p => p.IdentityUserId == u.Id)
-                        .Select(p => p.Staff != null && p.Staff.Vacancy != null
-                            ? (int?)p.Staff.Vacancy.OrganizationId : null)
-                        .FirstOrDefault(),
-                    TenantExists = u.TenantId.HasValue && _db.Tenants
-                        .Any(t => t.Id == u.TenantId.Value),
-                    TenantIsActive = u.TenantId.HasValue
-                        ? _db.Tenants.Where(t => t.Id == u.TenantId.Value)
-                            .Select(t => (bool?)t.IsActive).FirstOrDefault()
-                        : null,
-                    TenantOrganizationTreeId = u.TenantId.HasValue
-                        ? _db.Tenants.Where(t => t.Id == u.TenantId.Value)
-                            .Select(t => (int?)t.OrganizationTreeId).FirstOrDefault()
-                        : null
+                    u.LockoutEnd
                 })
                 .SingleOrDefaultAsync(cancellationToken);
 
@@ -53,38 +55,53 @@ namespace Accounts.Services.Services
             if (!user.IsTenantAdmin && user.LockoutEnabled && user.LockoutEnd.HasValue && user.LockoutEnd > DateTimeOffset.UtcNow)
                 return AccountScopeAccessResult.Denied("This account is disabled or locked.");
 
-            if (!user.IsTenantAdmin && user.PersonIsActive == false)
-                return AccountScopeAccessResult.Denied("Your staff account is inactive. Contact your administrator.");
-
             if (!user.TenantId.HasValue)
                 return AccountScopeAccessResult.Denied("This account is not assigned to an active tenant.");
 
-            if (!user.TenantExists || user.TenantIsActive != true ||
-                !user.TenantOrganizationTreeId.HasValue)
+            var tenant = await _db.Tenants.AsNoTracking()
+                .Where(t => t.Id == user.TenantId.Value)
+                .Select(t => new
+                {
+                    t.IsActive,
+                    TenantOrganizationTreeId = (int?)t.OrganizationTreeId
+                })
+                .SingleOrDefaultAsync(cancellationToken);
+
+            if (tenant == null || tenant.IsActive != true ||
+                !tenant.TenantOrganizationTreeId.HasValue)
                 return AccountScopeAccessResult.Denied("Your tenant is currently disabled. Contact your administrator.");
+
+            var person = await _db.Persons.IgnoreQueryFilters().AsNoTracking()
+                .Where(p => p.IdentityUserId == userId)
+                .Select(p => new
+                {
+                    PersonIsActive = (bool?)p.IsActive,
+                    EmployeeOrganizationId = p.Staff != null && p.Staff.Vacancy != null
+                        ? (int?)p.Staff.Vacancy.OrganizationId
+                        : null
+                })
+                .FirstOrDefaultAsync(cancellationToken);
+
+            if (!user.IsTenantAdmin && person?.PersonIsActive == false)
+                return AccountScopeAccessResult.Denied("Your staff account is inactive. Contact your administrator.");
 
             // Load only the two relevant ancestor chains on SQL Server. The
             // previous request middleware copied the complete organization tree
             // for every API call, which became progressively slower as tenants
             // and departments were added.
-            var nodes = _db.Database.IsSqlServer()
-                ? await LoadRelevantSqlServerNodesAsync(
-                    user.TenantOrganizationTreeId.Value,
-                    user.EmployeeOrganizationId,
-                    cancellationToken)
-                : await _db.OrganizationTree.AsNoTracking()
-                    .Select(n => new OrganizationAccessNode
-                    {
-                        Id = n.Id,
-                        ParentId = n.ParentId,
-                        IsActive = n.IsActive,
-                        Name = n.Name,
-                        Label = n.Label
-                    })
-                    .ToListAsync(cancellationToken);
+            var nodes = await _db.OrganizationTree.AsNoTracking()
+                .Select(n => new OrganizationAccessNode
+                {
+                    Id = n.Id,
+                    ParentId = n.ParentId,
+                    IsActive = n.IsActive,
+                    Name = n.Name,
+                    Label = n.Label
+                })
+                .ToListAsync(cancellationToken);
             var byId = nodes.ToDictionary(n => n.Id);
             var visited = new HashSet<int>();
-            var currentId = user.TenantOrganizationTreeId;
+            var currentId = tenant.TenantOrganizationTreeId;
 
             while (currentId.HasValue && byId.TryGetValue(currentId.Value, out var node) && visited.Add(node.Id))
             {
@@ -97,7 +114,7 @@ namespace Accounts.Services.Services
             // Staff can sit below the tenant's Company node (Department/Branch/Team).
             // Validate that complete assignment chain as well so department switches
             // revoke both current sessions and future logins.
-            currentId = user.EmployeeOrganizationId;
+            currentId = person?.EmployeeOrganizationId;
             visited.Clear();
             while (currentId.HasValue && byId.TryGetValue(currentId.Value, out var employeeNode) && visited.Add(employeeNode.Id))
             {
@@ -110,32 +127,6 @@ namespace Accounts.Services.Services
             return AccountScopeAccessResult.Allowed();
         }
 
-        private async Task<List<OrganizationAccessNode>> LoadRelevantSqlServerNodesAsync(
-            int tenantOrganizationId,
-            int? employeeOrganizationId,
-            CancellationToken cancellationToken)
-        {
-            return await _db.Database.SqlQuery<OrganizationAccessNode>(
-                $"""
-                WITH Ancestors AS
-                (
-                    SELECT node.Id, node.ParentId, node.IsActive, node.Name, node.Label
-                    FROM dbo.OrganizationTree AS node
-                    WHERE node.Id = {tenantOrganizationId}
-                       OR node.Id = {employeeOrganizationId}
-
-                    UNION ALL
-
-                    SELECT parent.Id, parent.ParentId, parent.IsActive, parent.Name, parent.Label
-                    FROM dbo.OrganizationTree AS parent
-                    INNER JOIN Ancestors AS child ON child.ParentId = parent.Id
-                )
-                SELECT DISTINCT Id, ParentId, IsActive, Name, Label
-                FROM Ancestors
-                """)
-                .ToListAsync(cancellationToken);
-        }
-
         private sealed class OrganizationAccessNode
         {
             public int Id { get; set; }
@@ -143,6 +134,13 @@ namespace Accounts.Services.Services
             public bool IsActive { get; set; }
             public string Name { get; set; } = string.Empty;
             public string Label { get; set; } = string.Empty;
+        }
+
+        private sealed class AccountScopeValidationRow
+        {
+            public bool IsAllowed { get; set; }
+            public string Code { get; set; } = string.Empty;
+            public string Message { get; set; } = string.Empty;
         }
     }
 }
