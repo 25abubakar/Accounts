@@ -10,6 +10,14 @@ public sealed class ProcessLookupDto
     public bool RequiresComments { get; set; }
 }
 
+public sealed class ProcessReportSubmissionCapabilityDto
+{
+    public bool CanSubmit { get; set; }
+    public string? Reason { get; set; }
+    public Guid? ReportingManagerStaffId { get; set; }
+    public string? ReportingManagerName { get; set; }
+}
+
 public sealed class ProcessReportListDto
 {
     public long Id { get; set; }
@@ -34,6 +42,7 @@ public sealed class ProcessReportListDto
     public string SubjectName { get; set; } = string.Empty;
     public string? SubjectNumber { get; set; }
     public string? CurrentApproverName { get; set; }
+    public bool IsFinalApprover { get; set; }
     public DateTime CreatedDateUtc { get; set; }
     public DateTime? ModifiedDateUtc { get; set; }
     public DateTime? CompletedDateUtc { get; set; }

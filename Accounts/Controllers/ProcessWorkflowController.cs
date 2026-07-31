@@ -49,6 +49,35 @@ public sealed class ProcessWorkflowController : ControllerBase
         return Ok(rows);
     }
 
+    [HttpGet("submission-capability")]
+    public async Task<IActionResult> GetSubmissionCapability(CancellationToken ct)
+    {
+        ProcessReportSubmissionCapabilityDto? result = null;
+        await WithCommandAsync("dbo.usp_ProcessReport_SubmissionCapability", async command =>
+        {
+            AddScope(command);
+            await using var reader = await command.ExecuteReaderAsync(ct);
+            if (!await reader.ReadAsync(ct)) return;
+
+            var managerStaffOrdinal = reader.GetOrdinal("ReportingManagerStaffId");
+            result = new ProcessReportSubmissionCapabilityDto
+            {
+                CanSubmit = reader.GetBoolean(reader.GetOrdinal("CanSubmit")),
+                Reason = DbString(reader, "Reason"),
+                ReportingManagerStaffId = reader.IsDBNull(managerStaffOrdinal)
+                    ? null
+                    : reader.GetGuid(managerStaffOrdinal),
+                ReportingManagerName = DbString(reader, "ReportingManagerName")
+            };
+        }, ct);
+
+        return Ok(result ?? new ProcessReportSubmissionCapabilityDto
+        {
+            CanSubmit = false,
+            Reason = "No active reporting manager is configured for this staff member."
+        });
+    }
+
     [HttpGet("tasks")]
     public async Task<IActionResult> GetTasks([FromQuery] string mode = "INBOX", CancellationToken ct = default)
     {
@@ -305,6 +334,7 @@ public sealed class ProcessWorkflowController : ControllerBase
         SubjectName = reader.GetString(reader.GetOrdinal("SubjectName")),
         SubjectNumber = DbString(reader, "SubjectNumber"),
         CurrentApproverName = DbString(reader, "CurrentApproverName"),
+        IsFinalApprover = DbBoolean(reader, "IsFinalApprover"),
         CreatedDateUtc = reader.GetDateTime(reader.GetOrdinal("CreatedDateUtc")),
         ModifiedDateUtc = DbDate(reader, "ModifiedDateUtc"),
         CompletedDateUtc = DbDate(reader, "CompletedDateUtc"),
