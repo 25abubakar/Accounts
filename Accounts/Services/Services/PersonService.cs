@@ -606,6 +606,11 @@ namespace Accounts.Services.Services
                   .ToListAsync();
               foreach (var directReport in directReports)
                   directReport.ReportsToPersonId = null;
+              var alternativeDirectReports = await _db.Persons
+                  .Where(p => p.AlternativeReportsToPersonId == id)
+                  .ToListAsync();
+              foreach (var directReport in alternativeDirectReports)
+                  directReport.AlternativeReportsToPersonId = null;
   
               await using var transaction = await _db.Database.BeginTransactionAsync();
 

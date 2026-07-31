@@ -645,6 +645,11 @@ namespace Accounts.Data
                  .WithMany(x => x.DirectReports)
                  .HasForeignKey(x => x.ReportsToPersonId)
                  .OnDelete(DeleteBehavior.Restrict);
+                e.HasIndex(x => x.AlternativeReportsToPersonId);
+                e.HasOne(x => x.AlternativeReportsToPerson)
+                 .WithMany(x => x.AlternativeDirectReports)
+                 .HasForeignKey(x => x.AlternativeReportsToPersonId)
+                 .OnDelete(DeleteBehavior.Restrict);
             });
 
             builder.Entity<PersonAddress>(e =>

@@ -52,7 +52,14 @@ namespace Accounts.Controllers
                         ? (p.ReportsToPerson.Staff.Vacancy.Organization != null && p.ReportsToPerson.Staff.Vacancy.Organization.Label == "Department"
                             ? p.ReportsToPerson.Staff.Vacancy.Organization.Name : p.ReportsToPerson.Staff.Vacancy.Department) : null,
                     ReportsToDesignation = p.ReportsToPerson != null && p.ReportsToPerson.Staff != null && p.ReportsToPerson.Staff.Vacancy != null
-                        ? (p.ReportsToPerson.Staff.Vacancy.JobTitleNav != null ? p.ReportsToPerson.Staff.Vacancy.JobTitleNav.TitleName : p.ReportsToPerson.Staff.Vacancy.JobTitle) : null
+                        ? (p.ReportsToPerson.Staff.Vacancy.JobTitleNav != null ? p.ReportsToPerson.Staff.Vacancy.JobTitleNav.TitleName : p.ReportsToPerson.Staff.Vacancy.JobTitle) : null,
+                    p.AlternativeReportsToPersonId,
+                    AlternativeReportsToName = p.AlternativeReportsToPerson != null ? p.AlternativeReportsToPerson.FullName : null,
+                    AlternativeReportsToDepartment = p.AlternativeReportsToPerson != null && p.AlternativeReportsToPerson.Staff != null && p.AlternativeReportsToPerson.Staff.Vacancy != null
+                        ? (p.AlternativeReportsToPerson.Staff.Vacancy.Organization != null && p.AlternativeReportsToPerson.Staff.Vacancy.Organization.Label == "Department"
+                            ? p.AlternativeReportsToPerson.Staff.Vacancy.Organization.Name : p.AlternativeReportsToPerson.Staff.Vacancy.Department) : null,
+                    AlternativeReportsToDesignation = p.AlternativeReportsToPerson != null && p.AlternativeReportsToPerson.Staff != null && p.AlternativeReportsToPerson.Staff.Vacancy != null
+                        ? (p.AlternativeReportsToPerson.Staff.Vacancy.JobTitleNav != null ? p.AlternativeReportsToPerson.Staff.Vacancy.JobTitleNav.TitleName : p.AlternativeReportsToPerson.Staff.Vacancy.JobTitle) : null
                 }).OrderBy(x => x.FullName).ToListAsync(ct);
             return Ok(rows);
         }
@@ -79,20 +86,31 @@ namespace Accounts.Controllers
                     return BadRequest(new { message = "The selected reporting manager is outside your reporting hierarchy." });
             }
 
-            if (dto.ReportsToPersonId == personId)
+            if (dto.ReportsToPersonId == personId || dto.AlternativeReportsToPersonId == personId)
                 return BadRequest(new { message = "A staff member cannot report to themselves." });
+            if (dto.ReportsToPersonId.HasValue && dto.ReportsToPersonId == dto.AlternativeReportsToPersonId)
+                return BadRequest(new { message = "Primary and alternative reporting managers must be different people." });
 
             var people = await _db.Persons.Where(p => p.Staff != null).ToListAsync(ct);
             var person = people.SingleOrDefault(p => p.PersonId == personId);
             if (person == null) return NotFound(new { message = "Staff member not found." });
             if (dto.ReportsToPersonId.HasValue && people.All(p => p.PersonId != dto.ReportsToPersonId.Value))
                 return BadRequest(new { message = "The selected reporting manager is not available in this tenant." });
-
-            if (dto.ReportsToPersonId.HasValue)
+            if (dto.AlternativeReportsToPersonId.HasValue && people.All(p => p.PersonId != dto.AlternativeReportsToPersonId.Value))
+                return BadRequest(new { message = "The selected alternative reporting manager is not available in this tenant." });
+            if (dto.AlternativeReportsToPersonId.HasValue)
             {
+                var eligibleCandidates = await ResolveEligibleAlternativeReporterIdsAsync(personId, ct);
+                if (!eligibleCandidates.Contains(dto.AlternativeReportsToPersonId.Value))
+                    return BadRequest(new { message = "The alternative reporter must be an active staff member holding a role above the employee's role in the saved reporting hierarchy." });
+            }
+
+            foreach (var selectedManagerId in new[] { dto.ReportsToPersonId, dto.AlternativeReportsToPersonId })
+            {
+                if (!selectedManagerId.HasValue) continue;
                 var byId = people.ToDictionary(p => p.PersonId);
                 var visited = new HashSet<Guid> { personId };
-                var current = dto.ReportsToPersonId;
+                var current = selectedManagerId;
                 while (current.HasValue && byId.TryGetValue(current.Value, out var manager))
                 {
                     if (!visited.Add(manager.PersonId))
@@ -102,10 +120,126 @@ namespace Accounts.Controllers
             }
 
             person.ReportsToPersonId = dto.ReportsToPersonId;
+            person.AlternativeReportsToPersonId = dto.AlternativeReportsToPersonId;
             await _db.SaveChangesAsync(ct);
             var managerName = dto.ReportsToPersonId.HasValue
                 ? people.First(p => p.PersonId == dto.ReportsToPersonId.Value).FullName : "no reporting manager";
-            return Ok(new { message = $"{person.FullName} now reports to {managerName}." });
+            var alternativeName = dto.AlternativeReportsToPersonId.HasValue
+                ? people.First(p => p.PersonId == dto.AlternativeReportsToPersonId.Value).FullName : null;
+            return Ok(new
+            {
+                message = alternativeName == null
+                    ? $"{person.FullName} now reports to {managerName}."
+                    : $"{person.FullName} now reports to {managerName}, with {alternativeName} as the alternative."
+            });
+        }
+
+        [HttpGet("{personId:guid}/alternative-candidates")]
+        public async Task<IActionResult> GetAlternativeCandidates(Guid personId, CancellationToken ct)
+        {
+            if (!await HasReportToActionAsync("VIEW", ct)) return Forbid();
+
+            var fullAccess = await IsAuthorizedAdminAsync();
+            if (!fullAccess)
+            {
+                var visiblePersonIds = await ResolveVisibleReportToPersonIdsAsync(includeSelf: true, ct);
+                if (!visiblePersonIds.Contains(personId)) return Forbid();
+            }
+
+            var candidateIds = await ResolveEligibleAlternativeReporterIdsAsync(personId, ct);
+            var rows = await _db.Persons.AsNoTracking()
+                .Where(p => candidateIds.Contains(p.PersonId))
+                .Select(p => new
+                {
+                    p.PersonId,
+                    p.FullName,
+                    p.ProfilePhotoUrl,
+                    p.IsActive,
+                    EmployeeId = p.Staff!.LoginId,
+                    Department = p.Staff.Vacancy != null
+                        ? (p.Staff.Vacancy.Organization != null && p.Staff.Vacancy.Organization.Label == "Department"
+                            ? p.Staff.Vacancy.Organization.Name : p.Staff.Vacancy.Department) : null,
+                    Designation = p.Staff.Vacancy != null
+                        ? (p.Staff.Vacancy.JobTitleNav != null ? p.Staff.Vacancy.JobTitleNav.TitleName : p.Staff.Vacancy.JobTitle) : null
+                })
+                .OrderBy(p => p.FullName)
+                .ToListAsync(ct);
+
+            return Ok(rows);
+        }
+
+        private async Task<HashSet<Guid>> ResolveEligibleAlternativeReporterIdsAsync(Guid personId, CancellationToken ct)
+        {
+            var staff = await _db.Persons.AsNoTracking()
+                .Where(p => p.Staff != null && p.Staff.Vacancy != null && p.IsActive)
+                .Select(p => new AlternativeReporterStaffRow
+                {
+                    PersonId = p.PersonId,
+                    ReportsToPersonId = p.ReportsToPersonId,
+                    JobTitleId = p.Staff!.Vacancy!.JobTitleId,
+                    JobTitleName = p.Staff.Vacancy.JobTitleNav != null
+                        ? p.Staff.Vacancy.JobTitleNav.TitleName
+                        : p.Staff.Vacancy.JobTitle
+                })
+                .ToListAsync(ct);
+
+            var target = staff.SingleOrDefault(p => p.PersonId == personId)
+                ?? throw new KeyNotFoundException("The employee does not have an active staff assignment.");
+            var targetRole = RoleKey(target);
+            if (targetRole == null)
+                return new HashSet<Guid>();
+
+            var byPersonId = staff.ToDictionary(p => p.PersonId);
+            var upperRolesByRole = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
+            foreach (var employee in staff)
+            {
+                var employeeRole = RoleKey(employee);
+                if (employeeRole == null || !employee.ReportsToPersonId.HasValue ||
+                    !byPersonId.TryGetValue(employee.ReportsToPersonId.Value, out var manager))
+                    continue;
+
+                var managerRole = RoleKey(manager);
+                if (managerRole == null || employeeRole.Equals(managerRole, StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                if (!upperRolesByRole.TryGetValue(employeeRole, out var upperRoles))
+                    upperRolesByRole[employeeRole] = upperRoles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                upperRoles.Add(managerRole);
+            }
+
+            var eligibleRoleKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var pendingRoles = new Queue<string>();
+            pendingRoles.Enqueue(targetRole);
+            while (pendingRoles.TryDequeue(out var role))
+            {
+                if (!upperRolesByRole.TryGetValue(role, out var upperRoles)) continue;
+                foreach (var upperRole in upperRoles)
+                {
+                    if (eligibleRoleKeys.Add(upperRole))
+                        pendingRoles.Enqueue(upperRole);
+                }
+            }
+
+            return staff
+                .Where(p => p.PersonId != personId && RoleKey(p) is { } role && eligibleRoleKeys.Contains(role))
+                .Select(p => p.PersonId)
+                .ToHashSet();
+        }
+
+        private static string? RoleKey(AlternativeReporterStaffRow staff)
+        {
+            if (staff.JobTitleId.HasValue) return $"ID:{staff.JobTitleId.Value}";
+            return string.IsNullOrWhiteSpace(staff.JobTitleName)
+                ? null
+                : $"NAME:{staff.JobTitleName.Trim()}";
+        }
+
+        private sealed class AlternativeReporterStaffRow
+        {
+            public Guid PersonId { get; init; }
+            public Guid? ReportsToPersonId { get; init; }
+            public int? JobTitleId { get; init; }
+            public string? JobTitleName { get; init; }
         }
 
         private async Task<bool> IsAuthorizedAdminAsync()
@@ -209,5 +343,9 @@ namespace Accounts.Controllers
         }
     }
 
-    public sealed class UpdateReportToDto { public Guid? ReportsToPersonId { get; set; } }
+    public sealed class UpdateReportToDto
+    {
+        public Guid? ReportsToPersonId { get; set; }
+        public Guid? AlternativeReportsToPersonId { get; set; }
+    }
 }

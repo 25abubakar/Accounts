@@ -69,6 +69,14 @@ namespace Accounts.Models
 
         public ICollection<Person> DirectReports { get; set; } = new List<Person>();
 
+        /// <summary>Optional second reporting manager within the same tenant.</summary>
+        public Guid? AlternativeReportsToPersonId { get; set; }
+
+        [ForeignKey(nameof(AlternativeReportsToPersonId))]
+        public Person? AlternativeReportsToPerson { get; set; }
+
+        public ICollection<Person> AlternativeDirectReports { get; set; } = new List<Person>();
+
         public ICollection<PersonAddress>  Addresses     { get; set; } = new List<PersonAddress>();
         public ICollection<PersonContact>  Contacts      { get; set; } = new List<PersonContact>();
         public StaffVacancy?               Staff         { get; set; }
