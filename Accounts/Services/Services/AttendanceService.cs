@@ -643,6 +643,9 @@ public sealed class AttendanceService : IAttendanceService
         bool includeAllAttendanceTypes = false,
         CancellationToken cancellationToken = default)
     {
+        var canViewHistory = organizationWide ||
+            await CanViewHistoricalAttendanceAsync(identityUserId, organizationWide, cancellationToken);
+        EnsureAllowedAttendancePeriod(canViewHistory, dateFrom, dateTo);
         var report = await GetAttendanceReportAsync(
             identityUserId, organizationWide, selfOnly: false, dateFrom, dateTo, cancellationToken);
 
@@ -832,16 +835,58 @@ public sealed class AttendanceService : IAttendanceService
         };
     }
 
-    public Task<DailyAttendanceReportDto> GetStaffAttendanceReportAsync(
+    public async Task<DailyAttendanceReportDto> GetStaffAttendanceReportAsync(
         string identityUserId, bool organizationWide, DateOnly dateFrom, DateOnly dateTo,
-        CancellationToken cancellationToken = default) =>
-        GetAttendanceReportAsync(
+        CancellationToken cancellationToken = default)
+    {
+        var visibility = await ResolveAttendanceVisibilityAsync(
+            identityUserId, organizationWide, selfOnly: false, cancellationToken);
+        var canViewHistory = organizationWide ||
+            visibility.VisiblePersonIds.Any(id => id != visibility.CallerPersonId) ||
+            await HasExplicitHistoricalAttendanceAccessAsync(identityUserId, cancellationToken);
+        EnsureAllowedAttendancePeriod(canViewHistory, dateFrom, dateTo);
+        return await GetAttendanceReportAsync(
             identityUserId,
             organizationWide,
-            selfOnly: !organizationWide,
+            selfOnly: false,
             dateFrom,
             dateTo,
             cancellationToken);
+    }
+
+    public async Task<bool> CanViewHistoricalAttendanceAsync(
+        string identityUserId, bool organizationWide, CancellationToken cancellationToken = default)
+    {
+        if (organizationWide) return true;
+        var visibility = await ResolveAttendanceVisibilityAsync(
+            identityUserId, organizationWide: false, selfOnly: false, cancellationToken);
+        return visibility.VisiblePersonIds.Any(id => id != visibility.CallerPersonId) ||
+            await HasExplicitHistoricalAttendanceAccessAsync(identityUserId, cancellationToken);
+    }
+
+    private async Task<bool> HasExplicitHistoricalAttendanceAccessAsync(
+        string identityUserId, CancellationToken cancellationToken)
+    {
+        return await _db.AccessFeatures.AsNoTracking().AnyAsync(access =>
+            access.IsAllow && access.Feature != null &&
+            access.StaffMenuAccess != null && access.StaffMenuAccess.IsAllow &&
+            access.StaffMenuAccess.Menu != null &&
+            access.StaffMenuAccess.Menu.Route == "/attendance/staff" &&
+            access.StaffMenuAccess.Staff != null &&
+            access.StaffMenuAccess.Staff.Person != null &&
+            access.StaffMenuAccess.Staff.Person.IdentityUserId == identityUserId &&
+            access.Feature.FeatureKey == "MENU_" + access.StaffMenuAccess.MenuId + "_HISTORY", cancellationToken);
+    }
+
+    private static void EnsureAllowedAttendancePeriod(bool canViewHistory, DateOnly dateFrom, DateOnly dateTo)
+    {
+        if (canViewHistory) return;
+        var today = DateOnly.FromDateTime(PakistanClock.Now());
+        var currentMonthStart = new DateOnly(today.Year, today.Month, 1);
+        var currentMonthEnd = currentMonthStart.AddMonths(1).AddDays(-1);
+        if (dateFrom < currentMonthStart || dateTo > currentMonthEnd)
+            throw new InvalidOperationException("Employees can view attendance for the current month only.");
+    }
 
     public async Task<AttendanceDeductionReportDto> GetDeductionReportAsync(
         string identityUserId,
@@ -2150,6 +2195,10 @@ public sealed class AttendanceService : IAttendanceService
     {
         await AttendanceRecordSchema.EnsureCameraColumnsAsync(_db, cancellationToken);
         if (year is < 2000 or > 2100 || month is < 1 or > 12) throw new ArgumentOutOfRangeException(nameof(month), "A valid report month is required.");
+        var requestedFrom = new DateOnly(year, month, 1);
+        var canViewRequestedHistory = canViewOthers ||
+            await HasExplicitHistoricalAttendanceAccessAsync(identityUserId, cancellationToken);
+        EnsureAllowedAttendancePeriod(canViewRequestedHistory, requestedFrom, requestedFrom.AddMonths(1).AddDays(-1));
         var callerPersonId = await _db.Persons.AsNoTracking().Where(p => p.IdentityUserId == identityUserId).Select(p => (Guid?)p.PersonId).FirstOrDefaultAsync(cancellationToken);
         var personId = canViewOthers && requestedPersonId.HasValue ? requestedPersonId.Value : callerPersonId
             ?? throw new KeyNotFoundException("No employee profile is linked to this account.");

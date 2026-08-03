@@ -42,6 +42,7 @@ public sealed class ProcessReportListDto
     public string SubjectName { get; set; } = string.Empty;
     public string? SubjectNumber { get; set; }
     public string? CurrentApproverName { get; set; }
+    public bool IsRequester { get; set; }
     public bool IsFinalApprover { get; set; }
     public DateTime CreatedDateUtc { get; set; }
     public DateTime? ModifiedDateUtc { get; set; }

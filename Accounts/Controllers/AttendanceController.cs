@@ -551,6 +551,10 @@ public sealed class AttendanceController : ControllerBase
     public Task<IActionResult> StaffAttendanceReport([FromQuery] DateOnly dateFrom, [FromQuery] DateOnly dateTo, CancellationToken ct) =>
         Execute(() => _service.GetStaffAttendanceReportAsync(UserId(), CanViewOrganization(), dateFrom, dateTo, ct));
 
+    [HttpGet("report/staff-attendance/access")]
+    public async Task<IActionResult> StaffAttendanceAccess(CancellationToken ct) =>
+        Ok(new { canViewHistorical = await _service.CanViewHistoricalAttendanceAsync(UserId(), CanViewOrganization(), ct) });
+
     [HttpGet("report/monthly-chart")]
     public Task<IActionResult> MonthlyChart([FromQuery] int year, [FromQuery] int month, CancellationToken ct) =>
         Execute(() => _service.GetMonthlyChartAsync(UserId(), CanViewOrganization(), year, month, ct));

@@ -20,7 +20,7 @@ public sealed class UseAlternativeReporterWhenPrimaryIsOnLeave : Migration
         migrationBuilder.Sql(BuildSubmitProcedure(useAlternativeReporter: false));
     }
 
-    private static string BuildSubmitProcedure(bool useAlternativeReporter)
+    internal static string BuildSubmitProcedure(bool useAlternativeReporter)
     {
         var routeSql = useAlternativeReporter
             ? AlternativeReporterRouteSql
@@ -99,6 +99,12 @@ public sealed class UseAlternativeReporterWhenPrimaryIsOnLeave : Migration
             """;
     }
 
+    // LEFT JOIN is forbidden inside the recursive member of a SQL Server recursive CTE
+    // (error 4011: "Outer join is not allowed in the recursive part of a recursive CTE").
+    // Both LEFT JOINs for alternativeManager have been replaced with CROSS APPLY
+    // (SELECT TOP(1) ...) which SQL Server permits in recursive members and is
+    // semantically identical — the subquery returns NULL columns when no row matches,
+    // so the CASE expression falls back to primaryManager exactly as a LEFT JOIN would.
     private const string AlternativeReporterRouteSql = """
                 DECLARE @RouteDate date=CONVERT(date,
                     SYSUTCDATETIME() AT TIME ZONE 'UTC' AT TIME ZONE 'Pakistan Standard Time');
@@ -110,78 +116,60 @@ public sealed class UseAlternativeReporterWhenPrimaryIsOnLeave : Migration
                     HasCycle bit NOT NULL
                 );
 
-                ;WITH ReportingChain AS
+                ;WITH EffectiveReportingEdges AS
                 (
+                    SELECT employee.PersonId,
+                           CASE
+                               WHEN alternativeManager.PersonId IS NOT NULL
+                                AND leaveProfile.PersonId IS NOT NULL
+                               THEN alternativeManager.PersonId
+                               ELSE primaryManager.PersonId
+                           END AS EffectiveManagerId
+                    FROM dbo.Persons employee
+                    JOIN dbo.Persons primaryManager
+                      ON primaryManager.PersonId=employee.ReportsToPersonId
+                     AND primaryManager.TenantId=@TenantId
+                     AND primaryManager.IsActive=1
+                    LEFT JOIN dbo.Persons alternativeManager
+                      ON alternativeManager.PersonId=employee.AlternativeReportsToPersonId
+                     AND alternativeManager.TenantId=@TenantId
+                     AND alternativeManager.IsActive=1
+                    LEFT JOIN dbo.PersonHrProfiles leaveProfile
+                      ON leaveProfile.PersonId=primaryManager.PersonId
+                     AND leaveProfile.TenantId=@TenantId
+                     AND leaveProfile.LeaveFrom IS NOT NULL
+                     AND CONVERT(date,leaveProfile.LeaveFrom)<=@RouteDate
+                     AND CONVERT(date,COALESCE(leaveProfile.LeaveTo,leaveProfile.LeaveFrom))>=@RouteDate
+                    WHERE employee.TenantId=@TenantId AND employee.IsActive=1
+                ),
+                ReportingChain AS
+                (
+                    -- Anchor member: first manager above the requester.
                     SELECT 1 AS StepOrder,effectiveManager.PersonId,effectiveManager.ReportsToPersonId,
                            CONVERT(nvarchar(max),N'|'+CONVERT(nvarchar(36),@RequesterPersonId)+N'|'+
                                CONVERT(nvarchar(36),effectiveManager.PersonId)+N'|') AS RoutePath,
                            CONVERT(bit,CASE WHEN effectiveManager.PersonId=@RequesterPersonId THEN 1 ELSE 0 END) AS HasCycle
-                    FROM dbo.Persons requester
-                    JOIN dbo.Persons primaryManager
-                      ON primaryManager.PersonId=requester.ReportsToPersonId
-                     AND primaryManager.TenantId=@TenantId
-                     AND primaryManager.IsActive=1
-                    LEFT JOIN dbo.Persons alternativeManager
-                      ON alternativeManager.PersonId=requester.AlternativeReportsToPersonId
-                     AND alternativeManager.TenantId=@TenantId
-                     AND alternativeManager.IsActive=1
-                    CROSS APPLY
-                    (
-                        SELECT CASE
-                            WHEN alternativeManager.PersonId IS NOT NULL AND EXISTS
-                            (
-                                SELECT 1 FROM dbo.PersonHrProfiles leaveProfile
-                                WHERE leaveProfile.PersonId=primaryManager.PersonId
-                                  AND leaveProfile.TenantId=@TenantId
-                                  AND leaveProfile.LeaveFrom IS NOT NULL
-                                  AND CONVERT(date,leaveProfile.LeaveFrom)<=@RouteDate
-                                  AND CONVERT(date,COALESCE(leaveProfile.LeaveTo,leaveProfile.LeaveFrom))>=@RouteDate
-                            ) THEN alternativeManager.PersonId
-                            ELSE primaryManager.PersonId
-                        END AS PersonId
-                    ) selectedManager
+                    FROM EffectiveReportingEdges edge
                     JOIN dbo.Persons effectiveManager
-                      ON effectiveManager.PersonId=selectedManager.PersonId
+                      ON effectiveManager.PersonId=edge.EffectiveManagerId
                      AND effectiveManager.TenantId=@TenantId
                      AND effectiveManager.IsActive=1
-                    WHERE requester.PersonId=@RequesterPersonId AND requester.TenantId=@TenantId
+                    WHERE edge.PersonId=@RequesterPersonId
 
                     UNION ALL
 
+                    -- Recursive member: walk up one level at a time.
+                    -- CROSS APPLY replaces LEFT JOIN here because SQL Server forbids
+                    -- outer joins in the recursive part of a recursive CTE.
                     SELECT chain.StepOrder+1,effectiveManager.PersonId,effectiveManager.ReportsToPersonId,
                            CONVERT(nvarchar(max),chain.RoutePath+CONVERT(nvarchar(36),effectiveManager.PersonId)+N'|'),
                            CONVERT(bit,CASE WHEN CHARINDEX(
                                N'|'+CONVERT(nvarchar(36),effectiveManager.PersonId)+N'|',chain.RoutePath
                            )>0 THEN 1 ELSE 0 END)
                     FROM ReportingChain chain
-                    JOIN dbo.Persons currentApprover
-                      ON currentApprover.PersonId=chain.PersonId
-                     AND currentApprover.TenantId=@TenantId
-                    JOIN dbo.Persons primaryManager
-                      ON primaryManager.PersonId=currentApprover.ReportsToPersonId
-                     AND primaryManager.TenantId=@TenantId
-                     AND primaryManager.IsActive=1
-                    LEFT JOIN dbo.Persons alternativeManager
-                      ON alternativeManager.PersonId=currentApprover.AlternativeReportsToPersonId
-                     AND alternativeManager.TenantId=@TenantId
-                     AND alternativeManager.IsActive=1
-                    CROSS APPLY
-                    (
-                        SELECT CASE
-                            WHEN alternativeManager.PersonId IS NOT NULL AND EXISTS
-                            (
-                                SELECT 1 FROM dbo.PersonHrProfiles leaveProfile
-                                WHERE leaveProfile.PersonId=primaryManager.PersonId
-                                  AND leaveProfile.TenantId=@TenantId
-                                  AND leaveProfile.LeaveFrom IS NOT NULL
-                                  AND CONVERT(date,leaveProfile.LeaveFrom)<=@RouteDate
-                                  AND CONVERT(date,COALESCE(leaveProfile.LeaveTo,leaveProfile.LeaveFrom))>=@RouteDate
-                            ) THEN alternativeManager.PersonId
-                            ELSE primaryManager.PersonId
-                        END AS PersonId
-                    ) selectedManager
+                    JOIN EffectiveReportingEdges edge ON edge.PersonId=chain.PersonId
                     JOIN dbo.Persons effectiveManager
-                      ON effectiveManager.PersonId=selectedManager.PersonId
+                      ON effectiveManager.PersonId=edge.EffectiveManagerId
                      AND effectiveManager.TenantId=@TenantId
                      AND effectiveManager.IsActive=1
                     WHERE chain.HasCycle=0 AND chain.StepOrder<50

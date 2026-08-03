@@ -334,6 +334,7 @@ public sealed class ProcessWorkflowController : ControllerBase
         SubjectName = reader.GetString(reader.GetOrdinal("SubjectName")),
         SubjectNumber = DbString(reader, "SubjectNumber"),
         CurrentApproverName = DbString(reader, "CurrentApproverName"),
+        IsRequester = DbBoolean(reader, "IsRequester"),
         IsFinalApprover = DbBoolean(reader, "IsFinalApprover"),
         CreatedDateUtc = reader.GetDateTime(reader.GetOrdinal("CreatedDateUtc")),
         ModifiedDateUtc = DbDate(reader, "ModifiedDateUtc"),
