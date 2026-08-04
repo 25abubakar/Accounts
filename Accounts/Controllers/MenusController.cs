@@ -32,7 +32,7 @@ namespace Accounts.Controllers
 
         // ── Create ────────────────────────────────────────────────────────────
 
-        [HasPermission("ACCESS_GROUP_EDIT")]
+        [Authorize(Roles = "SuperAdmin")]
         [HttpPost]
         public async Task<IActionResult> CreateMenu([FromBody] CreateMenuDto dto)
         {
@@ -69,7 +69,7 @@ namespace Accounts.Controllers
         }
 
         /// <summary>Flat list of all menus for admin management.</summary>
-        [HasPermission("ACCESS_GROUP_VIEW")]
+        [Authorize(Roles = "SuperAdmin")]
         [HttpGet]
         public async Task<IActionResult> GetAll()
         {
@@ -78,7 +78,7 @@ namespace Accounts.Controllers
         }
 
         /// <summary>All menus with their assigned permission keys.</summary>
-        [HasPermission("ACCESS_GROUP_VIEW")]
+        [Authorize(Roles = "SuperAdmin")]
         [HttpGet("with-permissions")]
         public async Task<IActionResult> GetMenusWithPermissions()
         {
@@ -107,7 +107,7 @@ namespace Accounts.Controllers
 
         // ── Delete ────────────────────────────────────────────────────────────
 
-        [HasPermission("ACCESS_GROUP_EDIT")]
+        [Authorize(Roles = "SuperAdmin")]
         [HttpPut("{id:int}")]
         public async Task<IActionResult> UpdateMenu(int id, [FromBody] CreateMenuDto dto)
         {
@@ -127,7 +127,7 @@ namespace Accounts.Controllers
             }
         }
 
-        [HasPermission("ACCESS_GROUP_EDIT")]
+        [Authorize(Roles = "SuperAdmin")]
         [HttpDelete("{id:int}")]
         public async Task<IActionResult> Deactivate(int id)
         {
@@ -142,7 +142,7 @@ namespace Accounts.Controllers
         /// Assign required permission keys to a menu item.
         /// Send empty array [] to make it public (visible to all authenticated users).
         /// </summary>
-        [HasPermission("ACCESS_GROUP_ASSIGN")]
+        [Authorize(Roles = "SuperAdmin")]
         [HttpPut("{id:int}/permissions")]
         public async Task<IActionResult> SetMenuPermissions(int id, [FromBody] List<string> permissionKeys)
         {
@@ -187,7 +187,7 @@ namespace Accounts.Controllers
             });
         }
 
-        [HasPermission("ACCESS_GROUP_ASSIGN")]
+        [Authorize(Roles = "SuperAdmin")]
         [HttpPost("bulk-permissions")]
         public async Task<IActionResult> BulkSetPermissions([FromBody] List<MenuPermissionDto> items)
         {

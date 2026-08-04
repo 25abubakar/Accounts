@@ -4,6 +4,7 @@ using Accounts.Services.Interfaces;
 using Accounts.Services.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
 using System.Security.Claims;
 
@@ -34,24 +35,26 @@ namespace Accounts.Controllers
             _db            = db;
         }
 
-        /// <summary>Register a new user with a role (Manager / Developer / AssistantManager)</summary>
+        /// <summary>
+        /// Legacy generic registration is disabled. TenantAdmins are provisioned
+        /// atomically with a tenant; staff accounts are created through Persons.
+        /// </summary>
         [HttpPost("register")]
-        [Authorize(Roles = "SuperAdmin,Admin")]
-        public async Task<IActionResult> Register([FromBody] RegisterDto dto)
-        {
-            if (!ModelState.IsValid) return BadRequest(ModelState);
-            var (success, message, response) = await _service.RegisterAsync(dto);
-            if (!success)
+        [Authorize(Roles = "SuperAdmin")]
+        [ApiExplorerSettings(IgnoreApi = true)]
+        public IActionResult Register([FromBody] RegisterDto dto) =>
+            StatusCode(StatusCodes.Status410Gone, new
             {
-                response.Message = message;
-                return message.Contains("already") ? Conflict(response) : BadRequest(response);
-            }
-            return Ok(response);
-        }
+                success = false,
+                code = "GENERIC_REGISTRATION_DISABLED",
+                message = "Use tenant provisioning for TenantAdmins and person registration for tenant staff."
+            });
 
         /// <summary>Login with email and password</summary>
         [HttpPost("login")]
         [AllowAnonymous]
+        [IgnoreAntiforgeryToken]
+        [EnableRateLimiting("authentication")]
         public async Task<IActionResult> Login([FromBody] LoginDto dto)
         {
             if (!ModelState.IsValid) return BadRequest(ModelState);
@@ -186,16 +189,32 @@ namespace Accounts.Controllers
             if (string.IsNullOrWhiteSpace(identityUserId))
                 return Unauthorized(new { success = false, message = "Not authenticated." });
 
-            var isTenantAdmin = User.IsInRole("TenantAdmin") ||
-                string.Equals(User.FindFirstValue(ITenantService.ClaimIsTenantAdmin), "true", StringComparison.OrdinalIgnoreCase);
-            var isFullAccess = User.IsInRole("SuperAdmin") || User.IsInRole("Admin") || isTenantAdmin;
-            var session = await _session.GetSessionAsync(
-                identityUserId,
-                isFullAccess,
-                false,
-                includeNavigation,
-                ct);
-            return Ok(new { success = true, data = session });
+            // Tenant Admin has tenant-scoped grants; it is not the same as the
+            // unrestricted platform/legacy Admin path.
+            var isFullAccess = User.IsInRole("SuperAdmin");
+            try
+            {
+                var session = await _session.GetSessionAsync(
+                    identityUserId,
+                    isFullAccess,
+                    false,
+                    includeNavigation,
+                    // Session bootstrap is a short, consistency-critical read.
+                    // Let it finish even when a previous browser navigation is
+                    // replaced; cancelling SqlClient mid-command can put that
+                    // command into the severe "results discarded" state.
+                    CancellationToken.None);
+                return Ok(new { success = true, data = session });
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                // Navigation, refresh and duplicate bootstrap calls can abort the
+                // previous session request while EF Core is reading tenant data.
+                // This is an expected client-disconnect outcome, not an API error.
+                // Handle it at the controller boundary so it never appears as a
+                // user-unhandled exception while debugging.
+                return StatusCode(499);
+            }
         }
 
         /// <summary>Assign a role to an existing user</summary>
@@ -239,21 +258,26 @@ namespace Accounts.Controllers
         /// </summary>
         [HttpGet("my-menus")]
         [Authorize]
-        public async Task<IActionResult> GetMyMenus(CancellationToken ct)
+        public async Task<IActionResult> GetMyMenus(CancellationToken requestCancellationToken)
         {
+            // Menu bootstrap consists only of bounded, read-only queries and is
+            // cached into the client auth state. Do not cancel SqlClient halfway
+            // through these commands when React replaces an in-flight request.
+            // The disconnected response will simply be discarded by ASP.NET.
+            _ = requestCancellationToken;
+            var ct = CancellationToken.None;
+
             var identityUserId = User.FindFirstValue(ClaimTypes.NameIdentifier);
             if (string.IsNullOrWhiteSpace(identityUserId))
                 return Unauthorized(new { status = false, message = "Invalid token" });
 
-            // ── SuperAdmin / Admin gets everything without any permission checks ──
-            bool isFullAccess = User.IsInRole("SuperAdmin") || User.IsInRole("Admin") || User.IsInRole("TenantAdmin") ||
-                string.Equals(User.FindFirstValue(ITenantService.ClaimIsTenantAdmin), "true", StringComparison.OrdinalIgnoreCase);
+            bool isFullAccess = User.IsInRole("SuperAdmin");
             _ = int.TryParse(User.FindFirstValue(ITenantService.ClaimTenantId), out var claimedTenantId);
             var appUser = new
             {
                 IsSuperAdmin = User.IsInRole("SuperAdmin") ||
                     string.Equals(User.FindFirstValue(ITenantService.ClaimIsSuperAdmin), "true", StringComparison.OrdinalIgnoreCase),
-                IsTenantAdmin = string.Equals(
+                IsTenantAdmin = User.IsInRole("TenantAdmin") || string.Equals(
                     User.FindFirstValue(ITenantService.ClaimIsTenantAdmin),
                     "true",
                     StringComparison.OrdinalIgnoreCase),
@@ -262,25 +286,47 @@ namespace Accounts.Controllers
 
             if (appUser?.IsSuperAdmin == true)
             {
-                // Super Admin sees the FULL menu catalog.
-                // They need to see every menu so they can:
-                //   (a) know what features exist in the system
-                //   (b) delegate any of them to Tenant Admins via TenantMenuPermissions
-                //
-                // Data privacy is enforced at the API layer (StaffController,
-                // PersonsController, VacanciesController all return 403 for Super Admin),
-                // NOT by hiding sidebar entries.  The sidebar shows the routes; the
-                // controllers decide what data comes back when those routes call the API.
                 var allMenus = await _db.Menus.AsNoTracking()
                     .Where(m => m.IsActive)
                     .OrderBy(m => m.SortOrder)
                     .ToListAsync(ct);
 
-                var allLookup = allMenus.ToLookup(m => m.ParentId);
-                var saMenus   = BuildFullTreeStatic(null, allLookup);
+                var platformRoutePrefixes = new[]
+                {
+                    "/dashboard",
+                    "/groups/",
+                    "/organization",
+                    "/tenants",
+                    "/settings/"
+                };
+                var byId = allMenus.ToDictionary(menu => menu.Id);
+                var visibleIds = allMenus
+                    .Where(menu => !string.IsNullOrWhiteSpace(menu.Route) &&
+                                   platformRoutePrefixes.Any(prefix =>
+                                       menu.Route!.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)))
+                    .Select(menu => menu.Id)
+                    .ToHashSet();
+                foreach (var menuId in visibleIds.ToList())
+                {
+                    var current = byId.GetValueOrDefault(menuId);
+                    while (current?.ParentId != null &&
+                           byId.TryGetValue(current.ParentId.Value, out var parent))
+                    {
+                        visibleIds.Add(parent.Id);
+                        current = parent;
+                    }
+                }
 
-                var allFeatureKeys = await _db.Features.AsNoTracking()
-                    .Select(f => f.FeatureKey).ToListAsync(ct);
+                var platformLookup = allMenus
+                    .Where(menu => visibleIds.Contains(menu.Id))
+                    .ToLookup(menu => menu.ParentId);
+                var saMenus = BuildFullTreeStatic(null, platformLookup);
+                var platformFeatureKeys = await _db.MenuPermissions
+                    .AsNoTracking()
+                    .Where(link => visibleIds.Contains(link.MenuId) && link.Feature != null)
+                    .Select(link => link.Feature!.FeatureKey)
+                    .Distinct()
+                    .ToListAsync(ct);
 
                 return Ok(new
                 {
@@ -291,7 +337,7 @@ namespace Accounts.Controllers
                     tenantId      = (int?)null,
                     staffId       = (Guid?)null,
                     menus         = saMenus,
-                    permissions   = allFeatureKeys,
+                    permissions   = platformFeatureKeys,
                     permissionDetails = new List<object>()
                 });
             }
@@ -344,7 +390,7 @@ namespace Accounts.Controllers
 
                 var tenantGrants = await _db.TenantMenuPermissions
                     .AsNoTracking()
-                    .Where(tmp => tmp.TenantId == appUser.TenantId.Value && tmp.IsAllow)
+                    .Where(tmp => tmp.TenantId == appUser.TenantId.Value && tmp.IsAllow && tmp.CanView)
                     .Select(tmp => new
                     {
                         tmp.MenuId,
@@ -363,11 +409,6 @@ namespace Accounts.Controllers
 
                 var byId       = allMenus.ToDictionary(m => m.Id);
                 var visibleIds = new HashSet<int>(tenantGrantedMenuIds);
-                var staffAttendanceMenuId = taStaffId.HasValue
-                    ? allMenus.FirstOrDefault(m => m.Route == "/attendance/staff")?.Id
-                    : null;
-                if (staffAttendanceMenuId.HasValue)
-                    visibleIds.Add(staffAttendanceMenuId.Value);
 
                 // Bubble up ancestors so tree structure is preserved
                 foreach (var menuId in visibleIds.ToList())
@@ -396,12 +437,6 @@ namespace Accounts.Controllers
                     if (grant.CanEdit) autoKeys.Add($"MENU_{grant.MenuId}_EDIT");
                     if (grant.CanDelete) autoKeys.Add($"MENU_{grant.MenuId}_DELETE");
                 }
-                if (staffAttendanceMenuId.HasValue)
-                {
-                    autoKeys.Add($"MENU_{staffAttendanceMenuId.Value}");
-                    autoKeys.Add($"MENU_{staffAttendanceMenuId.Value}_VIEW");
-                }
-
                 // Also pull any explicitly defined Feature rows linked to these menus
                 // — fetch all Features first, then filter in memory
                 var allGrantedKeys = autoKeys.ToList();

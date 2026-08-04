@@ -1,4 +1,5 @@
 using Accounts.Services.Services;
+using Accounts.Services.Interfaces;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using System.Security.Claims;
@@ -16,13 +17,20 @@ namespace Accounts.Controllers
     /// </summary>
     [ApiController]
     [Route("api/staff-menu-access")]
-    [Authorize]
+    [Authorize(Roles = "TenantAdmin")]
     [Produces("application/json")]
     public class StaffMenuAccessController : ControllerBase
     {
         private readonly StaffMenuAccessService _service;
+        private readonly ITenantService _tenantService;
 
-        public StaffMenuAccessController(StaffMenuAccessService service) => _service = service;
+        public StaffMenuAccessController(
+            StaffMenuAccessService service,
+            ITenantService tenantService)
+        {
+            _service = service;
+            _tenantService = tenantService;
+        }
 
         private string? CurrentUserId => User.FindFirstValue(ClaimTypes.NameIdentifier);
 
@@ -43,8 +51,11 @@ namespace Accounts.Controllers
         /// GET /api/staff-menu-access/{staffId}
         /// </summary>
         [HttpGet("{staffId:guid}")]
-        public async Task<IActionResult> GetAccessTree(Guid staffId) =>
-            Ok(await _service.GetStaffAccessTreeAsync(staffId));
+        public async Task<IActionResult> GetAccessTree(Guid staffId)
+        {
+            var tree = await _service.GetStaffAccessTreeAsync(_tenantService.RequiredTenantId, staffId);
+            return tree is null ? NotFound() : Ok(tree);
+        }
 
         // ─── GRANT ─────────────────────────────────────────────────────────────
 
@@ -62,7 +73,6 @@ namespace Accounts.Controllers
         /// POST /api/staff-menu-access/{staffId}/grant/{menuId}
         /// </summary>
         [HttpPost("{staffId:guid}/grant/{menuId:int}")]
-        [Authorize(Roles = "SuperAdmin,Admin")]
         public async Task<IActionResult> GrantMenu(
             Guid staffId,
             int menuId,
@@ -72,6 +82,7 @@ namespace Accounts.Controllers
                 .Select(fo => (fo.PermissionId, fo.IsAllow));
 
             var (ok, msg, keys) = await _service.GrantMenuAccessAsync(
+                _tenantService.RequiredTenantId,
                 staffId,
                 menuId,
                 dto?.IsAllow ?? true,
@@ -92,7 +103,6 @@ namespace Accounts.Controllers
         /// POST /api/staff-menu-access/{staffId}/bulk-grant
         /// </summary>
         [HttpPost("{staffId:guid}/bulk-grant")]
-        [Authorize(Roles = "SuperAdmin,Admin")]
         public async Task<IActionResult> BulkGrantMenus(
             Guid staffId,
             [FromBody] Dictionary<int, bool>? menuGrants)
@@ -101,9 +111,15 @@ namespace Accounts.Controllers
                 return BadRequest(new { message = "No menu grants provided." });
 
             var (saved, skipped, message) =
-                await _service.BulkGrantMenusAsync(staffId, menuGrants, CurrentUserId);
+                await _service.BulkGrantMenusAsync(
+                    _tenantService.RequiredTenantId,
+                    staffId,
+                    menuGrants,
+                    CurrentUserId);
 
-            return Ok(new { message, saved, skipped, staffId });
+            return saved == 0 && skipped > 0
+                ? BadRequest(new { message, saved, skipped, staffId })
+                : Ok(new { message, saved, skipped, staffId });
         }
 
         // ─── REVOKE ────────────────────────────────────────────────────────────
@@ -113,10 +129,12 @@ namespace Accounts.Controllers
         /// DELETE /api/staff-menu-access/{staffId}/revoke/{menuId}
         /// </summary>
         [HttpDelete("{staffId:guid}/revoke/{menuId:int}")]
-        [Authorize(Roles = "SuperAdmin,Admin")]
         public async Task<IActionResult> RevokeMenu(Guid staffId, int menuId)
         {
-            var (ok, msg) = await _service.RevokeMenuAccessAsync(staffId, menuId);
+            var (ok, msg) = await _service.RevokeMenuAccessAsync(
+                _tenantService.RequiredTenantId,
+                staffId,
+                menuId);
             return ok
                 ? Ok(new { message = msg })
                 : NotFound(new { message = msg });
@@ -127,10 +145,11 @@ namespace Accounts.Controllers
         /// DELETE /api/staff-menu-access/{staffId}/clear
         /// </summary>
         [HttpDelete("{staffId:guid}/clear")]
-        [Authorize(Roles = "SuperAdmin,Admin")]
         public async Task<IActionResult> ClearAll(Guid staffId)
         {
-            var count = await _service.ClearAllAccessAsync(staffId);
+            var count = await _service.ClearAllAccessAsync(
+                _tenantService.RequiredTenantId,
+                staffId);
             return Ok(new { message = $"Cleared {count} menu access grant(s) for staff {staffId}.", count });
         }
 
@@ -144,7 +163,6 @@ namespace Accounts.Controllers
         /// PATCH /api/staff-menu-access/{staffId}/menus/{menuId}/features/{permissionId}
         /// </summary>
         [HttpPatch("{staffId:guid}/menus/{menuId:int}/features/{permissionId:int}")]
-        [Authorize(Roles = "SuperAdmin,Admin")]
         public async Task<IActionResult> SetFeature(
             Guid staffId,
             int menuId,
@@ -152,7 +170,11 @@ namespace Accounts.Controllers
             [FromBody] SetFeatureDto dto)
         {
             var (ok, msg) = await _service.SetFeatureAccessAsync(
-                staffId, menuId, permissionId, dto.IsAllow);
+                _tenantService.RequiredTenantId,
+                staffId,
+                menuId,
+                permissionId,
+                dto.IsAllow);
 
             return ok
                 ? Ok(new { message = msg })

@@ -1463,17 +1463,17 @@ namespace Accounts.Migrations
                     b.Property<bool>("CanAdd")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("bit")
-                        .HasDefaultValue(true);
+                        .HasDefaultValue(false);
 
                     b.Property<bool>("CanDelete")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("bit")
-                        .HasDefaultValue(true);
+                        .HasDefaultValue(false);
 
                     b.Property<bool>("CanEdit")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("bit")
-                        .HasDefaultValue(true);
+                        .HasDefaultValue(false);
 
                     b.Property<bool>("CanView")
                         .ValueGeneratedOnAdd()
@@ -1500,7 +1500,12 @@ namespace Accounts.Migrations
 
                     b.HasIndex("TenantId");
 
-                    b.ToTable("TenantMenuPermissions", (string)null);
+                    b.ToTable("TenantMenuPermissions", null, table =>
+                        {
+                            table.HasCheckConstraint(
+                                "CK_TenantMenuPermissions_ActionsRequireView",
+                                "[CanView] = 1 OR ([CanAdd] = 0 AND [CanEdit] = 0 AND [CanDelete] = 0)");
+                        });
                 });
 
             modelBuilder.Entity("Accounts.Models.TenantRolePermission", b =>
@@ -1554,6 +1559,60 @@ namespace Accounts.Migrations
                         .HasFilter("[DeptId] IS NOT NULL");
 
                     b.ToTable("TenantRolePermissions", (string)null);
+                });
+
+            modelBuilder.Entity("Accounts.Models.SecurityAuditLog", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<long>("Id"));
+
+                    b.Property<DateTime>("CreatedOnUtc")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("datetime2")
+                        .HasDefaultValueSql("SYSUTCDATETIME()");
+
+                    b.Property<string>("Method")
+                        .IsRequired()
+                        .HasMaxLength(12)
+                        .HasColumnType("nvarchar(12)");
+
+                    b.Property<string>("Path")
+                        .IsRequired()
+                        .HasMaxLength(512)
+                        .HasColumnType("nvarchar(512)");
+
+                    b.Property<string>("RemoteIp")
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<int>("StatusCode")
+                        .HasColumnType("int");
+
+                    b.Property<bool>("Succeeded")
+                        .HasColumnType("bit");
+
+                    b.Property<int?>("TenantId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("TraceId")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<string>("UserId")
+                        .HasMaxLength(450)
+                        .HasColumnType("nvarchar(450)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TenantId", "CreatedOnUtc");
+
+                    b.HasIndex("UserId", "CreatedOnUtc");
+
+                    b.ToTable("SecurityAuditLogs", (string)null);
                 });
 
             modelBuilder.Entity("Accounts.Models.UserPermissionOverride", b =>
@@ -1895,9 +1954,17 @@ namespace Accounts.Migrations
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
 
+                    b.HasOne("Accounts.Models.Tenant", "Tenant")
+                        .WithMany()
+                        .HasForeignKey("TenantId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
                     b.Navigation("AttendanceStatus");
 
                     b.Navigation("Person");
+
+                    b.Navigation("Tenant");
                 });
 
             modelBuilder.Entity("Accounts.Models.DepartmentAccessMatrix", b =>
@@ -2136,6 +2203,16 @@ namespace Accounts.Migrations
                     b.Navigation("Department");
 
                     b.Navigation("Feature");
+
+                    b.Navigation("Tenant");
+                });
+
+            modelBuilder.Entity("Accounts.Models.SecurityAuditLog", b =>
+                {
+                    b.HasOne("Accounts.Models.Tenant", "Tenant")
+                        .WithMany()
+                        .HasForeignKey("TenantId")
+                        .OnDelete(DeleteBehavior.Restrict);
 
                     b.Navigation("Tenant");
                 });

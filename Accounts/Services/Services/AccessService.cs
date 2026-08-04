@@ -12,21 +12,39 @@ namespace Accounts.Services.Services
     public class AccessService : IAccessService
     {
         private readonly ApplicationDbContext _db;
+        private readonly ITenantService _tenantService;
+        private readonly ITenantMenuCeilingService _tenantCeiling;
 
-        public AccessService(ApplicationDbContext db) => _db = db;
+        public AccessService(
+            ApplicationDbContext db,
+            ITenantService tenantService,
+            ITenantMenuCeilingService tenantCeiling)
+        {
+            _db = db;
+            _tenantService = tenantService;
+            _tenantCeiling = tenantCeiling;
+        }
 
-        public async Task<IEnumerable<object>> GetAllFeaturesAsync() =>
-            await _db.Features
+        public async Task<IEnumerable<object>> GetAllFeaturesAsync()
+        {
+            var allowedIds = await GetAllowedPermissionIdsAsync();
+            return await _db.Features
+                .Where(feature => allowedIds.Contains(feature.PermissionId))
                 .OrderBy(f => f.Module).ThenBy(f => f.FeatureKey)
                 .Select(f => new { f.FeatureKey, f.FeatureName, f.Module, f.Description })
                 .ToListAsync<object>();
+        }
 
-        public async Task<IEnumerable<object>> GetFeaturesByModuleAsync(string module) =>
-            await _db.Features
-                .Where(f => f.Module.ToLower() == module.ToLower())
+        public async Task<IEnumerable<object>> GetFeaturesByModuleAsync(string module)
+        {
+            var allowedIds = await GetAllowedPermissionIdsAsync();
+            return await _db.Features
+                .Where(f => allowedIds.Contains(f.PermissionId)
+                            && f.Module.ToLower() == module.ToLower())
                 .OrderBy(f => f.FeatureKey)
                 .Select(f => new { f.FeatureKey, f.FeatureName, f.Module, f.Description })
                 .ToListAsync<object>();
+        }
 
         public async Task<IEnumerable<string>> GetStaffPermissionsAsync(Guid staffId)
         {
@@ -78,6 +96,14 @@ namespace Accounts.Services.Services
                 jobTitle    = p.Staff?.Vacancy?.JobTitle,
                 vacancyCode = p.Staff?.Vacancy?.VacancyCode
             });
+        }
+
+        private async Task<int[]> GetAllowedPermissionIdsAsync()
+        {
+            if (!_tenantService.TenantId.HasValue || _tenantService.IsSuperAdmin)
+                return Array.Empty<int>();
+            return (await _tenantCeiling.GetAllowedPermissionIdsAsync(
+                _tenantService.TenantId.Value)).ToArray();
         }
     }
 }

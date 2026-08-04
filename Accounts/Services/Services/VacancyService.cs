@@ -11,17 +11,20 @@ namespace Accounts.Services.Services
         private readonly VacancyCodeService   _codeService;
         private readonly JobTitleService      _jobTitleService;
         private readonly ITenantService       _tenantService;
+        private readonly IOrganizationScopeService _organizationScope;
 
         public VacancyService(
             ApplicationDbContext db,
             VacancyCodeService   codeService,
             JobTitleService      jobTitleService,
-            ITenantService       tenantService)
+            ITenantService       tenantService,
+            IOrganizationScopeService organizationScope)
         {
             _db              = db;
             _codeService     = codeService;
             _jobTitleService = jobTitleService;
             _tenantService   = tenantService;
+            _organizationScope = organizationScope;
         }
 
         public async Task<IEnumerable<VacancyDto>> GetAllAsync()
@@ -50,6 +53,11 @@ namespace Accounts.Services.Services
 
         public async Task<IEnumerable<VacancyDto>> GetByNodeAsync(int orgId)
         {
+            if (!await _organizationScope.IsWithinTenantSubtreeAsync(
+                    _tenantService.RequiredTenantId,
+                    orgId))
+                return Array.Empty<VacancyDto>();
+
             var list = await WithIncludes().Where(v => v.OrganizationId == orgId).ToListAsync();
             return list.Select(MapToDto);
         }
@@ -80,6 +88,11 @@ namespace Accounts.Services.Services
 
         public async Task<string?> PreviewCodeAsync(int organizationId, string jobTitle)
         {
+            if (!await _organizationScope.IsWithinTenantSubtreeAsync(
+                    _tenantService.RequiredTenantId,
+                    organizationId))
+                return null;
+
             var orgNode = await _db.OrganizationTree.FindAsync(organizationId);
             if (orgNode == null) return null;
 
@@ -89,6 +102,11 @@ namespace Accounts.Services.Services
 
         public async Task<(VacancyDto? Vacancy, string? Error)> CreateAsync(CreateVacancyDto dto)
         {
+            if (!await _organizationScope.IsWithinTenantSubtreeAsync(
+                    _tenantService.RequiredTenantId,
+                    dto.OrganizationId))
+                return (null, "Organization node is outside the current tenant scope.");
+
             var orgNode = await _db.OrganizationTree.FindAsync(dto.OrganizationId);
             if (orgNode == null)
                 return (null, $"Organization node {dto.OrganizationId} not found.");
@@ -160,6 +178,11 @@ namespace Accounts.Services.Services
         public async Task<(IEnumerable<VacancyDto> Created, IEnumerable<string> Errors)> CreateBulkAsync(
             CreateVacancyDto dto)
         {
+            if (!await _organizationScope.IsWithinTenantSubtreeAsync(
+                    _tenantService.RequiredTenantId,
+                    dto.OrganizationId))
+                return ([], ["Organization node is outside the current tenant scope."]);
+
             var orgNode = await _db.OrganizationTree.FindAsync(dto.OrganizationId);
             if (orgNode == null)
                 return ([], [$"Organization node {dto.OrganizationId} not found."]);
@@ -240,6 +263,11 @@ namespace Accounts.Services.Services
         {
             var vacancy = await _db.Vacancies.FindAsync(id);
             if (vacancy == null) return (null, $"Position {id} not found.");
+
+            if (!await _organizationScope.IsWithinTenantSubtreeAsync(
+                    _tenantService.RequiredTenantId,
+                    dto.OrganizationId))
+                return (null, "Organization node is outside the current tenant scope.");
 
             var orgNode = await _db.OrganizationTree.FindAsync(dto.OrganizationId);
             if (orgNode == null) return (null, $"Organization node {dto.OrganizationId} not found.");

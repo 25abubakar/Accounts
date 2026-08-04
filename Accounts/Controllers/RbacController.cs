@@ -18,22 +18,25 @@ namespace Accounts.Controllers
         private readonly RbacService          _rbac;
         private readonly ApplicationDbContext _db;
         private readonly IPersonAccessService _personAccess;
+        private readonly ITenantService       _tenantService;
 
-        public RbacController(RbacService rbac, ApplicationDbContext db, IPersonAccessService personAccess)
+        public RbacController(
+            RbacService rbac,
+            ApplicationDbContext db,
+            IPersonAccessService personAccess,
+            ITenantService tenantService)
         {
             _rbac          = rbac;
             _db            = db;
             _personAccess  = personAccess;
+            _tenantService = tenantService;
         }
 
         private string? CurrentUserId =>
             User.FindFirstValue(ClaimTypes.NameIdentifier);
 
         private bool IsFullAccessUser =>
-            User.IsInRole("SuperAdmin") ||
-            User.IsInRole("Admin") ||
             User.IsInRole("TenantAdmin") ||
-            string.Equals(User.FindFirstValue(ITenantService.ClaimIsSuperAdmin), "true", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(User.FindFirstValue(ITenantService.ClaimIsTenantAdmin), "true", StringComparison.OrdinalIgnoreCase);
 
         private bool IsSuperAdminUser =>
@@ -671,8 +674,10 @@ namespace Accounts.Controllers
         {
             if (!await HasAccessControlPermissionAsync("VIEW"))
                 return Forbid();
+            if (!_tenantService.TenantId.HasValue || _tenantService.IsSuperAdmin)
+                return Forbid();
 
-            return Ok(await _rbac.GetMenuPermissionTreeAsync());
+            return Ok(await _rbac.GetMenuPermissionTreeAsync(_tenantService.TenantId.Value));
         }
 
         [HttpPost("staff/{staffId:guid}/grant-menu/{menuId:int}")]

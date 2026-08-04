@@ -85,6 +85,14 @@ public sealed class ProcessWorkflowController : ControllerBase
         if (normalizedMode is not ("INBOX" or "MINE" or "COMPLETED"))
             return BadRequest(new { message = "Unsupported task-list mode." });
 
+        // Tenant administrators and other administrative identities may have a
+        // tenant account without an operational StaffVacancy record. A task list
+        // is staff-scoped, so this is a valid empty result rather than an error.
+        // Checking before the procedure also prevents SQL error 51210 from being
+        // raised and surfaced by the debugger for these accounts.
+        if (!await HasActiveStaffProfileAsync(ct))
+            return Ok(Array.Empty<ProcessReportListDto>());
+
         var rows = new List<ProcessReportListDto>();
         await WithCommandAsync("dbo.usp_ProcessReport_List", async command =>
         {
@@ -95,6 +103,25 @@ public sealed class ProcessWorkflowController : ControllerBase
                 rows.Add(MapReport(reader));
         }, ct);
         return Ok(rows);
+    }
+
+    private async Task<bool> HasActiveStaffProfileAsync(CancellationToken ct)
+    {
+        if (!_tenant.TenantId.HasValue || _tenant.IsSuperAdmin)
+            return false;
+
+        var identityUserId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+        if (string.IsNullOrWhiteSpace(identityUserId))
+            return false;
+
+        return await _db.Persons
+            .AsNoTracking()
+            .AnyAsync(person =>
+                person.TenantId == _tenant.TenantId.Value &&
+                person.IdentityUserId == identityUserId &&
+                person.IsActive &&
+                person.Staff != null,
+                ct);
     }
 
     [HttpGet("tasks/{reportId:long}/timeline")]

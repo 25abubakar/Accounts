@@ -361,3 +361,6 @@ MigrationBackup/
 
 # Fody - auto-generated XML schema
 FodyWeavers.xsd
+
+# Local ASP.NET Core Data Protection keys (cookies / antiforgery)
+.data-protection-keys/

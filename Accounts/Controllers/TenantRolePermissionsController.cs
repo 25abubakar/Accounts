@@ -29,13 +29,16 @@ namespace Accounts.Controllers
     {
         private readonly ApplicationDbContext         _db;
         private readonly UserManager<ApplicationUser> _userManager;
+        private readonly ITenantMenuCeilingService     _tenantCeiling;
 
         public TenantRolePermissionsController(
             ApplicationDbContext         db,
-            UserManager<ApplicationUser> userManager)
+            UserManager<ApplicationUser> userManager,
+            ITenantMenuCeilingService tenantCeiling)
         {
             _db          = db;
             _userManager = userManager;
+            _tenantCeiling = tenantCeiling;
         }
 
         // ── Helpers ────────────────────────────────────────────────────────
@@ -61,9 +64,14 @@ namespace Accounts.Controllers
             if (!isTenantAdmin || !tenantId.HasValue)
                 return Forbid();
 
+            var allowedPermissionIds = (await _tenantCeiling.GetAllowedPermissionIdsAsync(
+                tenantId.Value,
+                HttpContext.RequestAborted)).ToArray();
             var roles = await _db.TenantRolePermissions
                 .AsNoTracking()
-                .Where(r => r.TenantId == tenantId.Value && r.IsAllowed)
+                .Where(r => r.TenantId == tenantId.Value
+                            && r.IsAllowed
+                            && allowedPermissionIds.Contains(r.PermissionId))
                 .GroupBy(r => r.JobTitle)
                 .Select(g => new
                 {
@@ -89,12 +97,16 @@ namespace Accounts.Controllers
             if (!isTenantAdmin || !tenantId.HasValue)
                 return Forbid();
 
+            var allowedPermissionIds = (await _tenantCeiling.GetAllowedPermissionIdsAsync(
+                tenantId.Value,
+                HttpContext.RequestAborted)).ToArray();
             var permissions = await _db.TenantRolePermissions
                 .AsNoTracking()
                 .Include(r => r.Feature)
                 .Where(r => r.TenantId == tenantId.Value
                          && r.JobTitle == jobTitle
-                         && r.IsAllowed)
+                         && r.IsAllowed
+                         && allowedPermissionIds.Contains(r.PermissionId))
                 .Select(r => new
                 {
                     permissionId = r.PermissionId,
@@ -127,25 +139,26 @@ namespace Accounts.Controllers
 
             if (string.IsNullOrWhiteSpace(jobTitle))
                 return BadRequest(new { message = "jobTitle is required." });
+            var normalizedJobTitle = jobTitle.Trim();
+            if (!await _db.JobTitles.AsNoTracking()
+                    .AnyAsync(title => title.TenantId == tenantId.Value
+                                       && title.TitleName == normalizedJobTitle))
+                return BadRequest(new
+                {
+                    message = "The selected job title does not exist in this tenant."
+                });
 
-            // ── Pool check: what menu IDs does this tenant own? ────────────
-            // Resolve allowed permissionIds: any Feature whose FeatureKey
-            // contains a reference to one of the tenant's menu IDs,
-            // OR any Feature linked to a menu the tenant owns via MenuPermissions.
-            var allowedPermissionIds = await _db.MenuPermissions
-                .AsNoTracking()
-                .Select(mp => mp.PermissionId)
-                .ToHashSetAsync();
-
-            // Validate incoming list — reject anything outside the tenant's pool
-            var invalid = permissionIds.Except(allowedPermissionIds).ToList();
-            if (invalid.Any())
+            var validation = await _tenantCeiling.ValidatePermissionIdsAsync(
+                tenantId.Value,
+                permissionIds,
+                HttpContext.RequestAborted);
+            if (!validation.IsValid)
             {
                 return BadRequest(new
                 {
                     message = "Some permissions are not within your tenant's allowed pool. " +
                               "You can only assign permissions from menus granted to your tenant.",
-                    invalidPermissionIds = invalid
+                    invalidPermissionIds = validation.InvalidPermissionIds
                 });
             }
 
@@ -153,7 +166,7 @@ namespace Accounts.Controllers
 
             // ── Overwrite: remove existing, insert new ─────────────────────
             var existing = await _db.TenantRolePermissions
-                .Where(r => r.TenantId == tenantId.Value && r.JobTitle == jobTitle)
+                .Where(r => r.TenantId == tenantId.Value && r.JobTitle == normalizedJobTitle)
                 .ToListAsync();
 
             _db.TenantRolePermissions.RemoveRange(existing);
@@ -163,7 +176,7 @@ namespace Accounts.Controllers
                 _db.TenantRolePermissions.Add(new TenantRolePermission
                 {
                     TenantId      = tenantId.Value,
-                    JobTitle      = jobTitle.Trim(),
+                    JobTitle      = normalizedJobTitle,
                     PermissionId  = permId,
                     IsAllowed     = true,
                     SetByUserId   = callerId,
@@ -218,11 +231,31 @@ namespace Accounts.Controllers
             if (!isTenantAdmin || !tenantId.HasValue)
                 return Forbid();
 
-            // Fetch active menus with their linked feature keys.
+            var tenantMenuGrants = await _db.TenantMenuPermissions
+                .AsNoTracking()
+                .Where(grant => grant.TenantId == tenantId.Value
+                                && grant.IsAllow
+                                && grant.CanView)
+                .Select(grant => new
+                {
+                    grant.MenuId,
+                    grant.CanView,
+                    grant.CanAdd,
+                    grant.CanEdit,
+                    grant.CanDelete
+                })
+                .ToListAsync(HttpContext.RequestAborted);
+
+            var tenantMenuIds = tenantMenuGrants.Select(grant => grant.MenuId).ToArray();
+            var grantsByMenu = tenantMenuGrants.ToDictionary(grant => grant.MenuId);
+            var allowedPermissionIds = (await _tenantCeiling.GetAllowedPermissionIdsAsync(
+                tenantId.Value,
+                HttpContext.RequestAborted)).ToArray();
+
             var menus = await _db.Menus
                 .AsNoTracking()
                 .Include(m => m.MenuPermissions).ThenInclude(mp => mp.Feature)
-                .Where(m => m.IsActive)
+                .Where(m => m.IsActive && tenantMenuIds.Contains(m.Id))
                 .OrderBy(m => m.SortOrder)
                 .Select(m => new
                 {
@@ -230,7 +263,9 @@ namespace Accounts.Controllers
                     title    = m.Title,
                     route    = m.Route,
                     icon     = m.Icon,
-                    features = m.MenuPermissions.Select(mp => new
+                    features = m.MenuPermissions
+                        .Where(mp => allowedPermissionIds.Contains(mp.PermissionId))
+                        .Select(mp => new
                     {
                         permissionId = mp.PermissionId,
                         featureKey   = mp.Feature != null ? mp.Feature.FeatureKey : null,
@@ -240,7 +275,18 @@ namespace Accounts.Controllers
                 })
                 .ToListAsync();
 
-            return Ok(menus);
+            return Ok(menus.Select(menu => new
+            {
+                menu.menuId,
+                menu.title,
+                menu.route,
+                menu.icon,
+                canView = grantsByMenu[menu.menuId].CanView,
+                canAdd = grantsByMenu[menu.menuId].CanAdd,
+                canEdit = grantsByMenu[menu.menuId].CanEdit,
+                canDelete = grantsByMenu[menu.menuId].CanDelete,
+                menu.features
+            }));
         }
     }
 }

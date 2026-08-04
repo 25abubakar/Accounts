@@ -8,6 +8,7 @@ namespace Accounts.Services.Interfaces
         /// Vacancies and persons under an org subtree (recursive). Includes unfilled seats.
         /// </summary>
         Task<IReadOnlyList<OrganizationVacancyPersonDto>> GetPersonsByOrgNodeCleanAsync(
+            int tenantId,
             int orgNodeId,
             CancellationToken cancellationToken = default);
 
@@ -15,6 +16,7 @@ namespace Accounts.Services.Interfaces
         /// Filled positions under an org subtree; optional exact job-title filter.
         /// </summary>
         Task<IReadOnlyList<EmployeeByOrgAndRoleDto>> GetEmployeesByOrgAndRoleAsync(
+            int tenantId,
             int orgNodeId,
             string? jobTitle,
             CancellationToken cancellationToken = default);

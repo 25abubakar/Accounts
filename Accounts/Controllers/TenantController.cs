@@ -188,6 +188,12 @@ namespace Accounts.Controllers
             if (!orgLabel.Equals("Company", StringComparison.OrdinalIgnoreCase)
                 && !orgLabel.Equals("Group", StringComparison.OrdinalIgnoreCase))
                 return BadRequest(new { message = "OrgLabel must be 'Company' or 'Group'." });
+            if (dto.GrantedMenuAccess?.Any(item =>
+                    !item.CanView && (item.CanAdd || item.CanEdit || item.CanDelete)) == true)
+                return BadRequest(new
+                {
+                    message = "CanAdd, CanEdit, and CanDelete require CanView for the same menu."
+                });
 
             // ── Use the retry execution strategy required by SqlServerRetryingExecutionStrategy ──
             // EnableRetryOnFailure prevents direct BeginTransaction; we must wrap all
@@ -234,10 +240,8 @@ namespace Accounts.Controllers
 
                     // ── STEP 3: Credentials ───────────────────────────────────
                     var loginId  = await GenerateLoginIdAsync(code);
-                    var password = !string.IsNullOrWhiteSpace(dto.AdminPassword)
-                        ? dto.AdminPassword.Trim()
-                        : $"{loginId}@";
-                    var email    = dto.AdminEmail?.Trim() ?? $"admin@{code.ToLower()}.com";
+                    var password = dto.AdminPassword.Trim();
+                    var email = dto.AdminEmail.Trim();
 
                     // ── STEP 4: Tenant Admin user ─────────────────────────────
                     var adminUser = new ApplicationUser
@@ -276,20 +280,60 @@ namespace Accounts.Controllers
                     });
 
                     // ── STEP 6: Initial menu permissions ─────────────────────
-                    if (dto.GrantedMenuIds != null && dto.GrantedMenuIds.Any())
+                    var requestedAccess = dto.GrantedMenuAccess?
+                        .GroupBy(item => item.MenuId)
+                        .Select(group => group.Last())
+                        .ToDictionary(item => item.MenuId)
+                        ?? (dto.GrantedMenuIds ?? new List<int>())
+                            .Distinct()
+                            .ToDictionary(
+                                menuId => menuId,
+                                menuId => new TenantMenuAccessDto
+                                {
+                                    MenuId = menuId,
+                                    CanView = true
+                                });
+                    if (requestedAccess.Count > 0)
                     {
-                        var validMenuIds = await _db.Menus
-                            .Where(m => dto.GrantedMenuIds.Contains(m.Id) && m.IsActive)
-                            .Select(m => m.Id)
+                        var activeMenus = await _db.Menus
+                            .Where(menu => menu.IsActive)
+                            .Select(menu => new { menu.Id, menu.ParentId })
                             .ToListAsync();
+                        var activeById = activeMenus.ToDictionary(menu => menu.Id);
+                        requestedAccess = requestedAccess
+                            .Where(item => activeById.ContainsKey(item.Key) && item.Value.CanView)
+                            .ToDictionary(item => item.Key, item => item.Value);
 
-                        foreach (var menuId in validMenuIds)
+                        foreach (var item in requestedAccess.Values.ToList())
+                        {
+                            var currentId = item.MenuId;
+                            var visited = new HashSet<int>();
+                            while (activeById.TryGetValue(currentId, out var current)
+                                   && current.ParentId.HasValue
+                                   && visited.Add(currentId))
+                            {
+                                requestedAccess.TryAdd(
+                                    current.ParentId.Value,
+                                    new TenantMenuAccessDto
+                                    {
+                                        MenuId = current.ParentId.Value,
+                                        CanView = true
+                                    });
+                                currentId = current.ParentId.Value;
+                            }
+                        }
+
+                        foreach (var access in requestedAccess.Values)
                         {
                             _db.TenantMenuPermissions.Add(new TenantMenuPermission
                             {
                                 TenantId        = tenant.Id,
-                                MenuId          = menuId,
+                                MenuId          = access.MenuId,
                                 IsAllow         = true,
+                                CanView         = access.CanView,
+                                CanAdd          = access.CanAdd,
+                                CanEdit         = access.CanEdit,
+                                CanDelete       = access.CanDelete,
                                 GrantedByUserId = creatorId,
                                 GrantedOnUtc    = DateTime.UtcNow
                             });
@@ -319,9 +363,8 @@ namespace Accounts.Controllers
                         {
                             userId   = adminUser.Id,
                             loginId,
-                            password,
                             email,
-                            note = "Save these credentials — the password cannot be retrieved again."
+                            note = "The password was supplied by the provisioning administrator and is never returned by the API."
                         }
                     });
                 }
@@ -417,74 +460,23 @@ namespace Accounts.Controllers
         /// Send an array of menuIds to grant — all others will be revoked.
         /// </summary>
         [HttpPut("{id:int}/menus")]
-        public async Task<IActionResult> SetMenus(int id, [FromBody] List<int> menuIds)
-        {
-            var tenant = await _db.Tenants
-                .Include(t => t.MenuPermissions)
-                .FirstOrDefaultAsync(t => t.Id == id);
-
-            if (tenant == null) return NotFound(new { message = $"Tenant {id} not found." });
-
-            var creatorId = User.FindFirstValue(ClaimTypes.NameIdentifier);
-
-            // Validate requested IDs and automatically include every active ancestor.
-            // This keeps the tenant sidebar hierarchy intact even when the Super Admin
-            // selects only a nested menu.
-            var activeMenus = await _db.Menus
-                .AsNoTracking()
-                .Where(m => m.IsActive)
-                .Select(m => new { m.Id, m.ParentId })
-                .ToListAsync();
-            var activeById = activeMenus.ToDictionary(m => m.Id);
-            var validMenuIds = menuIds
-                .Where(activeById.ContainsKey)
-                .Distinct()
-                .ToHashSet();
-
-            foreach (var requestedId in validMenuIds.ToList())
+        [ApiExplorerSettings(IgnoreApi = true)]
+        public IActionResult SetMenus(int id, [FromBody] List<int> menuIds) =>
+            StatusCode(StatusCodes.Status410Gone, new
             {
-                var currentId = requestedId;
-                var visited = new HashSet<int>();
-                while (activeById.TryGetValue(currentId, out var current)
-                       && current.ParentId.HasValue
-                       && visited.Add(currentId))
-                {
-                    validMenuIds.Add(current.ParentId.Value);
-                    currentId = current.ParentId.Value;
-                }
-            }
-
-            // Remove all existing permissions and re-add
-            _db.TenantMenuPermissions.RemoveRange(tenant.MenuPermissions);
-
-            foreach (var menuId in validMenuIds.OrderBy(x => x))
-            {
-                _db.TenantMenuPermissions.Add(new TenantMenuPermission
-                {
-                    TenantId        = id,
-                    MenuId          = menuId,
-                    IsAllow         = true,
-                    CanView         = true,
-                    CanAdd          = true,
-                    CanEdit         = true,
-                    CanDelete       = true,
-                    GrantedByUserId = creatorId,
-                    GrantedOnUtc    = DateTime.UtcNow
-                });
-            }
-
-            await _db.SaveChangesAsync();
-
-            return Ok(new
-            {
-                message      = $"Menus updated for tenant '{tenant.TenantName}'.",
-                grantedCount = validMenuIds.Count
+                code = "MENU_ONLY_GRANT_RETIRED",
+                message = "Use PUT /api/tenants/{id}/menu-access with explicit CRUD flags."
             });
-        }
 
         [HttpPut("{id:int}/menu-access")]
         public async Task<IActionResult> SetMenuAccess(int id, [FromBody] List<TenantMenuAccessDto> access)
         {
+            if (access.Any(item => !item.CanView && (item.CanAdd || item.CanEdit || item.CanDelete)))
+                return BadRequest(new
+                {
+                    message = "CanAdd, CanEdit, and CanDelete require CanView for the same menu."
+                });
+
             var tenant = await _db.Tenants
                 .Include(t => t.MenuPermissions)
                 .FirstOrDefaultAsync(t => t.Id == id);
@@ -494,7 +486,7 @@ namespace Accounts.Controllers
                 .Select(m => new { m.Id, m.ParentId }).ToListAsync();
             var activeById = activeMenus.ToDictionary(m => m.Id);
             var requested = access
-                .Where(a => activeById.ContainsKey(a.MenuId))
+                .Where(a => activeById.ContainsKey(a.MenuId) && a.CanView)
                 .GroupBy(a => a.MenuId)
                 .Select(g => g.Last())
                 .ToDictionary(a => a.MenuId);
@@ -593,23 +585,25 @@ namespace Accounts.Controllers
         public string? OrgLabel { get; set; }
 
         /// <summary>
-        /// Optional custom email for the Tenant Admin account.
-        /// Auto-generated as admin@{tenantcode}.com if omitted.
+        /// Email for the Tenant Admin account.
         /// </summary>
-        [MaxLength(150), EmailAddress]
-        public string? AdminEmail { get; set; }
+        [Required, MaxLength(150), EmailAddress]
+        public string AdminEmail { get; set; } = string.Empty;
 
         /// <summary>
-        /// Optional custom password for the Tenant Admin account.
-        /// Auto-generated as {loginId}@ if omitted.
+        /// Strong initial password supplied out-of-band by the provisioning administrator.
+        /// It is never returned by the API.
         /// </summary>
-        [MinLength(6)]
-        public string? AdminPassword { get; set; }
+        [Required, MinLength(12), MaxLength(128)]
+        public string AdminPassword { get; set; } = string.Empty;
 
         /// <summary>
         /// Optional list of Menu IDs to grant to this tenant immediately.
         /// Leave empty to grant no menus initially (add later via PUT /api/tenants/{id}/menus).
         /// </summary>
         public List<int>? GrantedMenuIds { get; set; }
+
+        /// <summary>Preferred initial tenant ceiling with explicit CRUD flags.</summary>
+        public List<TenantMenuAccessDto>? GrantedMenuAccess { get; set; }
     }
 }

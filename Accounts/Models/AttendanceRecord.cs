@@ -31,6 +31,7 @@ public sealed class AttendanceRecord : ITenantEntity
     public DateTime CreatedDate { get; set; }
     public DateTime? ModifiedDate { get; set; }
 
+    public Tenant Tenant { get; set; } = null!;
     public Person Person { get; set; } = null!;
     public ProcessStatusStyle? AttendanceStatus { get; set; }
     public AttendanceEntryType? AttendanceEntryType { get; set; }

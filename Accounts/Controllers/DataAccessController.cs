@@ -23,24 +23,27 @@ namespace Accounts.Controllers
         private readonly IPermissionFilterService _filterService;
         private readonly ApplicationDbContext _db;
         private readonly IOrganizationEmployeeQueryService _orgEmployeeQuery;
+        private readonly ITenantService _tenantService;
+        private readonly IOrganizationScopeService _organizationScope;
 
         public DataAccessController(
             IPermissionFilterService filterService,
             ApplicationDbContext db,
-            IOrganizationEmployeeQueryService orgEmployeeQuery)
+            IOrganizationEmployeeQueryService orgEmployeeQuery,
+            ITenantService tenantService,
+            IOrganizationScopeService organizationScope)
         {
             _filterService = filterService;
             _db = db;
             _orgEmployeeQuery = orgEmployeeQuery;
+            _tenantService = tenantService;
+            _organizationScope = organizationScope;
         }
 
         private async Task<(bool Success, Guid? StaffId, string Message)> GetCurrentStaffIdAsync()
         {
-            // SuperAdmin / Admin bypass
             if (User.IsInRole("SuperAdmin") || User.IsInRole("Admin"))
-            {
-                return (true, Guid.Empty, "Full admin access.");
-            }
+                return (false, null, "Platform administrators cannot access tenant operational data.");
 
             var identityUserId = User.FindFirstValue(ClaimTypes.NameIdentifier);
             if (string.IsNullOrWhiteSpace(identityUserId))
@@ -179,35 +182,13 @@ namespace Accounts.Controllers
         /// Calls dbo.usp_GetEmployeesByOrgNode.
         /// </summary>
         [HttpGet("org/{orgNodeId:int}/employees")]
-        public async Task<IActionResult> GetEmployeesByOrgNode(int orgNodeId)
+        public IActionResult GetEmployeesByOrgNode(int orgNodeId)
         {
-            if (orgNodeId <= 0)
-                return BadRequest(new { message = "orgNodeId is required." });
-
-            var rows = new List<Dictionary<string, object?>>();
-
-            await using var conn = _db.Database.GetDbConnection();
-            if (conn.State != ConnectionState.Open)
-                await conn.OpenAsync();
-
-            await using var cmd = conn.CreateCommand();
-            cmd.CommandText = "dbo.usp_GetEmployeesByOrgNode";
-            cmd.CommandType = CommandType.StoredProcedure;
-            cmd.Parameters.Add(new SqlParameter("@OrgNodeId", SqlDbType.Int) { Value = orgNodeId });
-
-            await using var reader = await cmd.ExecuteReaderAsync();
-            while (await reader.ReadAsync())
+            return StatusCode(StatusCodes.Status410Gone, new
             {
-                var row = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
-                for (int i = 0; i < reader.FieldCount; i++)
-                {
-                    var value = reader.IsDBNull(i) ? null : reader.GetValue(i);
-                    row[reader.GetName(i)] = value;
-                }
-                rows.Add(row);
-            }
-
-            return Ok(rows);
+                code = "UNSCOPED_ORG_REPORT_RETIRED",
+                message = "Use the tenant-scoped vacancy-persons endpoint."
+            });
         }
 
         /// <summary>
@@ -222,17 +203,29 @@ namespace Accounts.Controllers
         {
             if (orgNodeId <= 0)
                 return BadRequest(new { message = "orgNodeId is required." });
+            if (_tenantService.IsSuperAdmin || !_tenantService.TenantId.HasValue)
+                return Forbid();
+            if (!await _organizationScope.IsWithinTenantSubtreeAsync(
+                    _tenantService.TenantId.Value,
+                    orgNodeId,
+                    cancellationToken))
+                return Forbid();
 
             var filter = !string.IsNullOrWhiteSpace(jobTitle) ? jobTitle : role;
             if (!string.IsNullOrWhiteSpace(filter))
             {
                 var rows = await _orgEmployeeQuery.GetEmployeesByOrgAndRoleAsync(
-                    orgNodeId, filter, cancellationToken);
+                    _tenantService.TenantId.Value,
+                    orgNodeId,
+                    filter,
+                    cancellationToken);
                 return Ok(rows);
             }
 
             var vacancyPersons = await _orgEmployeeQuery.GetPersonsByOrgNodeCleanAsync(
-                orgNodeId, cancellationToken);
+                _tenantService.TenantId.Value,
+                orgNodeId,
+                cancellationToken);
             return Ok(vacancyPersons);
         }
     }

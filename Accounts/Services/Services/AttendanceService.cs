@@ -1118,12 +1118,12 @@ public sealed class AttendanceService : IAttendanceService
         {
             "H" => "HO",
             "TP" => "T-P",
-            "LT" => row.LateMinutes >= 120 ? "2-L" : "1-L",
+            "LT" => LateDisplayCode(row.LateMinutes),
             "EL" => row.EarlyDepartureMinutes >= 120 ? "2-E" : "1-E",
             "SL" => "S-L",
             _ when row.OnLeave => "L",
             _ when row.EarlyDepartureMinutes > 0 => row.EarlyDepartureMinutes >= 120 ? "2-E" : "1-E",
-            _ when row.LateMinutes > 0 => row.LateMinutes >= 120 ? "2-L" : "1-L",
+            _ when row.LateMinutes > 0 => LateDisplayCode(row.LateMinutes),
             _ when row.Present => "P",
             _ => code
         };
@@ -1145,7 +1145,7 @@ public sealed class AttendanceService : IAttendanceService
             {
                 "H" => "HO",
                 "TP" => "T-P",
-                "LT" => lateMinutes >= 120 ? "2-L" : "1-L",
+                "LT" => LateDisplayCode(lateMinutes),
                 "EL" => earlyDepartureMinutes >= 120 ? "2-E" : "1-E",
                 "SL" => "S-L",
                 _ => code
@@ -1156,9 +1156,14 @@ public sealed class AttendanceService : IAttendanceService
         if (normalizedStatus.Contains("absent", StringComparison.Ordinal)) return "A";
         if (normalizedStatus.Contains("leave", StringComparison.Ordinal)) return "L";
         if (earlyDepartureMinutes > 0) return earlyDepartureMinutes >= 120 ? "2-E" : "1-E";
-        if (lateMinutes > 0) return lateMinutes >= 120 ? "2-L" : "1-L";
+        if (lateMinutes > 0) return LateDisplayCode(lateMinutes);
         return null;
     }
+
+    // Attendance legend bands are labels, while LateMinutes remains the exact
+    // duration shown in the grid: 1-60 minutes = 1 Hr Late, 61+ = 2 Hr Late.
+    private static string LateDisplayCode(int lateMinutes) =>
+        lateMinutes > 60 ? "2-L" : "1-L";
 
     private static string? ResolveCameraAttendanceDisplayStatusCode(
         bool isScheduledOff,
@@ -1393,17 +1398,31 @@ public sealed class AttendanceService : IAttendanceService
             var isScheduledOff = statusCode is not null &&
                 (statusCode.Equals("DO", StringComparison.OrdinalIgnoreCase) ||
                  statusCode.Equals("H", StringComparison.OrdinalIgnoreCase));
+            var configuredRule = source.AttendanceEntryTypeId.HasValue
+                ? ruleSettingsByEntryType.GetValueOrDefault(source.AttendanceEntryTypeId.Value)
+                : null;
+            var checkInAdjustMinutes = configuredRule != null
+                ? configuredRule.CheckInAdjustMinutes
+                : policy.OnTimeGraceMinutesAfter;
+            var checkOutAdjustMinutes = configuredRule != null
+                ? configuredRule.CheckOutAdjustMinutes
+                : policy.FullDayToleranceMinutes;
             var required = isScheduledOff ? 0 :
-                source.AttendanceEntryTypeId.HasValue &&
-                ruleSettingsByEntryType.TryGetValue(source.AttendanceEntryTypeId.Value, out var configuredRule)
+                configuredRule != null
                     ? configuredRule.WorkingMinutes
                     : ShiftMinutes(source.ShiftStartTime, source.ShiftEndTime);
-            var late = !isScheduledOff && checkInLocal.HasValue
+            var rawLate = !isScheduledOff && checkInLocal.HasValue
                 ? Math.Max(0, (int)Math.Floor((checkInLocal.Value - shiftWindow.Start).TotalMinutes))
                 : 0;
-            var early = !isScheduledOff && checkOutLocal.HasValue
+            var late = rawLate <= checkInAdjustMinutes
+                ? 0
+                : rawLate - checkInAdjustMinutes;
+            var rawEarly = !isScheduledOff && checkOutLocal.HasValue
                 ? Math.Max(0, (int)Math.Floor((shiftWindow.End - checkOutLocal.Value).TotalMinutes))
                 : 0;
+            var early = rawEarly <= checkOutAdjustMinutes
+                ? 0
+                : rawEarly - checkOutAdjustMinutes;
             var absentAfterShiftStartMinutes = source.AbsentAfterShiftStartMinutes ?? policy.AbsentAfterShiftStartMinutes;
             var earlyCheckoutAbsentMinutes = source.EarlyCheckoutAbsentAfterMinutes ?? policy.MissingCheckoutAfterShiftEndMinutes;
             var missingCheckoutAfterMinutes = source.MissingCheckoutAfterShiftEndMinutes ?? policy.MissingCheckoutAfterShiftEndMinutes;
@@ -1420,9 +1439,9 @@ public sealed class AttendanceService : IAttendanceService
                 nowLocal >= checkoutMissingDeadline;
             var absentByRule = !isScheduledOff &&
                 (missingCheckOut ||
-                 (late > absentAfterShiftStartMinutes) ||
+                 (rawLate > absentAfterShiftStartMinutes) ||
                  !hasValidClosedInterval && source.CheckOutUtc.HasValue ||
-                 (early > earlyCheckoutAbsentMinutes));
+                 (rawEarly > earlyCheckoutAbsentMinutes));
             var displayCode = ResolveDailyAttendanceDisplayStatusCode(statusCode, late, early, missingCheckIn || absentByRule, statusName);
             TryGetAttendanceDisplayStyle(displayStyles, displayCode, out var displayStyle);
             var displayName = displayStyle?.StatusName ?? (missingCheckIn || absentByRule ? "Absent" : statusName);
@@ -1441,19 +1460,9 @@ public sealed class AttendanceService : IAttendanceService
             var rawCameraLateMinutes = !isScheduledOff && hasCameraCheckIn
                 ? Math.Max(0, (int)Math.Floor((cameraCheckInLocal!.Value - shiftWindow.Start).TotalMinutes))
                 : 0;
-            var cameraCheckInAdjustMinutes =
-                source.AttendanceEntryTypeId.HasValue &&
-                ruleSettingsByEntryType.TryGetValue(source.AttendanceEntryTypeId.Value, out var cameraRule)
-                    ? cameraRule.CheckInAdjustMinutes
-                    : policy.OnTimeGraceMinutesAfter;
-            var cameraCheckOutAdjustMinutes =
-                source.AttendanceEntryTypeId.HasValue &&
-                ruleSettingsByEntryType.TryGetValue(source.AttendanceEntryTypeId.Value, out var cameraCheckoutRule)
-                    ? cameraCheckoutRule.CheckOutAdjustMinutes
-                    : policy.FullDayToleranceMinutes;
-            var cameraLateMinutes = rawCameraLateMinutes <= cameraCheckInAdjustMinutes
+            var cameraLateMinutes = rawCameraLateMinutes <= checkInAdjustMinutes
                 ? 0
-                : rawCameraLateMinutes;
+                : rawCameraLateMinutes - checkInAdjustMinutes;
             var rawCameraEarlyDepartureMinutes = !isScheduledOff && hasCameraCheckOut
                 ? Math.Max(0, (int)Math.Floor((shiftWindow.End - cameraCheckOutLocal!.Value).TotalMinutes))
                 : 0;
@@ -1461,11 +1470,13 @@ public sealed class AttendanceService : IAttendanceService
                 ? Math.Max(0, required - cameraWorkingMinutes)
                 : 0;
             var cameraEarlyDepartureMinutes =
-                rawCameraEarlyDepartureMinutes <= cameraCheckOutAdjustMinutes &&
-                cameraShortMinutes <= cameraCheckOutAdjustMinutes
+                rawCameraEarlyDepartureMinutes <= checkOutAdjustMinutes &&
+                cameraShortMinutes <= checkOutAdjustMinutes
                     ? 0
-                    : Math.Max(rawCameraEarlyDepartureMinutes, cameraShortMinutes);
-            var cameraRequiredCompletionMinutes = Math.Max(0, required - cameraCheckOutAdjustMinutes);
+                    : Math.Max(
+                        Math.Max(0, rawCameraEarlyDepartureMinutes - checkOutAdjustMinutes),
+                        Math.Max(0, cameraShortMinutes - checkOutAdjustMinutes));
+            var cameraRequiredCompletionMinutes = Math.Max(0, required - checkOutAdjustMinutes);
             var cameraMissingCheckoutExpired = hasCameraCheckIn && !hasCameraCheckOut &&
                 !isScheduledOff && nowLocal >= checkoutMissingDeadline;
             var cameraMissingCheckInExpired = !hasCameraCheckIn &&

@@ -36,7 +36,9 @@ namespace Accounts.Authorization
         {
             var db   = serviceProvider.GetRequiredService<ApplicationDbContext>();
             var rbac = serviceProvider.GetRequiredService<RbacService>();
-            return new PermissionFilter(_featureKey, db, rbac);
+            var tenantService = serviceProvider.GetRequiredService<ITenantService>();
+            var tenantCeiling = serviceProvider.GetRequiredService<ITenantMenuCeilingService>();
+            return new PermissionFilter(_featureKey, db, rbac, tenantService, tenantCeiling);
         }
     }
 
@@ -48,15 +50,21 @@ namespace Accounts.Authorization
         private readonly string               _featureKey;
         private readonly ApplicationDbContext _db;
         private readonly RbacService          _rbac;
+        private readonly ITenantService       _tenantService;
+        private readonly ITenantMenuCeilingService _tenantCeiling;
 
         public PermissionFilter(
             string featureKey,
             ApplicationDbContext db,
-            RbacService rbac)
+            RbacService rbac,
+            ITenantService tenantService,
+            ITenantMenuCeilingService tenantCeiling)
         {
             _featureKey = featureKey;
             _db         = db;
             _rbac       = rbac;
+            _tenantService = tenantService;
+            _tenantCeiling = tenantCeiling;
         }
 
         public async Task OnAuthorizationAsync(AuthorizationFilterContext context)
@@ -75,11 +83,35 @@ namespace Accounts.Authorization
                 return;
             }
 
-            // ── 2. SuperAdmin / Admin / TenantAdmin bypasses all permission checks ──
-            // TenantAdmin access is controlled by TenantMenuPermissions, not RBAC
-            if (user.IsInRole("SuperAdmin") || user.IsInRole("Admin") || user.IsInRole("TenantAdmin") ||
-                string.Equals(user.FindFirstValue(ITenantService.ClaimIsTenantAdmin), "true", StringComparison.OrdinalIgnoreCase))
+            // Platform actors are never allowed through tenant-operational feature checks.
+            if (user.IsInRole("SuperAdmin") || user.IsInRole("Admin") || _tenantService.IsSuperAdmin)
+            {
+                SetForbidden(
+                    context,
+                    "Platform administrators cannot access tenant operational features.",
+                    "PLATFORM_OPERATIONAL_ACCESS_DENIED");
                 return;
+            }
+
+            // TenantAdmin owns tenant operations only inside the SuperAdmin-approved
+            // menu/CRUD ceiling. It bypasses staff grants, never the tenant ceiling.
+            if (_tenantService.IsTenantAdmin)
+            {
+                if (_tenantService.TenantId.HasValue &&
+                    await _tenantCeiling.AllowsFeatureAsync(
+                        _tenantService.TenantId.Value,
+                        _featureKey,
+                        context.HttpContext.RequestAborted))
+                {
+                    return;
+                }
+
+                SetForbidden(
+                    context,
+                    $"Tenant access ceiling does not permit '{_featureKey}'.",
+                    "TENANT_CEILING_DENIED");
+                return;
+            }
 
             // ── 3. Get IdentityUser.Id from claims ────────────────────────────
             var identityUserId = user.FindFirstValue(ClaimTypes.NameIdentifier);
@@ -128,13 +160,22 @@ namespace Accounts.Authorization
 
             if (!hasAccess)
             {
-                context.Result = new ObjectResult(new
-                {
-                    message = $"Access denied. User does not have permission: '{_featureKey}'.",
-                    code    = "FORBIDDEN"
-                })
-                { StatusCode = StatusCodes.Status403Forbidden };
+                SetForbidden(
+                    context,
+                    $"Access denied. User does not have permission: '{_featureKey}'.",
+                    "FORBIDDEN");
             }
+        }
+
+        private static void SetForbidden(
+            AuthorizationFilterContext context,
+            string message,
+            string code)
+        {
+            context.Result = new ObjectResult(new { message, code })
+            {
+                StatusCode = StatusCodes.Status403Forbidden
+            };
         }
     }
 }

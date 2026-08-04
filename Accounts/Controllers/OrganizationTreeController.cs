@@ -20,17 +20,20 @@ namespace Accounts.Controllers
         private readonly ApplicationDbContext         _db;
         private readonly ITenantService               _tenantService;
         private readonly RbacService                  _rbac;
+        private readonly IOrganizationScopeService    _organizationScope;
 
         public OrganizationTreeController(
             IOrganizationService          service,
             ApplicationDbContext          db,
             ITenantService                tenantService,
-            RbacService                   rbac)
+            RbacService                   rbac,
+            IOrganizationScopeService organizationScope)
         {
             _service     = service;
             _db          = db;
             _tenantService = tenantService;
             _rbac        = rbac;
+            _organizationScope = organizationScope;
         }
 
         // ── Caller context helper ─────────────────────────────────────────────
@@ -62,17 +65,8 @@ namespace Accounts.Controllers
 
         private async Task<bool> HasOrganizationActionAsync(string action)
         {
-            if (_tenantService.IsSuperAdmin || _tenantService.IsTenantAdmin || User.IsInRole("Admin") || User.IsInRole("TenantAdmin"))
+            if (_tenantService.IsSuperAdmin)
                 return true;
-
-            var identityUserId = User.FindFirstValue(ClaimTypes.NameIdentifier);
-            if (string.IsNullOrWhiteSpace(identityUserId)) return false;
-
-            var staffId = await _db.Persons.AsNoTracking()
-                .Where(person => person.IdentityUserId == identityUserId && person.Staff != null)
-                .Select(person => (Guid?)person.Staff!.StaffId)
-                .FirstOrDefaultAsync();
-            if (!staffId.HasValue) return false;
 
             var normalizedAction = action.Trim().ToUpperInvariant();
             var menuIds = await _db.Menus.AsNoTracking()
@@ -83,6 +77,30 @@ namespace Accounts.Controllers
                 .Select(menu => menu.Id)
                 .ToListAsync();
 
+            if (_tenantService.IsTenantAdmin && _tenantService.TenantId.HasValue)
+            {
+                return await _db.TenantMenuPermissions.AsNoTracking()
+                    .Where(grant =>
+                        grant.TenantId == _tenantService.TenantId.Value
+                        && menuIds.Contains(grant.MenuId)
+                        && grant.IsAllow
+                        && grant.CanView)
+                    .AnyAsync(grant =>
+                        normalizedAction == "VIEW" ? grant.CanView
+                        : normalizedAction == "ADD" ? grant.CanAdd
+                        : normalizedAction == "EDIT" ? grant.CanEdit
+                        : normalizedAction == "DELETE" && grant.CanDelete);
+            }
+
+            var identityUserId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+            if (string.IsNullOrWhiteSpace(identityUserId)) return false;
+
+            var staffId = await _db.Persons.AsNoTracking()
+                .Where(person => person.IdentityUserId == identityUserId && person.Staff != null)
+                .Select(person => (Guid?)person.Staff!.StaffId)
+                .FirstOrDefaultAsync();
+            if (!staffId.HasValue) return false;
+
             foreach (var menuId in menuIds)
             {
                 if (normalizedAction == "VIEW" && await _rbac.HasAccessAsync(staffId.Value, $"MENU_{menuId}"))
@@ -92,6 +110,26 @@ namespace Accounts.Controllers
             }
 
             return false;
+        }
+
+        private async Task<bool> CanAccessNodeAsync(int nodeId)
+        {
+            if (_tenantService.IsSuperAdmin)
+            {
+                var label = await _db.OrganizationTree.AsNoTracking()
+                    .Where(node => node.Id == nodeId)
+                    .Select(node => node.Label)
+                    .FirstOrDefaultAsync();
+                return label != null &&
+                       new[] { "Country", "Group", "Company" }
+                           .Contains(label, StringComparer.OrdinalIgnoreCase);
+            }
+
+            return _tenantService.TenantId.HasValue &&
+                   await _organizationScope.IsWithinTenantSubtreeAsync(
+                       _tenantService.TenantId.Value,
+                       nodeId,
+                       HttpContext.RequestAborted);
         }
 
         // ── Country Lookup — available to all authenticated users ─────────────
@@ -133,12 +171,15 @@ namespace Accounts.Controllers
                 return Ok(subtree ?? Enumerable.Empty<OrgTreeNodeDto>());
             }
 
-            return Ok(tree);
+            return Forbid();
         }
 
         [HttpGet("tree/{startId:int}")]
         public async Task<IActionResult> GetSubTree(int startId)
         {
+            if (!await CanAccessNodeAsync(startId))
+                return Forbid();
+
             var result = await _service.GetSubTreeAsync(startId);
             return result == null
                 ? NotFound(new { message = $"Node {startId} not found." })
@@ -177,7 +218,7 @@ namespace Accounts.Controllers
                 return Ok(flat.Where(n => extendedIds.Contains(n.Id)));
             }
 
-            return Ok(flat);
+            return Forbid();
         }
 
         [HttpGet]
@@ -205,12 +246,22 @@ namespace Accounts.Controllers
                 return Ok(all.Where(n => extendedIds.Contains(n.Id)));
             }
 
-            return Ok(await _service.GetAllAsync());
+            if (isSuperAdmin)
+            {
+                var topLabels = new[] { "Country", "Group", "Company" };
+                return Ok((await _service.GetAllAsync()).Where(node =>
+                    topLabels.Contains(node.Label, StringComparer.OrdinalIgnoreCase)));
+            }
+
+            return Forbid();
         }
 
         [HttpGet("{id:int}")]
         public async Task<IActionResult> GetById(int id)
         {
+            if (!await CanAccessNodeAsync(id))
+                return Forbid();
+
             var node = await _service.GetByIdAsync(id);
             return node == null
                 ? NotFound(new { message = $"Node {id} not found." })
@@ -218,12 +269,22 @@ namespace Accounts.Controllers
         }
 
         [HttpGet("by-label/{label}")]
-        public async Task<IActionResult> GetByLabel(string label) =>
-            Ok(await _service.GetByLabelAsync(label));
+        public async Task<IActionResult> GetByLabel(string label)
+        {
+            var matches = await _service.GetByLabelAsync(label);
+            var allowed = new List<OrgNodeDto>();
+            foreach (var match in matches)
+                if (await CanAccessNodeAsync(match.Id))
+                    allowed.Add(match);
+            return Ok(allowed);
+        }
 
         [HttpGet("{id:int}/children")]
         public async Task<IActionResult> GetChildren(int id)
         {
+            if (!await CanAccessNodeAsync(id))
+                return Forbid();
+
             var children = await _service.GetChildrenAsync(id);
             return children == null
                 ? NotFound(new { message = $"Node {id} not found." })
@@ -235,7 +296,12 @@ namespace Accounts.Controllers
         {
             if (string.IsNullOrWhiteSpace(q))
                 return BadRequest(new { message = "Query 'q' is required." });
-            return Ok(await _service.SearchAsync(q));
+            var matches = await _service.SearchAsync(q);
+            var allowed = new List<OrgNodeDto>();
+            foreach (var match in matches)
+                if (await CanAccessNodeAsync(match.Id))
+                    allowed.Add(match);
+            return Ok(allowed);
         }
 
         // ── WRITE ─────────────────────────────────────────────────────────────
@@ -265,6 +331,9 @@ namespace Accounts.Controllers
                     return Forbid();
 
                 // Must place the node within their own subtree
+                if (!dto.ParentId.HasValue || !tenantRootId.HasValue)
+                    return Forbid();
+
                 if (dto.ParentId.HasValue && tenantRootId.HasValue)
                 {
                     var flat = (await _service.GetFlatTreeAsync()).ToList();
@@ -290,6 +359,25 @@ namespace Accounts.Controllers
         {
             if (!ModelState.IsValid) return BadRequest(ModelState);
             if (!await HasOrganizationActionAsync("EDIT")) return Forbid();
+            var (isSuperAdmin, _, _) = await ResolveCallerContextAsync();
+            if (!await CanAccessNodeAsync(id))
+                return Forbid();
+
+            var platformLabels = new[] { "Country", "Group", "Company" };
+            if (isSuperAdmin)
+            {
+                if (!platformLabels.Contains(dto.Label, StringComparer.OrdinalIgnoreCase))
+                    return Forbid();
+                if (dto.ParentId.HasValue && !await CanAccessNodeAsync(dto.ParentId.Value))
+                    return Forbid();
+            }
+            else
+            {
+                if (platformLabels.Contains(dto.Label, StringComparer.OrdinalIgnoreCase))
+                    return Forbid();
+                if (dto.ParentId.HasValue && !await CanAccessNodeAsync(dto.ParentId.Value))
+                    return Forbid();
+            }
 
             if (dto.ParentId.HasValue)
             {
@@ -310,6 +398,8 @@ namespace Accounts.Controllers
         public async Task<IActionResult> Delete(int id)
         {
             if (!await HasOrganizationActionAsync("DELETE")) return Forbid();
+            if (!await CanAccessNodeAsync(id))
+                return Forbid();
             var (success, message) = await _service.DeleteAsync(id);
             if (!success)
                 return message.Contains("not found")

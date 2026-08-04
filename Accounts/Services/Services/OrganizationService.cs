@@ -146,7 +146,7 @@ namespace Accounts.Services.Services
 
         public async Task<(OrgNodeDto Node, bool Created)> CreateAsync(CreateOrgNodeDto dto)
         {
-            var nextId  = (await _db.OrganizationTree.MaxAsync(n => (int?)n.Id) ?? 0) + 1;
+            var nextId  = await GetNextOrganizationIdAsync();
             string? flagUrl = dto.FlagUrl;
             string? code    = dto.Code;
 
@@ -189,6 +189,17 @@ namespace Accounts.Services.Services
             _db.OrganizationTree.Add(node);
             await _db.SaveChangesAsync();
             return (ToDto(node), true);
+        }
+
+        private async Task<int> GetNextOrganizationIdAsync()
+        {
+            if (!_db.Database.IsRelational())
+                return (await _db.OrganizationTree.MaxAsync(node => (int?)node.Id) ?? 0) + 1;
+
+            return await _db.Database
+                .SqlQueryRaw<int>(
+                    "SELECT CONVERT(int, NEXT VALUE FOR dbo.OrganizationTreeIdSequence) AS [Value]")
+                .SingleAsync();
         }
 
         public async Task<OrgNodeDto?> UpdateAsync(int id, UpdateOrgNodeDto dto)

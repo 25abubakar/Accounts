@@ -8,7 +8,7 @@ namespace Accounts.Controllers
 {
     [ApiController]
     [Route("api/access")]
-    [Authorize]
+    [Authorize(Roles = "TenantAdmin")]
     [Produces("application/json")]
     public class AccessController : ControllerBase
     {

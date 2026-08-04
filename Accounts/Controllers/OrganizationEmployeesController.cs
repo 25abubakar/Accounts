@@ -14,9 +14,18 @@ namespace Accounts.Controllers
     public class OrganizationEmployeesController : ControllerBase
     {
         private readonly IOrganizationEmployeeQueryService _query;
+        private readonly ITenantService _tenantService;
+        private readonly IOrganizationScopeService _organizationScope;
 
-        public OrganizationEmployeesController(IOrganizationEmployeeQueryService query) =>
+        public OrganizationEmployeesController(
+            IOrganizationEmployeeQueryService query,
+            ITenantService tenantService,
+            IOrganizationScopeService organizationScope)
+        {
             _query = query;
+            _tenantService = tenantService;
+            _organizationScope = organizationScope;
+        }
 
         /// <summary>
         /// Org subtree with vacancies and assigned persons (includes unfilled seats).
@@ -27,8 +36,18 @@ namespace Accounts.Controllers
         {
             if (orgId <= 0)
                 return BadRequest(new { message = "orgId must be a positive integer." });
+            if (_tenantService.IsSuperAdmin || !_tenantService.TenantId.HasValue)
+                return Forbid();
+            if (!await _organizationScope.IsWithinTenantSubtreeAsync(
+                    _tenantService.TenantId.Value,
+                    orgId,
+                    cancellationToken))
+                return Forbid();
 
-            var rows = await _query.GetPersonsByOrgNodeCleanAsync(orgId, cancellationToken);
+            var rows = await _query.GetPersonsByOrgNodeCleanAsync(
+                _tenantService.TenantId.Value,
+                orgId,
+                cancellationToken);
             return Ok(rows);
         }
 
@@ -45,9 +64,20 @@ namespace Accounts.Controllers
         {
             if (orgId <= 0)
                 return BadRequest(new { message = "orgId must be a positive integer." });
+            if (_tenantService.IsSuperAdmin || !_tenantService.TenantId.HasValue)
+                return Forbid();
+            if (!await _organizationScope.IsWithinTenantSubtreeAsync(
+                    _tenantService.TenantId.Value,
+                    orgId,
+                    cancellationToken))
+                return Forbid();
 
             var filter = !string.IsNullOrWhiteSpace(jobTitle) ? jobTitle : role;
-            var rows = await _query.GetEmployeesByOrgAndRoleAsync(orgId, filter, cancellationToken);
+            var rows = await _query.GetEmployeesByOrgAndRoleAsync(
+                _tenantService.TenantId.Value,
+                orgId,
+                filter,
+                cancellationToken);
             return Ok(rows);
         }
     }

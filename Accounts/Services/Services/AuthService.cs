@@ -17,9 +17,10 @@ namespace Accounts.Services.Services
         private readonly ApplicationDbContext           _db;
         private readonly IAccountScopeAccessService     _scopeAccess;
         private readonly IHttpContextAccessor           _httpContextAccessor;
+        private readonly ILogger<AuthService>           _logger;
 
         private static readonly string[] AllowedRoles =
-            ["Manager", "Developer", "AssistantManager", "SuperAdmin", "Admin", "TenantAdmin"];
+            ["Manager", "Developer", "AssistantManager"];
 
         public AuthService(
             UserManager<ApplicationUser>  userManager,
@@ -27,7 +28,8 @@ namespace Accounts.Services.Services
             RoleManager<IdentityRole>      roleManager,
             ApplicationDbContext           db,
             IAccountScopeAccessService     scopeAccess,
-            IHttpContextAccessor           httpContextAccessor)
+            IHttpContextAccessor           httpContextAccessor,
+            ILogger<AuthService>           logger)
         {
             _userManager   = userManager;
             _signInManager = signInManager;
@@ -35,6 +37,7 @@ namespace Accounts.Services.Services
             _db            = db;
             _scopeAccess   = scopeAccess;
             _httpContextAccessor = httpContextAccessor;
+            _logger = logger;
         }
 
         // ── Register ──────────────────────────────────────────────────────────
@@ -54,7 +57,9 @@ namespace Accounts.Services.Services
                 UserName       = dto.Email,
                 Email          = dto.Email,
                 EmailConfirmed = true,
-                IsSuperAdmin   = dto.Role == "SuperAdmin"
+                IsSuperAdmin   = false,
+                IsTenantAdmin  = false,
+                TenantId       = null
             };
 
             var result = await _userManager.CreateAsync(user, dto.Password);
@@ -121,7 +126,21 @@ namespace Accounts.Services.Services
 
                 await StampTenantClaimsAsync(user);
                 await _signInManager.SignInAsync(user, dto.RememberMe);
-                await OpenApplicationLoginSessionAsync(user);
+
+                // Login-session rows are attendance/audit telemetry. A missing
+                // table, transient SQL error, or malformed legacy staff link must
+                // never turn valid credentials into a failed login after the
+                // authentication cookie has already been issued.
+                try
+                {
+                    await OpenApplicationLoginSessionAsync(user);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex,
+                        "Login succeeded for {UserId}, but application session tracking could not be recorded.",
+                        user.Id);
+                }
                 var roles = await _userManager.GetRolesAsync(user);
                 return (true, 200, new AuthResponseDto
                 {

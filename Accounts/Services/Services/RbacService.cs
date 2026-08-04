@@ -1,5 +1,6 @@
 using Accounts.Data;
 using Accounts.Models;
+using Accounts.Services.Interfaces;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Data.SqlClient;
 using System.Text.Json;
@@ -22,7 +23,15 @@ namespace Accounts.Services.Services
     public class RbacService
     {
         private readonly ApplicationDbContext _db;
-        public RbacService(ApplicationDbContext db) => _db = db;
+        private readonly ITenantMenuCeilingService _tenantCeiling;
+
+        public RbacService(
+            ApplicationDbContext db,
+            ITenantMenuCeilingService tenantCeiling)
+        {
+            _db = db;
+            _tenantCeiling = tenantCeiling;
+        }
 
         // ─────────────────────────────────────────────────────────────────────
         // SINGLE PERMISSION CHECK
@@ -33,7 +42,6 @@ namespace Accounts.Services.Services
         /// Checks new 2-tier RBAC (StaffMenuAccess + AccessFeatures) first,
         /// then falls back to legacy RolePermissions / DepartmentAccessMatrix.
         /// </summary>
-#pragma warning disable CS0162
         public async Task<bool> HasAccessAsync(Guid staffId, string featureKey)
         {
             var permissionId = await _db.Features
@@ -44,66 +52,9 @@ namespace Accounts.Services.Services
 
             return permissionId.HasValue &&
                 (await GetEffectivePermissionIdsAsync(staffId)).Contains(permissionId.Value);
-
-            // ── Check new 2-tier RBAC ─────────────────────────────────────────
-            // Load all menu grants for this staff + their feature rows
-            var menuGrants = await _db.StaffMenuAccesses
-                .AsNoTracking()
-                .Include(ma => ma.AccessFeatures)
-                .Where(ma => ma.StaffId == staffId && ma.IsAllow)
-                .ToListAsync();
-
-            foreach (var grant in menuGrants)
-            {
-                var featureRow = grant.AccessFeatures.FirstOrDefault(af => af.PermissionId == permissionId);
-                if (featureRow != null)
-                    return featureRow.IsAllow;
-                // Grant exists with no specific feature row → all features allowed for this menu
-                return true;
-            }
-
-            // ── Legacy fallback: RolePermissions + DepartmentAccessMatrix ─────
-            var staff = await _db.StaffVacancies
-                .AsNoTracking()
-                .Include(s => s.Vacancy)
-                .FirstOrDefaultAsync(s => s.StaffId == staffId);
-
-            if (staff == null) return false;
-
-            var jobTitle = staff.Vacancy?.ResolvedJobTitle;
-            var deptId   = staff.Vacancy?.OrganizationId;
-
-            if (!string.IsNullOrWhiteSpace(jobTitle))
-            {
-                if (deptId.HasValue)
-                {
-                    var deptRolePerm = await _db.RolePermissions
-                        .AsNoTracking()
-                        .FirstOrDefaultAsync(r =>
-                            r.JobTitle == jobTitle &&
-                            r.DeptId   == deptId   &&
-                            r.PermissionId == permissionId);
-                    if (deptRolePerm != null) return deptRolePerm.IsAllowed;
-                }
-
-                var globalRolePerm = await _db.RolePermissions
-                    .AsNoTracking()
-                    .FirstOrDefaultAsync(r =>
-                        r.JobTitle    == jobTitle &&
-                        r.DeptId      == null     &&
-                        r.PermissionId == permissionId);
-                if (globalRolePerm != null) return globalRolePerm.IsAllowed;
-            }
-
-            var matrixRow = await _db.DepartmentAccessMatrix
-                .AsNoTracking()
-                .FirstOrDefaultAsync(m => m.StaffId == staffId && m.PermissionId == permissionId);
-
-            return matrixRow?.HasAccess == true;
         }
 
         // ─────────────────────────────────────────────────────────────────────
-#pragma warning restore CS0162
         // BULK PERMISSION LOAD (used at login)
         // ─────────────────────────────────────────────────────────────────────
 
@@ -217,6 +168,28 @@ namespace Accounts.Services.Services
         /// </summary>
         public async Task<HashSet<int>> GetEffectivePermissionIdsAsync(Guid staffId)
         {
+            var staff = await _db.StaffVacancies
+                .AsNoTracking()
+                .Where(item => item.StaffId == staffId)
+                .Select(item => new
+                {
+                    item.TenantId,
+                    JobTitle = item.Vacancy != null
+                        ? (item.Vacancy.JobTitleNav != null
+                            ? item.Vacancy.JobTitleNav.TitleName
+                            : item.Vacancy.JobTitle)
+                        : null,
+                    DepartmentId = item.Vacancy != null
+                        ? (int?)item.Vacancy.OrganizationId
+                        : null
+                })
+                .FirstOrDefaultAsync();
+
+            if (staff == null)
+                return new HashSet<int>();
+
+            var tenantCeiling = await _tenantCeiling.GetAllowedPermissionIdsAsync(staff.TenantId);
+
             // ── 1. New 2-tier RBAC (StaffMenuAccess + AccessFeatures) ─────────
             var menuGrants = await _db.StaffMenuAccesses
                 .AsNoTracking()
@@ -235,70 +208,34 @@ namespace Accounts.Services.Services
                     // visibility (handled in GetFilteredSidebarAsync by checking
                     // grantedMenuIds directly) but does not bulk-unlock every feature.
                     foreach (var af in grant.AccessFeatures.Where(af => af.IsAllow))
-                        result2Tier.Add(af.PermissionId);
+                        if (tenantCeiling.Contains(af.PermissionId))
+                            result2Tier.Add(af.PermissionId);
                 }
 
                 return result2Tier;
             }
 
-            // ── 2. Legacy fallback: RolePermissions + DepartmentAccessMatrix ──
-            var staff = await _db.StaffVacancies
+            // ── 2. Tenant-scoped job-title defaults ────────────────────────────
+            // Global RolePermissions and DepartmentAccessMatrix are intentionally
+            // not authorization fallbacks for tenant staff.
+            var rolePermissions = string.IsNullOrWhiteSpace(staff.JobTitle)
+                ? new List<TenantRolePermission>()
+                : await _db.TenantRolePermissions
                 .AsNoTracking()
-                .Include(s => s.Vacancy)
-                .FirstOrDefaultAsync(s => s.StaffId == staffId);
-
-            if (staff == null) return new HashSet<int>();
-
-            var jobTitle = staff.Vacancy?.ResolvedJobTitle;
-            var deptId   = staff.Vacancy?.OrganizationId;
-
-            var rolePermissions = string.IsNullOrWhiteSpace(jobTitle)
-                ? new List<RolePermission>()
-                : await _db.RolePermissions
-                    .AsNoTracking()
-                    .Where(r => r.JobTitle == jobTitle &&
-                                (r.DeptId == null || r.DeptId == deptId))
+                    .Where(rule =>
+                        rule.TenantId == staff.TenantId
+                        && rule.JobTitle == staff.JobTitle
+                        && (rule.DeptId == null || rule.DeptId == staff.DepartmentId))
                     .ToListAsync();
 
-            var matrixAllowed = await _db.DepartmentAccessMatrix
-                .AsNoTracking()
-                .Where(m => m.StaffId == staffId && m.HasAccess)
-                .Select(m => m.PermissionId)
-                .ToHashSetAsync();
-
-            var allFeatures = await _db.Features
-                .AsNoTracking()
-                .Select(f => new { f.PermissionId })
-                .ToListAsync();
-
-            var roleDeptLookup   = rolePermissions
-                .Where(r => r.DeptId != null)
-                .ToDictionary(r => r.PermissionId, r => r.IsAllowed);
-
-            var roleGlobalLookup = rolePermissions
-                .Where(r => r.DeptId == null)
-                .ToDictionary(r => r.PermissionId, r => r.IsAllowed);
-
-            var legacyResult = new HashSet<int>();
-            foreach (var f in allFeatures)
-            {
-                var pid = f.PermissionId;
-                if (!string.IsNullOrWhiteSpace(jobTitle))
-                {
-                    if (roleDeptLookup.TryGetValue(pid, out var deptAllowed))
-                    {
-                        if (deptAllowed) legacyResult.Add(pid);
-                        continue;
-                    }
-                    if (roleGlobalLookup.TryGetValue(pid, out var globalAllowed))
-                    {
-                        if (globalAllowed) legacyResult.Add(pid);
-                        continue;
-                    }
-                }
-                if (matrixAllowed.Contains(pid)) legacyResult.Add(pid);
-            }
-            return legacyResult;
+            return rolePermissions
+                .GroupBy(rule => rule.PermissionId)
+                .Select(group => group
+                    .OrderByDescending(rule => rule.DeptId == staff.DepartmentId)
+                    .First())
+                .Where(rule => rule.IsAllowed && tenantCeiling.Contains(rule.PermissionId))
+                .Select(rule => rule.PermissionId)
+                .ToHashSet();
         }
 
         // ─────────────────────────────────────────────────────────────────────
@@ -447,14 +384,42 @@ namespace Accounts.Services.Services
             if (staffId == Guid.Empty)
                 return BuildFullTree(null, lookup);
 
+            var tenantId = await _db.StaffVacancies
+                .AsNoTracking()
+                .Where(staff => staff.StaffId == staffId)
+                .Select(staff => (int?)staff.TenantId)
+                .FirstOrDefaultAsync();
+            if (!tenantId.HasValue)
+                return new List<object>();
+
+            var ceilingMenuIds = await _db.TenantMenuPermissions
+                .AsNoTracking()
+                .Where(grant => grant.TenantId == tenantId.Value
+                                && grant.IsAllow
+                                && grant.CanView)
+                .Select(grant => grant.MenuId)
+                .ToHashSetAsync();
+
             // ── Load explicitly granted menu IDs from StaffMenuAccess ─────────
             var grantedMenuIds = await _db.StaffMenuAccesses
                 .AsNoTracking()
-                .Where(ma => ma.StaffId == staffId && ma.IsAllow)
+                .Where(ma => ma.StaffId == staffId
+                             && ma.IsAllow
+                             && ceilingMenuIds.Contains(ma.MenuId))
                 .Select(ma => ma.MenuId)
                 .ToHashSetAsync();
 
-            // No grants at all — return empty sidebar
+            if (grantedMenuIds.Count == 0)
+            {
+                var allowedPermissionIds = await GetEffectivePermissionIdsAsync(staffId);
+                grantedMenuIds = await _db.MenuPermissions
+                    .AsNoTracking()
+                    .Where(link => allowedPermissionIds.Contains(link.PermissionId)
+                                   && ceilingMenuIds.Contains(link.MenuId))
+                    .Select(link => link.MenuId)
+                    .ToHashSetAsync();
+            }
+
             if (grantedMenuIds.Count == 0)
                 return new List<object>();
 
@@ -754,7 +719,11 @@ namespace Accounts.Services.Services
             if (staffId == Guid.Empty)
                 return (0, 0, "Invalid staffId (empty GUID).");
 
-            if (!await _db.StaffVacancies.AsNoTracking().AnyAsync(s => s.StaffId == staffId))
+            var staffTenantId = await _db.StaffVacancies.AsNoTracking()
+                .Where(staff => staff.StaffId == staffId)
+                .Select(staff => (int?)staff.TenantId)
+                .FirstOrDefaultAsync();
+            if (!staffTenantId.HasValue)
                 return (0, 0, "Staff not found.");
 
             // ── Step 1: Wipe all existing grants (cascade deletes AccessFeatures) ──
@@ -766,25 +735,14 @@ namespace Accounts.Services.Services
                 _db.StaffMenuAccesses.RemoveRange(existingGrants);
 
             // ── Step 2: Pre-load valid menu IDs (FK guard) ────────────────────
-            var validMenuIds = await _db.Menus.AsNoTracking()
-                .Select(m => m.Id)
+            var validMenuIds = await _db.TenantMenuPermissions.AsNoTracking()
+                .Where(grant => grant.TenantId == staffTenantId.Value
+                                && grant.IsAllow
+                                && grant.CanView)
+                .Select(grant => grant.MenuId)
                 .ToHashSetAsync();
-
-            // Seed Feature rows for MENU_* keys that are ALLOW and reference real menus
-            var allowedMenuKeys = overrides
-                .Where(kv => kv.Value.Trim().Equals("ALLOW", StringComparison.OrdinalIgnoreCase))
-                .Select(kv => kv.Key.Trim())
-                .Where(k => k.StartsWith("MENU_", StringComparison.OrdinalIgnoreCase))
-                .Distinct(StringComparer.OrdinalIgnoreCase);
-
-            foreach (var key in allowedMenuKeys)
-            {
-                var p = key.Split('_');
-                if (p.Length >= 2 && int.TryParse(p[1], out int kid) && kid > 0 && validMenuIds.Contains(kid))
-                    await EnsureFeatureExistsAsync(key);
-            }
-
-            // Feature lookup (after seeding)
+            var allowedPermissionIds = await _tenantCeiling.GetAllowedPermissionIdsAsync(
+                staffTenantId.Value);
             var featureLookup = await _db.Features.AsNoTracking()
                 .ToDictionaryAsync(f => f.FeatureKey.Trim(), f => f, StringComparer.OrdinalIgnoreCase);
 
@@ -823,11 +781,6 @@ namespace Accounts.Services.Services
                     skipped++; continue;
                 }
 
-                if (!featureLookup.TryGetValue(trimmedKey, out var feature))
-                {
-                    skipped++; continue;
-                }
-
                 bool isTopLevel = parts.Length == 2; // "MENU_8" (no suffix)
 
                 if (isTopLevel)
@@ -849,6 +802,13 @@ namespace Accounts.Services.Services
                 }
                 else
                 {
+                    if (!featureLookup.TryGetValue(trimmedKey, out var feature)
+                        || !allowedPermissionIds.Contains(feature.PermissionId))
+                    {
+                        skipped++;
+                        continue;
+                    }
+
                     // Feature-level key (e.g. "MENU_8_VIEW")
                     // Ensure the parent grant exists first
                     if (!newGrantsByMenuId.TryGetValue(menuId, out var grant))
@@ -893,10 +853,14 @@ namespace Accounts.Services.Services
             if (staffIds.Length == 0) return (0, 0, 0, "No staff members were selected.");
             if (overrides == null || overrides.Count == 0) return (0, 0, 0, "No overrides provided.");
 
-            var validStaffIds = await _db.StaffVacancies.AsNoTracking()
-                .Where(s => staffIds.Contains(s.StaffId)).Select(s => s.StaffId).ToArrayAsync();
-            if (validStaffIds.Length != staffIds.Length)
+            var validStaff = await _db.StaffVacancies.AsNoTracking()
+                .Where(staff => staffIds.Contains(staff.StaffId))
+                .Select(staff => new { staff.StaffId, staff.TenantId })
+                .ToArrayAsync();
+            if (validStaff.Length != staffIds.Length || validStaff.Select(staff => staff.TenantId).Distinct().Count() != 1)
                 return (0, 0, 0, "One or more selected staff members were not found.");
+            var validStaffIds = validStaff.Select(staff => staff.StaffId).ToArray();
+            var tenantId = validStaff[0].TenantId;
 
             var strategy = _db.Database.CreateExecutionStrategy();
             return await strategy.ExecuteAsync(async () =>
@@ -905,8 +869,16 @@ namespace Accounts.Services.Services
             // entities left from the failed attempt before rebuilding the graph.
             _db.ChangeTracker.Clear();
             await using var transaction = await _db.Database.BeginTransactionAsync();
-            var menus = await _db.Menus.AsNoTracking().Select(m => new { m.Id, m.Title }).ToListAsync();
+            var allowedMenuIds = await _db.TenantMenuPermissions.AsNoTracking()
+                .Where(grant => grant.TenantId == tenantId && grant.IsAllow && grant.CanView)
+                .Select(grant => grant.MenuId)
+                .ToHashSetAsync();
+            var menus = await _db.Menus.AsNoTracking()
+                .Where(menu => allowedMenuIds.Contains(menu.Id))
+                .Select(menu => new { menu.Id, menu.Title })
+                .ToListAsync();
             var menuById = menus.ToDictionary(m => m.Id);
+            var ceilingPermissionIds = await _tenantCeiling.GetAllowedPermissionIdsAsync(tenantId);
             var allowedKeys = overrides
                 .Where(pair => pair.Value.Trim().Equals("ALLOW", StringComparison.OrdinalIgnoreCase))
                 .Select(pair => pair.Key.Trim().ToUpperInvariant())
@@ -924,26 +896,10 @@ namespace Accounts.Services.Services
                 parsed.Add((key, menuId, parts.Length == 2));
             }
 
-            // Seed any missing MENU_* features in a single save, not once per key/user.
             var featureIds = await _db.Features.AsNoTracking()
-                .Where(f => allowedKeys.Contains(f.FeatureKey))
+                .Where(feature => allowedKeys.Contains(feature.FeatureKey)
+                                  && ceilingPermissionIds.Contains(feature.PermissionId))
                 .ToDictionaryAsync(f => f.FeatureKey, f => f.PermissionId, StringComparer.OrdinalIgnoreCase);
-            var missingFeatures = parsed.Where(item => !featureIds.ContainsKey(item.Key))
-                .GroupBy(item => item.Key, StringComparer.OrdinalIgnoreCase).Select(group => group.First())
-                .Select(item =>
-                {
-                    var suffix = item.Key.Split('_').Length >= 3 ? string.Join("_", item.Key.Split('_').Skip(2)) : "";
-                    var title = menuById[item.MenuId].Title;
-                    var name = suffix switch { "VIEW" => $"{title} - View", "ADD" => $"{title} - Add", "EDIT" => $"{title} - Edit", "DELETE" => $"{title} - Delete", "" => title, _ => $"{title} - {suffix}" };
-                    return new Feature { FeatureKey = item.Key, FeatureName = name, Module = "Menu" };
-                }).ToList();
-            if (missingFeatures.Count > 0)
-            {
-                _db.Features.AddRange(missingFeatures);
-                await _db.SaveChangesAsync();
-                foreach (var feature in missingFeatures)
-                    featureIds[feature.FeatureKey] = feature.PermissionId;
-            }
 
             var permissionRows = parsed
                 .Where(item => featureIds.ContainsKey(item.Key))
@@ -992,7 +948,11 @@ namespace Accounts.Services.Services
             if (staffId == Guid.Empty)
                 return (false, "Invalid staffId (empty GUID).");
 
-            if (!await _db.StaffVacancies.AnyAsync(s => s.StaffId == staffId))
+            var staffTenantId = await _db.StaffVacancies
+                .Where(staff => staff.StaffId == staffId)
+                .Select(staff => (int?)staff.TenantId)
+                .FirstOrDefaultAsync();
+            if (!staffTenantId.HasValue)
                 return (false, $"Staff {staffId} not found.");
 
             bool isMenuKey = featureKey.StartsWith("MENU_", StringComparison.OrdinalIgnoreCase);
@@ -1004,19 +964,20 @@ namespace Accounts.Services.Services
                 if (parts.Length < 2 || !int.TryParse(parts[1], out int menuId) || menuId <= 0)
                     return (false, $"Invalid feature key format: '{featureKey}'. Expected MENU_{{id}} or MENU_{{id}}_SUFFIX.");
 
-                // Guard: MenuId must exist in the Menus table
-                if (!await _db.Menus.AnyAsync(m => m.Id == menuId))
-                    return (false, $"Menu {menuId} does not exist. Cannot create a menu grant for a non-existent menu.");
-
-                await EnsureFeatureExistsAsync(featureKey);
+                if (status == PermissionStatus.ALLOW
+                    && !await _tenantCeiling.AllowsMenuAsync(staffTenantId.Value, menuId))
+                    return (false, "The requested menu is outside the tenant access ceiling.");
 
                 var feature = await _db.Features.AsNoTracking()
                     .FirstOrDefaultAsync(f => f.FeatureKey == featureKey);
 
-                if (feature == null)
-                    return (false, $"Feature '{featureKey}' could not be created or found.");
-
                 bool isTopLevel = parts.Length == 2;
+                if (!isTopLevel && feature == null)
+                    return (false, $"Feature '{featureKey}' was not found.");
+                if (!isTopLevel
+                    && status == PermissionStatus.ALLOW
+                    && !await _tenantCeiling.AllowsFeatureAsync(staffTenantId.Value, featureKey))
+                    return (false, "The requested feature is outside the tenant access ceiling.");
 
                 var grant = await _db.StaffMenuAccesses
                     .Include(ma => ma.AccessFeatures)
@@ -1064,7 +1025,7 @@ namespace Accounts.Services.Services
                         _db.StaffMenuAccesses.Add(grant);
                     }
 
-                    var af = grant.AccessFeatures.FirstOrDefault(x => x.PermissionId == feature.PermissionId);
+                    var af = grant.AccessFeatures.FirstOrDefault(x => x.PermissionId == feature!.PermissionId);
                     if (status == PermissionStatus.INHERIT)
                     {
                         if (af != null) { _db.AccessFeatures.Remove(af); grant.AccessFeatures.Remove(af); }
@@ -1073,7 +1034,7 @@ namespace Accounts.Services.Services
                     {
                         bool isAllow = status == PermissionStatus.ALLOW;
                         if (af == null)
-                            grant.AccessFeatures.Add(new AccessFeature { PermissionId = feature.PermissionId, IsAllow = isAllow });
+                            grant.AccessFeatures.Add(new AccessFeature { PermissionId = feature!.PermissionId, IsAllow = isAllow });
                         else
                             af.IsAllow = isAllow;
                     }
@@ -1089,6 +1050,9 @@ namespace Accounts.Services.Services
 
                 if (feature == null)
                     return (false, $"Feature '{featureKey}' not found. Use GET /api/access/features to see valid keys.");
+                if (status == PermissionStatus.ALLOW
+                    && !await _tenantCeiling.AllowsFeatureAsync(staffTenantId.Value, featureKey))
+                    return (false, "The requested feature is outside the tenant access ceiling.");
 
                 // Attach to an existing active menu grant
                 var parentGrant = await _db.StaffMenuAccesses
@@ -1207,14 +1171,28 @@ namespace Accounts.Services.Services
         public async Task<(bool Success, string Message, IReadOnlyList<string> GrantedKeys)>
             GrantMenuAccessAsync(Guid staffId, int menuId, string? setBy, string? reason)
         {
-            if (!await _db.StaffVacancies.AnyAsync(s => s.StaffId == staffId))
+            var tenantId = await _db.StaffVacancies
+                .Where(staff => staff.StaffId == staffId)
+                .Select(staff => (int?)staff.TenantId)
+                .FirstOrDefaultAsync();
+            if (!tenantId.HasValue)
                 return (false, $"Staff {staffId} not found.", Array.Empty<string>());
+            if (!await _tenantCeiling.AllowsMenuAsync(tenantId.Value, menuId))
+                return (false, "The requested menu is outside the tenant access ceiling.", Array.Empty<string>());
 
             var menu = await _db.Menus.AsNoTracking().FirstOrDefaultAsync(m => m.Id == menuId && m.IsActive);
             if (menu == null)
                 return (false, $"Menu {menuId} not found.", Array.Empty<string>());
 
-            var featureKeys = await GetMenuFeatureKeysAsync(menuId);
+            var allowedPermissionIds = await _tenantCeiling.GetAllowedPermissionIdsAsync(tenantId.Value);
+            var featureKeys = await _db.MenuPermissions
+                .AsNoTracking()
+                .Where(link => link.MenuId == menuId
+                               && allowedPermissionIds.Contains(link.PermissionId)
+                               && link.Feature != null)
+                .Select(link => link.Feature!.FeatureKey)
+                .Distinct()
+                .ToListAsync();
             if (featureKeys.Count == 0)
                 return (false, $"Menu '{menu.Title}' has no permission keys.", Array.Empty<string>());
 
@@ -1240,11 +1218,16 @@ namespace Accounts.Services.Services
             return (true, $"Removed override(s) for menu '{menu.Title}'.", featureKeys);
         }
 
-        public async Task<IEnumerable<object>> GetMenuPermissionTreeAsync()
+        public async Task<IEnumerable<object>> GetMenuPermissionTreeAsync(int tenantId)
         {
+            var allowedMenuIds = await _db.TenantMenuPermissions.AsNoTracking()
+                .Where(grant => grant.TenantId == tenantId && grant.IsAllow && grant.CanView)
+                .Select(grant => grant.MenuId)
+                .ToHashSetAsync();
+            var allowedPermissionIds = await _tenantCeiling.GetAllowedPermissionIdsAsync(tenantId);
             var menus = await _db.Menus.AsNoTracking()
                 .Include(m => m.MenuPermissions).ThenInclude(mp => mp.Feature)
-                .Where(m => m.IsActive)
+                .Where(m => m.IsActive && allowedMenuIds.Contains(m.Id))
                 .OrderBy(m => m.SortOrder)
                 .ToListAsync();
 
@@ -1256,7 +1239,8 @@ namespace Accounts.Services.Services
                 void Walk(int nodeId)
                 {
                     var m = menus.First(x => x.Id == nodeId);
-                    foreach (var mp in m.MenuPermissions.Where(mp => mp.Feature != null))
+                    foreach (var mp in m.MenuPermissions.Where(mp =>
+                                 mp.Feature != null && allowedPermissionIds.Contains(mp.PermissionId)))
                         set.Add(mp.Feature!.FeatureKey);
                     foreach (var c in lookup[nodeId]) Walk(c.Id);
                 }
@@ -1270,7 +1254,7 @@ namespace Accounts.Services.Services
                 {
                     menu.Id, menu.Title, menu.Icon, menu.Route, menu.ParentId, menu.SortOrder,
                     directPermissions = menu.MenuPermissions
-                        .Where(mp => mp.Feature != null)
+                        .Where(mp => mp.Feature != null && allowedPermissionIds.Contains(mp.PermissionId))
                         .Select(mp => mp.Feature!.FeatureKey).ToList(),
                     allPermissions = CollectDescendantKeys(menu.Id).OrderBy(k => k).ToList(),
                     children       = BuildTree(menu.Id)

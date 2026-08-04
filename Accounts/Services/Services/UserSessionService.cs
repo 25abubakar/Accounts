@@ -95,32 +95,105 @@ namespace Accounts.Services.Services
                     .OrderBy(m => m.SortOrder)
                     .ToListAsync(cancellationToken);
 
-                var lookup = allMenus.ToLookup(m => m.ParentId);
-
-                // Super Admin allowed route prefixes
                 var superAdminRoutes = new[]
                 {
                     "/groups/", "/organization", "/settings/", "/tenants", "/dashboard"
                 };
+                var byId = allMenus.ToDictionary(menu => menu.Id);
+                var visibleIds = allMenus
+                    .Where(menu => !string.IsNullOrWhiteSpace(menu.Route) &&
+                                   superAdminRoutes.Any(route =>
+                                       menu.Route!.StartsWith(route, StringComparison.OrdinalIgnoreCase)))
+                    .Select(menu => menu.Id)
+                    .ToHashSet();
+                foreach (var menuId in visibleIds.ToList())
+                {
+                    var current = byId.GetValueOrDefault(menuId);
+                    while (current?.ParentId != null &&
+                           byId.TryGetValue(current.ParentId.Value, out var parent))
+                    {
+                        visibleIds.Add(parent.Id);
+                        current = parent;
+                    }
+                }
 
-                bool IsSuperAdminMenu(Models.Menu m) =>
-                    m.Route == null || // group headers — include if they have valid children
-                    superAdminRoutes.Any(r => m.Route.StartsWith(r, StringComparison.OrdinalIgnoreCase));
-
-                // Build restricted sidebar (only org + settings)
-                var saMenus = allMenus
-                    .Where(m => IsSuperAdminMenu(m))
-                    .ToLookup(m => m.ParentId);
-
-                session.Sidebar = BuildFullTree(null, saMenus);
-                // Super Admin gets all feature keys for the platform-level settings UI
-                session.Permissions = await _db.Features.AsNoTracking()
-                    .Select(f => f.FeatureKey).ToListAsync(cancellationToken);
+                session.Sidebar = BuildFullTree(
+                    null,
+                    allMenus.Where(menu => visibleIds.Contains(menu.Id))
+                        .ToLookup(menu => menu.ParentId));
+                session.Permissions = await _db.MenuPermissions.AsNoTracking()
+                    .Where(link => visibleIds.Contains(link.MenuId) && link.Feature != null)
+                    .Select(link => link.Feature!.FeatureKey)
+                    .Distinct()
+                    .ToListAsync(cancellationToken);
 
                 var adminStaffId = identityUserId;
                 session.LoginInstructions = await _notes.GetLoginInstructionsAsync(
                     adminStaffId, identityUserId, cancellationToken);
                 session.UnreadInstructionCount = session.LoginInstructions.Count(n => !n.IsRead);
+                return session;
+            }
+
+            // TenantAdmin receives exactly the SuperAdmin-approved tenant menu
+            // and CRUD ceiling. A Person/Staff record is not required.
+            if (session.IsTenantAdmin && session.TenantId.HasValue)
+            {
+                session.IsFullAccess = false;
+                var tenantAdminPerson = await GetPersonInfoAsync(
+                    identityUserId,
+                    cancellationToken);
+                ApplyPersonInfo(session, tenantAdminPerson);
+                if (includeNavigation)
+                {
+                    var grants = await _db.TenantMenuPermissions
+                        .AsNoTracking()
+                        .Where(grant => grant.TenantId == session.TenantId.Value
+                                        && grant.IsAllow
+                                        && grant.CanView)
+                        .Select(grant => new
+                        {
+                            grant.MenuId,
+                            grant.CanView,
+                            grant.CanAdd,
+                            grant.CanEdit,
+                            grant.CanDelete
+                        })
+                        .ToListAsync(cancellationToken);
+
+                    var menus = await _db.Menus.AsNoTracking()
+                        .Where(menu => menu.IsActive)
+                        .OrderBy(menu => menu.SortOrder)
+                        .ToListAsync(cancellationToken);
+                    var byId = menus.ToDictionary(menu => menu.Id);
+                    var visibleIds = grants.Select(grant => grant.MenuId).ToHashSet();
+                    foreach (var menuId in visibleIds.ToList())
+                    {
+                        var current = byId.GetValueOrDefault(menuId);
+                        while (current?.ParentId != null &&
+                               byId.TryGetValue(current.ParentId.Value, out var parent))
+                        {
+                            visibleIds.Add(parent.Id);
+                            current = parent;
+                        }
+                    }
+
+                    session.Sidebar = BuildFullTree(
+                        null,
+                        menus.Where(menu => visibleIds.Contains(menu.Id))
+                            .ToLookup(menu => menu.ParentId));
+
+                    var permissionKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                    foreach (var grant in grants)
+                    {
+                        permissionKeys.Add($"MENU_{grant.MenuId}");
+                        if (grant.CanView) permissionKeys.Add($"MENU_{grant.MenuId}_VIEW");
+                        if (grant.CanAdd) permissionKeys.Add($"MENU_{grant.MenuId}_ADD");
+                        if (grant.CanEdit) permissionKeys.Add($"MENU_{grant.MenuId}_EDIT");
+                        if (grant.CanDelete) permissionKeys.Add($"MENU_{grant.MenuId}_DELETE");
+                    }
+                    session.Permissions = permissionKeys.OrderBy(key => key).ToList();
+                }
+
                 return session;
             }
 
