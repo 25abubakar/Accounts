@@ -23,12 +23,14 @@ namespace Accounts.Controllers
         private readonly IVacancyService              _service;
         private readonly ApplicationDbContext         _db;
         private readonly RbacService                  _rbac;
+        private readonly ITenantService               _tenant;
 
-        public VacanciesController(IVacancyService service, ApplicationDbContext db, RbacService rbac)
+        public VacanciesController(IVacancyService service, ApplicationDbContext db, RbacService rbac, ITenantService tenant)
         {
             _service     = service;
             _db          = db;
             _rbac        = rbac;
+            _tenant      = tenant;
         }
 
         private Task<bool> CallerIsSuperAdminAsync() => Task.FromResult(
@@ -78,12 +80,58 @@ namespace Accounts.Controllers
             return false;
         }
 
+        private async Task<HashSet<int>?> GetVisibleOrganizationIdsAsync()
+        {
+            if (CallerHasFullTenantAccess()) return null;
+            if (!_tenant.TenantId.HasValue) return [];
+
+            var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+            var assignedNodeId = await _db.Persons.AsNoTracking()
+                .Where(person => person.TenantId == _tenant.TenantId.Value
+                    && person.IdentityUserId == userId && person.IsActive
+                    && person.Staff != null && person.Staff.Vacancy != null)
+                .Select(person => (int?)person.Staff!.Vacancy!.OrganizationId)
+                .FirstOrDefaultAsync();
+            if (!assignedNodeId.HasValue) return [];
+
+            var tenantRoot = await _db.Tenants.AsNoTracking()
+                .Where(tenant => tenant.Id == _tenant.TenantId.Value)
+                .Select(tenant => tenant.OrganizationTreeId)
+                .FirstAsync();
+            var nodes = await _db.OrganizationTree.AsNoTracking()
+                .Select(node => new { node.Id, node.ParentId, node.Label }).ToListAsync();
+            var byId = nodes.ToDictionary(node => node.Id);
+            var currentId = assignedNodeId.Value;
+            var scopeRoot = assignedNodeId.Value;
+            var insideTenant = false;
+            var visited = new HashSet<int>();
+            while (visited.Add(currentId) && byId.TryGetValue(currentId, out var current))
+            {
+                if (current.Id == tenantRoot) insideTenant = true;
+                if (!current.ParentId.HasValue) break;
+                currentId = current.ParentId.Value;
+            }
+            if (!insideTenant) return [];
+
+            var visible = new HashSet<int> { scopeRoot };
+            var queue = new Queue<int>(); queue.Enqueue(scopeRoot);
+            while (queue.Count > 0)
+            {
+                var parent = queue.Dequeue();
+                foreach (var child in nodes.Where(node => node.ParentId == parent))
+                    if (visible.Add(child.Id)) queue.Enqueue(child.Id);
+            }
+            return visible;
+        }
+
         [HttpGet]
         public async Task<IActionResult> GetAll()
         {
             if (await CallerIsSuperAdminAsync()) return Forbid();
             if (!await HasVacancyActionAsync("VIEW", "VACANCY_VIEW")) return Forbid();
-            return Ok(await _service.GetAllAsync());
+            var rows = await _service.GetAllAsync();
+            var visible = await GetVisibleOrganizationIdsAsync();
+            return Ok(visible == null ? rows : rows.Where(row => visible.Contains(row.OrganizationId)));
         }
 
         [HttpGet("{id:guid}")]
@@ -92,6 +140,8 @@ namespace Accounts.Controllers
             if (await CallerIsSuperAdminAsync()) return Forbid();
             if (!await HasVacancyActionAsync("VIEW", "VACANCY_VIEW")) return Forbid();
             var v = await _service.GetByIdAsync(id);
+            var visible = await GetVisibleOrganizationIdsAsync();
+            if (v != null && visible != null && !visible.Contains(v.OrganizationId)) return Forbid();
             return v == null ? NotFound(new { message = $"Position {id} not found." }) : Ok(v);
         }
 
@@ -100,7 +150,9 @@ namespace Accounts.Controllers
         {
             if (await CallerIsSuperAdminAsync()) return Forbid();
             if (!await HasVacancyActionAsync("VIEW", "VACANCY_VIEW")) return Forbid();
-            return Ok(await _service.GetVacantAsync());
+            var rows = await _service.GetVacantAsync();
+            var visible = await GetVisibleOrganizationIdsAsync();
+            return Ok(visible == null ? rows : rows.Where(row => visible.Contains(row.OrganizationId)));
         }
 
         [HttpGet("filled")]
@@ -108,7 +160,9 @@ namespace Accounts.Controllers
         {
             if (await CallerIsSuperAdminAsync()) return Forbid();
             if (!await HasVacancyActionAsync("VIEW", "VACANCY_VIEW")) return Forbid();
-            return Ok(await _service.GetFilledAsync());
+            var rows = await _service.GetFilledAsync();
+            var visible = await GetVisibleOrganizationIdsAsync();
+            return Ok(visible == null ? rows : rows.Where(row => visible.Contains(row.OrganizationId)));
         }
 
         [HttpGet("by-node/{orgId:int}")]
@@ -116,6 +170,8 @@ namespace Accounts.Controllers
         {
             if (await CallerIsSuperAdminAsync()) return Forbid();
             if (!await HasVacancyActionAsync("VIEW", "VACANCY_VIEW")) return Forbid();
+            var visible = await GetVisibleOrganizationIdsAsync();
+            if (visible != null && !visible.Contains(orgId)) return Forbid();
             return Ok(await _service.GetByNodeAsync(orgId));
         }
 

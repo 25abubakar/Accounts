@@ -19,17 +19,20 @@ namespace Accounts.Controllers
         private readonly ApplicationDbContext _db;
         private readonly IPersonAccessService _personAccess;
         private readonly ITenantService       _tenantService;
+        private readonly IOrganizationDataScopeService _dataScope;
 
         public RbacController(
             RbacService rbac,
             ApplicationDbContext db,
             IPersonAccessService personAccess,
-            ITenantService tenantService)
+            ITenantService tenantService,
+            IOrganizationDataScopeService dataScope)
         {
             _rbac          = rbac;
             _db            = db;
             _personAccess  = personAccess;
             _tenantService = tenantService;
+            _dataScope = dataScope;
         }
 
         private string? CurrentUserId =>
@@ -143,9 +146,11 @@ namespace Accounts.Controllers
             }
 
             // ── Admin / Tenant Admin: return persons in their tenant scope ─────
+            var scope = await _dataScope.ResolveAsync(identityUserId ?? string.Empty, HttpContext.RequestAborted);
             var persons = await _db.Persons
                 .AsNoTracking()
                 .Include(p => p.Staff).ThenInclude(s => s!.Vacancy)
+                .Where(p => scope.PersonIds.Contains(p.PersonId))
                 .OrderBy(p => p.FullName)
                 .Select(p => new
                 {
@@ -214,7 +219,48 @@ namespace Accounts.Controllers
             }
 
             var overview = await _rbac.GetStaffAccessOverviewAsync();
-            return Ok(overview.Select(item => new { staffId = item.Key, allowedFeatureKeys = item.Value }));
+            var scope = await _dataScope.ResolveAsync(CurrentUserId ?? string.Empty, HttpContext.RequestAborted);
+            return Ok(overview.Where(item => scope.StaffIds.Contains(item.Key))
+                .Select(item => new { staffId = item.Key, allowedFeatureKeys = item.Value }));
+        }
+
+        /// <summary>
+        /// Authoritative menu/action catalogue the current tenant may delegate.
+        /// Unlike the caller's sidebar, this never exposes routes that are visible
+        /// through personal access but absent from the tenant delegation ceiling.
+        /// </summary>
+        [HttpGet("delegable-menus")]
+        public async Task<IActionResult> GetDelegableMenus()
+        {
+            if (!await HasAccessControlPermissionAsync("VIEW"))
+                return Forbid();
+            if (!_tenantService.TenantId.HasValue || _tenantService.IsSuperAdmin)
+                return Forbid();
+
+            var tenantId = _tenantService.TenantId.Value;
+            var rows = await (
+                from grant in _db.TenantMenuPermissions.AsNoTracking()
+                join menu in _db.Menus.AsNoTracking() on grant.MenuId equals menu.Id
+                where grant.TenantId == tenantId
+                      && grant.IsAllow
+                      && grant.CanView
+                      && menu.IsActive
+                orderby menu.SortOrder, menu.Title
+                select new
+                {
+                    id = menu.Id,
+                    title = menu.Title,
+                    icon = menu.Icon,
+                    route = menu.Route,
+                    parentId = menu.ParentId,
+                    sortOrder = menu.SortOrder,
+                    canView = grant.CanView,
+                    canAdd = grant.CanAdd,
+                    canEdit = grant.CanEdit,
+                    canDelete = grant.CanDelete
+                }).ToListAsync(HttpContext.RequestAborted);
+
+            return Ok(rows);
         }
 
         /// <summary>

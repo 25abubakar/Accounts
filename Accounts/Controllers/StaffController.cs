@@ -23,15 +23,18 @@ namespace Accounts.Controllers
         private readonly IStaffService               _service;
         private readonly ApplicationDbContext        _db;
         private readonly RbacService                 _rbac;
+        private readonly IOrganizationDataScopeService _dataScope;
 
         public StaffController(
             IStaffService               service,
             ApplicationDbContext        db,
-            RbacService                 rbac)
+            RbacService                 rbac,
+            IOrganizationDataScopeService dataScope)
         {
             _service     = service;
             _db          = db;
             _rbac        = rbac;
+            _dataScope   = dataScope;
         }
 
         private Task<bool> CallerIsSuperAdminAsync() => Task.FromResult(
@@ -66,6 +69,11 @@ namespace Accounts.Controllers
 
             return false;
         }
+
+        private async Task<OrganizationDataScope> CurrentDataScopeAsync() =>
+            await _dataScope.ResolveAsync(
+                User.FindFirstValue(ClaimTypes.NameIdentifier) ?? string.Empty,
+                HttpContext.RequestAborted);
 
         [HttpGet]
         public async Task<IActionResult> GetAll()
@@ -177,7 +185,8 @@ namespace Accounts.Controllers
 
                 return Ok(enrichedTenantAdmins);
             }
-            return Ok(await _service.GetAllAsync());
+            var scope = await _dataScope.ResolveAsync(User.FindFirstValue(ClaimTypes.NameIdentifier) ?? string.Empty, HttpContext.RequestAborted);
+            return Ok((await _service.GetAllAsync()).Where(staff => staff.PersonId.HasValue && scope.PersonIds.Contains(staff.PersonId.Value)));
         }
 
         [HttpGet("{id:guid}")]
@@ -185,6 +194,8 @@ namespace Accounts.Controllers
         {
             if (await CallerIsSuperAdminAsync()) return Forbid();
             var s = await _service.GetByIdAsync(id);
+            var scope = await _dataScope.ResolveAsync(User.FindFirstValue(ClaimTypes.NameIdentifier) ?? string.Empty, HttpContext.RequestAborted);
+            if (s != null && (!s.PersonId.HasValue || !scope.PersonIds.Contains(s.PersonId.Value))) return Forbid();
             return s == null ? NotFound(new { message = $"Employee {id} not found." }) : Ok(s);
         }
 
@@ -193,7 +204,8 @@ namespace Accounts.Controllers
         {
             if (await CallerIsSuperAdminAsync()) return Forbid();
             if (string.IsNullOrWhiteSpace(q)) return BadRequest(new { message = "Query 'q' is required." });
-            return Ok(await _service.SearchAsync(q));
+            var scope = await _dataScope.ResolveAsync(User.FindFirstValue(ClaimTypes.NameIdentifier) ?? string.Empty, HttpContext.RequestAborted);
+            return Ok((await _service.SearchAsync(q)).Where(staff => staff.PersonId.HasValue && scope.PersonIds.Contains(staff.PersonId.Value)));
         }
 
         [HttpGet("by-login/{loginOrEmail}")]
@@ -214,6 +226,8 @@ namespace Accounts.Controllers
                 .FirstOrDefaultAsync();
 
             if (staff == null) return NotFound(new { message = "Staff not found." });
+            var scope = await _dataScope.ResolveAsync(User.FindFirstValue(ClaimTypes.NameIdentifier) ?? string.Empty, HttpContext.RequestAborted);
+            if (!scope.StaffIds.Contains(staff.StaffId)) return Forbid();
 
             var branch  = staff.Vacancy?.Organization;
             var company = branch?.Parent;
@@ -254,6 +268,11 @@ namespace Accounts.Controllers
         {
             if (await CallerIsSuperAdminAsync()) return Forbid();
             if (!await HasStaffActionAsync("ADD", "PERSON_REGISTER")) return Forbid();
+            var scope = await CurrentDataScopeAsync();
+            var targetOrganizationId = await _db.Vacancies.AsNoTracking()
+                .Where(vacancy => vacancy.VacancyId == vacancyId)
+                .Select(vacancy => (int?)vacancy.OrganizationId).FirstOrDefaultAsync();
+            if (!scope.PersonIds.Contains(personId) || !targetOrganizationId.HasValue || !scope.OrganizationIds.Contains(targetOrganizationId.Value)) return Forbid();
             var (staff, error) = await _service.HirePersonAsync(vacancyId, personId);
             if (error != null) return error.Contains("not found") ? NotFound(new { message = error }) : BadRequest(new { message = error });
             return CreatedAtAction(nameof(GetById), new { id = staff!.StaffId }, staff);
@@ -264,6 +283,7 @@ namespace Accounts.Controllers
         {
             if (await CallerIsSuperAdminAsync()) return Forbid();
             if (!await HasStaffActionAsync("EDIT", "EMPLOYEE_EDIT", "PERSON_EDIT")) return Forbid();
+            if (!(await CurrentDataScopeAsync()).StaffIds.Contains(id)) return Forbid();
             if (!ModelState.IsValid) return BadRequest(ModelState);
             var (staff, error) = await _service.UpdateAsync(id, dto);
             if (error != null) return NotFound(new { message = error });
@@ -276,6 +296,7 @@ namespace Accounts.Controllers
         {
             if (await CallerIsSuperAdminAsync()) return Forbid();
             if (!await HasStaffActionAsync("EDIT", "EMPLOYEE_EDIT", "PERSON_EDIT")) return Forbid();
+            if (!(await CurrentDataScopeAsync()).StaffIds.Contains(id)) return Forbid();
             var baseUrl = $"{Request.Scheme}://{Request.Host}";
             var (photoUrl, fullUrl, error) = await _service.UploadPhotoAsync(id, photo, baseUrl);
             if (error != null) return error.Contains("not found") ? NotFound(new { message = error }) : BadRequest(new { message = error });
@@ -287,6 +308,7 @@ namespace Accounts.Controllers
         {
             if (await CallerIsSuperAdminAsync()) return Forbid();
             if (!await HasStaffActionAsync("EDIT", "EMPLOYEE_EDIT", "PERSON_EDIT")) return Forbid();
+            if (!(await CurrentDataScopeAsync()).StaffIds.Contains(id)) return Forbid();
             var (success, message) = await _service.DeletePhotoAsync(id);
             if (!success) return message.Contains("not found") ? NotFound(new { message }) : BadRequest(new { message });
             return Ok(new { message });
@@ -297,6 +319,10 @@ namespace Accounts.Controllers
         {
             if (await CallerIsSuperAdminAsync()) return Forbid();
             if (!await HasStaffActionAsync("EDIT", "EMPLOYEE_TRANSFER", "EMPLOYEE_EDIT")) return Forbid();
+            var scope = await CurrentDataScopeAsync();
+            var targetOrganizationId = await _db.Vacancies.AsNoTracking().Where(vacancy => vacancy.VacancyId == dto.NewVacancyId)
+                .Select(vacancy => (int?)vacancy.OrganizationId).FirstOrDefaultAsync();
+            if (!scope.StaffIds.Contains(id) || !targetOrganizationId.HasValue || !scope.OrganizationIds.Contains(targetOrganizationId.Value)) return Forbid();
             if (!ModelState.IsValid) return BadRequest(ModelState);
             var (staff, error) = await _service.TransferAsync(id, dto);
             if (error != null) return error.Contains("not found") ? NotFound(new { message = error }) : BadRequest(new { message = error });
@@ -308,6 +334,7 @@ namespace Accounts.Controllers
         {
             if (await CallerIsSuperAdminAsync()) return Forbid();
             if (!await HasStaffActionAsync("DELETE", "EMPLOYEE_DELETE", "PERSON_DELETE")) return Forbid();
+            if (!(await CurrentDataScopeAsync()).StaffIds.Contains(id)) return Forbid();
             var (success, message) = await _service.DeleteAsync(id);
             if (!success) return message.Contains("not found") ? NotFound(new { message }) : BadRequest(new { message });
             return Ok(new { message });

@@ -82,49 +82,22 @@ namespace Accounts.Services.Services
             }
 
             // ── Super Admin path ──────────────────────────────────────────────
-            // Super Admins see only Organisation + Platform Settings menus.
-            // They must NOT see HR/Staff/Notes operational menus.
+            // Super Admin owns the master catalogue and receives every active
+            // menu and feature. Tenant/staff ceilings apply only below this tier.
             if (session.IsSuperAdmin)
             {
                 if (!includeNavigation)
                     return session;
 
-                // Load only menus whose routes belong to the SuperAdmin scope
                 var allMenus = await _db.Menus.AsNoTracking()
                     .Where(m => m.IsActive)
                     .OrderBy(m => m.SortOrder)
                     .ToListAsync(cancellationToken);
-
-                var superAdminRoutes = new[]
-                {
-                    "/groups/", "/organization", "/settings/", "/tenants", "/dashboard"
-                };
-                var byId = allMenus.ToDictionary(menu => menu.Id);
-                var visibleIds = allMenus
-                    .Where(menu => !string.IsNullOrWhiteSpace(menu.Route) &&
-                                   superAdminRoutes.Any(route =>
-                                       menu.Route!.StartsWith(route, StringComparison.OrdinalIgnoreCase)))
-                    .Select(menu => menu.Id)
-                    .ToHashSet();
-                foreach (var menuId in visibleIds.ToList())
-                {
-                    var current = byId.GetValueOrDefault(menuId);
-                    while (current?.ParentId != null &&
-                           byId.TryGetValue(current.ParentId.Value, out var parent))
-                    {
-                        visibleIds.Add(parent.Id);
-                        current = parent;
-                    }
-                }
-
-                session.Sidebar = BuildFullTree(
-                    null,
-                    allMenus.Where(menu => visibleIds.Contains(menu.Id))
-                        .ToLookup(menu => menu.ParentId));
-                session.Permissions = await _db.MenuPermissions.AsNoTracking()
-                    .Where(link => visibleIds.Contains(link.MenuId) && link.Feature != null)
-                    .Select(link => link.Feature!.FeatureKey)
-                    .Distinct()
+                session.Sidebar = BuildFullTree(null, allMenus.ToLookup(menu => menu.ParentId));
+                session.Permissions = await _db.Features.AsNoTracking()
+                    .OrderBy(feature => feature.Module)
+                    .ThenBy(feature => feature.FeatureKey)
+                    .Select(feature => feature.FeatureKey)
                     .ToListAsync(cancellationToken);
 
                 var adminStaffId = identityUserId;

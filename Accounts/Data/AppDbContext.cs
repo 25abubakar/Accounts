@@ -61,6 +61,8 @@ namespace Accounts.Data
         public DbSet<AttendanceDeductionReportRow> AttendanceDeductionReportRows => Set<AttendanceDeductionReportRow>();
         public DbSet<ApplicationLoginSession>  ApplicationLoginSessions => Set<ApplicationLoginSession>();
         public DbSet<AttendancePolicy> AttendancePolicies => Set<AttendancePolicy>();
+        public DbSet<StaffAssessment> StaffAssessments => Set<StaffAssessment>();
+        public DbSet<AssessmentBonusRule> AssessmentBonusRules => Set<AssessmentBonusRule>();
         public DbSet<VacancyCounter>           VacancyCounters          => Set<VacancyCounter>();
         public DbSet<Menu>                     Menus                    => Set<Menu>();
         public DbSet<MenuPermission>           MenuPermissions          => Set<MenuPermission>();
@@ -102,6 +104,18 @@ namespace Accounts.Data
             builder.Entity<Person>().HasQueryFilter(row =>
                 _tenantService != null && !_tenantService.IsSuperAdmin &&
                 _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
+            builder.Entity<StaffAssessment>().HasQueryFilter(row =>
+                _tenantService != null && !_tenantService.IsSuperAdmin &&
+                _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
+            builder.Entity<StaffAssessment>().HasIndex(row => new
+            {
+                row.TenantId, row.AssessorPersonId, row.SubjectPersonId,
+                row.AssessmentYear, row.AssessmentMonth
+            }).IsUnique();
+            builder.Entity<AssessmentBonusRule>().HasQueryFilter(row =>
+                _tenantService != null && !_tenantService.IsSuperAdmin &&
+                _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
+            builder.Entity<AssessmentBonusRule>().HasIndex(row => new { row.TenantId, row.RankNumber }).IsUnique();
             builder.Entity<PersonAddress>().HasQueryFilter(row =>
                 _tenantService != null && !_tenantService.IsSuperAdmin &&
                 _tenantService.TenantId != null && row.Person != null &&
@@ -1188,4 +1202,3 @@ namespace Accounts.Data
         }
     }
 }
-

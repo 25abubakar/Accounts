@@ -290,42 +290,17 @@ namespace Accounts.Controllers
                     .Where(m => m.IsActive)
                     .OrderBy(m => m.SortOrder)
                     .ToListAsync(ct);
-
-                var platformRoutePrefixes = new[]
-                {
-                    "/dashboard",
-                    "/groups/",
-                    "/organization",
-                    "/tenants",
-                    "/settings/"
-                };
-                var byId = allMenus.ToDictionary(menu => menu.Id);
-                var visibleIds = allMenus
-                    .Where(menu => !string.IsNullOrWhiteSpace(menu.Route) &&
-                                   platformRoutePrefixes.Any(prefix =>
-                                       menu.Route!.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)))
-                    .Select(menu => menu.Id)
-                    .ToHashSet();
-                foreach (var menuId in visibleIds.ToList())
-                {
-                    var current = byId.GetValueOrDefault(menuId);
-                    while (current?.ParentId != null &&
-                           byId.TryGetValue(current.ParentId.Value, out var parent))
+                var saMenus = BuildFullTreeStatic(null, allMenus.ToLookup(menu => menu.ParentId));
+                var allFeatures = await _db.Features.AsNoTracking()
+                    .OrderBy(feature => feature.Module)
+                    .ThenBy(feature => feature.FeatureKey)
+                    .Select(feature => new
                     {
-                        visibleIds.Add(parent.Id);
-                        current = parent;
-                    }
-                }
-
-                var platformLookup = allMenus
-                    .Where(menu => visibleIds.Contains(menu.Id))
-                    .ToLookup(menu => menu.ParentId);
-                var saMenus = BuildFullTreeStatic(null, platformLookup);
-                var platformFeatureKeys = await _db.MenuPermissions
-                    .AsNoTracking()
-                    .Where(link => visibleIds.Contains(link.MenuId) && link.Feature != null)
-                    .Select(link => link.Feature!.FeatureKey)
-                    .Distinct()
+                        feature.PermissionId,
+                        feature.FeatureKey,
+                        feature.FeatureName,
+                        feature.Module
+                    })
                     .ToListAsync(ct);
 
                 return Ok(new
@@ -337,8 +312,8 @@ namespace Accounts.Controllers
                     tenantId      = (int?)null,
                     staffId       = (Guid?)null,
                     menus         = saMenus,
-                    permissions   = platformFeatureKeys,
-                    permissionDetails = new List<object>()
+                    permissions   = allFeatures.Select(feature => feature.FeatureKey).ToList(),
+                    permissionDetails = allFeatures
                 });
             }
 

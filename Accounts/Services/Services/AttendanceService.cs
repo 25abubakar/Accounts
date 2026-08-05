@@ -644,7 +644,7 @@ public sealed class AttendanceService : IAttendanceService
         CancellationToken cancellationToken = default)
     {
         var canViewHistory = organizationWide ||
-            await CanViewHistoricalAttendanceAsync(identityUserId, organizationWide, cancellationToken);
+            await HasAttendanceHistoryAccessAsync(identityUserId, "/attendance/daily-report", "TEAM_HISTORY", cancellationToken);
         EnsureAllowedAttendancePeriod(canViewHistory, dateFrom, dateTo);
         var report = await GetAttendanceReportAsync(
             identityUserId, organizationWide, selfOnly: false, dateFrom, dateTo, cancellationToken);
@@ -839,16 +839,20 @@ public sealed class AttendanceService : IAttendanceService
         string identityUserId, bool organizationWide, DateOnly dateFrom, DateOnly dateTo,
         CancellationToken cancellationToken = default)
     {
+        // Staff Attendance is the employee's personal monthly history. Daily
+        // Attendance is the separate hierarchy/branch-wide operational screen.
+        // A tenant administrator has no normal staff profile, so its explicit
+        // organization-wide role remains a company overview.
+        var selfOnly = !organizationWide;
         var visibility = await ResolveAttendanceVisibilityAsync(
-            identityUserId, organizationWide, selfOnly: false, cancellationToken);
+            identityUserId, organizationWide, selfOnly, cancellationToken);
         var canViewHistory = organizationWide ||
-            visibility.VisiblePersonIds.Any(id => id != visibility.CallerPersonId) ||
-            await HasExplicitHistoricalAttendanceAccessAsync(identityUserId, cancellationToken);
+            await HasAttendanceHistoryAccessAsync(identityUserId, "/attendance/staff", "OWN_HISTORY", cancellationToken);
         EnsureAllowedAttendancePeriod(canViewHistory, dateFrom, dateTo);
         return await GetAttendanceReportAsync(
             identityUserId,
             organizationWide,
-            selfOnly: false,
+            selfOnly,
             dateFrom,
             dateTo,
             cancellationToken);
@@ -858,24 +862,31 @@ public sealed class AttendanceService : IAttendanceService
         string identityUserId, bool organizationWide, CancellationToken cancellationToken = default)
     {
         if (organizationWide) return true;
-        var visibility = await ResolveAttendanceVisibilityAsync(
-            identityUserId, organizationWide: false, selfOnly: false, cancellationToken);
-        return visibility.VisiblePersonIds.Any(id => id != visibility.CallerPersonId) ||
-            await HasExplicitHistoricalAttendanceAccessAsync(identityUserId, cancellationToken);
+        return await HasAttendanceHistoryAccessAsync(identityUserId, "/attendance/staff", "OWN_HISTORY", cancellationToken);
     }
 
-    private async Task<bool> HasExplicitHistoricalAttendanceAccessAsync(
-        string identityUserId, CancellationToken cancellationToken)
+    public async Task<bool> CanViewTeamHistoricalAttendanceAsync(
+        string identityUserId, bool organizationWide, CancellationToken cancellationToken = default)
+    {
+        if (organizationWide) return true;
+        return await HasAttendanceHistoryAccessAsync(
+            identityUserId, "/attendance/daily-report", "TEAM_HISTORY", cancellationToken);
+    }
+
+    private async Task<bool> HasAttendanceHistoryAccessAsync(
+        string identityUserId, string route, string permissionSuffix, CancellationToken cancellationToken)
     {
         return await _db.AccessFeatures.AsNoTracking().AnyAsync(access =>
             access.IsAllow && access.Feature != null &&
             access.StaffMenuAccess != null && access.StaffMenuAccess.IsAllow &&
             access.StaffMenuAccess.Menu != null &&
-            access.StaffMenuAccess.Menu.Route == "/attendance/staff" &&
+            access.StaffMenuAccess.Menu.Route == route &&
             access.StaffMenuAccess.Staff != null &&
             access.StaffMenuAccess.Staff.Person != null &&
             access.StaffMenuAccess.Staff.Person.IdentityUserId == identityUserId &&
-            access.Feature.FeatureKey == "MENU_" + access.StaffMenuAccess.MenuId + "_HISTORY", cancellationToken);
+            (access.Feature.FeatureKey == "MENU_" + access.StaffMenuAccess.MenuId + "_" + permissionSuffix ||
+             // Preserve grants created before OWN_HISTORY and TEAM_HISTORY were split.
+             access.Feature.FeatureKey == "MENU_" + access.StaffMenuAccess.MenuId + "_HISTORY"), cancellationToken);
     }
 
     private static void EnsureAllowedAttendancePeriod(bool canViewHistory, DateOnly dateFrom, DateOnly dateTo)
@@ -2065,9 +2076,19 @@ public sealed class AttendanceService : IAttendanceService
             })
             .FirstOrDefaultAsync(cancellationToken);
 
+        var effectiveTenantId = caller?.TenantId ?? callerUser?.TenantId;
+        if (!effectiveTenantId.HasValue)
+            throw new KeyNotFoundException("No active employee profile is linked to this account.");
+
+        // Resolve the company boundary before calculating hierarchy visibility.
+        // Loading people from every tenant here allowed an incorrectly linked
+        // organization node to produce the same staff list for different users.
         var people = await _db.Persons.AsNoTracking()
             .Where(person =>
+                person.TenantId == effectiveTenantId.Value &&
                 person.IsActive &&
+                person.Staff != null &&
+                person.Staff.Vacancy != null &&
                 !_db.Users.Any(user => user.Id == person.IdentityUserId && user.IsTenantAdmin))
             .Select(person => new AttendanceVisibilityPerson
             {
@@ -2085,20 +2106,17 @@ public sealed class AttendanceService : IAttendanceService
             })
             .ToListAsync(cancellationToken);
 
-        if (!selfOnly && organizationWide)
+        // A feature permission allows use of the screen; it must never widen a
+        // regular staff member from their saved organization node to the tenant.
+        // Only the tenant administrator owns a company-wide operational scope.
+        if (!selfOnly && organizationWide && callerUser?.IsTenantAdmin == true)
         {
-            var organizationTenantId = caller?.TenantId ?? callerUser?.TenantId;
-            if (!organizationTenantId.HasValue)
-                throw new KeyNotFoundException("No active employee profile is linked to this account.");
-
-            var visiblePeople = people
-                .Where(person => person.TenantId == organizationTenantId.Value)
-                .ToList();
+            var visiblePeople = people.ToList();
 
             return new AttendanceVisibilityContext
             {
                 CallerPersonId = caller?.PersonId ?? Guid.Empty,
-                TenantId = organizationTenantId.Value,
+                TenantId = effectiveTenantId.Value,
                 People = visiblePeople,
                 VisiblePersonIds = visiblePeople.Select(person => person.PersonId).ToHashSet()
             };
@@ -2109,6 +2127,21 @@ public sealed class AttendanceService : IAttendanceService
 
         var visiblePersonIds = new HashSet<Guid> { caller.PersonId };
         var callerRank = AttendanceRoleRank(caller.JobTitle);
+
+        // The company CEO is the operational root of the saved hierarchy and
+        // can review all staff inside their own tenant. This is data visibility
+        // only; it does not grant tenant-administration or CRUD permissions.
+        if (!selfOnly && callerRank >= 700)
+        {
+            visiblePersonIds = people.Select(person => person.PersonId).ToHashSet();
+            return new AttendanceVisibilityContext
+            {
+                CallerPersonId = caller.PersonId,
+                TenantId = caller.TenantId,
+                People = people,
+                VisiblePersonIds = visiblePersonIds
+            };
+        }
 
         if (!selfOnly && caller.OrganizationId.HasValue)
         {
@@ -2208,7 +2241,8 @@ public sealed class AttendanceService : IAttendanceService
         if (year is < 2000 or > 2100 || month is < 1 or > 12) throw new ArgumentOutOfRangeException(nameof(month), "A valid report month is required.");
         var requestedFrom = new DateOnly(year, month, 1);
         var canViewRequestedHistory = canViewOthers ||
-            await HasExplicitHistoricalAttendanceAccessAsync(identityUserId, cancellationToken);
+            await HasAttendanceHistoryAccessAsync(
+                identityUserId, "/attendance/staff", "OWN_HISTORY", cancellationToken);
         EnsureAllowedAttendancePeriod(canViewRequestedHistory, requestedFrom, requestedFrom.AddMonths(1).AddDays(-1));
         var callerPersonId = await _db.Persons.AsNoTracking().Where(p => p.IdentityUserId == identityUserId).Select(p => (Guid?)p.PersonId).FirstOrDefaultAsync(cancellationToken);
         var personId = canViewOthers && requestedPersonId.HasValue ? requestedPersonId.Value : callerPersonId

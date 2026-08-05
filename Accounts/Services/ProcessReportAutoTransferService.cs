@@ -9,10 +9,18 @@ public sealed class ProcessReportAutoTransferService(
 {
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        await RunAsync(stoppingToken);
-        using var timer = new PeriodicTimer(TimeSpan.FromMinutes(5));
-        while (await timer.WaitForNextTickAsync(stoppingToken))
+        try
+        {
             await RunAsync(stoppingToken);
+            using var timer = new PeriodicTimer(TimeSpan.FromMinutes(5));
+            while (await timer.WaitForNextTickAsync(stoppingToken))
+                await RunAsync(stoppingToken);
+        }
+        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+        {
+            // Normal host shutdown. BackgroundService must complete quietly so
+            // Visual Studio does not report an unhandled cancellation exception.
+        }
     }
 
     private async Task RunAsync(CancellationToken ct)
@@ -21,7 +29,7 @@ public sealed class ProcessReportAutoTransferService(
         {
             await using var scope = scopeFactory.CreateAsyncScope();
             var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
-            await db.Database.ExecuteSqlRawAsync("EXEC dbo.usp_ProcessReport_AutoTransferOverdue @TimeoutHours={0}", [24], ct);
+            await db.Database.ExecuteSqlRawAsync("EXEC dbo.usp_ProcessReport_AutoTransferOverdue", ct);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
         catch (Exception error)

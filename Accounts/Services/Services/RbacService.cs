@@ -902,8 +902,16 @@ namespace Accounts.Services.Services
                 .ToDictionaryAsync(f => f.FeatureKey, f => f.PermissionId, StringComparer.OrdinalIgnoreCase);
 
             var permissionRows = parsed
-                .Where(item => featureIds.ContainsKey(item.Key))
-                .Select(item => new { item.MenuId, PermissionId = featureIds[item.Key], item.IsTopLevel })
+                // A top-level MENU_{id} is the StaffMenuAccess grant itself and
+                // does not require a corresponding Features row. The procedure
+                // only uses PermissionId for non-top-level AccessFeatures.
+                .Where(item => item.IsTopLevel || featureIds.ContainsKey(item.Key))
+                .Select(item => new
+                {
+                    item.MenuId,
+                    PermissionId = item.IsTopLevel ? 0 : featureIds[item.Key],
+                    item.IsTopLevel
+                })
                 .Distinct()
                 .ToArray();
             var saved = validStaffIds.Length * permissionRows.Length;
@@ -1304,6 +1312,39 @@ namespace Accounts.Services.Services
             if (toAdd.Count > 0)
             {
                 _db.Features.AddRange(toAdd);
+                await _db.SaveChangesAsync();
+            }
+
+            var menuIds = menus.Select(menu => menu.Id).ToArray();
+            var menuFeaturePrefixes = menuIds.Select(id => $"MENU_{id}").ToArray();
+            var crudFeatures = await _db.Features.AsNoTracking()
+                .Where(feature => menuFeaturePrefixes.Any(prefix =>
+                    feature.FeatureKey == prefix || feature.FeatureKey.StartsWith(prefix + "_")))
+                .Select(feature => new { feature.PermissionId, feature.FeatureKey })
+                .ToListAsync();
+            var existingLinks = await _db.MenuPermissions.AsNoTracking()
+                .Where(link => menuIds.Contains(link.MenuId))
+                .Select(link => new { link.MenuId, link.PermissionId })
+                .ToListAsync();
+            var existingLinkKeys = existingLinks
+                .Select(link => (link.MenuId, link.PermissionId))
+                .ToHashSet();
+            var missingLinks = crudFeatures
+                .Select(feature => new
+                {
+                    Feature = feature,
+                    MenuId = int.Parse(feature.FeatureKey.Split('_')[1])
+                })
+                .Where(item => !existingLinkKeys.Contains((item.MenuId, item.Feature.PermissionId)))
+                .Select(item => new MenuPermission
+                {
+                    MenuId = item.MenuId,
+                    PermissionId = item.Feature.PermissionId
+                })
+                .ToList();
+            if (missingLinks.Count > 0)
+            {
+                _db.MenuPermissions.AddRange(missingLinks);
                 await _db.SaveChangesAsync();
             }
 

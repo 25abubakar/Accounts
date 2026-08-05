@@ -17,11 +17,13 @@ public sealed class ProcessCategoryApproversController : ControllerBase
 {
     private readonly ApplicationDbContext _db;
     private readonly ITenantService _tenant;
+    private readonly IOrganizationDataScopeService _dataScope;
 
-    public ProcessCategoryApproversController(ApplicationDbContext db, ITenantService tenant)
+    public ProcessCategoryApproversController(ApplicationDbContext db, ITenantService tenant, IOrganizationDataScopeService dataScope)
     {
         _db = db;
         _tenant = tenant;
+        _dataScope = dataScope;
     }
 
     // GET /api/process-category-approvers
@@ -59,6 +61,8 @@ public sealed class ProcessCategoryApproversController : ControllerBase
                     cat.Code       AS CategoryCode,
                     cat.Name       AS CategoryName,
                     pca.StaffId,
+                    pca.LevelOrder,
+                    pca.CanFinalApprove,
                     per.FullName   AS StaffName,
                     sv.LoginId     AS StaffNumber,
                     org.Name       AS Department,
@@ -82,6 +86,8 @@ public sealed class ProcessCategoryApproversController : ControllerBase
                     CategoryCode = reader.GetString(reader.GetOrdinal("CategoryCode")),
                     CategoryName = reader.GetString(reader.GetOrdinal("CategoryName")),
                     StaffId = reader.GetGuid(reader.GetOrdinal("StaffId")),
+                    LevelOrder = reader.GetInt32(reader.GetOrdinal("LevelOrder")),
+                    CanFinalApprove = reader.GetBoolean(reader.GetOrdinal("CanFinalApprove")),
                     StaffName = reader.GetString(reader.GetOrdinal("StaffName")),
                     StaffNumber = GetNullableString(reader, "StaffNumber"),
                     Department = GetNullableString(reader, "Department"),
@@ -89,7 +95,31 @@ public sealed class ProcessCategoryApproversController : ControllerBase
                     ProfilePhotoUrl = GetNullableString(reader, "ProfilePhotoUrl")
                 }, ct);
 
-        return Ok(new { categories, assignments });
+        var configurations = await QueryAsync(
+            """
+            SELECT CategoryId,RoutingMode,SlaHours,AutoEscalate,AllowReturn,AllowHold,RequiresAttachment
+            FROM dbo.ProcessCategoryRoutingConfigurations WHERE TenantId=@tenantId AND IsActive=1
+            """,
+            command => AddParameter(command, "@tenantId", tenantId),
+            reader => new RoutingConfigurationRow
+            {
+                CategoryId = reader.GetInt32(reader.GetOrdinal("CategoryId")),
+                RoutingMode = reader.GetString(reader.GetOrdinal("RoutingMode")),
+                SlaHours = reader.GetInt32(reader.GetOrdinal("SlaHours")),
+                AutoEscalate = reader.GetBoolean(reader.GetOrdinal("AutoEscalate")),
+                AllowReturn = reader.GetBoolean(reader.GetOrdinal("AllowReturn")),
+                AllowHold = reader.GetBoolean(reader.GetOrdinal("AllowHold")),
+                RequiresAttachment = reader.GetBoolean(reader.GetOrdinal("RequiresAttachment"))
+            }, ct);
+
+        var currentUserId = User.FindFirstValue(ClaimTypes.NameIdentifier) ?? string.Empty;
+        var dataScope = await _dataScope.ResolveAsync(currentUserId, ct);
+        return Ok(new
+        {
+            categories,
+            assignments = assignments.Where(assignment => dataScope.StaffIds.Contains(assignment.StaffId)),
+            configurations
+        });
     }
 
     // GET /api/process-category-approvers/staff
@@ -130,7 +160,9 @@ public sealed class ProcessCategoryApproversController : ControllerBase
                     Designation = GetNullableString(reader, "Designation")
                 }, ct);
 
-        return Ok(rows);
+        var userId = User.FindFirstValue(ClaimTypes.NameIdentifier) ?? string.Empty;
+        var scope = await _dataScope.ResolveAsync(userId, ct);
+        return Ok(rows.Where(row => scope.StaffIds.Contains(row.StaffId)));
     }
 
     // POST /api/process-category-approvers
@@ -154,7 +186,8 @@ public sealed class ProcessCategoryApproversController : ControllerBase
             return BadRequest(new { message = "Category not found." });
 
         // Validate staff belongs to tenant
-        var staffExists = await ExistsAsync(
+        var scope = await _dataScope.ResolveAsync(userId, ct);
+        var staffExists = scope.StaffIds.Contains(dto.StaffId) && await ExistsAsync(
             "SELECT 1 FROM dbo.StaffVacancy WHERE StaffId = @staffId AND TenantId = @tenantId",
             command =>
             {
@@ -169,14 +202,14 @@ public sealed class ProcessCategoryApproversController : ControllerBase
         {
             await _db.Database.ExecuteSqlRawAsync(
                 """
-                INSERT INTO dbo.ProcessCategoryApprovers (TenantId, CategoryId, StaffId, CreatedByUserId)
-                SELECT {0}, {1}, {2}, {3}
+                INSERT INTO dbo.ProcessCategoryApprovers (TenantId, CategoryId, StaffId, CreatedByUserId, LevelOrder, CanFinalApprove, IsActive)
+                SELECT {0}, {1}, {2}, {3}, {4}, {5}, 1
                 WHERE NOT EXISTS (
                     SELECT 1 FROM dbo.ProcessCategoryApprovers
                     WHERE TenantId = {0} AND CategoryId = {1} AND StaffId = {2}
                 )
                 """,
-                tenantId, dto.CategoryId, dto.StaffId, userId);
+                tenantId, dto.CategoryId, dto.StaffId, userId, Math.Max(1, dto.LevelOrder), dto.CanFinalApprove);
         }
         catch (SqlException ex) when (ex.Number == 2627 || ex.Number == 2601)
         {
@@ -184,6 +217,30 @@ public sealed class ProcessCategoryApproversController : ControllerBase
         }
 
         return Ok(new { message = "Approver assigned successfully." });
+    }
+
+    [HttpPut("configuration/{categoryId:int}")]
+    public async Task<IActionResult> SaveConfiguration(int categoryId, [FromBody] SaveRoutingConfigurationDto dto, CancellationToken ct)
+    {
+        if (_tenant.IsSuperAdmin || !_tenant.TenantId.HasValue) return Forbid();
+        var mode = dto.RoutingMode?.Trim().ToUpperInvariant();
+        if (mode is not ("REPORTING_HIERARCHY" or "DIRECT_FUNCTIONAL" or "BRANCH_FIRST"))
+            return BadRequest(new { message = "Select a valid routing mode." });
+        if (dto.SlaHours is < 1 or > 8760) return BadRequest(new { message = "SLA must be between 1 and 8760 hours." });
+        var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+        if (string.IsNullOrWhiteSpace(userId)) return Unauthorized();
+
+        var affected = await _db.Database.ExecuteSqlInterpolatedAsync($"""
+            MERGE dbo.ProcessCategoryRoutingConfigurations AS target
+            USING (SELECT {_tenant.TenantId.Value} TenantId,{categoryId} CategoryId) source
+            ON target.TenantId=source.TenantId AND target.CategoryId=source.CategoryId
+            WHEN MATCHED THEN UPDATE SET RoutingMode={mode},SlaHours={dto.SlaHours},AutoEscalate={dto.AutoEscalate},
+                AllowReturn={dto.AllowReturn},AllowHold={dto.AllowHold},RequiresAttachment={dto.RequiresAttachment},
+                IsActive=1,ModifiedDateUtc=SYSUTCDATETIME(),ModifiedByUserId={userId}
+            WHEN NOT MATCHED THEN INSERT(TenantId,CategoryId,RoutingMode,SlaHours,AutoEscalate,AllowReturn,AllowHold,RequiresAttachment,ModifiedByUserId)
+                VALUES(source.TenantId,source.CategoryId,{mode},{dto.SlaHours},{dto.AutoEscalate},{dto.AllowReturn},{dto.AllowHold},{dto.RequiresAttachment},{userId});
+            """, ct);
+        return Ok(new { message = "Workflow configuration saved.", affected });
     }
 
     // DELETE /api/process-category-approvers/{id}
@@ -286,11 +343,24 @@ file sealed class AssignmentRow
     public string CategoryCode { get; set; } = string.Empty;
     public string CategoryName { get; set; } = string.Empty;
     public Guid StaffId { get; set; }
+    public int LevelOrder { get; set; }
+    public bool CanFinalApprove { get; set; }
     public string StaffName { get; set; } = string.Empty;
     public string? StaffNumber { get; set; }
     public string? Department { get; set; }
     public string? Designation { get; set; }
     public string? ProfilePhotoUrl { get; set; }
+}
+
+file sealed class RoutingConfigurationRow
+{
+    public int CategoryId { get; set; }
+    public string RoutingMode { get; set; } = "REPORTING_HIERARCHY";
+    public int SlaHours { get; set; }
+    public bool AutoEscalate { get; set; }
+    public bool AllowReturn { get; set; }
+    public bool AllowHold { get; set; }
+    public bool RequiresAttachment { get; set; }
 }
 
 file sealed class StaffPickerRow
@@ -307,4 +377,16 @@ public sealed class AssignApproverDto
 {
     public int CategoryId { get; set; }
     public Guid StaffId { get; set; }
+    public int LevelOrder { get; set; } = 1;
+    public bool CanFinalApprove { get; set; } = true;
+}
+
+public sealed class SaveRoutingConfigurationDto
+{
+    public string RoutingMode { get; set; } = "REPORTING_HIERARCHY";
+    public int SlaHours { get; set; } = 24;
+    public bool AutoEscalate { get; set; } = true;
+    public bool AllowReturn { get; set; } = true;
+    public bool AllowHold { get; set; } = true;
+    public bool RequiresAttachment { get; set; }
 }

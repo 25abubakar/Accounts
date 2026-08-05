@@ -20,13 +20,15 @@ public sealed class AttendanceController : ControllerBase
     private readonly ApplicationDbContext _db;
     private readonly ITenantService _tenant;
     private readonly RbacService _rbac;
+    private readonly IOrganizationDataScopeService _dataScope;
 
-    public AttendanceController(IAttendanceService service, ApplicationDbContext db, ITenantService tenant, RbacService rbac)
+    public AttendanceController(IAttendanceService service, ApplicationDbContext db, ITenantService tenant, RbacService rbac, IOrganizationDataScopeService dataScope)
     {
         _service = service;
         _db = db;
         _tenant = tenant;
         _rbac = rbac;
+        _dataScope = dataScope;
     }
 
     [HttpGet("me/today")]
@@ -51,8 +53,9 @@ public sealed class AttendanceController : ControllerBase
     {
         if (!_tenant.TenantId.HasValue) return Ok(Array.Empty<AttendanceMapRuleDto>());
 
+        var scope = await _dataScope.ResolveAsync(UserId(), ct);
         var rules = await _db.AttendanceMapRuleReadRows.AsNoTracking()
-            .Where(rule => rule.TenantId == _tenant.RequiredTenantId)
+            .Where(rule => rule.TenantId == _tenant.RequiredTenantId && scope.StaffIds.Contains(rule.StaffId))
             .OrderBy(rule => rule.Id)
             .Select(rule => new AttendanceMapRuleDto
             {
@@ -80,7 +83,8 @@ public sealed class AttendanceController : ControllerBase
         if (dto.StaffId == Guid.Empty) return BadRequest(new { message = "A staff member is required." });
 
         var tenantId = _tenant.RequiredTenantId;
-        var staffExists = await _db.StaffVacancies.AsNoTracking()
+        var scope = await _dataScope.ResolveAsync(UserId(), ct);
+        var staffExists = scope.StaffIds.Contains(dto.StaffId) && await _db.StaffVacancies.AsNoTracking()
             .AnyAsync(staff => staff.StaffId == dto.StaffId && staff.TenantId == tenantId, ct);
         if (!staffExists) return NotFound(new { message = "Staff member was not found in the current organization." });
 
@@ -238,7 +242,9 @@ public sealed class AttendanceController : ControllerBase
     {
         if (!CanViewOthers()) return Forbid();
         if (year is < 2000 or > 2100 || month is < 1 or > 12) return BadRequest(new { message = "A valid report month is required." });
-        return Ok(await _service.GetReportStaffAsync(year, month, ct));
+        var scope = await _dataScope.ResolveAsync(UserId(), ct);
+        return Ok((await _service.GetReportStaffAsync(year, month, ct))
+            .Where(staff => scope.PersonIds.Contains(staff.PersonId)));
     }
 
     [HttpGet("report/timing-chart/staff")]
@@ -548,12 +554,19 @@ public sealed class AttendanceController : ControllerBase
     }
 
     [HttpGet("report/staff-attendance")]
+    [ResponseCache(NoStore = true, Location = ResponseCacheLocation.None)]
     public Task<IActionResult> StaffAttendanceReport([FromQuery] DateOnly dateFrom, [FromQuery] DateOnly dateTo, CancellationToken ct) =>
         Execute(() => _service.GetStaffAttendanceReportAsync(UserId(), CanViewOrganization(), dateFrom, dateTo, ct));
 
     [HttpGet("report/staff-attendance/access")]
+    [ResponseCache(NoStore = true, Location = ResponseCacheLocation.None)]
     public async Task<IActionResult> StaffAttendanceAccess(CancellationToken ct) =>
         Ok(new { canViewHistorical = await _service.CanViewHistoricalAttendanceAsync(UserId(), CanViewOrganization(), ct) });
+
+    [HttpGet("report/daily/access")]
+    [ResponseCache(NoStore = true, Location = ResponseCacheLocation.None)]
+    public async Task<IActionResult> DailyAttendanceAccess(CancellationToken ct) =>
+        Ok(new { canViewHistorical = await _service.CanViewTeamHistoricalAttendanceAsync(UserId(), CanViewOrganization(), ct) });
 
     [HttpGet("report/monthly-chart")]
     public Task<IActionResult> MonthlyChart([FromQuery] int year, [FromQuery] int month, CancellationToken ct) =>

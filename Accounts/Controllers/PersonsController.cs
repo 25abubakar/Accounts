@@ -26,17 +26,20 @@ namespace Accounts.Controllers
         private readonly UserManager<ApplicationUser> _userManager;
         private readonly ApplicationDbContext         _db;
         private readonly RbacService                  _rbac;
+        private readonly IOrganizationDataScopeService _dataScope;
 
         public PersonsController(
             IPersonService               service,
             UserManager<ApplicationUser> userManager,
             ApplicationDbContext         db,
-            RbacService                  rbac)
+            RbacService                  rbac,
+            IOrganizationDataScopeService dataScope)
         {
             _service     = service;
             _userManager = userManager;
             _db          = db;
             _rbac        = rbac;
+            _dataScope   = dataScope;
         }
 
         private Task<bool> CallerIsSuperAdminAsync() => Task.FromResult(
@@ -114,13 +117,15 @@ namespace Accounts.Controllers
                     .ToListAsync();
                 return Ok(tenantAdmins);
             }
-            return Ok(await _service.GetProfilesAsync());
+            var scope = await _dataScope.ResolveAsync(User.FindFirstValue(ClaimTypes.NameIdentifier) ?? string.Empty, HttpContext.RequestAborted);
+            return Ok((await _service.GetProfilesAsync()).Where(profile => scope.PersonIds.Contains(profile.PersonId)));
         }
 
         [HttpGet("{id:guid}/profile")]
         public async Task<IActionResult> GetProfile(Guid id)
         {
             if (await CallerIsSuperAdminAsync()) return Forbid();
+            if (!await CanAccessPersonAsync(id)) return Forbid();
             var profile = await _service.GetProfileAsync(id);
             return profile == null ? NotFound(new { message = $"Person {id} not found." }) : Ok(profile);
         }
@@ -129,6 +134,7 @@ namespace Accounts.Controllers
         public async Task<IActionResult> GetHrProfile(Guid id)
         {
             if (await CallerIsSuperAdminAsync()) return Forbid();
+            if (!await CanAccessPersonAsync(id)) return Forbid();
             var profile = await _service.GetHrProfileAsync(id);
             return profile == null ? NotFound(new { message = $"Person {id} not found." }) : Ok(profile);
         }
@@ -138,6 +144,7 @@ namespace Accounts.Controllers
         {
             if (await CallerIsSuperAdminAsync()) return Forbid();
             if (!await HasStaffActionAsync("EDIT", "PERSON_EDIT", "EMPLOYEE_EDIT")) return Forbid();
+            if (!await CanAccessPersonAsync(id)) return Forbid();
             if (dto is null) return BadRequest(new { message = "Request body missing." });
             var (profile, error) = await _service.UpdateHrProfileAsync(id, dto);
             if (error != null) return error.Contains("not found") ? NotFound(new { message = error }) : BadRequest(new { message = error });
@@ -190,7 +197,8 @@ namespace Accounts.Controllers
                     .ToListAsync();
                 return Ok(tenantAdmins);
             }
-            return Ok(await _service.GetAllAsync());
+            var scope = await _dataScope.ResolveAsync(User.FindFirstValue(ClaimTypes.NameIdentifier) ?? string.Empty, HttpContext.RequestAborted);
+            return Ok((await _service.GetAllAsync()).Where(person => scope.PersonIds.Contains(person.PersonId)));
         }
 
         [HttpGet("unassigned")]
@@ -215,6 +223,7 @@ namespace Accounts.Controllers
         public async Task<IActionResult> GetById(Guid id)
         {
             if (await CallerIsSuperAdminAsync()) return Forbid();
+            if (!await CanAccessPersonAsync(id)) return Forbid();
             var person = await _service.GetByIdAsync(id);
             return person == null ? NotFound(new { message = $"Person {id} not found." }) : Ok(person);
         }
@@ -224,6 +233,14 @@ namespace Accounts.Controllers
         {
             using var reader = new System.IO.StreamReader(Request.Body);
             return Ok(new { received = await reader.ReadToEndAsync() });
+        }
+
+        private async Task<bool> CanAccessPersonAsync(Guid personId)
+        {
+            var scope = await _dataScope.ResolveAsync(
+                User.FindFirstValue(ClaimTypes.NameIdentifier) ?? string.Empty,
+                HttpContext.RequestAborted);
+            return scope.PersonIds.Contains(personId);
         }
 
         [HttpPost("register")]
@@ -247,6 +264,7 @@ namespace Accounts.Controllers
         [HttpPut("{id:guid}")]
         public async Task<IActionResult> Update(Guid id, [FromBody] UpdatePersonDto? dto)
         {
+            if (!await CanAccessPersonAsync(id)) return Forbid();
             if (await CallerIsSuperAdminAsync()) return Forbid();
             if (!await HasStaffActionAsync("EDIT", "PERSON_EDIT", "EMPLOYEE_EDIT")) return Forbid();
             if (dto is null) return BadRequest(new { message = "Request body missing." });
@@ -259,6 +277,7 @@ namespace Accounts.Controllers
         [Consumes("multipart/form-data")]
         public async Task<IActionResult> UploadPhoto(Guid id, IFormFile photo)
         {
+            if (!await CanAccessPersonAsync(id)) return Forbid();
             if (await CallerIsSuperAdminAsync()) return Forbid();
             if (!await HasStaffActionAsync("EDIT", "PERSON_EDIT", "EMPLOYEE_EDIT")) return Forbid();
             var baseUrl = $"{Request.Scheme}://{Request.Host}";
@@ -270,6 +289,7 @@ namespace Accounts.Controllers
         [HttpDelete("{id:guid}")]
         public async Task<IActionResult> Delete(Guid id)
         {
+            if (!await CanAccessPersonAsync(id)) return Forbid();
             if (await CallerIsSuperAdminAsync()) return Forbid();
             if (!await HasStaffActionAsync("DELETE", "PERSON_DELETE", "EMPLOYEE_DELETE")) return Forbid();
             var (success, message) = await _service.DeleteAsync(id);
@@ -280,6 +300,7 @@ namespace Accounts.Controllers
         [HttpPatch("{id:guid}/status")]
         public async Task<IActionResult> SetStatus(Guid id, [FromBody] SetPersonStatusDto dto)
         {
+            if (!await CanAccessPersonAsync(id)) return Forbid();
             if (await CallerIsSuperAdminAsync()) return Forbid();
             if (!await HasStaffActionAsync("DELETE", "PERSON_DELETE", "EMPLOYEE_DELETE")) return Forbid();
             var (success, message, isActive) = await _service.SetActiveAsync(id, dto.IsActive);
@@ -290,6 +311,7 @@ namespace Accounts.Controllers
         [HttpPost("{id:guid}/change-password")]
         public async Task<IActionResult> ChangePassword(Guid id, [FromBody] ChangePasswordDto dto)
         {
+            if (!await CanAccessPersonAsync(id)) return Forbid();
             if (await CallerIsSuperAdminAsync()) return Forbid();
             if (!await HasStaffActionAsync("EDIT", "PERSON_RESET_PASSWORD", "PERSON_EDIT")) return Forbid();
             if (string.IsNullOrWhiteSpace(dto.CurrentPassword))
@@ -304,6 +326,7 @@ namespace Accounts.Controllers
         [HttpPost("{id:guid}/reset-password")]
         public async Task<IActionResult> ResetPassword(Guid id, [FromBody] ResetPasswordDto? dto)
         {
+            if (!await CanAccessPersonAsync(id)) return Forbid();
             if (await CallerIsSuperAdminAsync()) return Forbid();
             if (!await HasStaffActionAsync("EDIT", "PERSON_RESET_PASSWORD", "PERSON_EDIT")) return Forbid();
             var (success, message, newPassword) = await _service.ResetPasswordAsync(id, dto?.NewPassword);
@@ -314,6 +337,7 @@ namespace Accounts.Controllers
         [HttpPost("{id:guid}/reset-to-default-password")]
         public async Task<IActionResult> ResetToDefaultPassword(Guid id)
         {
+            if (!await CanAccessPersonAsync(id)) return Forbid();
             if (await CallerIsSuperAdminAsync()) return Forbid();
             if (!await HasStaffActionAsync("EDIT", "PERSON_RESET_PASSWORD", "PERSON_EDIT")) return Forbid();
             var (success, message, defaultPassword) = await _service.ResetToDefaultPasswordAsync(id);

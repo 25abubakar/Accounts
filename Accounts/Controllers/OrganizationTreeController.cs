@@ -58,6 +58,41 @@ namespace Accounts.Controllers
                     .Where(tenant => tenant.Id == _tenantService.TenantId.Value)
                     .Select(tenant => (int?)tenant.OrganizationTreeId)
                     .FirstOrDefaultAsync();
+
+                // A tenant admin owns the company-wide view. Operational staff
+                // must be isolated to the Branch that contains their position.
+                if (!isOrganizationAdmin && rootNodeId.HasValue)
+                {
+                    var identityUserId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+                    var assignedNodeId = await _db.Persons.AsNoTracking()
+                        .Where(person => person.TenantId == _tenantService.TenantId.Value
+                            && person.IdentityUserId == identityUserId
+                            && person.IsActive
+                            && person.Staff != null
+                            && person.Staff.Vacancy != null)
+                        .Select(person => (int?)person.Staff!.Vacancy!.OrganizationId)
+                        .FirstOrDefaultAsync();
+
+                    if (!assignedNodeId.HasValue)
+                        return (false, false, null);
+
+                    var nodes = await _db.OrganizationTree.AsNoTracking()
+                        .Select(node => new { node.Id, node.ParentId, node.Label })
+                        .ToListAsync();
+                    var byId = nodes.ToDictionary(node => node.Id);
+                    var currentId = assignedNodeId.Value;
+                    var effectiveRoot = assignedNodeId.Value;
+                    var isInsideTenant = false;
+                    var visited = new HashSet<int>();
+                    while (visited.Add(currentId) && byId.TryGetValue(currentId, out var current))
+                    {
+                        if (current.Id == rootNodeId.Value) isInsideTenant = true;
+                        if (!current.ParentId.HasValue) break;
+                        currentId = current.ParentId.Value;
+                    }
+
+                    rootNodeId = isInsideTenant ? effectiveRoot : null;
+                }
             }
 
             return (isSuperAdmin, isOrganizationAdmin, rootNodeId);
@@ -125,11 +160,10 @@ namespace Accounts.Controllers
                            .Contains(label, StringComparer.OrdinalIgnoreCase);
             }
 
-            return _tenantService.TenantId.HasValue &&
-                   await _organizationScope.IsWithinTenantSubtreeAsync(
-                       _tenantService.TenantId.Value,
-                       nodeId,
-                       HttpContext.RequestAborted);
+            var (_, _, effectiveRootId) = await ResolveCallerContextAsync();
+            if (!effectiveRootId.HasValue) return false;
+            var flat = (await _service.GetFlatTreeAsync()).ToList();
+            return CollectSubtreeIds(flat, effectiveRootId.Value).Contains(nodeId);
         }
 
         // ── Country Lookup — available to all authenticated users ─────────────

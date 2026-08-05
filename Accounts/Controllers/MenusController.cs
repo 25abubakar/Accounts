@@ -274,8 +274,13 @@ namespace Accounts.Controllers
                 new("Group Matrix",         "Grid",               "/access/groups/matrix", "Access Control",      3, new() { "ACCESS_GROUP_VIEW" }),
                 new("Dept Permissions",     "ShieldCheck",        "/access/dept",          "Access Control",      4, new() { "ACCESS_GROUP_VIEW" }),
 
+                // Assessment (parent group)
+                new("Assessment",           "ClipboardCheck",     null,                    null,                  5, new()),
+                new("Rules",                "ListChecks",         "/assessment/rules",     "Assessment",          1, new()),
+                new("Mark Assessment",      "ClipboardPenLine",   "/assessment/mark",      "Assessment",          2, new()),
+
                 // Platform Settings (parent group)
-                new("Platform Settings",    "Settings",           null,                    null,                  5, new()),
+                new("Platform Settings",    "Settings",           null,                    null,                  6, new()),
                 new("General",              "SlidersHorizontal",  "/settings/general",     "Platform Settings",   1, new() { "ACCESS_GROUP_VIEW" }),
                 new("Branding",             "Palette",            "/settings/branding",    "Platform Settings",   2, new() { "ACCESS_GROUP_VIEW" }),
                 new("Email Templates",      "Mail",               "/settings/emails",      "Platform Settings",   3, new() { "ACCESS_GROUP_VIEW" }),

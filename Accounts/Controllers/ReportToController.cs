@@ -19,9 +19,10 @@ namespace Accounts.Controllers
         private readonly UserManager<ApplicationUser> _users;
         private readonly ITenantService _tenant;
         private readonly RbacService _rbac;
+        private readonly IOrganizationDataScopeService _dataScope;
 
-        public ReportToController(ApplicationDbContext db, UserManager<ApplicationUser> users, ITenantService tenant, RbacService rbac)
-        { _db = db; _users = users; _tenant = tenant; _rbac = rbac; }
+        public ReportToController(ApplicationDbContext db, UserManager<ApplicationUser> users, ITenantService tenant, RbacService rbac, IOrganizationDataScopeService dataScope)
+        { _db = db; _users = users; _tenant = tenant; _rbac = rbac; _dataScope = dataScope; }
 
         [HttpGet]
         public async Task<IActionResult> GetAll(CancellationToken ct)
@@ -248,7 +249,7 @@ namespace Accounts.Controllers
             var id = User.FindFirstValue(ClaimTypes.NameIdentifier);
             var user = id == null ? null : await _users.FindByIdAsync(id);
             if (user?.IsTenantAdmin == true || User.IsInRole("TenantAdmin")) return true;
-            return user != null && (await _users.GetRolesAsync(user)).Any(r => r is "Admin" or "TenantAdmin");
+            return user != null && (await _users.GetRolesAsync(user)).Any(r => r == "TenantAdmin");
         }
 
         private bool IsFullAccessClaimUser() =>
@@ -339,6 +340,9 @@ namespace Accounts.Controllers
                 }
             }
 
+            var dataScope = await _dataScope.ResolveAsync(
+                User.FindFirstValue(ClaimTypes.NameIdentifier) ?? string.Empty, ct);
+            visible.IntersectWith(dataScope.PersonIds);
             return visible;
         }
     }

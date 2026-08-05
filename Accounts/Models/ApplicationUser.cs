@@ -10,7 +10,7 @@ namespace Accounts.Models
     ///   1. Super Admin  — IsSuperAdmin=true, TenantId=null
     ///      • Manages OrganizationTree and creates/manages Tenants.
     ///      • Never accesses operational data (Staff, Vacancies, Notes).
-    ///      • Sees only "Organization Management" and "Platform Settings" in sidebar.
+    ///      • Owns and sees the complete active platform menu catalogue.
     ///
     ///   2. Tenant Admin — IsTenantAdmin=true, TenantId=&lt;tenantId&gt;
     ///      • Created atomically by TenantController when a new Tenant is provisioned.

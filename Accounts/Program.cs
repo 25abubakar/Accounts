@@ -219,6 +219,7 @@ builder.Services.AddScoped<ITenantService, TenantService>();
 builder.Services.AddScoped<IAccountScopeAccessService, AccountScopeAccessService>();
 builder.Services.AddScoped<ITenantMenuCeilingService, TenantMenuCeilingService>();
 builder.Services.AddScoped<IOrganizationScopeService, OrganizationScopeService>();
+builder.Services.AddScoped<IOrganizationDataScopeService, OrganizationDataScopeService>();
 
 // ── Core domain services ──────────────────────────────────────────────────────
 builder.Services.AddScoped<VacancyCodeService>();

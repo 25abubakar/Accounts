@@ -103,24 +103,31 @@ namespace Accounts.Services.Services
                 await _context.SaveChangesAsync();
             }
 
-            // Link MENU_{id} permission to this menu via MenuPermissions
-            var menuFeature = await _context.Features
-                .FirstOrDefaultAsync(f => f.FeatureKey == $"MENU_{menu.Id}");
-
-            if (menuFeature != null)
-            {
-                var alreadyLinked = await _context.MenuPermissions
-                    .AnyAsync(mp => mp.MenuId == menu.Id && mp.PermissionId == menuFeature.PermissionId);
-
-                if (!alreadyLinked)
+            // Link the complete CRUD bundle. TenantMenuCeilingService resolves
+            // View/Add/Edit/Delete from MenuPermissions, so linking only the
+            // top-level MENU_{id} makes every action appear granted in the UI
+            // but causes the backend to discard it.
+            var seededKeys = keysToSeed.Select(item => item.Item1).ToArray();
+            var menuFeatures = await _context.Features
+                .Where(feature => seededKeys.Contains(feature.FeatureKey))
+                .Select(feature => new { feature.PermissionId })
+                .ToListAsync();
+            var linkedIds = await _context.MenuPermissions
+                .Where(link => link.MenuId == menu.Id)
+                .Select(link => link.PermissionId)
+                .ToHashSetAsync();
+            var missingLinks = menuFeatures
+                .Where(feature => !linkedIds.Contains(feature.PermissionId))
+                .Select(feature => new MenuPermission
                 {
-                    _context.MenuPermissions.Add(new MenuPermission
-                    {
-                        MenuId       = menu.Id,
-                        PermissionId = menuFeature.PermissionId
-                    });
-                    await _context.SaveChangesAsync();
-                }
+                    MenuId = menu.Id,
+                    PermissionId = feature.PermissionId
+                })
+                .ToList();
+            if (missingLinks.Count > 0)
+            {
+                _context.MenuPermissions.AddRange(missingLinks);
+                await _context.SaveChangesAsync();
             }
         }
 
