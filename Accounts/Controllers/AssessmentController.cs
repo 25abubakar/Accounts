@@ -2,6 +2,7 @@ using Accounts.Data;
 using Accounts.Models;
 using Accounts.Services.Interfaces;
 using Accounts.Services.Services;
+using Accounts.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -19,13 +20,15 @@ public sealed class AssessmentController : ControllerBase
     private readonly RbacService _rbac;
     private readonly IOrganizationDataScopeService _dataScope;
     private readonly ITenantService _tenant;
+    private readonly AssessmentSchedulerService _assessmentScheduler;
 
-    public AssessmentController(ApplicationDbContext db, RbacService rbac, IOrganizationDataScopeService dataScope, ITenantService tenant)
+    public AssessmentController(ApplicationDbContext db, RbacService rbac, IOrganizationDataScopeService dataScope, ITenantService tenant, AssessmentSchedulerService assessmentScheduler)
     {
         _db = db;
         _rbac = rbac;
         _dataScope = dataScope;
         _tenant = tenant;
+        _assessmentScheduler = assessmentScheduler;
     }
 
     [HttpGet("staff-hierarchy")]
@@ -108,25 +111,18 @@ public sealed class AssessmentController : ControllerBase
         var assessmentMonth = month is >= 1 and <= 12 ? month.Value : DateTime.Today.Month;
         var tenantId = current?.TenantId ?? _tenant.TenantId;
         if (!tenantId.HasValue) return Ok(Array.Empty<object>());
+        await AssessmentSchema.EnsureCurrentAsync(_db);
+        var today = DateOnly.FromDateTime(PakistanClock.Now());
+        var configuredOpenDay = await _db.AssessmentSchedules.AsNoTracking().Where(x => x.AssessmentYear == assessmentYear && x.AssessmentMonth == assessmentMonth && x.IsActive).Select(x => (int?)x.OpenDay).FirstOrDefaultAsync(ct);
+        var windowOpen = assessmentYear == today.Year && assessmentMonth == today.Month && today.Day >= (configuredOpenDay ?? 25);
         var saved = await _db.StaffAssessments.AsNoTracking()
             .Where(item => item.TenantId == tenantId.Value && item.AssessmentYear == assessmentYear &&
                            item.AssessmentMonth == assessmentMonth &&
                            (isTenantAdmin || item.AssessorPersonId == current!.PersonId))
-            .Select(item => new { item.SubjectPersonId, item.Rating, item.Remarks })
+            .Select(item => new { item.SubjectPersonId, item.Rating, item.Amount })
             .ToListAsync(ct);
         var savedByPerson = saved.GroupBy(item => item.SubjectPersonId)
             .ToDictionary(group => group.Key, group => group.First());
-        var bonusRules = await _db.AssessmentBonusRules.AsNoTracking().Where(rule => rule.IsActive)
-            .OrderBy(rule => rule.RankNumber).ToListAsync(ct);
-        decimal? BonusFor(byte? rank)
-        {
-            if (!rank.HasValue) return null;
-            var exact = bonusRules.FirstOrDefault(rule => rule.RankNumber == rank.Value);
-            if (exact != null) return exact.BonusAmount;
-            return bonusRules.Where(rule => rule.AppliesToHigherRanks && rank.Value > rule.RankNumber)
-                .OrderByDescending(rule => rule.RankNumber).Select(rule => (decimal?)rule.BonusAmount).FirstOrDefault();
-        }
-
         return Ok(visible.Select((person, index) => new
         {
             id = index + 1,
@@ -138,9 +134,11 @@ public sealed class AssessmentController : ControllerBase
             jobTitle = person.JobTitle ?? "—",
             person.HierarchyLevel,
             rating = savedByPerson.GetValueOrDefault(person.PersonId)?.Rating,
-            remarks = savedByPerson.GetValueOrDefault(person.PersonId)?.Remarks,
-            bonusAmount = BonusFor(savedByPerson.GetValueOrDefault(person.PersonId)?.Rating),
-            canEdit = !isTenantAdmin
+            amount = savedByPerson.GetValueOrDefault(person.PersonId)?.Amount,
+            bonusAmount = savedByPerson.GetValueOrDefault(person.PersonId)?.Amount,
+            canEdit = !isTenantAdmin && windowOpen,
+            assessmentWindowOpen = windowOpen,
+            openDay = configuredOpenDay ?? 25
         }));
     }
 
@@ -151,14 +149,20 @@ public sealed class AssessmentController : ControllerBase
         if (string.IsNullOrWhiteSpace(userId)) return Unauthorized();
         if (dto.Year is < 2000 or > 2100 || dto.Month is < 1 or > 12 || dto.Rating is < 1 or > 255)
             return BadRequest(new { message = "Valid month, year and a position from 1 to 255 are required." });
-        if (string.IsNullOrWhiteSpace(dto.Remarks)) return BadRequest(new { message = "Monthly progress remarks are required." });
-        if (dto.Remarks.Trim().Length > 2000) return BadRequest(new { message = "Remarks cannot exceed 2000 characters." });
+        await AssessmentSchema.EnsureCurrentAsync(_db);
+        var today = DateOnly.FromDateTime(PakistanClock.Now());
+        if (dto.Year != today.Year || dto.Month != today.Month) return BadRequest(new { message = "Assessment can only be saved for the running month." });
+        var openDay = await _db.AssessmentSchedules.AsNoTracking().Where(x => x.AssessmentYear == dto.Year && x.AssessmentMonth == dto.Month && x.IsActive).Select(x => (int?)x.OpenDay).FirstOrDefaultAsync(ct) ?? 25;
+        if (today.Day < openDay) return Conflict(new { message = $"Assessment entry opens on day {openDay} of this month." });
 
         var assessor = await _db.Persons.AsNoTracking().Where(person => person.IdentityUserId == userId && person.IsActive)
             .Select(person => new { person.PersonId, person.TenantId, JobTitle = person.Staff != null && person.Staff.Vacancy != null
                 ? (person.Staff.Vacancy.JobTitleNav != null ? person.Staff.Vacancy.JobTitleNav.TitleName : person.Staff.Vacancy.JobTitle) : null })
             .FirstOrDefaultAsync(ct);
         if (assessor == null) return Forbid();
+        var rule = await _db.AssessmentBonusRules.AsNoTracking().FirstOrDefaultAsync(x => x.IsActive, ct);
+        if (rule == null) return Conflict(new { message = "Tenant assessment bonus rule is not configured." });
+        var amount = Math.Max(rule.MinimumBonusAmount, rule.BonusAmount - ((dto.Rating - 1) * rule.DecrementAmount));
         var allowed = await ResolveDirectSubjectIdsAsync(userId, assessor.PersonId, assessor.JobTitle, ct);
         if (!allowed.Contains(subjectPersonId)) return Forbid();
         var duplicateRank = await _db.StaffAssessments.AsNoTracking().AnyAsync(item =>
@@ -181,7 +185,7 @@ public sealed class AssessmentController : ControllerBase
                 AssessmentYear = dto.Year,
                 AssessmentMonth = (byte)dto.Month,
                 Rating = (byte)dto.Rating,
-                Remarks = dto.Remarks.Trim(),
+                Amount = amount,
                 CreatedDateUtc = DateTime.UtcNow
             };
             _db.StaffAssessments.Add(assessment);
@@ -189,7 +193,7 @@ public sealed class AssessmentController : ControllerBase
         else
         {
             assessment.Rating = (byte)dto.Rating;
-            assessment.Remarks = dto.Remarks.Trim();
+            assessment.Amount = amount;
             assessment.ModifiedDateUtc = DateTime.UtcNow;
         }
         await _db.SaveChangesAsync(ct);
@@ -212,7 +216,35 @@ public sealed class AssessmentController : ControllerBase
         return lower.Where(person => person.Rank == directRank).Select(person => person.PersonId).ToHashSet();
     }
 
-    public sealed class SaveAssessmentDto { public int Year { get; set; } public int Month { get; set; } public int Rating { get; set; } public string Remarks { get; set; } = string.Empty; }
+    [HttpGet("schedule")]
+    public async Task<IActionResult> GetSchedule(CancellationToken ct)
+    {
+        if (!_tenant.TenantId.HasValue || _tenant.IsSuperAdmin) return Forbid();
+        await AssessmentSchema.EnsureCurrentAsync(_db);
+        var today = DateOnly.FromDateTime(PakistanClock.Now());
+        var row = await _db.AssessmentSchedules.AsNoTracking().FirstOrDefaultAsync(x => x.AssessmentYear == today.Year && x.AssessmentMonth == today.Month && x.IsActive, ct);
+        var day = row?.OpenDay ?? 25;
+        return Ok(new { year = today.Year, month = today.Month, openDay = day, isManualOverride = row?.IsManualOverride ?? false, isOpen = today.Day >= day });
+    }
+
+    [HttpPut("schedule")]
+    public async Task<IActionResult> SetSchedule([FromBody] SetScheduleDto dto, CancellationToken ct)
+    {
+        if (!_tenant.TenantId.HasValue || !(_tenant.IsTenantAdmin || User.IsInRole("TenantAdmin"))) return Forbid();
+        await AssessmentSchema.EnsureCurrentAsync(_db);
+        var today = DateOnly.FromDateTime(PakistanClock.Now());
+        if (dto.OpenDate.Year != today.Year || dto.OpenDate.Month != today.Month || dto.OpenDate.Day > DateTime.DaysInMonth(today.Year, today.Month)) return BadRequest(new { message = "Select a valid date in the running month." });
+        var row = await _db.AssessmentSchedules.SingleOrDefaultAsync(x => x.AssessmentYear == today.Year && x.AssessmentMonth == today.Month, ct);
+        if (row == null) { row = new AssessmentSchedule { TenantId = _tenant.TenantId.Value, AssessmentYear = today.Year, AssessmentMonth = (byte)today.Month, CreatedDateUtc = DateTime.UtcNow, CreatedByUserId = User.FindFirstValue(ClaimTypes.NameIdentifier) }; _db.AssessmentSchedules.Add(row); }
+        row.OpenDay = (byte)dto.OpenDate.Day; row.IsManualOverride = true; row.IsActive = true;
+        await _db.SaveChangesAsync(ct);
+        await _assessmentScheduler.RunNowAsync(CancellationToken.None);
+        var generated = await _db.StaffAssessments.AsNoTracking().CountAsync(x => x.AssessmentYear == today.Year && x.AssessmentMonth == today.Month, ct);
+        return Ok(new { message = $"Assessment entry will open on {dto.OpenDate:dd MMM yyyy}.", generatedRows = generated });
+    }
+
+    public sealed class SaveAssessmentDto { public int Year { get; set; } public int Month { get; set; } public int Rating { get; set; } }
+    public sealed class SetScheduleDto { public DateOnly OpenDate { get; set; } }
 
     private sealed class HierarchyStaffRow
     {

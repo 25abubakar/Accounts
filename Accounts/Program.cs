@@ -235,6 +235,8 @@ builder.Services.AddScoped<IPermissionFilterService, PermissionFilterService>();
 builder.Services.AddScoped<RbacService>();
 builder.Services.AddScoped<OptimizedMenuService>();
 builder.Services.AddHostedService<ProcessReportAutoTransferService>();
+builder.Services.AddSingleton<AssessmentSchedulerService>();
+builder.Services.AddHostedService(provider => provider.GetRequiredService<AssessmentSchedulerService>());
 
 // ── Communication Center ──────────────────────────────────────────────────────
 builder.Services.AddScoped<IAppNoteService, AppNoteService>();

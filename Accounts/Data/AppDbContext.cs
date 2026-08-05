@@ -63,6 +63,7 @@ namespace Accounts.Data
         public DbSet<AttendancePolicy> AttendancePolicies => Set<AttendancePolicy>();
         public DbSet<StaffAssessment> StaffAssessments => Set<StaffAssessment>();
         public DbSet<AssessmentBonusRule> AssessmentBonusRules => Set<AssessmentBonusRule>();
+        public DbSet<AssessmentSchedule> AssessmentSchedules => Set<AssessmentSchedule>();
         public DbSet<VacancyCounter>           VacancyCounters          => Set<VacancyCounter>();
         public DbSet<Menu>                     Menus                    => Set<Menu>();
         public DbSet<MenuPermission>           MenuPermissions          => Set<MenuPermission>();
@@ -115,7 +116,11 @@ namespace Accounts.Data
             builder.Entity<AssessmentBonusRule>().HasQueryFilter(row =>
                 _tenantService != null && !_tenantService.IsSuperAdmin &&
                 _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
-            builder.Entity<AssessmentBonusRule>().HasIndex(row => new { row.TenantId, row.RankNumber }).IsUnique();
+            builder.Entity<AssessmentBonusRule>().HasIndex(row => row.TenantId).IsUnique();
+            builder.Entity<AssessmentSchedule>().HasQueryFilter(row =>
+                _tenantService != null && !_tenantService.IsSuperAdmin &&
+                _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
+            builder.Entity<AssessmentSchedule>().HasIndex(row => new { row.TenantId, row.AssessmentYear, row.AssessmentMonth }).IsUnique();
             builder.Entity<PersonAddress>().HasQueryFilter(row =>
                 _tenantService != null && !_tenantService.IsSuperAdmin &&
                 _tenantService.TenantId != null && row.Person != null &&

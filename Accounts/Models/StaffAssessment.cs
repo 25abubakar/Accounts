@@ -12,8 +12,8 @@ public sealed class StaffAssessment : ITenantEntity
     public Guid SubjectPersonId { get; set; }
     public int AssessmentYear { get; set; }
     public byte AssessmentMonth { get; set; }
-    public byte Rating { get; set; }
-    [MaxLength(2000)] public string Remarks { get; set; } = string.Empty;
+    public byte? Rating { get; set; }
+    [Column(TypeName = "decimal(18,2)")] public decimal? Amount { get; set; }
     public DateTime CreatedDateUtc { get; set; }
     public DateTime? ModifiedDateUtc { get; set; }
 }
