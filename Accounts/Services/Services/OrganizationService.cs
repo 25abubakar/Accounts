@@ -2,6 +2,7 @@ using Accounts.Data;
 using Accounts.Models;
 using Accounts.Services.Interfaces;
 using Microsoft.EntityFrameworkCore;
+using System.Data;
 using System.Text.Json;
 
 namespace Accounts.Services.Services
@@ -193,13 +194,40 @@ namespace Accounts.Services.Services
 
         private async Task<int> GetNextOrganizationIdAsync()
         {
-            if (!_db.Database.IsRelational())
+            // NEXT VALUE FOR is SQL Server-specific. Other providers used by
+            // tests/development safely retain the existing max+1 behavior.
+            if (!_db.Database.IsSqlServer())
                 return (await _db.OrganizationTree.MaxAsync(node => (int?)node.Id) ?? 0) + 1;
 
-            return await _db.Database
-                .SqlQueryRaw<int>(
-                    "SELECT CONVERT(int, NEXT VALUE FOR dbo.OrganizationTreeIdSequence) AS [Value]")
-                .SingleAsync();
+            // Do not use SqlQueryRaw<T> here. EF composes scalar queries as a
+            // derived table, while SQL Server explicitly forbids NEXT VALUE
+            // FOR inside derived queries/subqueries. Execute it as the direct
+            // scalar command it is instead.
+            var connection = _db.Database.GetDbConnection();
+            var shouldClose = connection.State != ConnectionState.Open;
+
+            try
+            {
+                if (shouldClose)
+                    await connection.OpenAsync();
+
+                await using var command = connection.CreateCommand();
+                command.CommandText =
+                    "SELECT CONVERT(int, NEXT VALUE FOR dbo.OrganizationTreeIdSequence);";
+                command.CommandType = CommandType.Text;
+
+                var result = await command.ExecuteScalarAsync();
+                if (result is null || result is DBNull)
+                    throw new InvalidOperationException(
+                        "The organization ID sequence did not return a value.");
+
+                return Convert.ToInt32(result);
+            }
+            finally
+            {
+                if (shouldClose && connection.State != ConnectionState.Closed)
+                    await connection.CloseAsync();
+            }
         }
 
         public async Task<OrgNodeDto?> UpdateAsync(int id, UpdateOrgNodeDto dto)
