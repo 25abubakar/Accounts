@@ -26,6 +26,7 @@ public sealed class AccountsWebApplicationFactory : WebApplicationFactory<Progra
     {
         builder.UseEnvironment(_environment);
         builder.UseSetting("Database:ApplyMigrationsOnStartup", "false");
+        builder.UseSetting("Scheduler:ApiKey", "test-scheduler-key-that-is-at-least-32-chars");
         builder.ConfigureServices(services =>
         {
             services.RemoveAll<DbContextOptions<ApplicationDbContext>>();

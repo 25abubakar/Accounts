@@ -2313,14 +2313,19 @@ public sealed class AttendanceService : IAttendanceService
             .FirstOrDefaultAsync(cancellationToken)
         ?? throw new InvalidOperationException("No active attendance policy is configured for this company.");
 
-    private Task EvaluateStatusesAsync(int tenantId, DateOnly dateFrom, DateOnly dateTo, CancellationToken cancellationToken) =>
+    public Task EvaluateStatusesAsync(
+        int tenantId,
+        DateOnly dateFrom,
+        DateOnly dateTo,
+        CancellationToken cancellationToken = default,
+        DateTime? asOfPakistanLocal = null) =>
         _db.Database.ExecuteSqlRawAsync(
             "EXEC dbo.usp_Attendance_EvaluateStatuses @TenantId, @DateFrom, @DateTo, @AsOfUtc",
             new object[] {
                 new SqlParameter("@TenantId", tenantId),
                 new SqlParameter("@DateFrom", dateFrom.ToDateTime(TimeOnly.MinValue)),
                 new SqlParameter("@DateTo", dateTo.ToDateTime(TimeOnly.MinValue)),
-                new SqlParameter("@AsOfUtc", PakistanClock.Now())
+                new SqlParameter("@AsOfUtc", asOfPakistanLocal ?? PakistanClock.Now())
             }, cancellationToken);
 
     private static MyAttendanceTodayDto Map(

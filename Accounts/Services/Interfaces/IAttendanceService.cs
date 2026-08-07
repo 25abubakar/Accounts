@@ -4,6 +4,12 @@ namespace Accounts.Services.Interfaces;
 
 public interface IAttendanceService
 {
+    Task EvaluateStatusesAsync(
+        int tenantId,
+        DateOnly dateFrom,
+        DateOnly dateTo,
+        CancellationToken cancellationToken = default,
+        DateTime? asOfPakistanLocal = null);
     Task<MyAttendanceTodayDto> GetTodayAsync(string identityUserId, CancellationToken cancellationToken = default);
     Task<MyAttendanceTodayDto> CheckInAsync(string identityUserId, int? workModeId = null, CancellationToken cancellationToken = default);
     Task<MyAttendanceTodayDto> ToggleBreakAsync(string identityUserId, CancellationToken cancellationToken = default);

@@ -200,6 +200,16 @@ builder.Services.AddRateLimiter(options =>
                 QueueLimit = 0,
                 AutoReplenishment = true
             }));
+    options.AddPolicy("scheduler", context =>
+        RateLimitPartition.GetFixedWindowLimiter(
+            context.Connection.RemoteIpAddress?.ToString() ?? "unknown-scheduler",
+            _ => new FixedWindowRateLimiterOptions
+            {
+                PermitLimit = 12,
+                Window = TimeSpan.FromMinutes(1),
+                QueueLimit = 0,
+                AutoReplenishment = true
+            }));
     options.OnRejected = (context, _) =>
     {
         if (context.Lease.TryGetMetadata(MetadataName.RetryAfter, out var retryAfter))
@@ -236,7 +246,8 @@ builder.Services.AddScoped<RbacService>();
 builder.Services.AddScoped<OptimizedMenuService>();
 builder.Services.AddHostedService<ProcessReportAutoTransferService>();
 builder.Services.AddSingleton<AssessmentSchedulerService>();
-builder.Services.AddHostedService(provider => provider.GetRequiredService<AssessmentSchedulerService>());
+if (builder.Configuration.GetValue("Assessment:InternalSchedulerEnabled", false))
+    builder.Services.AddHostedService(provider => provider.GetRequiredService<AssessmentSchedulerService>());
 
 // ── Communication Center ──────────────────────────────────────────────────────
 builder.Services.AddScoped<IAppNoteService, AppNoteService>();
