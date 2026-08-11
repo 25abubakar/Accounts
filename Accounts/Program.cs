@@ -9,9 +9,17 @@ using Microsoft.EntityFrameworkCore;
 using Accounts.Repositories;
 using Accounts.Repositories.Interfaces;
 using Microsoft.AspNetCore.Authentication;
+using Microsoft.AspNetCore.Antiforgery;
 using Microsoft.AspNetCore.ResponseCompression;
 
 var builder = WebApplication.CreateBuilder(args);
+
+// The default Windows Event Log provider requires machine-level permissions on
+// some developer/deployment accounts. A logging warning must never prevent the
+// API from starting (which otherwise appears to the frontend as "Network Error").
+builder.Logging.ClearProviders();
+builder.Logging.AddConsole();
+builder.Logging.AddDebug();
 
 // ── 1. Database Configuration ────────────────────────────────────────────────
 builder.Services.AddDbContext<ApplicationDbContext>(options =>
@@ -49,8 +57,12 @@ builder.Services.AddIdentity<ApplicationUser, IdentityRole>(options =>
 // ── 3. Cookie Configuration ──────────────────────────────────────────────────
 builder.Services.ConfigureApplicationCookie(options =>
 {
-    options.Cookie.SameSite     = SameSiteMode.None;
-    options.Cookie.SecurePolicy = CookieSecurePolicy.Always;
+    options.Cookie.SameSite = builder.Environment.IsDevelopment()
+        ? SameSiteMode.Lax
+        : SameSiteMode.None;
+    options.Cookie.SecurePolicy = builder.Environment.IsDevelopment()
+        ? CookieSecurePolicy.SameAsRequest
+        : CookieSecurePolicy.Always;
     options.Cookie.HttpOnly     = true;
     options.Cookie.Name         = ".AspNetCore.Identity.Application";
 
@@ -96,6 +108,16 @@ builder.Services.AddControllers()
         options.JsonSerializerOptions.ReferenceHandler =
             System.Text.Json.Serialization.ReferenceHandler.IgnoreCycles;
     });
+builder.Services.AddAntiforgery(options =>
+{
+    options.HeaderName = "X-CSRF-TOKEN";
+    options.Cookie.Name = ".Accounts.Antiforgery";
+    options.Cookie.HttpOnly = true;
+    options.Cookie.SameSite = SameSiteMode.Lax;
+    options.Cookie.SecurePolicy = builder.Environment.IsDevelopment()
+        ? CookieSecurePolicy.SameAsRequest
+        : CookieSecurePolicy.Always;
+});
 builder.Services.AddRazorPages();
 builder.Services.AddResponseCompression(options =>
 {
@@ -172,7 +194,11 @@ if (app.Environment.IsDevelopment())
     app.UseSwaggerUI();
 }
 
-app.UseHttpsRedirection();
+// Vite uses the HTTP development endpoint (localhost:5099). Redirecting its
+// CORS preflight OPTIONS request to HTTPS makes browsers reject login before
+// the POST is sent. Enforce HTTPS outside local development only.
+if (!app.Environment.IsDevelopment())
+    app.UseHttpsRedirection();
 app.UseResponseCompression();
 app.UseStaticFiles();
 app.UseRouting();
@@ -187,6 +213,11 @@ app.UseAuthentication();
 app.UseMiddleware<AccountScopeAccessMiddleware>();
 app.UseAuthorization();
 
+app.MapGet("/api/security/csrf-token", (HttpContext context, IAntiforgery antiforgery) =>
+{
+    var tokens = antiforgery.GetAndStoreTokens(context);
+    return Results.Ok(new { token = tokens.RequestToken });
+}).AllowAnonymous();
 app.MapControllers();
 app.MapRazorPages();
 

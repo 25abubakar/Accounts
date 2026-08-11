@@ -39,6 +39,16 @@ namespace Accounts.Data
         public DbSet<SalaryScale>              SalaryScales             => Set<SalaryScale>();
         public DbSet<PlatformTypeCategory>     PlatformTypeCategories   => Set<PlatformTypeCategory>();
         public DbSet<PlatformTypeValue>        PlatformTypeValues       => Set<PlatformTypeValue>();
+        public DbSet<ContractType>             ContractTypes            => Set<ContractType>();
+        public DbSet<FrequencyType>            FrequencyTypes           => Set<FrequencyType>();
+        public DbSet<RateType>                 RateTypes                => Set<RateType>();
+        public DbSet<AllowanceType>            AllowanceTypes           => Set<AllowanceType>();
+        public DbSet<TadaType>                 TadaTypes                => Set<TadaType>();
+        public DbSet<LeaveType>                LeaveTypes               => Set<LeaveType>();
+        public DbSet<AnnouncementType>         AnnouncementTypes        => Set<AnnouncementType>();
+        public DbSet<AssessmentType>           AssessmentTypes          => Set<AssessmentType>();
+        public DbSet<AttendanceType>           AttendanceTypes          => Set<AttendanceType>();
+        public DbSet<BenefitType>              BenefitTypes             => Set<BenefitType>();
         public DbSet<ProcessMaster>            Processes                => Set<ProcessMaster>();
         public DbSet<StatusDefinition>         Statuses                 => Set<StatusDefinition>();
         public DbSet<ColorStyle>               ColorStyles              => Set<ColorStyle>();
@@ -155,6 +165,9 @@ namespace Accounts.Data
                 _tenantService != null && !_tenantService.IsSuperAdmin &&
                 _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
             builder.Entity<PlatformTypeValue>().HasQueryFilter(row =>
+                _tenantService != null && !_tenantService.IsSuperAdmin &&
+                _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
+            builder.Entity<PlatformTypeTableRow>().HasQueryFilter(row =>
                 _tenantService != null && !_tenantService.IsSuperAdmin &&
                 _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
             builder.Entity<AttendanceRecord>().HasQueryFilter(row =>
@@ -838,6 +851,27 @@ namespace Accounts.Data
                 e.HasOne(x => x.Tenant).WithMany().HasForeignKey(x => x.TenantId).OnDelete(DeleteBehavior.Restrict);
             });
 
+            builder.Entity<PlatformTypeTableRow>(e =>
+            {
+                e.UseTpcMappingStrategy();
+                e.HasKey(x => x.Id);
+                e.Property(x => x.Name).HasMaxLength(150).IsRequired();
+                e.Property(x => x.Code).HasMaxLength(100).IsRequired();
+                e.Property(x => x.CreatedOnUtc).HasDefaultValueSql("SYSUTCDATETIME()");
+                e.HasOne(x => x.Tenant).WithMany().HasForeignKey(x => x.TenantId).OnDelete(DeleteBehavior.Restrict);
+            });
+
+            ConfigurePlatformTypeTable<ContractType>(builder, "ContractTypes");
+            ConfigurePlatformTypeTable<FrequencyType>(builder, "FrequencyTypes");
+            ConfigurePlatformTypeTable<RateType>(builder, "RateTypes");
+            ConfigurePlatformTypeTable<AllowanceType>(builder, "AllowanceTypes");
+            ConfigurePlatformTypeTable<TadaType>(builder, "TadaTypes");
+            ConfigurePlatformTypeTable<LeaveType>(builder, "LeaveTypes");
+            ConfigurePlatformTypeTable<AnnouncementType>(builder, "AnnouncementTypes");
+            ConfigurePlatformTypeTable<AssessmentType>(builder, "AssessmentTypes");
+            ConfigurePlatformTypeTable<AttendanceType>(builder, "AttendanceTypes");
+            ConfigurePlatformTypeTable<BenefitType>(builder, "BenefitTypes");
+
             builder.Entity<AttendanceRecord>(e =>
             {
                 e.ToTable("AttendanceRecords");
@@ -1385,6 +1419,19 @@ namespace Accounts.Data
                  .OnDelete(DeleteBehavior.Cascade);
                 // StaffMenuAccess â†’ AccessFeatures cascade is configured on the parent side above
             });
+        }
+
+        private static void ConfigurePlatformTypeTable<TEntity>(ModelBuilder builder, string tableName)
+            where TEntity : PlatformTypeTableRow
+        {
+            var entity = builder.Entity<TEntity>();
+            // Keep all independent tenant-owned masters together in SQL Server.
+            // The common schema makes the database easy to browse without
+            // changing the existing tenant boundary or authorization model.
+            entity.ToTable(tableName, "PlatformTypes");
+            entity.HasIndex(x => new { x.TenantId, x.Code }).IsUnique();
+            entity.HasIndex(x => new { x.TenantId, x.Name }).IsUnique();
+            entity.HasIndex(x => new { x.TenantId, x.DisplayOrder });
         }
     }
 }

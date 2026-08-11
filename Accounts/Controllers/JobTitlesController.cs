@@ -42,16 +42,26 @@ namespace Accounts.Controllers
                 .FirstOrDefaultAsync();
             if (!staffId.HasValue) return false;
 
-            var menuId = await _db.Menus.AsNoTracking()
-                .Where(menu => menu.IsActive && menu.Route == "/settings/job-titles")
-                .Select(menu => (int?)menu.Id)
-                .FirstOrDefaultAsync();
-            if (!menuId.HasValue) return false;
+            var menuIds = await _db.Menus.AsNoTracking()
+                .Where(menu => menu.IsActive &&
+                    (menu.Route == "/settings/types" || menu.Route == "/settings/job-titles"))
+                .Select(menu => menu.Id)
+                .ToListAsync();
+            if (menuIds.Count == 0) return false;
 
             var normalizedAction = action.Trim().ToUpperInvariant();
-            if (normalizedAction == "VIEW" && await _rbac.HasAccessAsync(staffId.Value, $"MENU_{menuId.Value}"))
+            if (normalizedAction == "VIEW" && await _db.StaffMenuAccesses.AsNoTracking()
+                    .AnyAsync(access => access.StaffId == staffId.Value && menuIds.Contains(access.MenuId) && access.IsAllow))
                 return true;
-            return await _rbac.HasAccessAsync(staffId.Value, $"MENU_{menuId.Value}_{normalizedAction}");
+
+            foreach (var menuId in menuIds)
+            {
+                if (normalizedAction == "VIEW" && await _rbac.HasAccessAsync(staffId.Value, $"MENU_{menuId}"))
+                    return true;
+                if (await _rbac.HasAccessAsync(staffId.Value, $"MENU_{menuId}_{normalizedAction}"))
+                    return true;
+            }
+            return false;
         }
 
         [HttpGet]
