@@ -1,5 +1,6 @@
 using Accounts.DTOs;
 using Accounts.Services.Interfaces;
+using Accounts.Services.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
@@ -12,12 +13,14 @@ namespace Accounts.Controllers;
 public sealed class AttendanceStatusController : ControllerBase
 {
     private readonly IAttendanceStatusService _service;
-    private readonly ITenantService _tenantService;
+    private readonly TenantPermissionService _tenantPermissions;
 
-    public AttendanceStatusController(IAttendanceStatusService service, ITenantService tenantService)
+    public AttendanceStatusController(
+        IAttendanceStatusService service,
+        TenantPermissionService tenantPermissions)
     {
         _service = service;
-        _tenantService = tenantService;
+        _tenantPermissions = tenantPermissions;
     }
 
     [HttpGet]
@@ -35,7 +38,7 @@ public sealed class AttendanceStatusController : ControllerBase
     [HttpPost]
     public async Task<ActionResult<AttendanceStatusDto>> Create(CreateAttendanceStatusDto dto, CancellationToken cancellationToken)
     {
-        if (!CanManage()) return Forbid();
+        if (!await CanManageAsync("ADD", cancellationToken)) return Forbid();
         try
         {
             var result = await _service.CreateAsync(dto, cancellationToken);
@@ -50,7 +53,7 @@ public sealed class AttendanceStatusController : ControllerBase
     [HttpPut("{id:int}")]
     public async Task<ActionResult<AttendanceStatusDto>> Update(int id, UpdateAttendanceStatusDto dto, CancellationToken cancellationToken)
     {
-        if (!CanManage()) return Forbid();
+        if (!await CanManageAsync("EDIT", cancellationToken)) return Forbid();
         try
         {
             var result = await _service.UpdateAsync(id, dto, cancellationToken);
@@ -65,11 +68,16 @@ public sealed class AttendanceStatusController : ControllerBase
     [HttpDelete("{id:int}")]
     public async Task<IActionResult> Delete(int id, CancellationToken cancellationToken)
     {
-        if (!CanManage()) return Forbid();
+        if (!await CanManageAsync("DELETE", cancellationToken)) return Forbid();
         return await _service.DeactivateAsync(id, cancellationToken)
             ? Ok(new { message = "Attendance status deactivated successfully." })
             : NotFound(new { message = "Attendance status was not found." });
     }
 
-    private bool CanManage() => _tenantService.IsSuperAdmin || _tenantService.IsTenantAdmin;
+    private Task<bool> CanManageAsync(string action, CancellationToken cancellationToken) =>
+        _tenantPermissions.HasMenuRouteAsync(
+            User,
+            ["/attendance/rules/list", "/attendance/rules/rule", "/attendance/rules"],
+            action,
+            cancellationToken);
 }

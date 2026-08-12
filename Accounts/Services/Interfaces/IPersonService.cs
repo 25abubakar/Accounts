@@ -5,6 +5,7 @@ namespace Accounts.Services.Interfaces
     public interface IPersonService
     {
         Task<IEnumerable<PersonDto>> GetAllAsync();
+        Task<IEnumerable<PersonDto>> GetFormerAsync(bool tenantWide, IReadOnlySet<int> visibleOrganizationIds);
         Task<IEnumerable<PersonDto>> GetUnassignedAsync();
         Task<PersonDto?> GetByIdAsync(Guid id);
         Task<PersonDto?> GetByIdentityUserIdAsync(string identityUserId);

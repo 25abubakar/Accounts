@@ -20,17 +20,20 @@ namespace Accounts.Controllers
         private readonly ApplicationDbContext         _db;
         private readonly ITenantService               _tenantService;
         private readonly RbacService                  _rbac;
+        private readonly TenantPermissionService      _tenantPermissions;
 
         public OrganizationTreeController(
             IOrganizationService          service,
             ApplicationDbContext          db,
             ITenantService                tenantService,
-            RbacService                   rbac)
+            RbacService                   rbac,
+            TenantPermissionService       tenantPermissions)
         {
             _service     = service;
             _db          = db;
             _tenantService = tenantService;
             _rbac        = rbac;
+            _tenantPermissions = tenantPermissions;
         }
 
         // ── Caller context helper ─────────────────────────────────────────────
@@ -62,8 +65,12 @@ namespace Accounts.Controllers
 
         private async Task<bool> HasOrganizationActionAsync(string action)
         {
-            if (_tenantService.IsSuperAdmin || _tenantService.IsTenantAdmin || User.IsInRole("Admin") || User.IsInRole("TenantAdmin"))
-                return true;
+            if (TenantPermissionService.IsSuperAdmin(User)) return true;
+            if (TenantPermissionService.IsTenantAdmin(User))
+                return await _tenantPermissions.HasMenuRouteAsync(
+                    User,
+                    ["/groups/companies", "/organization", "/groups/hierarchy"],
+                    action);
 
             var identityUserId = User.FindFirstValue(ClaimTypes.NameIdentifier);
             if (string.IsNullOrWhiteSpace(identityUserId)) return false;

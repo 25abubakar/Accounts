@@ -35,6 +35,20 @@ namespace Accounts.Services.Services
             return persons.Select(p => MapToDto(p, orgNodes));
         }
 
+        public async Task<IEnumerable<PersonDto>> GetFormerAsync(bool tenantWide, IReadOnlySet<int> visibleOrganizationIds)
+        {
+            var visibleIds = visibleOrganizationIds.ToArray();
+            var persons = await _db.Persons.AsNoTracking()
+                .Include(p => p.Addresses)
+                .Where(p => (p.EmploymentStatus == "Fired" || p.EmploymentStatus == "Retired") &&
+                    (tenantWide || (p.LastOrganizationId.HasValue && visibleIds.Contains(p.LastOrganizationId.Value))))
+                .OrderByDescending(p => p.TerminationDateUtc)
+                .ThenBy(p => p.FullName)
+                .ToListAsync();
+            var orgNodes = await _db.OrganizationTree.AsNoTracking().ToListAsync();
+            return persons.Select(p => MapToDto(p, orgNodes));
+        }
+
         public async Task<IEnumerable<PersonDto>> GetUnassignedAsync()
         {
             var persons  = await _db.Persons.Include(p => p.Addresses)
@@ -1150,11 +1164,13 @@ namespace Accounts.Services.Services
                 PersonalEmail = p.PersonalEmail ?? p.Contacts.FirstOrDefault(c => c.ContactType == "PersonalEmail")?.ContactValue,
                 ShiftStartTime = p.ShiftStartTime, ShiftEndTime = p.ShiftEndTime, TimeZoneId = p.TimeZoneId,
                 PhotoUrl = p.ProfilePhotoUrl,
-                IsHired = p.Staff != null, IsActive = p.IsActive, RegisteredAt = p.CreatedDate.ToString("o"),
-                BranchId = branch?.Id, BranchName = branch?.Name, CompanyName = company?.Name, CountryName = country?.Name,
-                VacancyCode = p.Staff?.Vacancy?.VacancyCode,
-                JobTitle = p.Staff?.Vacancy?.ResolvedJobTitle,
-                Department = p.Staff?.Vacancy?.Department ?? department?.Name,
+                IsHired = p.Staff != null, IsActive = p.IsActive, EmploymentStatus = p.EmploymentStatus,
+                TerminationDateUtc = p.TerminationDateUtc, TerminationReason = p.TerminationReason,
+                RegisteredAt = p.CreatedDate.ToString("o"), JoiningDate = p.LastJoiningDate,
+                BranchId = branch?.Id, BranchName = branch?.Name ?? p.LastBranchName, CompanyName = company?.Name ?? p.LastCompanyName, CountryName = country?.Name ?? p.LastCountryName,
+                VacancyCode = p.Staff?.Vacancy?.VacancyCode ?? p.LastVacancyCode,
+                JobTitle = p.Staff?.Vacancy?.ResolvedJobTitle ?? p.LastJobTitle,
+                Department = p.Staff?.Vacancy?.Department ?? department?.Name ?? p.LastDepartment,
                 CurrentAddress = curDto, PermanentAddress = permDto, SameAddress = same
             };
         }

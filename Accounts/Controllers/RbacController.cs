@@ -29,16 +29,27 @@ namespace Accounts.Controllers
         private string? CurrentUserId =>
             User.FindFirstValue(ClaimTypes.NameIdentifier);
 
-        private bool IsFullAccessUser =>
-            User.IsInRole("SuperAdmin") ||
-            User.IsInRole("Admin") ||
-            User.IsInRole("TenantAdmin") ||
-            string.Equals(User.FindFirstValue(ITenantService.ClaimIsSuperAdmin), "true", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(User.FindFirstValue(ITenantService.ClaimIsTenantAdmin), "true", StringComparison.OrdinalIgnoreCase);
-
         private bool IsSuperAdminUser =>
             User.IsInRole("SuperAdmin") ||
             string.Equals(User.FindFirstValue(ITenantService.ClaimIsSuperAdmin), "true", StringComparison.OrdinalIgnoreCase);
+
+        private bool IsTenantAdminUser =>
+            User.IsInRole("TenantAdmin") ||
+            string.Equals(User.FindFirstValue(ITenantService.ClaimIsTenantAdmin), "true", StringComparison.OrdinalIgnoreCase);
+
+        private async Task<int?> CurrentTenantIdAsync()
+        {
+            if (int.TryParse(User.FindFirstValue(ITenantService.ClaimTenantId), out var claimedTenantId))
+                return claimedTenantId;
+
+            var identityUserId = CurrentUserId;
+            if (string.IsNullOrWhiteSpace(identityUserId)) return null;
+            return await _db.Users.AsNoTracking()
+                .OfType<ApplicationUser>()
+                .Where(user => user.Id == identityUserId)
+                .Select(user => user.TenantId)
+                .FirstOrDefaultAsync();
+        }
 
         private async Task<Guid?> CurrentStaffIdAsync()
         {
@@ -54,10 +65,7 @@ namespace Accounts.Controllers
 
         private async Task<bool> HasAccessControlPermissionAsync(params string[] actions)
         {
-            if (IsFullAccessUser) return true;
-
-            var staffId = await CurrentStaffIdAsync();
-            if (!staffId.HasValue) return false;
+            if (IsSuperAdminUser) return true;
 
             var normalizedActions = actions
                 .Where(action => !string.IsNullOrWhiteSpace(action))
@@ -75,15 +83,45 @@ namespace Accounts.Controllers
                 .Select(menu => menu.Id)
                 .ToListAsync();
 
+            // Tenant Admin authority is the ceiling assigned by Super Admin.
+            // It is not an unconditional bypass and does not require a Staff row.
+            if (IsTenantAdminUser || User.IsInRole("Admin"))
+            {
+                var tenantId = await CurrentTenantIdAsync();
+                if (!tenantId.HasValue) return false;
+
+                var ceiling = await _db.TenantMenuPermissions.AsNoTracking()
+                    .Where(permission => permission.TenantId == tenantId.Value &&
+                        permission.IsAllow && accessMenuIds.Contains(permission.MenuId))
+                    .Select(permission => new
+                    {
+                        permission.CanView,
+                        permission.CanAdd,
+                        permission.CanEdit,
+                        permission.CanDelete
+                    })
+                    .ToListAsync();
+
+                return normalizedActions.Any(action => action switch
+                {
+                    "VIEW" => ceiling.Any(permission => permission.CanView),
+                    "ADD" => ceiling.Any(permission => permission.CanAdd),
+                    "EDIT" => ceiling.Any(permission => permission.CanEdit),
+                    "DELETE" => ceiling.Any(permission => permission.CanDelete),
+                    _ => false
+                });
+            }
+
+            var staffId = await CurrentStaffIdAsync();
+            if (!staffId.HasValue) return false;
+
+            var effectiveKeys = (await _rbac.GetEffectivePermissionsAsync(staffId.Value))
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
             foreach (var menuId in accessMenuIds)
             {
                 if (normalizedActions.Contains("VIEW", StringComparer.OrdinalIgnoreCase) &&
-                    await _rbac.HasAccessAsync(staffId.Value, $"MENU_{menuId}"))
-                    return true;
-
-                foreach (var action in normalizedActions)
-                    if (await _rbac.HasAccessAsync(staffId.Value, $"MENU_{menuId}_{action}"))
-                        return true;
+                    effectiveKeys.Contains($"MENU_{menuId}")) return true;
+                if (normalizedActions.Any(action => effectiveKeys.Contains($"MENU_{menuId}_{action}"))) return true;
             }
 
             return false;
@@ -101,6 +139,209 @@ namespace Accounts.Controllers
         ///
         /// GET /api/rbac/users
         /// </summary>
+        /// <summary>
+        /// Returns the menu catalogue the current administrator is allowed to
+        /// delegate. Tenant administrators receive only the menus granted to
+        /// their tenant, including the CRUD ceiling from TenantMenuPermissions.
+        /// </summary>
+        [HttpGet("delegable-menus")]
+        public async Task<IActionResult> GetDelegableMenus()
+        {
+            if (!await HasAccessControlPermissionAsync("VIEW"))
+                return Forbid();
+
+            if (IsSuperAdminUser)
+            {
+                var allMenus = await _db.Menus
+                    .AsNoTracking()
+                    .Where(menu => menu.IsActive)
+                    .OrderBy(menu => menu.SortOrder)
+                    .ThenBy(menu => menu.Title)
+                    .Select(menu => new
+                    {
+                        menu.Id,
+                        menu.Title,
+                        menu.Icon,
+                        menu.Route,
+                        menu.ParentId,
+                        menu.SortOrder,
+                        CanView = true,
+                        CanAdd = true,
+                        CanEdit = true,
+                        CanDelete = true
+                    })
+                    .ToListAsync();
+
+                return Ok(allMenus);
+            }
+
+            var identityUserId = CurrentUserId;
+            if (string.IsNullOrWhiteSpace(identityUserId))
+                return Unauthorized();
+
+            var tenantId = await _db.Users
+                .AsNoTracking()
+                .OfType<ApplicationUser>()
+                .Where(user => user.Id == identityUserId)
+                .Select(user => user.TenantId)
+                .FirstOrDefaultAsync();
+
+            if (!tenantId.HasValue)
+                return Forbid();
+
+            var menus = await (
+                from grant in _db.TenantMenuPermissions.AsNoTracking()
+                join menu in _db.Menus.AsNoTracking() on grant.MenuId equals menu.Id
+                where grant.TenantId == tenantId.Value && grant.IsAllow && menu.IsActive
+                orderby menu.SortOrder, menu.Title
+                select new
+                {
+                    menu.Id,
+                    menu.Title,
+                    menu.Icon,
+                    menu.Route,
+                    menu.ParentId,
+                    menu.SortOrder,
+                    grant.CanView,
+                    grant.CanAdd,
+                    grant.CanEdit,
+                    grant.CanDelete
+                })
+                .ToListAsync();
+
+            return Ok(menus);
+        }
+
+        /// <summary>
+        /// Returns the users that the current administrator can manage in the
+        /// access-control screen.
+        /// </summary>
+        /// <summary>
+        /// Returns the active tenant staff that can receive access grants. This
+        /// catalogue is intentionally owned by RBAC so access administration is
+        /// not coupled to the richer HR staff-directory query.
+        /// </summary>
+        [HttpGet("staff-catalog")]
+        public async Task<IActionResult> GetStaffCatalog()
+        {
+            if (!await HasAccessControlPermissionAsync("VIEW"))
+                return Forbid();
+
+            if (IsSuperAdminUser)
+                return BadRequest(new { message = "Super administrators delegate tenant access through tenant administrators." });
+
+            // Resolve the scope from the authenticated account instead of
+            // relying solely on the ambient tenant query filter. This keeps
+            // the access catalogue fail-closed while also supporting tenant
+            // admin accounts whose older authentication cookie does not yet
+            // contain the tenant_id claim.
+            var identityUserId = CurrentUserId;
+            if (string.IsNullOrWhiteSpace(identityUserId))
+                return Unauthorized();
+
+            var tenantId = await _db.Users
+                .AsNoTracking()
+                .OfType<ApplicationUser>()
+                .Where(user => user.Id == identityUserId)
+                .Select(user => user.TenantId)
+                .FirstOrDefaultAsync();
+
+            if (!tenantId.HasValue)
+                return Forbid();
+
+            var staff = await _db.StaffVacancies
+                // RBAC applies its own mandatory tenant predicate below. This
+                // avoids an empty catalogue when a legacy session lacks the
+                // newer tenant claim, without allowing cross-tenant rows.
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .Where(row =>
+                    row.TenantId == tenantId.Value &&
+                    row.PersonId.HasValue &&
+                    row.Person != null &&
+                    row.Person.TenantId == tenantId.Value &&
+                    row.Person.IsActive &&
+                    row.Vacancy != null &&
+                    row.Vacancy.TenantId == tenantId.Value)
+                .Select(row => new
+                {
+                    row.StaffId,
+                    row.PersonId,
+                    FullName = row.Person!.FullName,
+                    Email = row.Person.Email,
+                    Phone = row.Person.Phone,
+                    PhotoUrl = row.Person.ProfilePhotoUrl,
+                    row.LoginId,
+                    row.VacancyId,
+                    VacancyCode = row.Vacancy != null ? row.Vacancy.VacancyCode : null,
+                    JobTitleId = row.Vacancy != null ? row.Vacancy.JobTitleId : null,
+                    // Use the stable vacancy value in this small catalogue.
+                    // The richer HR endpoint can hydrate normalized
+                    // designation navigation; RBAC must remain independent of
+                    // that optional join so one malformed title cannot hide
+                    // every staff member from access administration.
+                    JobTitle = row.Vacancy != null ? row.Vacancy.JobTitle : null,
+                    Department = row.Vacancy != null ? row.Vacancy.Department : null,
+                    OrganizationId = row.Vacancy != null ? (int?)row.Vacancy.OrganizationId : null
+                })
+                .OrderBy(row => row.FullName)
+                .ToListAsync();
+
+            var jobTitleIds = staff
+                .Where(row => row.JobTitleId.HasValue)
+                .Select(row => row.JobTitleId!.Value)
+                .Distinct()
+                .ToArray();
+            var jobTitleMap = await _db.JobTitles
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .Where(title => title.TenantId == tenantId.Value && jobTitleIds.Contains(title.Id))
+                .ToDictionaryAsync(title => title.Id, title => title.TitleName);
+
+            var organizationNodes = await _db.OrganizationTree
+                .AsNoTracking()
+                .Select(node => new { node.Id, node.ParentId, node.Name, node.Label })
+                .ToListAsync();
+            var organizationMap = organizationNodes.ToDictionary(node => node.Id);
+
+            string? FindOrganizationName(int? startId, params string[] labels)
+            {
+                if (!startId.HasValue) return null;
+                var acceptedLabels = labels.ToHashSet(StringComparer.OrdinalIgnoreCase);
+                var currentId = startId;
+                var guard = 0;
+                while (currentId.HasValue && organizationMap.TryGetValue(currentId.Value, out var node) && guard++ < 100)
+                {
+                    if (acceptedLabels.Contains(node.Label)) return node.Name;
+                    currentId = node.ParentId;
+                }
+                return null;
+            }
+
+            return Ok(staff.Select(row => new
+            {
+                staffId = row.StaffId,
+                personId = row.PersonId,
+                fullName = row.FullName,
+                email = row.Email ?? string.Empty,
+                phone = row.Phone ?? string.Empty,
+                photoUrl = row.PhotoUrl,
+                isActive = true,
+                loginId = row.LoginId,
+                vacancyId = row.VacancyId,
+                vacancyCode = row.VacancyCode ?? string.Empty,
+                jobTitle = row.JobTitleId.HasValue && jobTitleMap.TryGetValue(row.JobTitleId.Value, out var normalizedTitle)
+                    ? normalizedTitle
+                    : row.JobTitle ?? string.Empty,
+                department = row.Department ?? FindOrganizationName(row.OrganizationId, "Department"),
+                branchName = FindOrganizationName(row.OrganizationId, "Branch", "Office"),
+                companyName = FindOrganizationName(row.OrganizationId, "Company"),
+                countryName = FindOrganizationName(row.OrganizationId, "Country"),
+                groupName = FindOrganizationName(row.OrganizationId, "Group"),
+                joiningDate = (DateTime?)null
+            }));
+        }
+
         [HttpGet("users")]
         public async Task<IActionResult> GetAllUsers()
         {
@@ -225,6 +466,9 @@ namespace Accounts.Controllers
             if (!await HasAccessControlPermissionAsync("VIEW"))
                 return Forbid();
 
+            var effectiveKeys = (await _rbac.GetEffectivePermissionsAsync(staffId))
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
             var allFeatures = await _db.Features.AsNoTracking()
                 .OrderBy(f => f.Module).ThenBy(f => f.FeatureKey)
                 .ToListAsync();
@@ -270,8 +514,8 @@ namespace Accounts.Controllers
                     featureKey  = f.FeatureKey,
                     featureName = f.FeatureName,
                     module      = f.Module,
-                    status,
-                    hasOverride = status != "INHERIT"
+                    status = effectiveKeys.Contains(f.FeatureKey) ? "ALLOW" : "INHERIT",
+                    hasOverride = effectiveKeys.Contains(f.FeatureKey)
                 };
             });
 
@@ -362,6 +606,9 @@ namespace Accounts.Controllers
         [HttpGet("staff/{staffId:guid}/effective-permissions")]
         public async Task<IActionResult> GetEffectivePermissions(Guid staffId)
         {
+            var centrallyResolvedKeys = (await _rbac.GetEffectivePermissionsAsync(staffId))
+                .Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+            var centrallyResolvedSet = centrallyResolvedKeys.ToHashSet(StringComparer.OrdinalIgnoreCase);
             // Load all menu grants with their feature-level flags
             var menuGrants = await _db.StaffMenuAccesses
                 .AsNoTracking()
@@ -403,8 +650,7 @@ namespace Accounts.Controllers
                     .Where(f => allowedPermIds.Contains(f.PermissionId))
                     .Select(f => f.FeatureKey)
                     .ToListAsync();
-            allowedFeatureKeys.AddRange(grantedMenuIds.Select(id => $"MENU_{id}"));
-            allowedFeatureKeys = allowedFeatureKeys.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+            allowedFeatureKeys = centrallyResolvedKeys;
 
             // Build detailed view for admin display
             var allFeatures = await _db.Features.AsNoTracking()
@@ -419,7 +665,7 @@ namespace Accounts.Controllers
 
             var detailed = allFeatures.Select(f =>
             {
-                bool hasAccess = allowedPermIds.Contains(f.PermissionId);
+                bool hasAccess = centrallyResolvedSet.Contains(f.FeatureKey);
                 string source  = denySet.Contains(f.PermissionId)    ? "MenuFeatureDeny"
                                : (hasAccess && menuGrants.Count > 0) ? "MenuGrant"
                                : hasAccess                            ? "RoleDefault"
@@ -575,11 +821,17 @@ namespace Accounts.Controllers
             if (string.IsNullOrWhiteSpace(identityUserId))
                 return Unauthorized(new { message = "Not authenticated." });
 
-            // SuperAdmin / Admin sees everything
-            if (IsFullAccessUser)
+            if (IsSuperAdminUser)
             {
                 var allMenus = await _rbac.GetFilteredSidebarAsync(Guid.Empty);
                 return Ok(allMenus);
+            }
+
+            if (IsTenantAdminUser || User.IsInRole("Admin"))
+            {
+                var tenantId = await CurrentTenantIdAsync();
+                if (!tenantId.HasValue) return Ok(new List<object>());
+                return Ok(await _rbac.GetTenantSidebarAsync(tenantId.Value));
             }
 
             var person = await _db.Persons

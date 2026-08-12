@@ -1,6 +1,7 @@
 using Accounts.Data;
 using Accounts.Models;
 using Accounts.Services.Interfaces;
+using Accounts.Services.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -14,7 +15,13 @@ public sealed class StatusConfigurationsController : ControllerBase
 {
     private readonly ApplicationDbContext _db;
     private readonly ITenantService _tenant;
-    public StatusConfigurationsController(ApplicationDbContext db, ITenantService tenant) { _db = db; _tenant = tenant; }
+    private readonly TenantPermissionService _tenantPermissions;
+    public StatusConfigurationsController(ApplicationDbContext db, ITenantService tenant, TenantPermissionService tenantPermissions)
+    {
+        _db = db;
+        _tenant = tenant;
+        _tenantPermissions = tenantPermissions;
+    }
 
     [HttpGet]
     public async Task<IActionResult> GetAll(CancellationToken ct)
@@ -140,7 +147,9 @@ public sealed class StatusConfigurationsController : ControllerBase
 
     private async Task<bool> CanManageAsync(string operation, CancellationToken ct)
     {
-        if (_tenant.IsSuperAdmin || _tenant.IsTenantAdmin) return true;
+        if (_tenant.IsSuperAdmin) return true;
+        if (_tenant.IsTenantAdmin)
+            return await _tenantPermissions.HasMenuRouteAsync(User, ["/settings/statuses"], operation, ct);
         if (!_tenant.TenantId.HasValue) return false;
         var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
         if (string.IsNullOrWhiteSpace(userId)) return false;

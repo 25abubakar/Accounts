@@ -186,9 +186,7 @@ namespace Accounts.Controllers
             if (string.IsNullOrWhiteSpace(identityUserId))
                 return Unauthorized(new { success = false, message = "Not authenticated." });
 
-            var isTenantAdmin = User.IsInRole("TenantAdmin") ||
-                string.Equals(User.FindFirstValue(ITenantService.ClaimIsTenantAdmin), "true", StringComparison.OrdinalIgnoreCase);
-            var isFullAccess = User.IsInRole("SuperAdmin") || User.IsInRole("Admin") || isTenantAdmin;
+            var isFullAccess = TenantPermissionService.IsSuperAdmin(User);
             var session = await _session.GetSessionAsync(
                 identityUserId,
                 isFullAccess,
@@ -246,8 +244,7 @@ namespace Accounts.Controllers
                 return Unauthorized(new { status = false, message = "Invalid token" });
 
             // ── SuperAdmin / Admin gets everything without any permission checks ──
-            bool isFullAccess = User.IsInRole("SuperAdmin") || User.IsInRole("Admin") || User.IsInRole("TenantAdmin") ||
-                string.Equals(User.FindFirstValue(ITenantService.ClaimIsTenantAdmin), "true", StringComparison.OrdinalIgnoreCase);
+            bool isFullAccess = TenantPermissionService.IsSuperAdmin(User);
             _ = int.TryParse(User.FindFirstValue(ITenantService.ClaimTenantId), out var claimedTenantId);
             var appUser = new
             {
@@ -324,8 +321,6 @@ namespace Accounts.Controllers
             // They must still see the menus granted to their tenant.
             if (appUser?.IsTenantAdmin == true && appUser.TenantId.HasValue)
             {
-                // A tenant administrator can also be an employee. In that case,
-                // Staff Attendance is always available as a self-service screen.
                 var taPersonId = (Guid?)null;
                 var taStaffId = (Guid?)null;
                 var taPerson = await _db.Persons.AsNoTracking()
@@ -354,7 +349,10 @@ namespace Accounts.Controllers
                         tmp.CanDelete
                     })
                     .ToListAsync(ct);
-                var tenantGrantedMenuIds = tenantGrants.Select(g => g.MenuId).ToHashSet();
+                var tenantGrantedMenuIds = tenantGrants
+                    .Where(grant => grant.CanView)
+                    .Select(grant => grant.MenuId)
+                    .ToHashSet();
 
                 var allMenus = await _db.Menus.AsNoTracking()
                     .Where(m => m.IsActive)
@@ -363,12 +361,6 @@ namespace Accounts.Controllers
 
                 var byId       = allMenus.ToDictionary(m => m.Id);
                 var visibleIds = new HashSet<int>(tenantGrantedMenuIds);
-                var staffAttendanceMenuId = taStaffId.HasValue
-                    ? allMenus.FirstOrDefault(m => m.Route == "/attendance/staff")?.Id
-                    : null;
-                if (staffAttendanceMenuId.HasValue)
-                    visibleIds.Add(staffAttendanceMenuId.Value);
-
                 // Bubble up ancestors so tree structure is preserved
                 foreach (var menuId in visibleIds.ToList())
                 {
@@ -390,18 +382,15 @@ namespace Accounts.Controllers
                 var autoKeys = new HashSet<string>();
                 foreach (var grant in tenantGrants)
                 {
-                    autoKeys.Add($"MENU_{grant.MenuId}");
-                    if (grant.CanView) autoKeys.Add($"MENU_{grant.MenuId}_VIEW");
+                    if (grant.CanView)
+                    {
+                        autoKeys.Add($"MENU_{grant.MenuId}");
+                        autoKeys.Add($"MENU_{grant.MenuId}_VIEW");
+                    }
                     if (grant.CanAdd) autoKeys.Add($"MENU_{grant.MenuId}_ADD");
                     if (grant.CanEdit) autoKeys.Add($"MENU_{grant.MenuId}_EDIT");
                     if (grant.CanDelete) autoKeys.Add($"MENU_{grant.MenuId}_DELETE");
                 }
-                if (staffAttendanceMenuId.HasValue)
-                {
-                    autoKeys.Add($"MENU_{staffAttendanceMenuId.Value}");
-                    autoKeys.Add($"MENU_{staffAttendanceMenuId.Value}_VIEW");
-                }
-
                 // Also pull any explicitly defined Feature rows linked to these menus
                 // — fetch all Features first, then filter in memory
                 var allGrantedKeys = autoKeys.ToList();

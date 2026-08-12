@@ -61,6 +61,21 @@ namespace Accounts.Models
         /// <summary>Employment/account status controlled by tenant administrators.</summary>
         public bool IsActive { get; set; } = true;
 
+        [MaxLength(30)]
+        public string EmploymentStatus { get; set; } = "Registered";
+        public DateTime? TerminationDateUtc { get; set; }
+        [MaxLength(500)] public string? TerminationReason { get; set; }
+        [MaxLength(50)] public string? LastLoginId { get; set; }
+        [MaxLength(50)] public string? LastVacancyCode { get; set; }
+        [MaxLength(100)] public string? LastJobTitle { get; set; }
+        [MaxLength(100)] public string? LastDepartment { get; set; }
+        [MaxLength(150)] public string? LastBranchName { get; set; }
+        [MaxLength(150)] public string? LastCompanyName { get; set; }
+        [MaxLength(150)] public string? LastCountryName { get; set; }
+        public DateTime? LastJoiningDate { get; set; }
+        /// <summary>Last assigned organization node, retained for historical branch/department scoping.</summary>
+        public int? LastOrganizationId { get; set; }
+
         /// <summary>Configurable reporting manager within the same tenant.</summary>
         public Guid? ReportsToPersonId { get; set; }
 

@@ -26,10 +26,10 @@ namespace Accounts.Models
         /// <summary>True = granted; False = explicitly denied.</summary>
         public bool IsAllow { get; set; } = true;
 
-        public bool CanView { get; set; } = true;
-        public bool CanAdd { get; set; } = true;
-        public bool CanEdit { get; set; } = true;
-        public bool CanDelete { get; set; } = true;
+    public bool CanView { get; set; } = true;
+    public bool CanAdd { get; set; }
+    public bool CanEdit { get; set; }
+    public bool CanDelete { get; set; }
 
         public DateTime GrantedOnUtc { get; set; } = DateTime.UtcNow;
 

@@ -23,12 +23,14 @@ namespace Accounts.Controllers
         private readonly IVacancyService              _service;
         private readonly ApplicationDbContext         _db;
         private readonly RbacService                  _rbac;
+        private readonly TenantPermissionService      _tenantPermissions;
 
-        public VacanciesController(IVacancyService service, ApplicationDbContext db, RbacService rbac)
+        public VacanciesController(IVacancyService service, ApplicationDbContext db, RbacService rbac, TenantPermissionService tenantPermissions)
         {
             _service     = service;
             _db          = db;
             _rbac        = rbac;
+            _tenantPermissions = tenantPermissions;
         }
 
         private Task<bool> CallerIsSuperAdminAsync() => Task.FromResult(
@@ -39,14 +41,11 @@ namespace Accounts.Controllers
             User.IsInRole("TenantAdmin") ||
             string.Equals(User.FindFirstValue(ITenantService.ClaimIsTenantAdmin), "true", StringComparison.OrdinalIgnoreCase));
 
-        private bool CallerHasFullTenantAccess() =>
-            User.IsInRole("Admin") ||
-            User.IsInRole("TenantAdmin") ||
-            string.Equals(User.FindFirstValue(ITenantService.ClaimIsTenantAdmin), "true", StringComparison.OrdinalIgnoreCase);
-
         private async Task<bool> HasVacancyActionAsync(string action, params string[] semanticKeys)
         {
-            if (CallerHasFullTenantAccess()) return true;
+            if (TenantPermissionService.IsSuperAdmin(User)) return true;
+            if (TenantPermissionService.IsTenantAdmin(User))
+                return await _tenantPermissions.HasMenuRouteAsync(User, ["/hr/vacancies", "/positions"], action);
 
             var identityUserId = User.FindFirstValue(ClaimTypes.NameIdentifier);
             if (string.IsNullOrWhiteSpace(identityUserId)) return false;

@@ -36,7 +36,8 @@ namespace Accounts.Authorization
         {
             var db   = serviceProvider.GetRequiredService<ApplicationDbContext>();
             var rbac = serviceProvider.GetRequiredService<RbacService>();
-            return new PermissionFilter(_featureKey, db, rbac);
+            var tenantPermissions = serviceProvider.GetRequiredService<TenantPermissionService>();
+            return new PermissionFilter(_featureKey, db, rbac, tenantPermissions);
         }
     }
 
@@ -48,15 +49,18 @@ namespace Accounts.Authorization
         private readonly string               _featureKey;
         private readonly ApplicationDbContext _db;
         private readonly RbacService          _rbac;
+        private readonly TenantPermissionService _tenantPermissions;
 
         public PermissionFilter(
             string featureKey,
             ApplicationDbContext db,
-            RbacService rbac)
+            RbacService rbac,
+            TenantPermissionService tenantPermissions)
         {
             _featureKey = featureKey;
             _db         = db;
             _rbac       = rbac;
+            _tenantPermissions = tenantPermissions;
         }
 
         public async Task OnAuthorizationAsync(AuthorizationFilterContext context)
@@ -75,11 +79,27 @@ namespace Accounts.Authorization
                 return;
             }
 
-            // ── 2. SuperAdmin / Admin / TenantAdmin bypasses all permission checks ──
-            // TenantAdmin access is controlled by TenantMenuPermissions, not RBAC
-            if (user.IsInRole("SuperAdmin") || user.IsInRole("Admin") || user.IsInRole("TenantAdmin") ||
-                string.Equals(user.FindFirstValue(ITenantService.ClaimIsTenantAdmin), "true", StringComparison.OrdinalIgnoreCase))
+            // SuperAdmin bypasses all permission checks.
+            // TenantAdmin is capped by TenantMenuPermissions (never a full bypass).
+            if (TenantPermissionService.IsSuperAdmin(user))
                 return;
+
+            if (TenantPermissionService.IsTenantAdmin(user))
+            {
+                if (await _tenantPermissions.HasFeatureAsync(
+                    user,
+                    _featureKey,
+                    context.HttpContext.Request.Method,
+                    context.HttpContext.RequestAborted))
+                    return;
+
+                context.Result = new ObjectResult(new
+                {
+                    message = $"Tenant access does not include permission '{_featureKey}'.",
+                    code = "TENANT_PERMISSION_DENIED"
+                }) { StatusCode = StatusCodes.Status403Forbidden };
+                return;
+            }
 
             // ── 3. Get IdentityUser.Id from claims ────────────────────────────
             var identityUserId = user.FindFirstValue(ClaimTypes.NameIdentifier);

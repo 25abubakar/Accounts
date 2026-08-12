@@ -19,12 +19,14 @@ public sealed class SalaryScalesController : ControllerBase
     private readonly ApplicationDbContext _db;
     private readonly ITenantService _tenantService;
     private readonly RbacService _rbac;
+    private readonly TenantPermissionService _tenantPermissions;
 
-    public SalaryScalesController(ApplicationDbContext db, ITenantService tenantService, RbacService rbac)
+    public SalaryScalesController(ApplicationDbContext db, ITenantService tenantService, RbacService rbac, TenantPermissionService tenantPermissions)
     {
         _db = db;
         _tenantService = tenantService;
         _rbac = rbac;
+        _tenantPermissions = tenantPermissions;
     }
 
     [HttpGet]
@@ -128,8 +130,9 @@ public sealed class SalaryScalesController : ControllerBase
 
     private async Task<bool> HasScaleActionAsync(string action, CancellationToken ct)
     {
-        if (_tenantService.IsTenantAdmin || User.IsInRole("Admin") || User.IsInRole("TenantAdmin"))
-            return true;
+        if (TenantPermissionService.IsSuperAdmin(User)) return true;
+        if (TenantPermissionService.IsTenantAdmin(User))
+            return await _tenantPermissions.HasMenuRouteAsync(User, [RoutePath], action, ct);
         if (!_tenantService.TenantId.HasValue) return false;
 
         var identityUserId = User.FindFirstValue(ClaimTypes.NameIdentifier);

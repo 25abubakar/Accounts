@@ -149,8 +149,13 @@ builder.Services.AddScoped<IMenuService, MenuService>();
 builder.Services.AddScoped<IAccessService, AccessService>();
 builder.Services.AddScoped<IPermissionFilterService, PermissionFilterService>();
 builder.Services.AddScoped<RbacService>();
+builder.Services.AddScoped<TenantPermissionService>();
 builder.Services.AddScoped<OptimizedMenuService>();
 builder.Services.AddHostedService<ProcessReportAutoTransferService>();
+builder.Services.AddSingleton<AssessmentSchedulerService>();
+builder.Services.AddHostedService(serviceProvider =>
+    serviceProvider.GetRequiredService<AssessmentSchedulerService>());
+builder.Services.AddScoped<IOrganizationDataScopeService, OrganizationDataScopeService>();
 
 // ── Communication Center ──────────────────────────────────────────────────────
 builder.Services.AddScoped<IAppNoteService, AppNoteService>();

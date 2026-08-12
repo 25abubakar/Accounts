@@ -181,7 +181,11 @@ namespace Accounts.DTOs
         public string?   PhotoUrl      { get; set; }
         public bool      IsHired       { get; set; }
         public bool      IsActive      { get; set; }
+        public string    EmploymentStatus { get; set; } = "Registered";
+        public DateTime? TerminationDateUtc { get; set; }
+        public string?   TerminationReason { get; set; }
         public string    RegisteredAt  { get; set; } = string.Empty;
+        public DateTime? JoiningDate   { get; set; }
         public int?      BranchId      { get; set; }
         public string?   BranchName    { get; set; }
         public string?   CompanyName   { get; set; }

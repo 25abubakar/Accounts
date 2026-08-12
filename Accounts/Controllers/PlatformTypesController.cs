@@ -22,12 +22,14 @@ public sealed partial class PlatformTypesController : ControllerBase
     private readonly ApplicationDbContext _db;
     private readonly ITenantService _tenant;
     private readonly RbacService _rbac;
+    private readonly TenantPermissionService _tenantPermissions;
 
-    public PlatformTypesController(ApplicationDbContext db, ITenantService tenant, RbacService rbac)
+    public PlatformTypesController(ApplicationDbContext db, ITenantService tenant, RbacService rbac, TenantPermissionService tenantPermissions)
     {
         _db = db;
         _tenant = tenant;
         _rbac = rbac;
+        _tenantPermissions = tenantPermissions;
     }
 
     [HttpGet]
@@ -142,7 +144,9 @@ public sealed partial class PlatformTypesController : ControllerBase
 
     private async Task<bool> HasActionAsync(string action, CancellationToken ct)
     {
-        if (_tenant.IsTenantAdmin || User.IsInRole("Admin") || User.IsInRole("TenantAdmin")) return true;
+        if (TenantPermissionService.IsSuperAdmin(User)) return true;
+        if (TenantPermissionService.IsTenantAdmin(User))
+            return await _tenantPermissions.HasMenuRouteAsync(User, [RoutePath, LegacyRoutePath], action, ct);
         var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
         if (string.IsNullOrWhiteSpace(userId)) return false;
         var staffId = await _db.Persons.AsNoTracking().Where(x => x.IdentityUserId == userId && x.Staff != null)

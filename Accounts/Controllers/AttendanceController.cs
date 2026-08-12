@@ -20,13 +20,23 @@ public sealed class AttendanceController : ControllerBase
     private readonly ApplicationDbContext _db;
     private readonly ITenantService _tenant;
     private readonly RbacService _rbac;
+    private readonly TenantPermissionService _tenantPermissions;
+    private readonly IOrganizationDataScopeService _dataScope;
 
-    public AttendanceController(IAttendanceService service, ApplicationDbContext db, ITenantService tenant, RbacService rbac)
+    public AttendanceController(
+        IAttendanceService service,
+        ApplicationDbContext db,
+        ITenantService tenant,
+        RbacService rbac,
+        TenantPermissionService tenantPermissions,
+        IOrganizationDataScopeService dataScope)
     {
         _service = service;
         _db = db;
         _tenant = tenant;
         _rbac = rbac;
+        _tenantPermissions = tenantPermissions;
+        _dataScope = dataScope;
     }
 
     [HttpGet("me/today")]
@@ -50,6 +60,9 @@ public sealed class AttendanceController : ControllerBase
     public async Task<IActionResult> MapAttendanceRules(CancellationToken ct)
     {
         if (!_tenant.TenantId.HasValue) return Ok(Array.Empty<AttendanceMapRuleDto>());
+        if (!await HasAttendanceMenuActionAsync(
+                "VIEW", ct, "/attendance/rules/map-attendance", "/attendance/map-attendance"))
+            return Forbid();
 
         var rules = await _db.AttendanceMapRuleReadRows.AsNoTracking()
             .Where(rule => rule.TenantId == _tenant.RequiredTenantId)
@@ -140,6 +153,8 @@ public sealed class AttendanceController : ControllerBase
     public async Task<IActionResult> MapColors(CancellationToken ct)
     {
         if (!_tenant.TenantId.HasValue) return Ok(Array.Empty<AttendanceHolidayColorMapDto>());
+        if (!await HasAttendanceMenuActionAsync("VIEW", ct, "/attendance/rules/map-color"))
+            return Forbid();
 
         await EnsureDefaultHolidayColorMapsAsync(ct);
 
@@ -236,31 +251,48 @@ public sealed class AttendanceController : ControllerBase
     [HttpGet("report/staff")]
     public async Task<IActionResult> ReportStaff([FromQuery] int year, [FromQuery] int month, CancellationToken ct)
     {
-        if (!CanViewOthers()) return Forbid();
+        if (!await HasAttendanceMenuActionAsync("VIEW", ct, "/attendance/timing-chart"))
+            return Forbid();
+        if (!await CanViewOthersAsync(ct)) return Forbid();
         if (year is < 2000 or > 2100 || month is < 1 or > 12) return BadRequest(new { message = "A valid report month is required." });
         return Ok(await _service.GetReportStaffAsync(year, month, ct));
     }
 
     [HttpGet("report/timing-chart/staff")]
-    public Task<IActionResult> TimingChartStaff(CancellationToken ct) =>
-        Execute(() => _service.GetTimingChartStaffAsync(UserId(), CanViewOrganization(), ct));
+    public async Task<IActionResult> TimingChartStaff(CancellationToken ct)
+    {
+        if (!await HasAttendanceMenuActionAsync("VIEW", ct, "/attendance/timing-chart"))
+            return Forbid();
+        var orgWide = await CanViewOrganizationAsync(ct);
+        return await Execute(() => _service.GetTimingChartStaffAsync(UserId(), orgWide, ct));
+    }
 
     [HttpGet("report/timing-chart/staff/{staffId:guid}/schedules")]
-    public Task<IActionResult> TimingChartSchedules(
+    public async Task<IActionResult> TimingChartSchedules(
         Guid staffId,
         [FromQuery] int year,
         [FromQuery] int month,
-        CancellationToken ct) =>
-        Execute(() => _service.GetTimingChartSchedulesAsync(
-            UserId(), CanViewOrganization(), staffId, year, month, ct));
+        CancellationToken ct)
+    {
+        if (!await HasAttendanceMenuActionAsync("VIEW", ct, "/attendance/timing-chart"))
+            return Forbid();
+        var orgWide = await CanViewOrganizationAsync(ct);
+        return await Execute(() => _service.GetTimingChartSchedulesAsync(
+            UserId(), orgWide, staffId, year, month, ct));
+    }
 
     [HttpGet("report/timing-chart/staff-schedule")]
-    public Task<IActionResult> TimingChartStaffSchedule(
+    public async Task<IActionResult> TimingChartStaffSchedule(
         [FromQuery] int year,
         [FromQuery] int month,
-        CancellationToken ct) =>
-        Execute(() => _service.GetTimingChartStaffScheduleAsync(
-            UserId(), CanViewOrganization(), year, month, ct));
+        CancellationToken ct)
+    {
+        if (!await HasAttendanceMenuActionAsync("VIEW", ct, "/attendance/timing-chart"))
+            return Forbid();
+        var orgWide = await CanViewOrganizationAsync(ct);
+        return await Execute(() => _service.GetTimingChartStaffScheduleAsync(
+            UserId(), orgWide, year, month, ct));
+    }
 
     [HttpPut("report/timing-chart/staff/{staffId:guid}/schedules/{holidayDate}")]
     public async Task<IActionResult> SaveTimingChartSchedule(
@@ -272,8 +304,9 @@ public sealed class AttendanceController : ControllerBase
         if (!await HasAttendanceMenuActionAsync("EDIT", ct, "/attendance/timing-chart"))
             return Forbid();
 
+        var orgWide = await CanViewOrganizationAsync(ct);
         return await Execute(() => _service.SaveTimingChartScheduleAsync(
-            UserId(), CanViewOrganization(), staffId, holidayDate, dto, ct));
+            UserId(), orgWide, staffId, holidayDate, dto, ct));
     }
 
     [HttpPost("report/timing-chart/staff/{staffId:guid}/schedules/range")]
@@ -285,21 +318,43 @@ public sealed class AttendanceController : ControllerBase
         if (!await HasAttendanceMenuActionAsync("EDIT", ct, "/attendance/timing-chart"))
             return Forbid();
 
+        var orgWide = await CanViewOrganizationAsync(ct);
         return await Execute(() => _service.SaveTimingChartScheduleRangeAsync(
-            UserId(), CanViewOrganization(), staffId, dto, ct));
+            UserId(), orgWide, staffId, dto, ct));
     }
 
     [HttpGet("report/monthly")]
-    public Task<IActionResult> MonthlyReport([FromQuery] int year, [FromQuery] int month, [FromQuery] Guid? personId, CancellationToken ct) =>
-        Execute(() => _service.GetMonthlyReportAsync(UserId(), CanViewOthers(), personId, year, month, ct));
+    public async Task<IActionResult> MonthlyReport(
+        [FromQuery] int year,
+        [FromQuery] int month,
+        [FromQuery] Guid? personId,
+        CancellationToken ct)
+    {
+        if (!await HasAttendanceMenuActionAsync(
+                "VIEW", ct, "/attendance/monthly-chart", "/attendance/staff", "/attendance/daily-report"))
+            return Forbid();
+        var canViewOthers = await CanViewOthersAsync(ct);
+        if (personId.HasValue && canViewOthers)
+        {
+            var scope = await _dataScope.ResolveAsync(UserId(), ct);
+            if (!scope.PersonIds.Contains(personId.Value)) return Forbid();
+        }
+        return await Execute(() => _service.GetMonthlyReportAsync(UserId(), canViewOthers, personId, year, month, ct));
+    }
 
     [HttpGet("report/daily")]
-    public Task<IActionResult> DailyReport(
+    public async Task<IActionResult> DailyReport(
         [FromQuery] DateOnly dateFrom,
         [FromQuery] DateOnly dateTo,
         [FromQuery] bool includeAllTypes,
-        CancellationToken ct) =>
-        Execute(() => _service.GetDailyReportAsync(UserId(), CanViewOrganization(), dateFrom, dateTo, includeAllTypes, ct));
+        CancellationToken ct)
+    {
+        if (!await HasAttendanceMenuActionAsync(
+                "VIEW", ct, "/attendance/daily-report", "/attendance/types/check-in", "/attendance/types/camera"))
+            return Forbid();
+        var orgWide = await CanViewOrganizationAsync(ct);
+        return await Execute(() => _service.GetDailyReportAsync(UserId(), orgWide, dateFrom, dateTo, includeAllTypes, ct));
+    }
 
     [HttpGet("report/comparative")]
     public async Task<IActionResult> ComparativeAttendanceReport(
@@ -310,21 +365,37 @@ public sealed class AttendanceController : ControllerBase
         if (!await HasAttendanceMenuActionAsync("VIEW", ct, "/attendance/types/comparative"))
             return Forbid();
 
+        var orgWide = await CanViewOrganizationAsync(ct);
         return await Execute(() =>
-            _service.GetDailyReportAsync(UserId(), CanViewOrganization(), dateFrom, dateTo, true, ct));
+            _service.GetDailyReportAsync(UserId(), orgWide, dateFrom, dateTo, true, ct));
     }
 
     [HttpGet("report/remote")]
-    public Task<IActionResult> RemoteAttendanceReport([FromQuery] DateOnly dateFrom, [FromQuery] DateOnly dateTo, CancellationToken ct) =>
-        Execute(() => _service.GetRemoteAttendanceReportAsync(UserId(), CanViewOrganization(), dateFrom, dateTo, ct));
+    public async Task<IActionResult> RemoteAttendanceReport([FromQuery] DateOnly dateFrom, [FromQuery] DateOnly dateTo, CancellationToken ct)
+    {
+        if (!await HasAttendanceMenuActionAsync("VIEW", ct, "/attendance/types/remote"))
+            return Forbid();
+        var orgWide = await CanViewOrganizationAsync(ct);
+        return await Execute(() => _service.GetRemoteAttendanceReportAsync(UserId(), orgWide, dateFrom, dateTo, ct));
+    }
 
     [HttpGet("report/login")]
-    public Task<IActionResult> LoginAttendanceReport([FromQuery] DateOnly dateFrom, [FromQuery] DateOnly dateTo, CancellationToken ct) =>
-        Execute(() => _service.GetLoginAttendanceReportAsync(UserId(), CanViewOrganization(), dateFrom, dateTo, ct));
+    public async Task<IActionResult> LoginAttendanceReport([FromQuery] DateOnly dateFrom, [FromQuery] DateOnly dateTo, CancellationToken ct)
+    {
+        if (!await HasAttendanceMenuActionAsync("VIEW", ct, "/attendance/types/login"))
+            return Forbid();
+        var orgWide = await CanViewOrganizationAsync(ct);
+        return await Execute(() => _service.GetLoginAttendanceReportAsync(UserId(), orgWide, dateFrom, dateTo, ct));
+    }
 
     [HttpGet("report/deduction")]
-    public Task<IActionResult> DeductionReport([FromQuery] int year, [FromQuery] int month, CancellationToken ct) =>
-        Execute(() => _service.GetDeductionReportAsync(UserId(), CanViewOrganization(), year, month, ct));
+    public async Task<IActionResult> DeductionReport([FromQuery] int year, [FromQuery] int month, CancellationToken ct)
+    {
+        if (!await HasAttendanceMenuActionAsync("VIEW", ct, "/attendance/deduction"))
+            return Forbid();
+        var orgWide = await CanViewOrganizationAsync(ct);
+        return await Execute(() => _service.GetDeductionReportAsync(UserId(), orgWide, year, month, ct));
+    }
 
     [HttpPost("deductions/requests")]
     public async Task<IActionResult> CreateDeductionRequest([FromBody] SaveAttendanceDeductionRequestDto dto, CancellationToken ct)
@@ -388,6 +459,8 @@ public sealed class AttendanceController : ControllerBase
             .Include(p => p.Staff)
             .SingleOrDefaultAsync(p => p.PersonId == dto.PersonId && p.TenantId == _tenant.RequiredTenantId, ct);
         if (person?.Staff == null) return NotFound(new { message = "Staff member was not found in the current organization." });
+        var scope = await _dataScope.ResolveAsync(UserId(), ct);
+        if (!scope.PersonIds.Contains(person.PersonId)) return Forbid();
 
         DateTime? checkInUtc = null;
         DateTime? checkOutUtc = null;
@@ -548,20 +621,63 @@ public sealed class AttendanceController : ControllerBase
     }
 
     [HttpGet("report/staff-attendance")]
-    public Task<IActionResult> StaffAttendanceReport([FromQuery] DateOnly dateFrom, [FromQuery] DateOnly dateTo, CancellationToken ct) =>
-        Execute(() => _service.GetStaffAttendanceReportAsync(UserId(), CanViewOrganization(), dateFrom, dateTo, ct));
+    [ResponseCache(NoStore = true, Location = ResponseCacheLocation.None)]
+    public async Task<IActionResult> StaffAttendanceReport([FromQuery] DateOnly dateFrom, [FromQuery] DateOnly dateTo, CancellationToken ct)
+    {
+        if (!await HasAttendanceMenuActionAsync("VIEW", ct, "/attendance/staff"))
+            return Forbid();
+        var orgWide = await CanViewOrganizationAsync(ct);
+        return await Execute(() => _service.GetStaffAttendanceReportAsync(UserId(), orgWide, dateFrom, dateTo, ct));
+    }
 
     [HttpGet("report/staff-attendance/access")]
-    public async Task<IActionResult> StaffAttendanceAccess(CancellationToken ct) =>
-        Ok(new { canViewHistorical = await _service.CanViewHistoricalAttendanceAsync(UserId(), CanViewOrganization(), ct) });
+    [ResponseCache(NoStore = true, Location = ResponseCacheLocation.None)]
+    public async Task<IActionResult> StaffAttendanceAccess(CancellationToken ct)
+    {
+        if (!await HasAttendanceMenuActionAsync("VIEW", ct, "/attendance/staff"))
+            return Forbid();
+        var orgWide = await CanViewOrganizationAsync(ct);
+        return Ok(new { canViewHistorical = await _service.CanViewHistoricalAttendanceAsync(UserId(), orgWide, ct) });
+    }
+
+    [HttpGet("report/daily/access")]
+    [ResponseCache(NoStore = true, Location = ResponseCacheLocation.None)]
+    public async Task<IActionResult> DailyAttendanceAccess(CancellationToken ct)
+    {
+        if (!await HasAttendanceMenuActionAsync("VIEW", ct, "/attendance/daily-report"))
+            return Forbid();
+        var orgWide = await CanViewOrganizationAsync(ct);
+        return Ok(new { canViewHistorical = await _service.CanViewTeamHistoricalAttendanceAsync(UserId(), orgWide, ct) });
+    }
 
     [HttpGet("report/monthly-chart")]
-    public Task<IActionResult> MonthlyChart([FromQuery] int year, [FromQuery] int month, CancellationToken ct) =>
-        Execute(() => _service.GetMonthlyChartAsync(UserId(), CanViewOrganization(), year, month, ct));
+    public async Task<IActionResult> MonthlyChart([FromQuery] int year, [FromQuery] int month, CancellationToken ct)
+    {
+        if (!await HasAttendanceMenuActionAsync("VIEW", ct, "/attendance/monthly-chart"))
+            return Forbid();
+        var orgWide = await CanViewOrganizationAsync(ct);
+        return await Execute(() => _service.GetMonthlyChartAsync(UserId(), orgWide, year, month, ct));
+    }
 
     private string UserId() => User.FindFirstValue(ClaimTypes.NameIdentifier) ?? throw new UnauthorizedAccessException();
-    private bool CanViewOthers() => User.IsInRole("SuperAdmin") || User.IsInRole("Admin") || User.IsInRole("TenantAdmin") || User.HasClaim(ITenantService.ClaimIsTenantAdmin, "true");
-    private bool CanViewOrganization() => User.IsInRole("SuperAdmin") || User.IsInRole("Admin") || User.IsInRole("TenantAdmin") || User.HasClaim(ITenantService.ClaimIsTenantAdmin, "true");
+
+    private async Task<bool> CanViewOthersAsync(CancellationToken ct)
+    {
+        if (TenantPermissionService.IsSuperAdmin(User)) return true;
+        if (TenantPermissionService.IsTenantAdmin(User))
+            return await _tenantPermissions.HasMenuRouteAsync(User,
+                ["/attendance/report", "/attendance/daily-report"], "VIEW", ct);
+        return false;
+    }
+
+    private async Task<bool> CanViewOrganizationAsync(CancellationToken ct)
+    {
+        if (TenantPermissionService.IsSuperAdmin(User)) return true;
+        if (TenantPermissionService.IsTenantAdmin(User))
+            return await _tenantPermissions.HasMenuRouteAsync(User,
+                ["/attendance/daily-report", "/attendance/staff", "/attendance/report", "/attendance/timing-chart"], "VIEW", ct);
+        return false;
+    }
 
     private async Task<Guid?> CurrentStaffIdAsync(CancellationToken ct)
     {
@@ -576,7 +692,9 @@ public sealed class AttendanceController : ControllerBase
 
     private async Task<bool> HasAttendanceMenuActionAsync(string action, CancellationToken ct, params string[] routes)
     {
-        if (CanViewOrganization()) return true;
+        if (TenantPermissionService.IsSuperAdmin(User)) return true;
+        if (TenantPermissionService.IsTenantAdmin(User))
+            return await _tenantPermissions.HasMenuRouteAsync(User, routes, action, ct);
 
         var staffId = await CurrentStaffIdAsync(ct);
         if (!staffId.HasValue) return false;

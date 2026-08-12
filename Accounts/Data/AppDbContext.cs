@@ -49,6 +49,11 @@ namespace Accounts.Data
         public DbSet<AssessmentType>           AssessmentTypes          => Set<AssessmentType>();
         public DbSet<AttendanceType>           AttendanceTypes          => Set<AttendanceType>();
         public DbSet<BenefitType>              BenefitTypes             => Set<BenefitType>();
+        public DbSet<PlatformSettingAction>    PlatformSettingActions   => Set<PlatformSettingAction>();
+        public DbSet<PlatformSettingStatus>    PlatformSettingStatuses  => Set<PlatformSettingStatus>();
+        public DbSet<PlatformSettingColor>     PlatformSettingColors    => Set<PlatformSettingColor>();
+        public DbSet<PlatformSettingActionStatus> PlatformSettingActionStatuses => Set<PlatformSettingActionStatus>();
+        public DbSet<PlatformSettingStatusCrDbValue> PlatformSettingStatusCrDbValues => Set<PlatformSettingStatusCrDbValue>();
         public DbSet<ProcessMaster>            Processes                => Set<ProcessMaster>();
         public DbSet<StatusDefinition>         Statuses                 => Set<StatusDefinition>();
         public DbSet<ColorStyle>               ColorStyles              => Set<ColorStyle>();
@@ -73,6 +78,9 @@ namespace Accounts.Data
         public DbSet<AttendanceDeductionReportRow> AttendanceDeductionReportRows => Set<AttendanceDeductionReportRow>();
         public DbSet<ApplicationLoginSession>  ApplicationLoginSessions => Set<ApplicationLoginSession>();
         public DbSet<AttendancePolicy> AttendancePolicies => Set<AttendancePolicy>();
+        public DbSet<StaffAssessment> StaffAssessments => Set<StaffAssessment>();
+        public DbSet<AssessmentBonusRule> AssessmentBonusRules => Set<AssessmentBonusRule>();
+        public DbSet<AssessmentSchedule> AssessmentSchedules => Set<AssessmentSchedule>();
         public DbSet<VacancyCounter>           VacancyCounters          => Set<VacancyCounter>();
         public DbSet<Menu>                     Menus                    => Set<Menu>();
         public DbSet<MenuPermission>           MenuPermissions          => Set<MenuPermission>();
@@ -170,6 +178,18 @@ namespace Accounts.Data
             builder.Entity<PlatformTypeTableRow>().HasQueryFilter(row =>
                 _tenantService != null && !_tenantService.IsSuperAdmin &&
                 _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
+            builder.Entity<PlatformSettingNamedRow>().HasQueryFilter(row =>
+                _tenantService != null && !_tenantService.IsSuperAdmin &&
+                _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
+            builder.Entity<PlatformSettingColor>().HasQueryFilter(row =>
+                _tenantService != null && !_tenantService.IsSuperAdmin &&
+                _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
+            builder.Entity<PlatformSettingActionStatus>().HasQueryFilter(row =>
+                _tenantService != null && !_tenantService.IsSuperAdmin &&
+                _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
+            builder.Entity<PlatformSettingStatusCrDbValue>().HasQueryFilter(row =>
+                _tenantService != null && !_tenantService.IsSuperAdmin &&
+                _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
             builder.Entity<AttendanceRecord>().HasQueryFilter(row =>
                 _tenantService != null && !_tenantService.IsSuperAdmin &&
                 _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
@@ -201,6 +221,15 @@ namespace Accounts.Data
                 _tenantService != null && !_tenantService.IsSuperAdmin &&
                 _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
             builder.Entity<AttendanceHolidayColorMapReadRow>().HasQueryFilter(row =>
+                _tenantService != null && !_tenantService.IsSuperAdmin &&
+                _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
+            builder.Entity<StaffAssessment>().HasQueryFilter(row =>
+                _tenantService != null && !_tenantService.IsSuperAdmin &&
+                _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
+            builder.Entity<AssessmentBonusRule>().HasQueryFilter(row =>
+                _tenantService != null && !_tenantService.IsSuperAdmin &&
+                _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
+            builder.Entity<AssessmentSchedule>().HasQueryFilter(row =>
                 _tenantService != null && !_tenantService.IsSuperAdmin &&
                 _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
 
@@ -509,10 +538,13 @@ namespace Accounts.Data
                 e.ToTable("TenantMenuPermissions");
                 e.HasKey(x => new { x.TenantId, x.MenuId });
                 e.Property(x => x.IsAllow).HasDefaultValue(true);
-                e.Property(x => x.CanView).HasDefaultValue(true);
-                e.Property(x => x.CanAdd).HasDefaultValue(true);
-                e.Property(x => x.CanEdit).HasDefaultValue(true);
-                e.Property(x => x.CanDelete).HasDefaultValue(true);
+                // Do NOT configure store defaults for CRUD flags. EF Core skips
+                // INSERT columns when the value equals HasDefaultValue(...), and
+                // a mismatched SQL default previously turned full CRUD into View-only.
+                e.Property(x => x.CanView).IsRequired();
+                e.Property(x => x.CanAdd).IsRequired();
+                e.Property(x => x.CanEdit).IsRequired();
+                e.Property(x => x.CanDelete).IsRequired();
                 e.Property(x => x.GrantedOnUtc).HasDefaultValueSql("SYSUTCDATETIME()");
                 e.Property(x => x.GrantedByUserId).HasMaxLength(450).IsRequired(false);
 
@@ -871,6 +903,52 @@ namespace Accounts.Data
             ConfigurePlatformTypeTable<AssessmentType>(builder, "AssessmentTypes");
             ConfigurePlatformTypeTable<AttendanceType>(builder, "AttendanceTypes");
             ConfigurePlatformTypeTable<BenefitType>(builder, "BenefitTypes");
+
+            builder.Entity<PlatformSettingNamedRow>(e =>
+            {
+                e.UseTpcMappingStrategy();
+                e.HasKey(x => x.Id);
+                e.Property(x => x.Name).HasMaxLength(150).IsRequired();
+                e.Property(x => x.CreatedOnUtc).HasDefaultValueSql("SYSUTCDATETIME()");
+                e.HasOne(x => x.Tenant).WithMany().HasForeignKey(x => x.TenantId).OnDelete(DeleteBehavior.Restrict);
+            });
+            ConfigurePlatformSettingNameTable<PlatformSettingAction>(builder, "Actions");
+            ConfigurePlatformSettingNameTable<PlatformSettingStatus>(builder, "Statuses");
+
+            builder.Entity<PlatformSettingColor>(e =>
+            {
+                e.ToTable("Colors", "PlatformSettings");
+                e.HasKey(x => x.Id);
+                e.Property(x => x.ColorCode).HasMaxLength(9).IsRequired();
+                e.Property(x => x.FontColor).HasMaxLength(9);
+                e.Property(x => x.CreatedOnUtc).HasDefaultValueSql("SYSUTCDATETIME()");
+                e.HasIndex(x => new { x.TenantId, x.ColorCode }).IsUnique();
+                e.HasOne(x => x.Tenant).WithMany().HasForeignKey(x => x.TenantId).OnDelete(DeleteBehavior.Restrict);
+            });
+
+            builder.Entity<PlatformSettingActionStatus>(e =>
+            {
+                e.ToTable("ActionStatuses", "PlatformSettings");
+                e.HasKey(x => x.Id);
+                e.Property(x => x.CreatedOnUtc).HasDefaultValueSql("SYSUTCDATETIME()");
+                e.HasIndex(x => new { x.TenantId, x.ActionId, x.StatusId }).IsUnique();
+                e.HasOne(x => x.Tenant).WithMany().HasForeignKey(x => x.TenantId).OnDelete(DeleteBehavior.Restrict);
+                e.HasOne(x => x.Action).WithMany().HasForeignKey(x => x.ActionId).OnDelete(DeleteBehavior.Restrict);
+                e.HasOne(x => x.Status).WithMany().HasForeignKey(x => x.StatusId).OnDelete(DeleteBehavior.Restrict);
+                e.HasOne(x => x.Color).WithMany().HasForeignKey(x => x.ColorId).OnDelete(DeleteBehavior.Restrict);
+            });
+
+            builder.Entity<PlatformSettingStatusCrDbValue>(e =>
+            {
+                e.ToTable("StatusCrDbValues", "PlatformSettings");
+                e.HasKey(x => x.Id);
+                e.Property(x => x.CrValue).HasMaxLength(150).IsRequired();
+                e.Property(x => x.DbValue).HasMaxLength(150).IsRequired();
+                e.Property(x => x.CreatedOnUtc).HasDefaultValueSql("SYSUTCDATETIME()");
+                e.HasIndex(x => new { x.TenantId, x.StatusId }).IsUnique();
+                e.HasOne(x => x.Tenant).WithMany().HasForeignKey(x => x.TenantId).OnDelete(DeleteBehavior.Restrict);
+                e.HasOne(x => x.Status).WithMany().HasForeignKey(x => x.StatusId).OnDelete(DeleteBehavior.Restrict);
+            });
 
             builder.Entity<AttendanceRecord>(e =>
             {
@@ -1419,6 +1497,14 @@ namespace Accounts.Data
                  .OnDelete(DeleteBehavior.Cascade);
                 // StaffMenuAccess â†’ AccessFeatures cascade is configured on the parent side above
             });
+
+            builder.Entity<StaffAssessment>().HasIndex(row => new
+            {
+                row.TenantId, row.AssessorPersonId, row.SubjectPersonId,
+                row.AssessmentYear, row.AssessmentMonth
+            }).IsUnique();
+            builder.Entity<AssessmentBonusRule>().HasIndex(row => row.TenantId).IsUnique();
+            builder.Entity<AssessmentSchedule>().HasIndex(row => new { row.TenantId, row.AssessmentYear, row.AssessmentMonth }).IsUnique();
         }
 
         private static void ConfigurePlatformTypeTable<TEntity>(ModelBuilder builder, string tableName)
@@ -1432,6 +1518,14 @@ namespace Accounts.Data
             entity.HasIndex(x => new { x.TenantId, x.Code }).IsUnique();
             entity.HasIndex(x => new { x.TenantId, x.Name }).IsUnique();
             entity.HasIndex(x => new { x.TenantId, x.DisplayOrder });
+        }
+
+        private static void ConfigurePlatformSettingNameTable<TEntity>(ModelBuilder builder, string tableName)
+            where TEntity : PlatformSettingNamedRow
+        {
+            var entity = builder.Entity<TEntity>();
+            entity.ToTable(tableName, "PlatformSettings");
+            entity.HasIndex(x => new { x.TenantId, x.Name }).IsUnique();
         }
     }
 }

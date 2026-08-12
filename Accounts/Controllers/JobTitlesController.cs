@@ -18,19 +18,22 @@ namespace Accounts.Controllers
         private readonly ITenantService _tenantService;
         private readonly ApplicationDbContext _db;
         private readonly RbacService _rbac;
+        private readonly TenantPermissionService _tenantPermissions;
 
-        public JobTitlesController(JobTitleService service, ITenantService tenantService, ApplicationDbContext db, RbacService rbac)
+        public JobTitlesController(JobTitleService service, ITenantService tenantService, ApplicationDbContext db, RbacService rbac, TenantPermissionService tenantPermissions)
         {
             _service = service;
             _tenantService = tenantService;
             _db = db;
             _rbac = rbac;
+            _tenantPermissions = tenantPermissions;
         }
 
         private async Task<bool> HasJobTitleActionAsync(string action)
         {
-            if (_tenantService.IsTenantAdmin || User.IsInRole("Admin") || User.IsInRole("TenantAdmin"))
-                return true;
+            if (TenantPermissionService.IsSuperAdmin(User)) return true;
+            if (TenantPermissionService.IsTenantAdmin(User))
+                return await _tenantPermissions.HasMenuRouteAsync(User, ["/settings/types", "/settings/job-titles"], action);
             if (!_tenantService.TenantId.HasValue) return false;
 
             var identityUserId = User.FindFirstValue(ClaimTypes.NameIdentifier);

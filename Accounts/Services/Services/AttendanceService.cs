@@ -644,7 +644,7 @@ public sealed class AttendanceService : IAttendanceService
         CancellationToken cancellationToken = default)
     {
         var canViewHistory = organizationWide ||
-            await CanViewHistoricalAttendanceAsync(identityUserId, organizationWide, cancellationToken);
+            await HasAttendanceHistoryAccessAsync(identityUserId, "/attendance/daily-report", "TEAM_HISTORY", cancellationToken);
         EnsureAllowedAttendancePeriod(canViewHistory, dateFrom, dateTo);
         var report = await GetAttendanceReportAsync(
             identityUserId, organizationWide, selfOnly: false, dateFrom, dateTo, cancellationToken);
@@ -839,11 +839,8 @@ public sealed class AttendanceService : IAttendanceService
         string identityUserId, bool organizationWide, DateOnly dateFrom, DateOnly dateTo,
         CancellationToken cancellationToken = default)
     {
-        var visibility = await ResolveAttendanceVisibilityAsync(
-            identityUserId, organizationWide, selfOnly: false, cancellationToken);
         var canViewHistory = organizationWide ||
-            visibility.VisiblePersonIds.Any(id => id != visibility.CallerPersonId) ||
-            await HasExplicitHistoricalAttendanceAccessAsync(identityUserId, cancellationToken);
+            await HasAttendanceHistoryAccessAsync(identityUserId, "/attendance/staff", "OWN_HISTORY", cancellationToken);
         EnsureAllowedAttendancePeriod(canViewHistory, dateFrom, dateTo);
         return await GetAttendanceReportAsync(
             identityUserId,
@@ -858,10 +855,29 @@ public sealed class AttendanceService : IAttendanceService
         string identityUserId, bool organizationWide, CancellationToken cancellationToken = default)
     {
         if (organizationWide) return true;
-        var visibility = await ResolveAttendanceVisibilityAsync(
-            identityUserId, organizationWide: false, selfOnly: false, cancellationToken);
-        return visibility.VisiblePersonIds.Any(id => id != visibility.CallerPersonId) ||
-            await HasExplicitHistoricalAttendanceAccessAsync(identityUserId, cancellationToken);
+        return await HasAttendanceHistoryAccessAsync(identityUserId, "/attendance/staff", "OWN_HISTORY", cancellationToken);
+    }
+
+    public async Task<bool> CanViewTeamHistoricalAttendanceAsync(
+        string identityUserId, bool organizationWide, CancellationToken cancellationToken = default)
+    {
+        if (organizationWide) return true;
+        return await HasAttendanceHistoryAccessAsync(identityUserId, "/attendance/daily-report", "TEAM_HISTORY", cancellationToken);
+    }
+
+    private async Task<bool> HasAttendanceHistoryAccessAsync(
+        string identityUserId, string route, string permissionSuffix, CancellationToken cancellationToken)
+    {
+        return await _db.AccessFeatures.AsNoTracking().AnyAsync(access =>
+            access.IsAllow && access.Feature != null &&
+            access.StaffMenuAccess != null && access.StaffMenuAccess.IsAllow &&
+            access.StaffMenuAccess.Menu != null &&
+            access.StaffMenuAccess.Menu.Route == route &&
+            access.StaffMenuAccess.Staff != null &&
+            access.StaffMenuAccess.Staff.Person != null &&
+            access.StaffMenuAccess.Staff.Person.IdentityUserId == identityUserId &&
+            (access.Feature.FeatureKey == "MENU_" + access.StaffMenuAccess.MenuId + "_" + permissionSuffix ||
+             access.Feature.FeatureKey == "MENU_" + access.StaffMenuAccess.MenuId + "_HISTORY"), cancellationToken);
     }
 
     private async Task<bool> HasExplicitHistoricalAttendanceAccessAsync(

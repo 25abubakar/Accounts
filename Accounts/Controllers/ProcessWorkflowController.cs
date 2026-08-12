@@ -85,6 +85,12 @@ public sealed class ProcessWorkflowController : ControllerBase
         if (normalizedMode is not ("INBOX" or "MINE" or "COMPLETED"))
             return BadRequest(new { message = "Unsupported task-list mode." });
 
+        // Tenant administrators are valid tenant accounts but are not required to
+        // occupy a staff vacancy. A personal workflow inbox therefore has no rows
+        // for them; avoid invoking the staff-only procedure, which raises 51210.
+        if (!await HasActiveStaffProfileAsync(ct))
+            return Ok(Array.Empty<ProcessReportListDto>());
+
         var rows = new List<ProcessReportListDto>();
         await WithCommandAsync("dbo.usp_ProcessReport_List", async command =>
         {
@@ -95,6 +101,19 @@ public sealed class ProcessWorkflowController : ControllerBase
                 rows.Add(MapReport(reader));
         }, ct);
         return Ok(rows);
+    }
+
+    private async Task<bool> HasActiveStaffProfileAsync(CancellationToken ct)
+    {
+        if (!_tenant.TenantId.HasValue || _tenant.IsSuperAdmin) return false;
+        var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+        if (string.IsNullOrWhiteSpace(userId)) return false;
+
+        return await _db.Persons.AsNoTracking().AnyAsync(person =>
+            person.TenantId == _tenant.TenantId.Value &&
+            person.IdentityUserId == userId &&
+            person.IsActive &&
+            person.Staff != null, ct);
     }
 
     [HttpGet("tasks/{reportId:long}/timeline")]

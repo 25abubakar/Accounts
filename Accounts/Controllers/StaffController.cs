@@ -23,15 +23,18 @@ namespace Accounts.Controllers
         private readonly IStaffService               _service;
         private readonly ApplicationDbContext        _db;
         private readonly RbacService                 _rbac;
+        private readonly TenantPermissionService     _tenantPermissions;
 
         public StaffController(
             IStaffService               service,
             ApplicationDbContext        db,
-            RbacService                 rbac)
+            RbacService                 rbac,
+            TenantPermissionService     tenantPermissions)
         {
             _service     = service;
             _db          = db;
             _rbac        = rbac;
+            _tenantPermissions = tenantPermissions;
         }
 
         private Task<bool> CallerIsSuperAdminAsync() => Task.FromResult(
@@ -40,9 +43,9 @@ namespace Accounts.Controllers
 
         private async Task<bool> HasStaffActionAsync(string action, params string[] semanticKeys)
         {
-            if (User.IsInRole("Admin") || User.IsInRole("TenantAdmin") ||
-                string.Equals(User.FindFirstValue(ITenantService.ClaimIsTenantAdmin), "true", StringComparison.OrdinalIgnoreCase))
-                return true;
+            if (TenantPermissionService.IsSuperAdmin(User)) return true;
+            if (TenantPermissionService.IsTenantAdmin(User))
+                return await _tenantPermissions.HasMenuRouteAsync(User, ["/hr/staff"], action);
 
             var identityUserId = User.FindFirstValue(ClaimTypes.NameIdentifier);
             if (string.IsNullOrWhiteSpace(identityUserId)) return false;

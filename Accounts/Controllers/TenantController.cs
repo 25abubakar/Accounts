@@ -4,9 +4,11 @@ using Accounts.Services.Interfaces;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using System.ComponentModel.DataAnnotations;
 using System.Security.Claims;
+using System.Text.Json;
 
 namespace Accounts.Controllers
 {
@@ -103,15 +105,100 @@ namespace Accounts.Controllers
 
         // ── GET /api/tenants/{id} ─────────────────────────────────────────────
 
+        // Tenant Admin accounts are Identity users rather than StaffVacancy rows.
+        // This directory lets the Super Admin manage tenant menu scope without
+        // requiring a Tenant Admin to have an operational staff profile.
+        [HttpGet("admins")]
+        public async Task<IActionResult> GetAdmins()
+        {
+            var adminUsers = await _db.Users
+                .AsNoTracking()
+                .Where(user => user.IsTenantAdmin && user.TenantId.HasValue)
+                .Select(user => new
+                {
+                    user.Id,
+                    user.UserName,
+                    user.Email,
+                    user.PhoneNumber,
+                    user.TenantId,
+                    user.LockoutEnd
+                })
+                .ToListAsync();
+
+            var tenantIds = adminUsers
+                .Select(user => user.TenantId!.Value)
+                .Distinct()
+                .ToList();
+
+            var tenantsById = await _db.Tenants
+                .AsNoTracking()
+                .Where(tenant => tenantIds.Contains(tenant.Id))
+                .Select(tenant => new
+                {
+                    tenant.Id,
+                    tenant.TenantName,
+                    tenant.IsActive,
+                    tenant.CreatedOnUtc
+                })
+                .ToDictionaryAsync(tenant => tenant.Id);
+
+            var now = DateTimeOffset.UtcNow;
+            var response = adminUsers
+                .Select(user =>
+                {
+                    tenantsById.TryGetValue(user.TenantId!.Value, out var tenant);
+                    var accountIsUnlocked = !user.LockoutEnd.HasValue || user.LockoutEnd <= now;
+
+                    return new
+                    {
+                        // Access-control pages use staffId as their stable selection key.
+                        // A Tenant Admin's equivalent stable key is its Identity user ID.
+                        staffId = user.Id,
+                        identityUserId = user.Id,
+                        fullName = user.UserName ?? user.Email ?? "Tenant Admin",
+                        email = user.Email ?? string.Empty,
+                        phone = user.PhoneNumber ?? string.Empty,
+                        vacancyId = string.Empty,
+                        vacancyCode = string.Empty,
+                        jobTitle = "Tenant Admin",
+                        department = string.Empty,
+                        companyName = tenant?.TenantName ?? "Tenant",
+                        joiningDate = tenant?.CreatedOnUtc,
+                        loginId = user.UserName,
+                        tenantId = user.TenantId,
+                        isTenantAdmin = true,
+                        isActive = (tenant?.IsActive ?? false) && accountIsUnlocked
+                    };
+                })
+                .OrderBy(admin => admin.companyName)
+                .ThenBy(admin => admin.fullName)
+                .ToList();
+
+            return Ok(response);
+        }
+
         /// <summary>Single tenant with granted menus and staff count.</summary>
         [HttpGet("{id:int}")]
         public async Task<IActionResult> GetById(int id)
         {
             var tenant = await _db.Tenants
                 .AsNoTracking()
-                .Include(t => t.OrganizationNode)
-                .Include(t => t.MenuPermissions).ThenInclude(mp => mp.Menu)
-                .FirstOrDefaultAsync(t => t.Id == id);
+                .Where(t => t.Id == id)
+                .Select(t => new
+                {
+                    t.Id, t.TenantName, t.TenantCode, t.IsActive,
+                    t.OrganizationTreeId,
+                    OrgNodeName = t.OrganizationNode != null ? t.OrganizationNode.Name : null,
+                    t.BrandingAssetType, t.BrandingFileName, t.BrandingUpdatedOnUtc,
+                    HasBranding = t.BrandingContent != null,
+                    GrantedMenus = t.MenuPermissions.Select(mp => new
+                    {
+                        menuId = mp.MenuId,
+                        menuTitle = mp.Menu != null ? mp.Menu.Title : null,
+                        mp.IsAllow, mp.CanView, mp.CanAdd, mp.CanEdit, mp.CanDelete
+                    }).ToList()
+                })
+                .FirstOrDefaultAsync();
 
             if (tenant == null)
                 return NotFound(new { message = $"Tenant {id} not found." });
@@ -128,24 +215,15 @@ namespace Accounts.Controllers
                 tenant.TenantCode,
                 tenant.IsActive,
                 tenant.OrganizationTreeId,
-                orgNodeName  = tenant.OrganizationNode?.Name,
+                orgNodeName  = tenant.OrgNodeName,
                 brandingAssetType = tenant.BrandingAssetType,
                 brandingFileName = tenant.BrandingFileName,
                 brandingUpdatedOnUtc = tenant.BrandingUpdatedOnUtc,
-                brandingUrl = tenant.BrandingContent != null
+                brandingUrl = tenant.HasBranding
                     ? $"/api/tenant-branding/{tenant.Id}/content?v={tenant.BrandingUpdatedOnUtc?.Ticks ?? 0}"
                     : null,
                 staffCount,
-                grantedMenus = tenant.MenuPermissions.Select(mp => new
-                {
-                    menuId    = mp.MenuId,
-                    menuTitle = mp.Menu?.Title,
-                    mp.IsAllow,
-                    mp.CanView,
-                    mp.CanAdd,
-                    mp.CanEdit,
-                    mp.CanDelete
-                })
+                grantedMenus = tenant.GrantedMenus
             });
         }
 
@@ -283,18 +361,17 @@ namespace Accounts.Controllers
                             .Select(m => m.Id)
                             .ToListAsync();
 
-                        foreach (var menuId in validMenuIds)
-                        {
-                            _db.TenantMenuPermissions.Add(new TenantMenuPermission
+                        await InsertTenantMenuGrantsAsync(
+                            tenant.Id,
+                            validMenuIds.Select(menuId => new TenantMenuAccessDto
                             {
-                                TenantId        = tenant.Id,
-                                MenuId          = menuId,
-                                IsAllow         = true,
-                                GrantedByUserId = creatorId,
-                                GrantedOnUtc    = DateTime.UtcNow
-                            });
-                        }
-                        await _db.SaveChangesAsync();
+                                MenuId = menuId,
+                                CanView = true,
+                                CanAdd = true,
+                                CanEdit = true,
+                                CanDelete = true
+                            }),
+                            creatorId);
                     }
 
                     await tx.CommitAsync();
@@ -420,7 +497,7 @@ namespace Accounts.Controllers
         public async Task<IActionResult> SetMenus(int id, [FromBody] List<int> menuIds)
         {
             var tenant = await _db.Tenants
-                .Include(t => t.MenuPermissions)
+                .AsNoTracking()
                 .FirstOrDefaultAsync(t => t.Id == id);
 
             if (tenant == null) return NotFound(new { message = $"Tenant {id} not found." });
@@ -454,26 +531,33 @@ namespace Accounts.Controllers
                 }
             }
 
-            // Remove all existing permissions and re-add
-            _db.TenantMenuPermissions.RemoveRange(tenant.MenuPermissions);
-
-            foreach (var menuId in validMenuIds.OrderBy(x => x))
+            var strategy = _db.Database.CreateExecutionStrategy();
+            await strategy.ExecuteAsync(async () =>
             {
-                _db.TenantMenuPermissions.Add(new TenantMenuPermission
-                {
-                    TenantId        = id,
-                    MenuId          = menuId,
-                    IsAllow         = true,
-                    CanView         = true,
-                    CanAdd          = true,
-                    CanEdit         = true,
-                    CanDelete       = true,
-                    GrantedByUserId = creatorId,
-                    GrantedOnUtc    = DateTime.UtcNow
-                });
-            }
+                _db.ChangeTracker.Clear();
+                await using var transaction = await _db.Database.BeginTransactionAsync();
 
-            await _db.SaveChangesAsync();
+                await _db.TenantMenuPermissions
+                    .Where(p => p.TenantId == id)
+                    .ExecuteDeleteAsync();
+
+                await InsertTenantMenuGrantsAsync(
+                    id,
+                    validMenuIds.OrderBy(x => x).Select(menuId => new TenantMenuAccessDto
+                    {
+                        MenuId = menuId,
+                        CanView = true,
+                        CanAdd = true,
+                        CanEdit = true,
+                        CanDelete = true
+                    }),
+                    creatorId);
+
+                // Keep the compatibility route subject to the same authoritative
+                // tenant ceiling as the richer CRUD-aware endpoint.
+                await PruneRevokedStaffMenusAsync(id, validMenuIds);
+                await transaction.CommitAsync();
+            });
 
             return Ok(new
             {
@@ -486,7 +570,7 @@ namespace Accounts.Controllers
         public async Task<IActionResult> SetMenuAccess(int id, [FromBody] List<TenantMenuAccessDto> access)
         {
             var tenant = await _db.Tenants
-                .Include(t => t.MenuPermissions)
+                .AsNoTracking()
                 .FirstOrDefaultAsync(t => t.Id == id);
             if (tenant == null) return NotFound(new { message = $"Tenant {id} not found." });
 
@@ -496,7 +580,7 @@ namespace Accounts.Controllers
             var requested = access
                 .Where(a => activeById.ContainsKey(a.MenuId))
                 .GroupBy(a => a.MenuId)
-                .Select(g => g.Last())
+                .Select(g => NormalizeMenuAccess(g.Last()))
                 .ToDictionary(a => a.MenuId);
 
             // Parents are structural grants with View permission only.
@@ -512,19 +596,141 @@ namespace Accounts.Controllers
                 }
             }
 
-            _db.TenantMenuPermissions.RemoveRange(tenant.MenuPermissions);
             var creatorId = User.FindFirstValue(ClaimTypes.NameIdentifier);
-            _db.TenantMenuPermissions.AddRange(requested.Values.Select(a => new TenantMenuPermission
+            var viewMenuIds = requested.Values.Where(a => a.CanView).Select(a => a.MenuId).ToArray();
+            var grantsJson = JsonSerializer.Serialize(requested.Values
+                .OrderBy(g => g.MenuId)
+                .Select(g => new
+                {
+                    menuId = g.MenuId,
+                    canView = g.CanView,
+                    canAdd = g.CanAdd,
+                    canEdit = g.CanEdit,
+                    canDelete = g.CanDelete
+                }));
+
+            var strategy = _db.Database.CreateExecutionStrategy();
+            await strategy.ExecuteAsync(async () =>
             {
-                TenantId = id, MenuId = a.MenuId, IsAllow = true,
-                CanView = a.CanView, CanAdd = a.CanAdd, CanEdit = a.CanEdit, CanDelete = a.CanDelete,
-                GrantedByUserId = creatorId, GrantedOnUtc = DateTime.UtcNow
-            }));
-            await _db.SaveChangesAsync();
-            return Ok(new { message = $"Menu access updated for tenant '{tenant.TenantName}'.", grantedCount = requested.Count });
+                _db.ChangeTracker.Clear();
+                await using var transaction = await _db.Database.BeginTransactionAsync();
+
+                await _db.TenantMenuPermissions
+                    .Where(p => p.TenantId == id)
+                    .ExecuteDeleteAsync();
+
+                await InsertTenantMenuGrantsAsync(id, requested.Values, creatorId);
+
+                // One set-based prune for menus removed from the tenant ceiling.
+                await _db.StaffMenuAccesses
+                    .Where(grant => grant.Staff != null && grant.Staff.TenantId == id && !viewMenuIds.Contains(grant.MenuId))
+                    .ExecuteDeleteAsync();
+
+                // Prune staff CRUD bits that exceed the new ceiling in one SQL pass.
+                await _db.Database.ExecuteSqlRawAsync("""
+                    DELETE af
+                    FROM dbo.AccessFeatures af
+                    INNER JOIN dbo.StaffMenuAccess sma ON sma.Id = af.StaffMenuAccessId
+                    INNER JOIN dbo.StaffVacancy sv ON sv.StaffId = sma.StaffId
+                    INNER JOIN dbo.Features f ON f.PermissionId = af.PermissionId
+                    LEFT JOIN OPENJSON(@GrantsJson)
+                    WITH (
+                        MenuId int '$.menuId',
+                        CanView bit '$.canView',
+                        CanAdd bit '$.canAdd',
+                        CanEdit bit '$.canEdit',
+                        CanDelete bit '$.canDelete'
+                    ) g ON g.MenuId = sma.MenuId
+                    WHERE sv.TenantId = @TenantId
+                      AND f.FeatureKey LIKE N'MENU_%'
+                      AND (
+                            g.MenuId IS NULL
+                         OR (f.FeatureKey LIKE N'MENU_%_VIEW' AND ISNULL(g.CanView, 0) = 0)
+                         OR (f.FeatureKey LIKE N'MENU_%_ADD' AND ISNULL(g.CanAdd, 0) = 0)
+                         OR (f.FeatureKey LIKE N'MENU_%_EDIT' AND ISNULL(g.CanEdit, 0) = 0)
+                         OR (f.FeatureKey LIKE N'MENU_%_DELETE' AND ISNULL(g.CanDelete, 0) = 0)
+                      );
+                    """,
+                    new SqlParameter("@TenantId", id),
+                    new SqlParameter("@GrantsJson", grantsJson));
+
+                await transaction.CommitAsync();
+            });
+
+            return Ok(new
+            {
+                message = $"Menu access updated for tenant '{tenant.TenantName}'.",
+                grantedCount = requested.Count,
+                grantedMenus = requested.Values
+                    .OrderBy(g => g.MenuId)
+                    .Select(g => new
+                    {
+                        menuId = g.MenuId,
+                        isAllow = true,
+                        canView = g.CanView,
+                        canAdd = g.CanAdd,
+                        canEdit = g.CanEdit,
+                        canDelete = g.CanDelete
+                    })
+            });
         }
 
         // ── Private helpers ───────────────────────────────────────────────────
+
+        private async Task InsertTenantMenuGrantsAsync(
+            int tenantId,
+            IEnumerable<TenantMenuAccessDto> grants,
+            string? grantedByUserId)
+        {
+            var payload = grants
+                .Select(g => new
+                {
+                    menuId = g.MenuId,
+                    canView = g.CanView,
+                    canAdd = g.CanAdd,
+                    canEdit = g.CanEdit,
+                    canDelete = g.CanDelete
+                })
+                .ToArray();
+            if (payload.Length == 0) return;
+
+            await _db.Database.ExecuteSqlRawAsync("""
+                INSERT INTO dbo.TenantMenuPermissions
+                    (TenantId, MenuId, IsAllow, CanView, CanAdd, CanEdit, CanDelete, GrantedByUserId, GrantedOnUtc)
+                SELECT
+                    @TenantId,
+                    g.MenuId,
+                    CAST(1 AS bit),
+                    g.CanView,
+                    g.CanAdd,
+                    g.CanEdit,
+                    g.CanDelete,
+                    @GrantedBy,
+                    SYSUTCDATETIME()
+                FROM OPENJSON(@GrantsJson)
+                WITH (
+                    MenuId int '$.menuId',
+                    CanView bit '$.canView',
+                    CanAdd bit '$.canAdd',
+                    CanEdit bit '$.canEdit',
+                    CanDelete bit '$.canDelete'
+                ) g;
+                """,
+                new SqlParameter("@TenantId", tenantId),
+                new SqlParameter("@GrantedBy", (object?)grantedByUserId ?? DBNull.Value),
+                new SqlParameter("@GrantsJson", JsonSerializer.Serialize(payload)));
+        }
+
+        private async Task PruneRevokedStaffMenusAsync(int tenantId, IReadOnlySet<int> allowedMenuIds)
+        {
+            // One server-side delete covers every staff member in the tenant;
+            // no per-user lookups or N+1 query pattern is introduced.
+            await _db.StaffMenuAccesses
+                .Where(grant => grant.Staff != null &&
+                    grant.Staff.TenantId == tenantId &&
+                    !allowedMenuIds.Contains(grant.MenuId))
+                .ExecuteDeleteAsync();
+        }
 
         private async Task<string> GenerateLoginIdAsync(string prefix)
         {
@@ -552,6 +758,23 @@ namespace Accounts.Controllers
                 current = node.ParentId;
             }
             return false;
+        }
+
+        /// <summary>
+        /// Enforces the DB rule that Add/Edit/Delete require View, and drops
+        /// impossible combinations before they hit the ceiling table.
+        /// </summary>
+        private static TenantMenuAccessDto NormalizeMenuAccess(TenantMenuAccessDto dto)
+        {
+            var canView = dto.CanView || dto.CanAdd || dto.CanEdit || dto.CanDelete;
+            return new TenantMenuAccessDto
+            {
+                MenuId    = dto.MenuId,
+                CanView   = canView,
+                CanAdd    = canView && dto.CanAdd,
+                CanEdit   = canView && dto.CanEdit,
+                CanDelete = canView && dto.CanDelete,
+            };
         }
     }
 

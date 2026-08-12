@@ -17,6 +17,42 @@ namespace Accounts.Services.Services
         private readonly ApplicationDbContext _db;
         public StaffMenuAccessService(ApplicationDbContext db) => _db = db;
 
+        private async Task<Dictionary<int, (bool View, bool Add, bool Edit, bool Delete)>> LoadCeilingForStaffAsync(Guid staffId)
+        {
+            var tenantId = await _db.StaffVacancies.IgnoreQueryFilters().AsNoTracking()
+                .Where(s => s.StaffId == staffId)
+                .Select(s => (int?)s.TenantId)
+                .FirstOrDefaultAsync();
+            if (!tenantId.HasValue) return new Dictionary<int, (bool, bool, bool, bool)>();
+
+            return await _db.TenantMenuPermissions.IgnoreQueryFilters().AsNoTracking()
+                .Where(p => p.TenantId == tenantId.Value && p.IsAllow)
+                .ToDictionaryAsync(
+                    p => p.MenuId,
+                    p => (p.CanView, p.CanAdd, p.CanEdit, p.CanDelete));
+        }
+
+        private static bool MenuAllowedByCeiling(
+            int menuId,
+            IReadOnlyDictionary<int, (bool View, bool Add, bool Edit, bool Delete)> ceiling) =>
+            ceiling.TryGetValue(menuId, out var bits) && bits.View;
+
+        private static bool FeatureAllowedByCeiling(
+            string featureKey,
+            IReadOnlyDictionary<int, (bool View, bool Add, bool Edit, bool Delete)> ceiling)
+        {
+            if (!TenantPermissionService.TryParseMenuFeature(featureKey, out var menuId, out var capability))
+                return false;
+            if (!ceiling.TryGetValue(menuId, out var bits)) return false;
+            return capability switch
+            {
+                TenantPermissionService.TenantCapability.Add => bits.Add,
+                TenantPermissionService.TenantCapability.Edit => bits.Edit,
+                TenantPermissionService.TenantCapability.Delete => bits.Delete,
+                _ => bits.View
+            };
+        }
+
         // ─────────────────────────────────────────────────────────────────────
         // READ — permissions response used at login (GET /api/rbac/staff/{id}/access-tree)
         // ─────────────────────────────────────────────────────────────────────
@@ -108,6 +144,10 @@ namespace Accounts.Services.Services
             if (!await _db.StaffVacancies.AnyAsync(s => s.StaffId == staffId))
                 return (false, $"Staff {staffId} not found.", Array.Empty<string>());
 
+            var ceiling = await LoadCeilingForStaffAsync(staffId);
+            if (!MenuAllowedByCeiling(menuId, ceiling))
+                return (false, $"Menu {menuId} is outside the Super Admin ceiling for this tenant.", Array.Empty<string>());
+
             var menu = await _db.Menus.AsNoTracking()
                 .FirstOrDefaultAsync(m => m.Id == menuId && m.IsActive);
             if (menu == null)
@@ -119,6 +159,7 @@ namespace Accounts.Services.Services
                 .Where(f => f.FeatureKey == menuFeaturePrefix
                          || f.FeatureKey.StartsWith(menuFeaturePrefix + "_"))
                 .ToListAsync();
+            features = features.Where(f => FeatureAllowedByCeiling(f.FeatureKey, ceiling)).ToList();
 
             // Build override map if provided
             var overrideMap = featureOverrides?.ToDictionary(x => x.PermissionId, x => x.IsAllow)
@@ -207,27 +248,35 @@ namespace Accounts.Services.Services
             if (!await _db.StaffVacancies.AnyAsync(s => s.StaffId == staffId))
                 return (0, 0, "Staff not found.");
 
+            var ceiling = await LoadCeilingForStaffAsync(staffId);
+
             // ONE query: load all relevant menus
-            var menuIds  = menuGrants.Keys.ToList();
+            var menuIds  = menuGrants.Keys.Where(id => MenuAllowedByCeiling(id, ceiling)).ToList();
+            var skippedOutsideCeiling = menuGrants.Count - menuIds.Count;
             var menus    = await _db.Menus.AsNoTracking()
                 .Where(m => menuIds.Contains(m.Id) && m.IsActive)
                 .ToDictionaryAsync(m => m.Id);
 
             // ONE query: load all features that match any MENU_{id}* pattern
             var prefixes = menuIds.Select(id => $"MENU_{id}").ToList();
-            var allFeatures = await _db.Features.AsNoTracking()
-                .Where(f => prefixes.Any(p => f.FeatureKey == p || f.FeatureKey.StartsWith(p + "_")))
-                .ToListAsync();
+            var allFeatures = prefixes.Count == 0
+                ? new List<Feature>()
+                : await _db.Features.AsNoTracking()
+                    .Where(f => prefixes.Any(p => f.FeatureKey == p || f.FeatureKey.StartsWith(p + "_")))
+                    .ToListAsync();
+            allFeatures = allFeatures.Where(f => FeatureAllowedByCeiling(f.FeatureKey, ceiling)).ToList();
 
             // ONE query: load all existing StaffMenuAccess rows (tracked for upsert)
-            var existingAccesses = await _db.StaffMenuAccesses
-                .Include(sma => sma.AccessFeatures)
-                .Where(sma => sma.StaffId == staffId && menuIds.Contains(sma.MenuId))
-                .ToListAsync();
+            var existingAccesses = menuIds.Count == 0
+                ? new List<StaffMenuAccess>()
+                : await _db.StaffMenuAccesses
+                    .Include(sma => sma.AccessFeatures)
+                    .Where(sma => sma.StaffId == staffId && menuIds.Contains(sma.MenuId))
+                    .ToListAsync();
 
             var existingMap = existingAccesses.ToDictionary(sma => sma.MenuId);
 
-            int saved = 0, skipped = 0;
+            int saved = 0, skipped = skippedOutsideCeiling;
 
             foreach (var (menuId, isAllow) in menuGrants)
             {
