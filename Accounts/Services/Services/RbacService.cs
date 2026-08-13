@@ -182,7 +182,7 @@ namespace Accounts.Services.Services
                     s.TenantId,
                     DepartmentId = s.Vacancy != null ? (int?)s.Vacancy.OrganizationId : null,
                     JobTitle = s.Vacancy != null
-                        ? (s.Vacancy.JobTitleNav != null ? s.Vacancy.JobTitleNav.TitleName : s.Vacancy.JobTitle)
+                        ? (s.Vacancy.DesignationNav != null ? s.Vacancy.DesignationNav.Name : s.Vacancy.JobTitle)
                         : null
                 }).ToListAsync();
             var staffIds = staff.Select(s => s.StaffId).ToArray();

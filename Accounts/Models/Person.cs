@@ -58,6 +58,11 @@ namespace Accounts.Models
 
         public DateTime CreatedDate { get; set; } = DateTime.UtcNow;
 
+        /// <summary>User preference to show their last seen/online status in chat.</summary>
+        public bool ShowLastSeen { get; set; } = true;
+
+        /// <summary>Timestamp of when the user was last seen online.</summary>
+        public DateTime? LastSeenUtc { get; set; }
         /// <summary>Employment/account status controlled by tenant administrators.</summary>
         public bool IsActive { get; set; } = true;
 

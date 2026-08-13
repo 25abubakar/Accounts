@@ -9,27 +9,36 @@ using System.Security.Claims;
 namespace Accounts.Controllers
 {
     [ApiController]
+    [Route("api/designations")]
     [Route("api/job-titles")]
     [Authorize]
     [Produces("application/json")]
-    public class JobTitlesController : ControllerBase
+    public class DesignationsController : ControllerBase
     {
-        private readonly JobTitleService _service;
+        private readonly DesignationService _service;
+        private readonly PlatformSettingsProvisioningService _provisioning;
         private readonly ITenantService _tenantService;
         private readonly ApplicationDbContext _db;
         private readonly RbacService _rbac;
         private readonly TenantPermissionService _tenantPermissions;
 
-        public JobTitlesController(JobTitleService service, ITenantService tenantService, ApplicationDbContext db, RbacService rbac, TenantPermissionService tenantPermissions)
+        public DesignationsController(
+            DesignationService service,
+            PlatformSettingsProvisioningService provisioning,
+            ITenantService tenantService,
+            ApplicationDbContext db,
+            RbacService rbac,
+            TenantPermissionService tenantPermissions)
         {
             _service = service;
+            _provisioning = provisioning;
             _tenantService = tenantService;
             _db = db;
             _rbac = rbac;
             _tenantPermissions = tenantPermissions;
         }
 
-        private async Task<bool> HasJobTitleActionAsync(string action)
+        private async Task<bool> HasDesignationActionAsync(string action)
         {
             if (TenantPermissionService.IsSuperAdmin(User)) return true;
             if (TenantPermissionService.IsTenantAdmin(User))
@@ -68,50 +77,53 @@ namespace Accounts.Controllers
         }
 
         [HttpGet]
-        public async Task<IActionResult> GetAll()
+        public async Task<IActionResult> GetAll(CancellationToken ct)
         {
-            // Keep the menu/page visible to Super Admin without exposing tenant data.
-            if (_tenantService.IsSuperAdmin) return Ok(Array.Empty<JobTitleResponseDto>());
+            if (_tenantService.IsSuperAdmin) return Ok(Array.Empty<DesignationResponseDto>());
             if (!_tenantService.TenantId.HasValue) return Forbid();
-            if (!await HasJobTitleActionAsync("VIEW")) return Forbid();
+            if (!await HasDesignationActionAsync("VIEW")) return Forbid();
+
+            await _provisioning.EnsureTenantPlatformSettingsAsync(_tenantService.TenantId.Value, ct: ct);
             return Ok(await _service.GetAllWithCountAsync());
         }
 
         [HttpPost("upsert")]
-        public async Task<IActionResult> Upsert([FromBody] UpsertJobTitleDto dto)
+        public async Task<IActionResult> Upsert([FromBody] UpsertDesignationDto dto)
         {
-            if (!await HasJobTitleActionAsync("ADD")) return Forbid();
-            if (string.IsNullOrWhiteSpace(dto.TitleName))
-                return BadRequest(new { message = "TitleName is required." });
+            if (!await HasDesignationActionAsync("ADD")) return Forbid();
+            var name = dto.Name ?? dto.TitleName;
+            if (string.IsNullOrWhiteSpace(name))
+                return BadRequest(new { message = "Name is required." });
 
-            var id = await _service.UpsertByNameAsync(dto.TitleName.Trim());
-            var title = await _service.GetByIdAsync(id);
-            return Ok(new { id, titleName = title?.TitleName });
+            var id = await _service.UpsertByNameAsync(name.Trim());
+            var designation = await _service.GetByIdAsync(id);
+            return Ok(new { id, name = designation?.Name, titleName = designation?.Name });
         }
 
         [HttpPut("{id:int}")]
-        public async Task<IActionResult> Update(int id, [FromBody] UpsertJobTitleDto dto)
+        public async Task<IActionResult> Update(int id, [FromBody] UpsertDesignationDto dto)
         {
-            if (!await HasJobTitleActionAsync("EDIT")) return Forbid();
-            if (string.IsNullOrWhiteSpace(dto.TitleName))
-                return BadRequest(new { message = "TitleName is required." });
+            if (!await HasDesignationActionAsync("EDIT")) return Forbid();
+            var name = dto.Name ?? dto.TitleName;
+            if (string.IsNullOrWhiteSpace(name))
+                return BadRequest(new { message = "Name is required." });
 
-            var success = await _service.UpdateAsync(id, dto.TitleName.Trim());
+            var success = await _service.UpdateAsync(id, name.Trim());
             return success
-                ? Ok(new { id, titleName = dto.TitleName.Trim() })
-                : NotFound(new { message = "Job Title not found." });
+                ? Ok(new { id, name = name.Trim(), titleName = name.Trim() })
+                : NotFound(new { message = "Designation not found." });
         }
 
         [HttpDelete("{id:int}")]
         public async Task<IActionResult> Delete(int id)
         {
-            if (!await HasJobTitleActionAsync("DELETE")) return Forbid();
+            if (!await HasDesignationActionAsync("DELETE")) return Forbid();
             try
             {
                 var success = await _service.DeleteAsync(id);
                 return success
-                    ? Ok(new { message = "Job Title deleted successfully." })
-                    : NotFound(new { message = "Job Title not found." });
+                    ? Ok(new { message = "Designation deleted successfully." })
+                    : NotFound(new { message = "Designation not found." });
             }
             catch (InvalidOperationException ex)
             {
@@ -122,16 +134,17 @@ namespace Accounts.Controllers
         [HttpPut("{id:int}/attendance-scope")]
         public async Task<IActionResult> UpdateAttendanceScope(int id, [FromBody] UpdateAttendanceScopeDto dto)
         {
-            if (!await HasJobTitleActionAsync("EDIT")) return Forbid();
+            if (!await HasDesignationActionAsync("EDIT")) return Forbid();
             if (!Enum.IsDefined(dto.Scope)) return BadRequest(new { message = "Invalid attendance visibility scope." });
             var success = await _service.UpdateAttendanceScopeAsync(id, dto.Scope);
-            return success ? Ok(new { id, attendanceVisibilityScope = dto.Scope }) : NotFound(new { message = "Job Title not found." });
+            return success ? Ok(new { id, attendanceVisibilityScope = dto.Scope }) : NotFound(new { message = "Designation not found." });
         }
     }
 
-    public class UpsertJobTitleDto
+    public class UpsertDesignationDto
     {
-        public string TitleName { get; set; } = string.Empty;
+        public string? Name { get; set; }
+        public string? TitleName { get; set; }
     }
 
     public sealed class UpdateAttendanceScopeDto

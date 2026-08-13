@@ -29,7 +29,7 @@ namespace Accounts.Services.Services
         public async Task<IEnumerable<PersonDto>> GetAllAsync()
         {
             var persons  = await _db.Persons.Include(p => p.Addresses)
-                .Include(p => p.Staff).ThenInclude(s => s!.Vacancy).ThenInclude(v => v!.JobTitleNav)
+                .Include(p => p.Staff).ThenInclude(s => s!.Vacancy).ThenInclude(v => v!.DesignationNav)
                 .OrderByDescending(p => p.CreatedDate).ToListAsync();
             var orgNodes = await _db.OrganizationTree.ToListAsync();
             return persons.Select(p => MapToDto(p, orgNodes));
@@ -52,7 +52,7 @@ namespace Accounts.Services.Services
         public async Task<IEnumerable<PersonDto>> GetUnassignedAsync()
         {
             var persons  = await _db.Persons.Include(p => p.Addresses)
-                .Include(p => p.Staff).ThenInclude(s => s!.Vacancy).ThenInclude(v => v!.JobTitleNav)
+                .Include(p => p.Staff).ThenInclude(s => s!.Vacancy).ThenInclude(v => v!.DesignationNav)
                 .Where(p => p.Staff == null).OrderByDescending(p => p.CreatedDate).ToListAsync();
             var orgNodes = await _db.OrganizationTree.ToListAsync();
             return persons.Select(p => MapToDto(p, orgNodes));
@@ -62,7 +62,7 @@ namespace Accounts.Services.Services
         {
             var person = await _db.Persons.Include(p => p.Addresses)
                 .Include(p => p.Contacts)
-                .Include(p => p.Staff).ThenInclude(s => s!.Vacancy).ThenInclude(v => v!.JobTitleNav)
+                .Include(p => p.Staff).ThenInclude(s => s!.Vacancy).ThenInclude(v => v!.DesignationNav)
                 .FirstOrDefaultAsync(p => p.PersonId == id);
             if (person == null) return null;
             var orgNodes = await _db.OrganizationTree.ToListAsync();
@@ -74,7 +74,7 @@ namespace Accounts.Services.Services
             var person = await _db.Persons.AsNoTracking()
                 .Include(p => p.Addresses)
                 .Include(p => p.Contacts)
-                .Include(p => p.Staff).ThenInclude(s => s!.Vacancy).ThenInclude(v => v!.JobTitleNav)
+                .Include(p => p.Staff).ThenInclude(s => s!.Vacancy).ThenInclude(v => v!.DesignationNav)
                 .FirstOrDefaultAsync(p => p.IdentityUserId == identityUserId);
             if (person == null) return null;
             var orgNodes = await _db.OrganizationTree.AsNoTracking().ToListAsync();
@@ -86,7 +86,7 @@ namespace Accounts.Services.Services
             var orgNodes = await _db.OrganizationTree.AsNoTracking().ToListAsync();
             var persons  = await _db.Persons.AsNoTracking()
                 .Include(p => p.Addresses)
-                .Include(p => p.Staff).ThenInclude(s => s!.Vacancy).ThenInclude(v => v!.JobTitleNav)
+                .Include(p => p.Staff).ThenInclude(s => s!.Vacancy).ThenInclude(v => v!.DesignationNav)
                 .OrderByDescending(p => p.CreatedDate).ToListAsync();
             return persons.Select(p => MapToProfile(p, orgNodes));
         }
@@ -95,7 +95,7 @@ namespace Accounts.Services.Services
         {
             var person = await _db.Persons.AsNoTracking()
                 .Include(p => p.Addresses)
-                .Include(p => p.Staff).ThenInclude(s => s!.Vacancy).ThenInclude(v => v!.JobTitleNav)
+                .Include(p => p.Staff).ThenInclude(s => s!.Vacancy).ThenInclude(v => v!.DesignationNav)
                 .FirstOrDefaultAsync(p => p.PersonId == id);
             if (person == null) return null;
             var orgNodes = await _db.OrganizationTree.AsNoTracking().ToListAsync();
@@ -455,7 +455,7 @@ namespace Accounts.Services.Services
             }
 
             var created = await _db.Persons.Include(p => p.Addresses)
-                .Include(p => p.Staff).ThenInclude(s => s!.Vacancy).ThenInclude(v => v!.JobTitleNav)
+                .Include(p => p.Staff).ThenInclude(s => s!.Vacancy).ThenInclude(v => v!.DesignationNav)
                 .FirstOrDefaultAsync(p => p.PersonId == person.PersonId);
 
             return (MapToDto(created!, orgNodes), loginId, password, null, 201);
@@ -569,7 +569,7 @@ namespace Accounts.Services.Services
 
             var orgNodes = await _db.OrganizationTree.ToListAsync();
             var updated  = await _db.Persons.Include(p => p.Addresses)
-                .Include(p => p.Staff).ThenInclude(s => s!.Vacancy).ThenInclude(v => v!.JobTitleNav)
+                .Include(p => p.Staff).ThenInclude(s => s!.Vacancy).ThenInclude(v => v!.DesignationNav)
                 .FirstOrDefaultAsync(p => p.PersonId == id);
             return (MapToDto(updated!, orgNodes), null);
         }

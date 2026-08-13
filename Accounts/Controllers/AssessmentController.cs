@@ -1,4 +1,4 @@
-ï»¿using Accounts.Data;
+using Accounts.Data;
 using Accounts.Models;
 using Accounts.Services.Interfaces;
 using Accounts.Services.Services;
@@ -66,12 +66,12 @@ public sealed class AssessmentController : ControllerBase
                     ? (int?)person.Staff.Vacancy.OrganizationId
                     : null,
                 JobTitle = person.Staff.Vacancy != null
-                    ? (person.Staff.Vacancy.JobTitleNav != null
-                        ? person.Staff.Vacancy.JobTitleNav.TitleName
+                    ? (person.Staff.Vacancy.DesignationNav != null
+                        ? person.Staff.Vacancy.DesignationNav.Name
                         : person.Staff.Vacancy.JobTitle)
                     : null,
-                AttendanceScope = person.Staff.Vacancy != null && person.Staff.Vacancy.JobTitleNav != null
-                    ? person.Staff.Vacancy.JobTitleNav.AttendanceVisibilityScope
+                AttendanceScope = person.Staff.Vacancy != null && person.Staff.Vacancy.DesignationNav != null
+                    ? person.Staff.Vacancy.DesignationNav.AttendanceVisibilityScope
                     : AttendanceVisibilityScope.Self
             })
             .FirstOrDefaultAsync(ct);
@@ -107,8 +107,8 @@ public sealed class AssessmentController : ControllerBase
                         : person.Staff.Vacancy.Department)
                     : null,
                 JobTitle = person.Staff.Vacancy != null
-                    ? (person.Staff.Vacancy.JobTitleNav != null
-                        ? person.Staff.Vacancy.JobTitleNav.TitleName
+                    ? (person.Staff.Vacancy.DesignationNav != null
+                        ? person.Staff.Vacancy.DesignationNav.Name
                         : person.Staff.Vacancy.JobTitle)
                     : null
             })
@@ -144,8 +144,8 @@ public sealed class AssessmentController : ControllerBase
             staffGuid = person.StaffGuid,
             person.StaffId,
             person.FullName,
-            department = person.Department ?? "Î“Ã‡Ã¶",
-            jobTitle = person.JobTitle ?? "Î“Ã‡Ã¶",
+            department = person.Department ?? "GÇö",
+            jobTitle = person.JobTitle ?? "GÇö",
             person.HierarchyLevel,
             rating = savedByPerson.GetValueOrDefault(person.PersonId)?.Rating,
             amount = savedByPerson.GetValueOrDefault(person.PersonId)?.Amount,
@@ -171,7 +171,7 @@ public sealed class AssessmentController : ControllerBase
 
         var assessor = await _db.Persons.AsNoTracking().Where(person => person.IdentityUserId == userId && person.IsActive)
             .Select(person => new { person.PersonId, person.TenantId, StaffId = person.Staff != null ? (Guid?)person.Staff.StaffId : null, JobTitle = person.Staff != null && person.Staff.Vacancy != null
-                ? (person.Staff.Vacancy.JobTitleNav != null ? person.Staff.Vacancy.JobTitleNav.TitleName : person.Staff.Vacancy.JobTitle) : null })
+                ? (person.Staff.Vacancy.DesignationNav != null ? person.Staff.Vacancy.DesignationNav.Name : person.Staff.Vacancy.JobTitle) : null })
             .FirstOrDefaultAsync(ct);
         if (assessor == null || !assessor.StaffId.HasValue ||
             !await HasStaffMenuActionAsync(assessor.StaffId.Value, "/assessment/mark", "EDIT", ct))
@@ -223,8 +223,8 @@ public sealed class AssessmentController : ControllerBase
         var scope = await _dataScope.ResolveAsync(identityUserId, ct);
         var candidates = await _db.Persons.AsNoTracking()
             .Where(person => scope.PersonIds.Contains(person.PersonId) && person.PersonId != assessorPersonId && person.Staff != null && person.Staff.Vacancy != null)
-            .Select(person => new { person.PersonId, JobTitle = person.Staff!.Vacancy!.JobTitleNav != null
-                ? person.Staff.Vacancy.JobTitleNav.TitleName : person.Staff.Vacancy.JobTitle }).ToListAsync(ct);
+            .Select(person => new { person.PersonId, JobTitle = person.Staff!.Vacancy!.DesignationNav != null
+                ? person.Staff.Vacancy.DesignationNav.Name : person.Staff.Vacancy.JobTitle }).ToListAsync(ct);
         var lower = candidates.Select(person => new { person.PersonId, Rank = AttendanceRoleRank(person.JobTitle) })
             .Where(person => person.Rank > 0 && person.Rank < callerRank).ToList();
         if (lower.Count == 0) return [];

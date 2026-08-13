@@ -1,4 +1,4 @@
-﻿using Accounts.Data;
+using Accounts.Data;
 using Accounts.Models;
 using Accounts.Services.Services;
 using Microsoft.EntityFrameworkCore;
@@ -38,7 +38,7 @@ public sealed class AssessmentSchedulerService(IServiceScopeFactory scopeFactory
                 var openDay = schedule?.OpenDay ?? 25;
                 if (today.Day < openDay) continue;
                 var people = await db.Persons.IgnoreQueryFilters().AsNoTracking().Where(x => x.TenantId == tenantId && x.IsActive && x.IdentityUserId != null && x.Staff != null && x.Staff.Vacancy != null)
-                    .Select(x => new PersonRow(x.PersonId, x.IdentityUserId!, x.Staff!.Vacancy!.OrganizationId, x.Staff.Vacancy.JobTitleNav != null ? x.Staff.Vacancy.JobTitleNav.TitleName : x.Staff.Vacancy.JobTitle)).ToListAsync(ct);
+                    .Select(x => new PersonRow(x.PersonId, x.IdentityUserId!, x.Staff!.Vacancy!.OrganizationId, x.Staff.Vacancy.DesignationNav != null ? x.Staff.Vacancy.DesignationNav.Name : x.Staff.Vacancy.JobTitle)).ToListAsync(ct);
 
                 foreach (var assessor in people.Where(x => Rank(x.JobTitle) > 100))
                 {

@@ -48,8 +48,8 @@ public sealed class DashboardController : ControllerBase
             .CountAsync(cancellationToken);
 
         var topRoles = await _db.Vacancies.AsNoTracking()
-            .GroupBy(vacancy => vacancy.JobTitleNav != null
-                ? vacancy.JobTitleNav.TitleName
+            .GroupBy(vacancy => vacancy.DesignationNav != null
+                ? vacancy.DesignationNav.Name
                 : vacancy.JobTitle)
             .Select(group => new { name = group.Key ?? "Unassigned", count = group.Count() })
             .OrderByDescending(item => item.count)

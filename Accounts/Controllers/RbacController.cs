@@ -292,11 +292,11 @@ namespace Accounts.Controllers
                 .Select(row => row.JobTitleId!.Value)
                 .Distinct()
                 .ToArray();
-            var jobTitleMap = await _db.JobTitles
+            var jobTitleMap = await _db.Designations
                 .IgnoreQueryFilters()
                 .AsNoTracking()
                 .Where(title => title.TenantId == tenantId.Value && jobTitleIds.Contains(title.Id))
-                .ToDictionaryAsync(title => title.Id, title => title.TitleName);
+                .ToDictionaryAsync(title => title.Id, title => title.Name);
 
             var organizationNodes = await _db.OrganizationTree
                 .AsNoTracking()

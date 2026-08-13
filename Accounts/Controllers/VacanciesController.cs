@@ -132,7 +132,7 @@ namespace Accounts.Controllers
             if (await CallerIsSuperAdminAsync()) return Forbid();
             if (!await HasVacancyActionAsync("ADD", "VACANCY_CREATE")) return Forbid();
             if (organizationId <= 0 || string.IsNullOrWhiteSpace(jobTitle))
-                return BadRequest(new { message = "organizationId and jobTitle are required." });
+                return BadRequest(new { message = "organizationId and designation are required." });
             var code = await _service.PreviewCodeAsync(organizationId, jobTitle);
             return code == null
                 ? BadRequest(new { message = $"Organization node {organizationId} not found." })
@@ -145,8 +145,6 @@ namespace Accounts.Controllers
             if (await CallerIsSuperAdminAsync()) return Forbid();
             if (!await HasVacancyActionAsync("ADD", "VACANCY_CREATE")) return Forbid();
             if (!ModelState.IsValid) return BadRequest(ModelState);
-            if (await CallerIsTenantAdminAsync() && !dto.JobTitleId.HasValue)
-                return BadRequest(new { message = "Tenant Admins must select an existing job title from the Job Titles catalog." });
             if (dto.VacancyCount <= 1)
             {
                 var (vacancy, error) = await _service.CreateAsync(dto);

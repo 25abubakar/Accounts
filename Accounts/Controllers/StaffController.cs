@@ -208,7 +208,7 @@ namespace Accounts.Controllers
                 .AsNoTracking()
                 .Include(s => s.Person)
                 .Include(s => s.Vacancy)
-                    .ThenInclude(v => v!.JobTitleNav)
+                    .ThenInclude(v => v!.DesignationNav)
                 .Include(s => s.Vacancy)
                     .ThenInclude(v => v!.Organization)
                     .ThenInclude(o => o!.Parent)

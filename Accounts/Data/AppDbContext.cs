@@ -1,4 +1,4 @@
-﻿using Accounts.Models;
+using Accounts.Models;
 using Accounts.Services.Interfaces;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Identity.EntityFrameworkCore;
@@ -35,7 +35,8 @@ namespace Accounts.Data
         public DbSet<PersonEducation>          PersonEducations         => Set<PersonEducation>();
         public DbSet<PersonExperience>         PersonExperiences        => Set<PersonExperience>();
         public DbSet<PersonHrProfileReadRow>   PersonHrProfileReadRows  => Set<PersonHrProfileReadRow>();
-        public DbSet<JobTitle>                 JobTitles                => Set<JobTitle>();
+        public DbSet<Designation>              Designations             => Set<Designation>();
+        public DbSet<Designation>              JobTitles                => Set<Designation>();
         public DbSet<SalaryScale>              SalaryScales             => Set<SalaryScale>();
         public DbSet<PlatformTypeCategory>     PlatformTypeCategories   => Set<PlatformTypeCategory>();
         public DbSet<PlatformTypeValue>        PlatformTypeValues       => Set<PlatformTypeValue>();
@@ -94,6 +95,8 @@ namespace Accounts.Data
         // â”€â”€ New 2-Tier RBAC â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         public DbSet<StaffMenuAccess>          StaffMenuAccesses        => Set<StaffMenuAccess>();
         public DbSet<AccessFeature>            AccessFeatures           => Set<AccessFeature>();
+        public DbSet<PersonMenu>               PersonMenus              => Set<PersonMenu>();
+        public DbSet<PersonFeature>            PersonFeatures           => Set<PersonFeature>();
 
         // â”€â”€ Multi-Tenant SaaS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         public DbSet<Tenant>                   Tenants                  => Set<Tenant>();
@@ -109,6 +112,15 @@ namespace Accounts.Data
         public DbSet<AppNoteUserStatus> AppNoteUserStatuses => Set<AppNoteUserStatus>();
         public DbSet<AppNoteUserState>  AppNoteUserStates   => Set<AppNoteUserState>();
         public DbSet<AppNoteAttachment> AppNoteAttachments  => Set<AppNoteAttachment>();
+        public DbSet<ChatWorkspace> ChatWorkspaces => Set<ChatWorkspace>();
+        public DbSet<ChatContactRequest> ChatContactRequests => Set<ChatContactRequest>();
+        public DbSet<ChatConversation> ChatConversations => Set<ChatConversation>();
+        public DbSet<ChatConversationMember> ChatConversationMembers => Set<ChatConversationMember>();
+        public DbSet<ChatMessage> ChatMessages => Set<ChatMessage>();
+        public DbSet<ChatMessageReaction> ChatMessageReactions => Set<ChatMessageReaction>();
+        public DbSet<ChatMessageDeletion> ChatMessageDeletions => Set<ChatMessageDeletion>();
+        public DbSet<ChatAttachment> ChatAttachments => Set<ChatAttachment>();
+        public DbSet<ChatBlock> ChatBlocks => Set<ChatBlock>();
 
         protected override void OnModelCreating(ModelBuilder builder)
         {
@@ -118,6 +130,33 @@ namespace Accounts.Data
             // sees no operational rows, and SuperAdmin sees no tenant operational
             // rows. Explicit IgnoreQueryFilters is reserved for reviewed platform
             // provisioning services.
+            builder.Entity<ChatWorkspace>().HasQueryFilter(row =>
+                _tenantService != null && !_tenantService.IsSuperAdmin &&
+                _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
+            builder.Entity<ChatContactRequest>().HasQueryFilter(row =>
+                _tenantService != null && !_tenantService.IsSuperAdmin &&
+                _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
+            builder.Entity<ChatConversation>().HasQueryFilter(row =>
+                _tenantService != null && !_tenantService.IsSuperAdmin &&
+                _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
+            builder.Entity<ChatConversationMember>().HasQueryFilter(row =>
+                _tenantService != null && !_tenantService.IsSuperAdmin &&
+                _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
+            builder.Entity<ChatMessage>().HasQueryFilter(row =>
+                _tenantService != null && !_tenantService.IsSuperAdmin &&
+                _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
+            builder.Entity<ChatMessageReaction>().HasQueryFilter(row =>
+                _tenantService != null && !_tenantService.IsSuperAdmin &&
+                _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
+            builder.Entity<ChatMessageDeletion>().HasQueryFilter(row =>
+                _tenantService != null && !_tenantService.IsSuperAdmin &&
+                _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
+            builder.Entity<ChatAttachment>().HasQueryFilter(row =>
+                _tenantService != null && !_tenantService.IsSuperAdmin &&
+                _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
+            builder.Entity<ChatBlock>().HasQueryFilter(row =>
+                _tenantService != null && !_tenantService.IsSuperAdmin &&
+                _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
             builder.Entity<Person>().HasQueryFilter(row =>
                 _tenantService != null && !_tenantService.IsSuperAdmin &&
                 _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
@@ -166,7 +205,7 @@ namespace Accounts.Data
                 _tenantService != null && !_tenantService.IsSuperAdmin &&
                 _tenantService.TenantId != null && row.Staff != null &&
                 row.Staff.TenantId == _tenantService.TenantId);
-            builder.Entity<JobTitle>().HasQueryFilter(row =>
+            builder.Entity<Designation>().HasQueryFilter(row =>
                 _tenantService != null && !_tenantService.IsSuperAdmin &&
                 _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
             builder.Entity<SalaryScale>().HasQueryFilter(row =>
@@ -329,6 +368,28 @@ namespace Accounts.Data
                     a.Staff == null ||
                     a.Staff.TenantId == _tenantService.TenantId);
 
+            builder.Entity<PersonMenu>(e =>
+            {
+                e.HasKey(x => new { x.PersonId, x.MenuId });
+                e.HasQueryFilter(m =>
+                    _tenantService == null ||
+                    _tenantService.IsSuperAdmin ||
+                    _tenantService.TenantId == null ||
+                    m.Person == null ||
+                    m.Person.TenantId == _tenantService.TenantId);
+            });
+
+            builder.Entity<PersonFeature>(e =>
+            {
+                e.HasKey(x => new { x.PersonId, x.PermissionId });
+                e.HasQueryFilter(f =>
+                    _tenantService == null ||
+                    _tenantService.IsSuperAdmin ||
+                    _tenantService.TenantId == null ||
+                    f.Person == null ||
+                    f.Person.TenantId == _tenantService.TenantId);
+            });
+
             builder.Entity<UserPermissionOverride>()
                 .HasQueryFilter(o =>
                     _tenantService == null ||
@@ -337,7 +398,7 @@ namespace Accounts.Data
                     o.Staff == null ||
                     o.Staff.TenantId == _tenantService.TenantId);
 
-            builder.Entity<JobTitle>()
+            builder.Entity<Designation>()
                 .HasQueryFilter(j =>
                     _tenantService == null ||
                     _tenantService.IsSuperAdmin ||
@@ -465,7 +526,7 @@ namespace Accounts.Data
                     a.Note.TenantId == null ||
                     a.Note.TenantId == _tenantService.TenantId);
 
-            // â”€â”€ ApplicationUser (AspNetUsers) â€” multi-tenant columns â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+            // ——— ApplicationUser (AspNetUsers) — multi-tenant columns ————————————
             builder.Entity<ApplicationUser>(e =>
             {
                 e.Property(u => u.TenantId).IsRequired(false);
@@ -474,7 +535,7 @@ namespace Accounts.Data
                 e.HasIndex(u => u.TenantId);
             });
 
-            // â”€â”€ Tenants table â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+            // ——— Tenants table ——————————————————————————————————————————————————
             builder.Entity<ApplicationLoginSession>(e =>
             {
                 e.ToTable("ApplicationLoginSessions");
@@ -532,7 +593,7 @@ namespace Accounts.Data
                  .OnDelete(DeleteBehavior.Restrict);
             });
 
-            // â”€â”€ TenantMenuPermissions â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+            // ——— TenantMenuPermissions ——————————————————————————————————————————
             builder.Entity<TenantMenuPermission>(e =>
             {
                 e.ToTable("TenantMenuPermissions");
@@ -562,7 +623,7 @@ namespace Accounts.Data
                 e.HasIndex(x => x.MenuId);
             });
 
-            // â”€â”€ TenantRolePermissions â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+            // ——— TenantRolePermissions ——————————————————————————————————————————
             builder.Entity<TenantRolePermission>(e =>
             {
                 e.ToTable("TenantRolePermissions");
@@ -595,7 +656,7 @@ namespace Accounts.Data
                  .IsRequired(false);
             });
 
-            // â”€â”€ Person: TenantId FK â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+            // ——— Person: TenantId FK ————————————————————————————————————————————
             builder.Entity<Person>(e =>
             {
                 e.Property(x => x.TenantId).IsRequired();
@@ -606,7 +667,7 @@ namespace Accounts.Data
                  .OnDelete(DeleteBehavior.Restrict);
             });
 
-            // â”€â”€ Vacancy: TenantId FK â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+            // ——— Vacancy: TenantId FK ———————————————————————————————————————————
             builder.Entity<Vacancy>(e =>
             {
                 e.Property(x => x.TenantId).IsRequired();
@@ -617,7 +678,7 @@ namespace Accounts.Data
                  .OnDelete(DeleteBehavior.Restrict);
             });
 
-            // â”€â”€ StaffVacancy: TenantId FK â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+            // ——— StaffVacancy: TenantId FK ——————————————————————————————————————
             builder.Entity<StaffVacancy>(e =>
             {
                 e.Property(x => x.TenantId).IsRequired();
@@ -626,20 +687,6 @@ namespace Accounts.Data
                  .WithMany()
                  .HasForeignKey(x => x.TenantId)
                  .OnDelete(DeleteBehavior.Restrict);
-            });
-
-            // â”€â”€ JobTitle: TenantId FK â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-            builder.Entity<JobTitle>(e =>
-            {
-                e.Property(x => x.TenantId).IsRequired();
-                e.HasIndex(x => x.TenantId);
-                e.HasOne<Tenant>()
-                 .WithMany()
-                 .HasForeignKey(x => x.TenantId)
-                 .OnDelete(DeleteBehavior.Restrict);
-                // UNIQUE constraint now scoped per tenant
-                // (old global unique on TitleName is replaced by tenant-scoped unique)
-                e.HasIndex(x => new { x.TenantId, x.TitleName }).IsUnique();
             });
 
             builder.Entity<SalaryScale>(e =>
@@ -669,7 +716,7 @@ namespace Accounts.Data
                  .OnDelete(DeleteBehavior.Restrict);
             });
 
-            // â”€â”€ AppNote: optional TenantId FK â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+            // ——— AppNote: optional TenantId FK ——————————————————————————————————
             builder.Entity<AppNote>(e =>
             {
                 e.Property(x => x.TenantId).IsRequired(false);
@@ -681,7 +728,7 @@ namespace Accounts.Data
                  .IsRequired(false);
             });
 
-            // â”€â”€ Menu and MenuPermissions â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+            // ——— Menu and MenuPermissions ———————————————————————————————————————
             builder.Entity<Menu>()
                 .HasOne(m => m.Parent)
                 .WithMany(m => m.Children)
@@ -960,9 +1007,11 @@ namespace Accounts.Data
                 e.HasIndex(x => new { x.TenantId, x.AttendanceDate });
                 e.HasOne(x => x.Person).WithMany().HasForeignKey(x => x.PersonId).OnDelete(DeleteBehavior.Restrict);
                 e.HasOne(x => x.AttendanceStatus).WithMany().HasForeignKey(x => x.AttendanceStatusId).OnDelete(DeleteBehavior.Restrict);
+                e.HasOne(x => x.PlatformActionStatus).WithMany().HasForeignKey(x => x.PlatformActionStatusId).OnDelete(DeleteBehavior.Restrict);
                 e.HasOne(x => x.AttendanceEntryType).WithMany(x => x.Records).HasForeignKey(x => x.AttendanceEntryTypeId).OnDelete(DeleteBehavior.Restrict);
                 e.HasOne(x => x.AttendanceWorkMode).WithMany(x => x.Records).HasForeignKey(x => x.AttendanceWorkModeId).OnDelete(DeleteBehavior.Restrict);
                 e.HasOne(x => x.VerificationStatus).WithMany().HasForeignKey(x => x.VerificationStatusId).OnDelete(DeleteBehavior.Restrict);
+                e.HasOne(x => x.PlatformVerificationStatus).WithMany().HasForeignKey(x => x.PlatformVerificationStatusId).OnDelete(DeleteBehavior.Restrict);
                 e.HasOne(x => x.ApprovalRequest).WithMany().HasForeignKey(x => x.ApprovalRequestId).OnDelete(DeleteBehavior.Restrict);
             });
 
@@ -1163,11 +1212,17 @@ namespace Accounts.Data
                 e.HasIndex(x => x.TenantId).IsUnique().HasFilter("[IsActive] = 1");
                 e.HasOne(x => x.Tenant).WithMany().HasForeignKey(x => x.TenantId).OnDelete(DeleteBehavior.Restrict);
                 e.HasOne(x => x.PresentStatus).WithMany().HasForeignKey(x => x.PresentStatusId).OnDelete(DeleteBehavior.Restrict);
+                e.HasOne(x => x.PlatformPresentStatus).WithMany().HasForeignKey(x => x.PlatformPresentStatusId).OnDelete(DeleteBehavior.Restrict);
                 e.HasOne(x => x.LateStatus).WithMany().HasForeignKey(x => x.LateStatusId).OnDelete(DeleteBehavior.Restrict);
+                e.HasOne(x => x.PlatformLateStatus).WithMany().HasForeignKey(x => x.PlatformLateStatusId).OnDelete(DeleteBehavior.Restrict);
                 e.HasOne(x => x.CompletedLateStatus).WithMany().HasForeignKey(x => x.CompletedLateStatusId).OnDelete(DeleteBehavior.Restrict);
+                e.HasOne(x => x.PlatformCompletedLateStatus).WithMany().HasForeignKey(x => x.PlatformCompletedLateStatusId).OnDelete(DeleteBehavior.Restrict);
                 e.HasOne(x => x.ShortLeaveStatus).WithMany().HasForeignKey(x => x.ShortLeaveStatusId).OnDelete(DeleteBehavior.Restrict);
+                e.HasOne(x => x.PlatformShortLeaveStatus).WithMany().HasForeignKey(x => x.PlatformShortLeaveStatusId).OnDelete(DeleteBehavior.Restrict);
                 e.HasOne(x => x.EarlyDepartureStatus).WithMany().HasForeignKey(x => x.EarlyDepartureStatusId).OnDelete(DeleteBehavior.Restrict);
+                e.HasOne(x => x.PlatformEarlyDepartureStatus).WithMany().HasForeignKey(x => x.PlatformEarlyDepartureStatusId).OnDelete(DeleteBehavior.Restrict);
                 e.HasOne(x => x.AbsentStatus).WithMany().HasForeignKey(x => x.AbsentStatusId).OnDelete(DeleteBehavior.Restrict);
+                e.HasOne(x => x.PlatformAbsentStatus).WithMany().HasForeignKey(x => x.PlatformAbsentStatusId).OnDelete(DeleteBehavior.Restrict);
             });
 
             builder.Entity<VacancyCounter>(e =>
@@ -1178,7 +1233,7 @@ namespace Accounts.Data
                 e.Property(x => x.LastNumber).HasDefaultValue(0).IsRequired();
             });
 
-            // â”€â”€ Features (Master Permissions) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+            // ——— Features (Master Permissions) ——————————————————————————————————
             builder.Entity<Feature>(e =>
             {
                 e.ToTable("Features");
@@ -1207,7 +1262,7 @@ namespace Accounts.Data
                  .OnDelete(DeleteBehavior.Cascade);
             });
 
-            // â”€â”€ DepartmentAccessMatrix (Legacy) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+            // ——— DepartmentAccessMatrix (Legacy) ————————————————————————————————
             builder.Entity<DepartmentAccessMatrix>(e =>
             {
                 e.ToTable("DepartmentAccessMatrix");
@@ -1242,7 +1297,7 @@ namespace Accounts.Data
                  .OnDelete(DeleteBehavior.Cascade);
             });
 
-            // â”€â”€ RolePermission (Optimized) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+            // ——— RolePermission (Optimized) —————————————————————————————————————
             builder.Entity<RolePermission>(e =>
             {
                 e.ToTable("RolePermissions");
@@ -1275,7 +1330,7 @@ namespace Accounts.Data
             // NOTE: UserPermissionOverrides table dropped in V2 migration.
             //       All permission writes now go through StaffMenuAccess + AccessFeatures.
 
-            // â”€â”€ Communication Center: AppLookupTypes â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+            // ——— Communication Center: AppLookupTypes ———————————————————————————
             builder.Entity<AppLookupType>(e =>
             {
                 e.ToTable("AppLookupTypes");
@@ -1285,7 +1340,7 @@ namespace Accounts.Data
                 e.HasIndex(x => x.LookupTypeCode).IsUnique();
             });
 
-            // â”€â”€ Communication Center: AppLookupValues â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+            // ——— Communication Center: AppLookupValues ——————————————————————————
             builder.Entity<AppLookupValue>(e =>
             {
                 e.ToTable("AppLookupValues");
@@ -1299,7 +1354,7 @@ namespace Accounts.Data
                  .OnDelete(DeleteBehavior.Cascade);
             });
 
-            // â”€â”€ Communication Center: AppNotes â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+            // ——— Communication Center: AppNotes —————————————————————————————————
             builder.Entity<AppNote>(e =>
             {
                 e.ToTable("AppNotes");
@@ -1325,7 +1380,7 @@ namespace Accounts.Data
                 e.HasMany(x => x.Attachments).WithOne(x => x.Note).HasForeignKey(x => x.NoteId).OnDelete(DeleteBehavior.Cascade);
             });
 
-            // â”€â”€ Communication Center: AppNoteTargets â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+            // ——— Communication Center: AppNoteTargets ———————————————————————————
             builder.Entity<AppNoteTarget>(e =>
             {
                 e.ToTable("AppNoteTargets");
@@ -1338,7 +1393,7 @@ namespace Accounts.Data
                  .HasDatabaseName("IX_AppNoteTargets_TypeValueNoteId");
             });
 
-            // â”€â”€ Communication Center: AppNoteUserStatuses (legacy) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+            // ——— Communication Center: AppNoteUserStatuses (legacy) —————————————
             builder.Entity<AppNoteUserStatus>(e =>
             {
                 e.ToTable("AppNoteUserStatuses");
@@ -1347,7 +1402,7 @@ namespace Accounts.Data
                 e.HasIndex(x => new { x.NoteId, x.UserId }).IsUnique();
             });
 
-            // â”€â”€ Communication Center: AppNoteUserStates (per-staff) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+            // ——— Communication Center: AppNoteUserStates (per-staff) ————————————
             builder.Entity<AppNoteUserState>(e =>
             {
                 e.ToTable("AppNoteUserStates");
@@ -1359,28 +1414,39 @@ namespace Accounts.Data
                  .HasDatabaseName("IX_AppNoteUserStates_StaffId_NoteId");
             });
 
-            // â”€â”€ Communication Center: AppNoteAttachments â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+            // ——— Communication Center: AppNoteAttachments ——————————————————————
             builder.Entity<AppNoteAttachment>(e =>
             {
                 e.ToTable("AppNoteAttachments");
                 e.HasKey(x => x.AttachmentId);
             });
 
-            // â”€â”€ Keyless query types (stored procedures / views) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+            // ——— Keyless query types (stored procedures / views) ————————————————
             builder.Entity<OrganizationVacancyPersonDto>().HasNoKey();
             builder.Entity<EmployeeByOrgAndRoleDto>().HasNoKey();
 
-            // â”€â”€ JobTitles (normalized lookup â€” now tenant-scoped) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-            builder.Entity<JobTitle>(e =>
+            // ——— Designations (JobTitles table — tenant-scoped) ———————————————
+            builder.Entity<Designation>(e =>
             {
                 e.ToTable("JobTitles");
                 e.HasKey(x => x.Id);
                 e.Property(x => x.Id).ValueGeneratedOnAdd();
-                e.Property(x => x.TitleName).HasMaxLength(100).IsRequired();
-                // Unique index is now (TenantId, TitleName) â€” configured above in tenant section
+                e.Property(x => x.Name).HasColumnName("TitleName").HasMaxLength(100).IsRequired();
             });
 
-            // â”€â”€ PersonContacts (one-to-many contacts per person) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+            // ——— Designation: TenantId FK ——————————————————————————————————————
+            builder.Entity<Designation>(e =>
+            {
+                e.Property(x => x.TenantId).IsRequired();
+                e.HasIndex(x => x.TenantId);
+                e.HasOne<Tenant>()
+                 .WithMany()
+                 .HasForeignKey(x => x.TenantId)
+                 .OnDelete(DeleteBehavior.Restrict);
+                e.HasIndex(x => new { x.TenantId, x.Name }).IsUnique();
+            });
+
+            // ——— PersonContacts (one-to-many contacts per person) ———————————————
             builder.Entity<PersonContact>(e =>
             {
                 e.ToTable("PersonContacts", table => table.HasCheckConstraint(
@@ -1437,18 +1503,20 @@ namespace Accounts.Data
                 e.HasNoKey();
                 e.ToView("vw_PersonHrProfiles");
             });
-            // â”€â”€ Vacancy: JobTitleId FK â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+            // ——— Vacancy: DesignationId FK ——————————————————————————————————————
             builder.Entity<Vacancy>(e =>
             {
-                e.HasOne(x => x.JobTitleNav)
+                e.Property(x => x.DesignationId).HasColumnName("JobTitleId");
+                e.Property(x => x.JobTitle).HasMaxLength(100);
+                e.HasOne(x => x.DesignationNav)
                  .WithMany(x => x.Vacancies)
-                 .HasForeignKey(x => x.JobTitleId)
+                 .HasForeignKey(x => x.DesignationId)
                  .OnDelete(DeleteBehavior.Restrict)
                  .IsRequired(false);
-                e.HasIndex(x => x.JobTitleId);
+                e.HasIndex(x => x.DesignationId);
             });
 
-            // â”€â”€ StaffMenuAccess (RBAC Tier-1) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+            // ——— StaffMenuAccess (RBAC Tier-1) ——————————————————————————————————
             builder.Entity<StaffMenuAccess>(e =>
             {
                 e.ToTable("StaffMenuAccess");
@@ -1505,6 +1573,72 @@ namespace Accounts.Data
             }).IsUnique();
             builder.Entity<AssessmentBonusRule>().HasIndex(row => row.TenantId).IsUnique();
             builder.Entity<AssessmentSchedule>().HasIndex(row => new { row.TenantId, row.AssessmentYear, row.AssessmentMonth }).IsUnique();
+
+            builder.Entity<ChatWorkspace>(e =>
+            {
+                e.HasIndex(x => new { x.TenantId, x.OrganizationTreeId }).IsUnique();
+                e.HasOne<Tenant>().WithMany().HasForeignKey(x => x.TenantId).OnDelete(DeleteBehavior.Cascade);
+                e.HasOne<OrganizationTree>().WithMany().HasForeignKey(x => x.OrganizationTreeId).OnDelete(DeleteBehavior.Restrict);
+            });
+
+            builder.Entity<ChatContactRequest>(e =>
+            {
+                e.HasIndex(x => new { x.WorkspaceId, x.PairKey })
+                    .IsUnique()
+                    .HasFilter("[Status] = 'Pending'");
+                e.HasIndex(x => new { x.TenantId, x.ReceiverPersonId, x.Status, x.CreatedOnUtc });
+                e.HasOne<ChatWorkspace>().WithMany().HasForeignKey(x => x.WorkspaceId).OnDelete(DeleteBehavior.Cascade);
+                e.HasOne<Person>().WithMany().HasForeignKey(x => x.SenderPersonId).OnDelete(DeleteBehavior.Restrict);
+                e.HasOne<Person>().WithMany().HasForeignKey(x => x.ReceiverPersonId).OnDelete(DeleteBehavior.Restrict);
+            });
+
+            builder.Entity<ChatConversation>(e =>
+            {
+                e.HasIndex(x => new { x.WorkspaceId, x.DirectPairKey })
+                    .IsUnique()
+                    .HasFilter("[DirectPairKey] IS NOT NULL");
+                e.HasIndex(x => new { x.TenantId, x.IsActive, x.CreatedOnUtc });
+                e.HasOne<ChatWorkspace>().WithMany().HasForeignKey(x => x.WorkspaceId).OnDelete(DeleteBehavior.Cascade);
+                e.HasOne<Person>().WithMany().HasForeignKey(x => x.CreatedByPersonId).OnDelete(DeleteBehavior.Restrict);
+            });
+
+            builder.Entity<ChatConversationMember>(e =>
+            {
+                e.HasIndex(x => new { x.ConversationId, x.PersonId }).IsUnique();
+                e.HasIndex(x => new { x.TenantId, x.PersonId, x.LeftOnUtc });
+                e.HasOne<ChatConversation>().WithMany().HasForeignKey(x => x.ConversationId).OnDelete(DeleteBehavior.Cascade);
+                e.HasOne<Person>().WithMany().HasForeignKey(x => x.PersonId).OnDelete(DeleteBehavior.Restrict);
+            });
+
+            builder.Entity<ChatMessage>(e =>
+            {
+                e.HasIndex(x => new { x.ConversationId, x.Id });
+                e.HasIndex(x => new { x.TenantId, x.SenderPersonId, x.ClientMessageId }).IsUnique();
+                e.HasOne<ChatConversation>().WithMany().HasForeignKey(x => x.ConversationId).OnDelete(DeleteBehavior.Cascade);
+                e.HasOne<Person>().WithMany().HasForeignKey(x => x.SenderPersonId).OnDelete(DeleteBehavior.Restrict);
+                e.HasOne<ChatMessage>().WithMany().HasForeignKey(x => x.ReplyToMessageId).OnDelete(DeleteBehavior.Restrict);
+            });
+
+            builder.Entity<ChatMessageReaction>(e =>
+            {
+                e.HasIndex(x => new { x.MessageId, x.PersonId, x.Emoji }).IsUnique();
+                e.HasOne<ChatMessage>().WithMany().HasForeignKey(x => x.MessageId).OnDelete(DeleteBehavior.Cascade);
+                e.HasOne<Person>().WithMany().HasForeignKey(x => x.PersonId).OnDelete(DeleteBehavior.Restrict);
+            });
+
+            builder.Entity<ChatAttachment>(e =>
+            {
+                e.Property(x => x.Content).HasColumnType("varbinary(max)");
+                e.HasIndex(x => new { x.MessageId, x.Id });
+                e.HasOne<ChatMessage>().WithMany().HasForeignKey(x => x.MessageId).OnDelete(DeleteBehavior.Cascade);
+            });
+
+            builder.Entity<ChatBlock>(e =>
+            {
+                e.HasIndex(x => new { x.TenantId, x.BlockerPersonId, x.BlockedPersonId }).IsUnique();
+                e.HasOne<Person>().WithMany().HasForeignKey(x => x.BlockerPersonId).OnDelete(DeleteBehavior.Restrict);
+                e.HasOne<Person>().WithMany().HasForeignKey(x => x.BlockedPersonId).OnDelete(DeleteBehavior.Restrict);
+            });
         }
 
         private static void ConfigurePlatformTypeTable<TEntity>(ModelBuilder builder, string tableName)

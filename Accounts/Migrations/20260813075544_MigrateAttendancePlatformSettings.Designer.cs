@@ -4,6 +4,7 @@ using Accounts.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 #nullable disable
@@ -11,9 +12,11 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace Accounts.Migrations
 {
     [DbContext(typeof(ApplicationDbContext))]
-    partial class ApplicationDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260813075544_MigrateAttendancePlatformSettings")]
+    partial class MigrateAttendancePlatformSettings
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -1238,24 +1241,6 @@ namespace Accounts.Migrations
                     b.Property<int>("OnTimeGraceMinutesAfter")
                         .HasColumnType("int");
 
-                    b.Property<int?>("PlatformAbsentStatusId")
-                        .HasColumnType("int");
-
-                    b.Property<int?>("PlatformCompletedLateStatusId")
-                        .HasColumnType("int");
-
-                    b.Property<int?>("PlatformEarlyDepartureStatusId")
-                        .HasColumnType("int");
-
-                    b.Property<int?>("PlatformLateStatusId")
-                        .HasColumnType("int");
-
-                    b.Property<int?>("PlatformPresentStatusId")
-                        .HasColumnType("int");
-
-                    b.Property<int?>("PlatformShortLeaveStatusId")
-                        .HasColumnType("int");
-
                     b.Property<string>("PolicyName")
                         .IsRequired()
                         .HasMaxLength(100)
@@ -1284,18 +1269,6 @@ namespace Accounts.Migrations
                     b.HasIndex("EarlyDepartureStatusId");
 
                     b.HasIndex("LateStatusId");
-
-                    b.HasIndex("PlatformAbsentStatusId");
-
-                    b.HasIndex("PlatformCompletedLateStatusId");
-
-                    b.HasIndex("PlatformEarlyDepartureStatusId");
-
-                    b.HasIndex("PlatformLateStatusId");
-
-                    b.HasIndex("PlatformPresentStatusId");
-
-                    b.HasIndex("PlatformShortLeaveStatusId");
 
                     b.HasIndex("PresentStatusId");
 
@@ -1370,12 +1343,6 @@ namespace Accounts.Migrations
                     b.Property<Guid>("PersonId")
                         .HasColumnType("uniqueidentifier");
 
-                    b.Property<int?>("PlatformActionStatusId")
-                        .HasColumnType("int");
-
-                    b.Property<int?>("PlatformVerificationStatusId")
-                        .HasColumnType("int");
-
                     b.Property<int>("TenantId")
                         .HasColumnType("int");
 
@@ -1397,10 +1364,6 @@ namespace Accounts.Migrations
                     b.HasIndex("AttendanceStatusId");
 
                     b.HasIndex("AttendanceWorkModeId");
-
-                    b.HasIndex("PlatformActionStatusId");
-
-                    b.HasIndex("PlatformVerificationStatusId");
 
                     b.HasIndex("VerificationStatusId");
 
@@ -4889,36 +4852,6 @@ namespace Accounts.Migrations
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
 
-                    b.HasOne("Accounts.Models.PlatformSettingActionStatus", "PlatformAbsentStatus")
-                        .WithMany()
-                        .HasForeignKey("PlatformAbsentStatusId")
-                        .OnDelete(DeleteBehavior.Restrict);
-
-                    b.HasOne("Accounts.Models.PlatformSettingActionStatus", "PlatformCompletedLateStatus")
-                        .WithMany()
-                        .HasForeignKey("PlatformCompletedLateStatusId")
-                        .OnDelete(DeleteBehavior.Restrict);
-
-                    b.HasOne("Accounts.Models.PlatformSettingActionStatus", "PlatformEarlyDepartureStatus")
-                        .WithMany()
-                        .HasForeignKey("PlatformEarlyDepartureStatusId")
-                        .OnDelete(DeleteBehavior.Restrict);
-
-                    b.HasOne("Accounts.Models.PlatformSettingActionStatus", "PlatformLateStatus")
-                        .WithMany()
-                        .HasForeignKey("PlatformLateStatusId")
-                        .OnDelete(DeleteBehavior.Restrict);
-
-                    b.HasOne("Accounts.Models.PlatformSettingActionStatus", "PlatformPresentStatus")
-                        .WithMany()
-                        .HasForeignKey("PlatformPresentStatusId")
-                        .OnDelete(DeleteBehavior.Restrict);
-
-                    b.HasOne("Accounts.Models.PlatformSettingActionStatus", "PlatformShortLeaveStatus")
-                        .WithMany()
-                        .HasForeignKey("PlatformShortLeaveStatusId")
-                        .OnDelete(DeleteBehavior.Restrict);
-
                     b.HasOne("Accounts.Models.ProcessStatusStyle", "PresentStatus")
                         .WithMany()
                         .HasForeignKey("PresentStatusId")
@@ -4943,18 +4876,6 @@ namespace Accounts.Migrations
                     b.Navigation("EarlyDepartureStatus");
 
                     b.Navigation("LateStatus");
-
-                    b.Navigation("PlatformAbsentStatus");
-
-                    b.Navigation("PlatformCompletedLateStatus");
-
-                    b.Navigation("PlatformEarlyDepartureStatus");
-
-                    b.Navigation("PlatformLateStatus");
-
-                    b.Navigation("PlatformPresentStatus");
-
-                    b.Navigation("PlatformShortLeaveStatus");
 
                     b.Navigation("PresentStatus");
 
@@ -4991,16 +4912,6 @@ namespace Accounts.Migrations
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
 
-                    b.HasOne("Accounts.Models.PlatformSettingActionStatus", "PlatformActionStatus")
-                        .WithMany()
-                        .HasForeignKey("PlatformActionStatusId")
-                        .OnDelete(DeleteBehavior.Restrict);
-
-                    b.HasOne("Accounts.Models.PlatformSettingActionStatus", "PlatformVerificationStatus")
-                        .WithMany()
-                        .HasForeignKey("PlatformVerificationStatusId")
-                        .OnDelete(DeleteBehavior.Restrict);
-
                     b.HasOne("Accounts.Models.ProcessStatusStyle", "VerificationStatus")
                         .WithMany()
                         .HasForeignKey("VerificationStatusId")
@@ -5015,10 +4926,6 @@ namespace Accounts.Migrations
                     b.Navigation("AttendanceWorkMode");
 
                     b.Navigation("Person");
-
-                    b.Navigation("PlatformActionStatus");
-
-                    b.Navigation("PlatformVerificationStatus");
 
                     b.Navigation("VerificationStatus");
                 });

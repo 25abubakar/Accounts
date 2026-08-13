@@ -92,7 +92,26 @@ namespace Accounts.Services.Services
             user = await _userManager.FindByNameAsync(dto.Username);
 
             if (user == null && dto.Username.Contains('@'))
-                user = await _userManager.FindByEmailAsync(dto.Username);
+            {
+                var normalizedEmail = dto.Username.Trim().ToLowerInvariant();
+                var emailMatches = await _db.Users.AsNoTracking()
+                    .Where(u => u.Email != null && u.Email.ToLower() == normalizedEmail)
+                    .Select(u => u.Id)
+                    .Take(2)
+                    .ToListAsync();
+
+                if (emailMatches.Count > 1)
+                {
+                    return (false, 409, new AuthResponseDto
+                    {
+                        Success = false,
+                        Message = "Multiple accounts share this email. Please sign in with your Login ID instead."
+                    });
+                }
+
+                if (emailMatches.Count == 1)
+                    user = await _userManager.FindByIdAsync(emailMatches[0]);
+            }
 
             if (user == null)
                 return (false, 401, new AuthResponseDto
@@ -330,6 +349,8 @@ namespace Accounts.Services.Services
             var userAgent = context?.Request.Headers.UserAgent.ToString();
             if (userAgent?.Length > 300) userAgent = userAgent[..300];
 
+            _db.ChangeTracker.Clear();
+
             _db.ApplicationLoginSessions.Add(new ApplicationLoginSession
             {
                 TenantId = user.TenantId.Value,
@@ -349,7 +370,7 @@ namespace Accounts.Services.Services
 
         private async Task CloseApplicationLoginSessionAsync(string identityUserId)
         {
-            var user = await _userManager.FindByIdAsync(identityUserId);
+            var user = await _db.Users.AsNoTracking().FirstOrDefaultAsync(u => u.Id == identityUserId);
             if (user?.IsSuperAdmin == true || user?.IsTenantAdmin == true)
                 return;
 

@@ -63,6 +63,12 @@ namespace Accounts.Controllers
             return (isSuperAdmin, isOrganizationAdmin, rootNodeId);
         }
 
+        private static readonly string[] InfrastructureLabels = ["Country", "Group", "Company"];
+
+        private static bool IsInfrastructureLabel(string? label) =>
+            !string.IsNullOrWhiteSpace(label) &&
+            InfrastructureLabels.Contains(label, StringComparer.OrdinalIgnoreCase);
+
         private async Task<bool> HasOrganizationActionAsync(string action)
         {
             if (TenantPermissionService.IsSuperAdmin(User)) return true;
@@ -248,13 +254,11 @@ namespace Accounts.Controllers
         // ── WRITE ─────────────────────────────────────────────────────────────
         //
         // Business rules:
-        //   Super Admin  → can add any node (Country/Group/Company) at the top level.
-        //                  Company creation should go through POST /api/tenants
-        //                  but plain org nodes are still allowed here.
-        //   Tenant Admin → can add Branch / Department / Team ONLY under their
-        //                  own company subtree. Country/Group/Company labels are
-        //                  forbidden (must use POST /api/tenants).
-        //   Staff        → RBAC permission check only (HasPermission attribute).
+        //   Super Admin  → may create Country / Group / Company at any tree level.
+        //                  Company/Group may also be provisioned via POST /api/tenants.
+        //   Tenant Admin → Branch / Department / Team anywhere inside their tenant subtree.
+        //                  Country / Group / Company labels are forbidden.
+        //   Staff        → same operational scope as tenant admin when RBAC allows ADD.
 
         [HttpPost]
         public async Task<IActionResult> Create([FromBody] CreateOrgNodeDto dto)
@@ -264,14 +268,13 @@ namespace Accounts.Controllers
 
             var (isSuperAdmin, isTenantAdmin, tenantRootId) = await ResolveCallerContextAsync();
 
-            // Tenant Admin and regular Staff cannot create top-level infrastructure nodes
+            // Tenant Admin and staff cannot create infrastructure nodes.
             if (!isSuperAdmin)
             {
-                var blocked = new[] { "Country", "Group", "Company" };
-                if (blocked.Contains(dto.Label, StringComparer.OrdinalIgnoreCase))
-                    return Forbid();
+                if (IsInfrastructureLabel(dto.Label))
+                    return BadRequest(new { message = "Only Super Admin can create Country, Group, or Company nodes." });
 
-                // Must place the node within their own subtree
+                // Operational nodes must stay inside the caller's tenant subtree.
                 if (dto.ParentId.HasValue && tenantRootId.HasValue)
                 {
                     var flat = (await _service.GetFlatTreeAsync()).ToList();
@@ -298,6 +301,28 @@ namespace Accounts.Controllers
             if (!ModelState.IsValid) return BadRequest(ModelState);
             if (!await HasOrganizationActionAsync("EDIT")) return Forbid();
 
+            var (isSuperAdmin, _, tenantRootId) = await ResolveCallerContextAsync();
+            var existing = await _service.GetByIdAsync(id);
+            if (existing == null)
+                return NotFound(new { message = $"Node {id} not found." });
+
+            if (!isSuperAdmin)
+            {
+                if (IsInfrastructureLabel(existing.Label))
+                    return BadRequest(new { message = "Only Super Admin can edit Country, Group, or Company nodes." });
+
+                if (IsInfrastructureLabel(dto.Label))
+                    return BadRequest(new { message = "Only Super Admin can assign Country, Group, or Company labels." });
+
+                if (dto.ParentId.HasValue && tenantRootId.HasValue)
+                {
+                    var flat = (await _service.GetFlatTreeAsync()).ToList();
+                    var allowed = CollectSubtreeIds(flat, tenantRootId.Value);
+                    if (!allowed.Contains(dto.ParentId.Value))
+                        return Forbid();
+                }
+            }
+
             if (dto.ParentId.HasValue)
             {
                 if (dto.ParentId.Value == id)
@@ -317,6 +342,15 @@ namespace Accounts.Controllers
         public async Task<IActionResult> Delete(int id)
         {
             if (!await HasOrganizationActionAsync("DELETE")) return Forbid();
+
+            var (isSuperAdmin, _, _) = await ResolveCallerContextAsync();
+            if (!isSuperAdmin)
+            {
+                var existing = await _service.GetByIdAsync(id);
+                if (existing != null && IsInfrastructureLabel(existing.Label))
+                    return BadRequest(new { message = "Only Super Admin can delete Country, Group, or Company nodes." });
+            }
+
             var (success, message) = await _service.DeleteAsync(id);
             if (!success)
                 return message.Contains("not found")

@@ -8,20 +8,20 @@ namespace Accounts.Services.Services
     public class VacancyService : IVacancyService
     {
         private readonly ApplicationDbContext _db;
-        private readonly VacancyCodeService   _codeService;
-        private readonly JobTitleService      _jobTitleService;
-        private readonly ITenantService       _tenantService;
+        private readonly VacancyCodeService _codeService;
+        private readonly DesignationService _designationService;
+        private readonly ITenantService _tenantService;
 
         public VacancyService(
             ApplicationDbContext db,
-            VacancyCodeService   codeService,
-            JobTitleService      jobTitleService,
-            ITenantService       tenantService)
+            VacancyCodeService codeService,
+            DesignationService designationService,
+            ITenantService tenantService)
         {
-            _db              = db;
-            _codeService     = codeService;
-            _jobTitleService = jobTitleService;
-            _tenantService   = tenantService;
+            _db = db;
+            _codeService = codeService;
+            _designationService = designationService;
+            _tenantService = tenantService;
         }
 
         public async Task<IEnumerable<VacancyDto>> GetAllAsync()
@@ -60,31 +60,29 @@ namespace Accounts.Services.Services
             return list.Select(v =>
             {
                 var node = v.Organization;
-                var p1   = node?.Parent;
-                var p2   = p1?.Parent;
+                var p1 = node?.Parent;
+                var p2 = p1?.Parent;
                 return new OrgVacancyReportDto
                 {
-                    Country       = p2?.Name    ?? "-",
-                    Company       = p1?.Name    ?? "-",
-                    Branch        = node?.Name  ?? "-",
-                    VacancyCode   = v.VacancyCode,
-                    JobTitle      = v.ResolvedJobTitle,
-                    Department    = v.Department,
-                    IsFilled      = v.IsFilled,
-                    EmployeeName  = v.Staff?.Person?.FullName,
+                    Country = p2?.Name ?? "-",
+                    Company = p1?.Name ?? "-",
+                    Branch = node?.Name ?? "-",
+                    VacancyCode = v.VacancyCode,
+                    Designation = v.ResolvedDesignation,
+                    Department = v.Department,
+                    IsFilled = v.IsFilled,
+                    EmployeeName = v.Staff?.Person?.FullName,
                     EmployeeEmail = v.Staff?.Person?.Email,
-                    JoiningDate   = null
+                    JoiningDate = null
                 };
             });
         }
 
-        public async Task<string?> PreviewCodeAsync(int organizationId, string jobTitle)
+        public async Task<string?> PreviewCodeAsync(int organizationId, string designation)
         {
             var orgNode = await _db.OrganizationTree.FindAsync(organizationId);
             if (orgNode == null) return null;
-
-            // Use PreviewAsync — reads counter WITHOUT incrementing it
-            return await _codeService.PreviewAsync(organizationId, jobTitle);
+            return await _codeService.PreviewAsync(organizationId, designation);
         }
 
         public async Task<(VacancyDto? Vacancy, string? Error)> CreateAsync(CreateVacancyDto dto)
@@ -93,49 +91,21 @@ namespace Accounts.Services.Services
             if (orgNode == null)
                 return (null, $"Organization node {dto.OrganizationId} not found.");
 
-            // ── Resolve JobTitleId from either Id OR Name OR legacy JobTitle ─
-            int jobTitleId;
-            string jobTitleForCode;
-            
-            if (dto.JobTitleId.HasValue && dto.JobTitleId.Value > 0)
-            {
-                // Frontend sent an Id — validate it exists
-                var exists = await _db.JobTitles.AnyAsync(jt => jt.Id == dto.JobTitleId.Value);
-                if (!exists)
-                    return (null, $"JobTitle Id {dto.JobTitleId.Value} not found.");
-                jobTitleId = dto.JobTitleId.Value;
-                var title = await _db.JobTitles.FindAsync(jobTitleId);
-                jobTitleForCode = title?.TitleName ?? "Unknown";
-            }
-            else if (!string.IsNullOrWhiteSpace(dto.JobTitleName))
-            {
-                // Frontend sent a new name — upsert and get the Id
-                jobTitleId = await _jobTitleService.UpsertByNameAsync(dto.JobTitleName);
-                jobTitleForCode = dto.JobTitleName;
-            }
-            else if (!string.IsNullOrWhiteSpace(dto.JobTitle))
-            {
-                // Legacy: JobTitle string — upsert and get the Id
-                jobTitleId = await _jobTitleService.UpsertByNameAsync(dto.JobTitle);
-                jobTitleForCode = dto.JobTitle;
-            }
-            else
-            {
-                return (null, "JobTitleId, JobTitleName, or JobTitle (legacy) is required.");
-            }
+            var (designationId, designationForCode, error) = await ResolveDesignationAsync(dto);
+            if (error != null) return (null, error);
 
-            var vacancyCode = await _codeService.GenerateAsync(dto.OrganizationId, jobTitleForCode);
+            var vacancyCode = await _codeService.GenerateAsync(dto.OrganizationId, designationForCode!);
 
             var vacancy = new Vacancy
             {
-                VacancyId      = Guid.NewGuid(),
-                TenantId       = _tenantService.RequiredTenantId,   // ← stamp tenant
+                VacancyId = Guid.NewGuid(),
+                TenantId = _tenantService.RequiredTenantId,
                 OrganizationId = dto.OrganizationId,
-                VacancyCode    = vacancyCode,
-                JobTitleId     = jobTitleId,
-                Department     = dto.Department,
-                IsFilled       = false,
-                CreatedDate    = DateTime.UtcNow
+                VacancyCode = vacancyCode,
+                DesignationId = designationId,
+                Department = dto.Department,
+                IsFilled = false,
+                CreatedDate = DateTime.UtcNow
             };
 
             _db.Vacancies.Add(vacancy);
@@ -145,80 +115,39 @@ namespace Accounts.Services.Services
             return (MapToDto(created!), null);
         }
 
-        /// <summary>
-        /// Creates multiple vacancies in one request.
-        /// The loop runs server-side — frontend just sends VacancyCount.
-        /// Each vacancy gets a unique auto-incremented code (race-condition safe).
-        ///
-        /// Example: VacancyCount = 5, JobTitle = "Developer"
-        /// Creates: Pakistan-LalGroup-LT-1
-        ///          Pakistan-LalGroup-LT-2
-        ///          Pakistan-LalGroup-LT-3
-        ///          Pakistan-LalGroup-LT-4
-        ///          Pakistan-LalGroup-LT-5
-        /// </summary>
-        public async Task<(IEnumerable<VacancyDto> Created, IEnumerable<string> Errors)> CreateBulkAsync(
-            CreateVacancyDto dto)
+        public async Task<(IEnumerable<VacancyDto> Created, IEnumerable<string> Errors)> CreateBulkAsync(CreateVacancyDto dto)
         {
             var orgNode = await _db.OrganizationTree.FindAsync(dto.OrganizationId);
             if (orgNode == null)
                 return ([], [$"Organization node {dto.OrganizationId} not found."]);
 
-            int count = dto.VacancyCount < 1 ? 1 : dto.VacancyCount;
-
+            var count = dto.VacancyCount < 1 ? 1 : dto.VacancyCount;
             var created = new List<VacancyDto>();
-            var errors  = new List<string>();
+            var errors = new List<string>();
 
-            // Loop runs entirely on the backend — each iteration gets a unique code
-            // from the atomic VacancyCounters table (no race conditions)
-            for (int i = 0; i < count; i++)
+            for (var i = 0; i < count; i++)
             {
                 try
                 {
-                    // ── Resolve JobTitleId from either Id OR Name OR legacy JobTitle ─
-                    int jobTitleId;
-                    string jobTitleForCode;
-                    
-                    if (dto.JobTitleId.HasValue && dto.JobTitleId.Value > 0)
+                    var (designationId, designationForCode, error) = await ResolveDesignationAsync(dto);
+                    if (error != null)
                     {
-                        var exists = await _db.JobTitles.AnyAsync(jt => jt.Id == dto.JobTitleId.Value);
-                        if (!exists)
-                        {
-                            errors.Add($"Vacancy {i + 1} failed: JobTitle Id {dto.JobTitleId.Value} not found.");
-                            continue;
-                        }
-                        jobTitleId = dto.JobTitleId.Value;
-                        var title = await _db.JobTitles.FindAsync(jobTitleId);
-                        jobTitleForCode = title?.TitleName ?? "Unknown";
-                    }
-                    else if (!string.IsNullOrWhiteSpace(dto.JobTitleName))
-                    {
-                        jobTitleId = await _jobTitleService.UpsertByNameAsync(dto.JobTitleName);
-                        jobTitleForCode = dto.JobTitleName;
-                    }
-                    else if (!string.IsNullOrWhiteSpace(dto.JobTitle))
-                    {
-                        jobTitleId = await _jobTitleService.UpsertByNameAsync(dto.JobTitle);
-                        jobTitleForCode = dto.JobTitle;
-                    }
-                    else
-                    {
-                        errors.Add($"Vacancy {i + 1} failed: JobTitleId, JobTitleName, or JobTitle (legacy) is required.");
+                        errors.Add($"Vacancy {i + 1} failed: {error}");
                         continue;
                     }
 
-                    var vacancyCode = await _codeService.GenerateAsync(dto.OrganizationId, jobTitleForCode);
+                    var vacancyCode = await _codeService.GenerateAsync(dto.OrganizationId, designationForCode!);
 
                     var vacancy = new Vacancy
                     {
-                        VacancyId      = Guid.NewGuid(),
-                        TenantId       = _tenantService.RequiredTenantId,   // ← stamp tenant
+                        VacancyId = Guid.NewGuid(),
+                        TenantId = _tenantService.RequiredTenantId,
                         OrganizationId = dto.OrganizationId,
-                        VacancyCode    = vacancyCode,
-                        JobTitleId     = jobTitleId,
-                        Department     = dto.Department,
-                        IsFilled       = false,
-                        CreatedDate    = DateTime.UtcNow
+                        VacancyCode = vacancyCode,
+                        DesignationId = designationId,
+                        Department = dto.Department,
+                        IsFilled = false,
+                        CreatedDate = DateTime.UtcNow
                     };
 
                     _db.Vacancies.Add(vacancy);
@@ -244,42 +173,17 @@ namespace Accounts.Services.Services
             var orgNode = await _db.OrganizationTree.FindAsync(dto.OrganizationId);
             if (orgNode == null) return (null, $"Organization node {dto.OrganizationId} not found.");
 
-            // ── Resolve JobTitleId from either Id OR Name OR legacy JobTitle ─
-            int newJobTitleId;
-            string jobTitleForCode;
-            
-            if (dto.JobTitleId.HasValue && dto.JobTitleId.Value > 0)
-            {
-                var exists = await _db.JobTitles.AnyAsync(jt => jt.Id == dto.JobTitleId.Value);
-                if (!exists)
-                    return (null, $"JobTitle Id {dto.JobTitleId.Value} not found.");
-                newJobTitleId = dto.JobTitleId.Value;
-                var title = await _db.JobTitles.FindAsync(newJobTitleId);
-                jobTitleForCode = title?.TitleName ?? "Unknown";
-            }
-            else if (!string.IsNullOrWhiteSpace(dto.JobTitleName))
-            {
-                newJobTitleId = await _jobTitleService.UpsertByNameAsync(dto.JobTitleName);
-                jobTitleForCode = dto.JobTitleName;
-            }
-            else if (!string.IsNullOrWhiteSpace(dto.JobTitle))
-            {
-                newJobTitleId = await _jobTitleService.UpsertByNameAsync(dto.JobTitle);
-                jobTitleForCode = dto.JobTitle;
-            }
-            else
-            {
-                return (null, "JobTitleId, JobTitleName, or JobTitle (legacy) is required.");
-            }
+            var (newDesignationId, designationForCode, error) = await ResolveDesignationAsync(dto);
+            if (error != null) return (null, error);
 
-            bool needsNewCode = vacancy.JobTitleId != newJobTitleId || vacancy.OrganizationId != dto.OrganizationId;
+            var needsNewCode = vacancy.DesignationId != newDesignationId || vacancy.OrganizationId != dto.OrganizationId;
 
-            vacancy.JobTitleId     = newJobTitleId;
-            vacancy.Department     = dto.Department;
+            vacancy.DesignationId = newDesignationId;
+            vacancy.Department = dto.Department;
             vacancy.OrganizationId = dto.OrganizationId;
 
             if (needsNewCode)
-                vacancy.VacancyCode = await _codeService.GenerateAsync(dto.OrganizationId, jobTitleForCode);
+                vacancy.VacancyCode = await _codeService.GenerateAsync(dto.OrganizationId, designationForCode!);
 
             await _db.SaveChangesAsync();
 
@@ -300,46 +204,76 @@ namespace Accounts.Services.Services
             return (true, $"Position '{vacancy.VacancyCode}' deleted.");
         }
 
-        // ── Helpers ───────────────────────────────────────────────────────────
+        private async Task<(int DesignationId, string? DesignationForCode, string? Error)> ResolveDesignationAsync(CreateVacancyDto dto)
+        {
+            if (dto.DesignationId.HasValue && dto.DesignationId.Value > 0)
+            {
+                var designation = await _db.Designations.AsNoTracking()
+                    .FirstOrDefaultAsync(d => d.Id == dto.DesignationId.Value);
+                if (designation == null)
+                    return (0, null, $"Designation Id {dto.DesignationId.Value} not found.");
+                return (designation.Id, designation.Name, null);
+            }
+
+            var name = !string.IsNullOrWhiteSpace(dto.DesignationName)
+                ? dto.DesignationName
+                : dto.JobTitle;
+
+            if (!string.IsNullOrWhiteSpace(name))
+            {
+                var id = await _designationService.UpsertByNameAsync(name);
+                return (id, name.Trim(), null);
+            }
+
+            return (0, null, "DesignationId, DesignationName, or JobTitle (legacy) is required.");
+        }
+
+        private Task<(int DesignationId, string? DesignationForCode, string? Error)> ResolveDesignationAsync(UpdateVacancyDto dto)
+            => ResolveDesignationAsync(new CreateVacancyDto
+            {
+                DesignationId = dto.DesignationId,
+                DesignationName = dto.DesignationName,
+                JobTitle = dto.JobTitle
+            });
 
         private IQueryable<Vacancy> WithIncludes() =>
             _db.Vacancies
                .Include(v => v.Organization).ThenInclude(o => o!.Parent).ThenInclude(p => p!.Parent)
-               .Include(v => v.JobTitleNav)
+               .Include(v => v.DesignationNav)
                .Include(v => v.Staff).ThenInclude(s => s!.Person);
 
         private static VacancyDto MapToDto(Vacancy v)
         {
             var node = v.Organization;
-            var p1   = node?.Parent;
-            var p2   = p1?.Parent;
+            var p1 = node?.Parent;
+            var p2 = p1?.Parent;
 
             return new VacancyDto
             {
-                VacancyId      = v.VacancyId,
+                VacancyId = v.VacancyId,
                 OrganizationId = v.OrganizationId,
-                BranchName     = node?.Name  ?? "-",
-                CompanyName    = p1?.Name    ?? "-",
-                CountryName    = p2?.Name    ?? "-",
-                NodeLabel      = node?.Label ?? "-",
-                VacancyCode    = v.VacancyCode,
-                JobTitleId     = v.JobTitleId,
-                JobTitle       = v.ResolvedJobTitle,
-                Department     = v.Department,
-                IsFilled       = v.IsFilled,
-                CreatedDate    = v.CreatedDate,
-                Employee       = v.Staff == null ? null : new StaffDto
+                BranchName = node?.Name ?? "-",
+                CompanyName = p1?.Name ?? "-",
+                CountryName = p2?.Name ?? "-",
+                NodeLabel = node?.Label ?? "-",
+                VacancyCode = v.VacancyCode,
+                DesignationId = v.DesignationId,
+                Designation = v.ResolvedDesignation,
+                Department = v.Department,
+                IsFilled = v.IsFilled,
+                CreatedDate = v.CreatedDate,
+                Employee = v.Staff == null ? null : new StaffDto
                 {
-                    StaffId     = v.Staff.StaffId,
-                    FullName    = v.Staff.Person?.FullName ?? "-",
-                    Email       = v.Staff.Person?.Email,
-                    Phone       = v.Staff.Person?.Phone,
-                    PhotoUrl    = v.Staff.Person?.ProfilePhotoUrl,
-                    VacancyId   = v.Staff.VacancyId,
+                    StaffId = v.Staff.StaffId,
+                    FullName = v.Staff.Person?.FullName ?? "-",
+                    Email = v.Staff.Person?.Email,
+                    Phone = v.Staff.Person?.Phone,
+                    PhotoUrl = v.Staff.Person?.ProfilePhotoUrl,
+                    VacancyId = v.Staff.VacancyId,
                     VacancyCode = v.VacancyCode,
-                    JobTitle    = v.ResolvedJobTitle,
-                    Department  = v.Department ?? node?.Name,
-                    BranchName  = node?.Name,
+                    Designation = v.ResolvedDesignation,
+                    Department = v.Department ?? node?.Name,
+                    BranchName = node?.Name,
                     CompanyName = p1?.Name,
                     CountryName = p2?.Name,
                     JoiningDate = DateTime.UtcNow

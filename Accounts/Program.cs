@@ -11,6 +11,7 @@ using Accounts.Repositories.Interfaces;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Antiforgery;
 using Microsoft.AspNetCore.ResponseCompression;
+using Accounts.Hubs;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -92,7 +93,9 @@ builder.Services.AddCors(options =>
                   "http://localhost:5173",
                   "https://localhost:5173",
                   "http://localhost:3000",
-                  "https://localhost:3000")
+                  "https://localhost:3000",
+                  "http://localhost:8080",
+                  "http://127.0.0.1:8080")
               .AllowAnyHeader()
               .AllowAnyMethod()
               .AllowCredentials());
@@ -119,6 +122,11 @@ builder.Services.AddAntiforgery(options =>
         : CookieSecurePolicy.Always;
 });
 builder.Services.AddRazorPages();
+builder.Services.AddSignalR(options =>
+{
+    options.EnableDetailedErrors = builder.Environment.IsDevelopment();
+    options.MaximumReceiveMessageSize = 64 * 1024;
+});
 builder.Services.AddResponseCompression(options =>
 {
     options.EnableForHttps = true;
@@ -156,6 +164,8 @@ builder.Services.AddSingleton<AssessmentSchedulerService>();
 builder.Services.AddHostedService(serviceProvider =>
     serviceProvider.GetRequiredService<AssessmentSchedulerService>());
 builder.Services.AddScoped<IOrganizationDataScopeService, OrganizationDataScopeService>();
+builder.Services.AddScoped<IChatService, ChatService>();
+builder.Services.AddSingleton<ChatPresenceTracker>();
 
 // ── Communication Center ──────────────────────────────────────────────────────
 builder.Services.AddScoped<IAppNoteService, AppNoteService>();
@@ -164,7 +174,8 @@ builder.Services.AddScoped<IPersonAccessService, PersonAccessService>();
 
 // ── Normalized domain services ────────────────────────────────────────────────
 builder.Services.AddScoped<StaffMenuAccessService>();
-builder.Services.AddScoped<JobTitleService>();
+builder.Services.AddScoped<DesignationService>();
+builder.Services.AddScoped<PlatformSettingsProvisioningService>();
 builder.Services.AddScoped<IAttendanceStatusRepository, AttendanceStatusRepository>();
 builder.Services.AddScoped<IAttendanceStatusService, AttendanceStatusService>();
 builder.Services.AddScoped<IAttendanceService, AttendanceService>();
@@ -224,6 +235,7 @@ app.MapGet("/api/security/csrf-token", (HttpContext context, IAntiforgery antifo
     return Results.Ok(new { token = tokens.RequestToken });
 }).AllowAnonymous();
 app.MapControllers();
+app.MapHub<ChatHub>("/hubs/chat");
 app.MapRazorPages();
 
 app.Run();

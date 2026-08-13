@@ -11,7 +11,9 @@ public sealed class AttendanceRecord : ITenantEntity
     public int TenantId { get; set; }
     public Guid PersonId { get; set; }
     public DateOnly AttendanceDate { get; set; }
+    public DateTime? EffectiveCheckOutUtc { get; set; }
     public int? AttendanceStatusId { get; set; }
+    public int? PlatformActionStatusId { get; set; }
     public int? AttendanceEntryTypeId { get; set; }
     public int? AttendanceWorkModeId { get; set; }
     public DateTime? CheckInUtc { get; set; }
@@ -19,8 +21,8 @@ public sealed class AttendanceRecord : ITenantEntity
     public DateTime? CameraCheckInUtc { get; set; }
     public DateTime? CameraCheckOutUtc { get; set; }
     public DateTime? EffectiveCheckInUtc { get; set; }
-    public DateTime? EffectiveCheckOutUtc { get; set; }
     public int? VerificationStatusId { get; set; }
+    public int? PlatformVerificationStatusId { get; set; }
     public bool HasVerificationAnomaly { get; set; }
     public int? VerificationDifferenceMinutes { get; set; }
     public long? ApprovalRequestId { get; set; }
@@ -33,8 +35,10 @@ public sealed class AttendanceRecord : ITenantEntity
 
     public Person Person { get; set; } = null!;
     public ProcessStatusStyle? AttendanceStatus { get; set; }
+    public PlatformSettingActionStatus? PlatformActionStatus { get; set; }
     public AttendanceEntryType? AttendanceEntryType { get; set; }
     public AttendanceWorkMode? AttendanceWorkMode { get; set; }
     public ProcessStatusStyle? VerificationStatus { get; set; }
+    public PlatformSettingActionStatus? PlatformVerificationStatus { get; set; }
     public WorkflowApprovalRequest? ApprovalRequest { get; set; }
 }

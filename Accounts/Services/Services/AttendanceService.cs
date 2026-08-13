@@ -109,6 +109,8 @@ public sealed class AttendanceService : IAttendanceService
         record.AttendanceWorkMode = workMode;
         record.AttendanceStatusId = attendanceRule.IsOpenAttendance || localNow <= shiftWindow.Start.AddMinutes(checkInAdjustMinutes)
             ? policy.PresentStatusId : policy.LateStatusId;
+        record.PlatformActionStatusId = attendanceRule.IsOpenAttendance || localNow <= shiftWindow.Start.AddMinutes(checkInAdjustMinutes)
+            ? policy.PlatformPresentStatusId : policy.PlatformLateStatusId;
         record.CheckInUtc = localNow;
         record.ModifiedDate = localNow;
         if (record.Id == 0) _db.AttendanceRecords.Add(record);
@@ -147,6 +149,7 @@ public sealed class AttendanceService : IAttendanceService
             }
 
             record.AttendanceStatusId = policy.AbsentStatusId;
+            record.PlatformActionStatusId = policy.PlatformAbsentStatusId;
             record.ModifiedDate = now;
             await _db.SaveChangesAsync(cancellationToken);
             await EvaluateStatusesAsync(person.TenantId, record.AttendanceDate, record.AttendanceDate, cancellationToken);
@@ -194,6 +197,7 @@ public sealed class AttendanceService : IAttendanceService
             }
 
             record.AttendanceStatusId = policy.AbsentStatusId;
+            record.PlatformActionStatusId = policy.PlatformAbsentStatusId;
             record.ModifiedDate = now;
             await _db.SaveChangesAsync(cancellationToken);
             await EvaluateStatusesAsync(person.TenantId, record.AttendanceDate, record.AttendanceDate, cancellationToken);
@@ -764,7 +768,7 @@ public sealed class AttendanceService : IAttendanceService
             .Include(session => session.Person)
             .ThenInclude(person => person!.Staff)
             .ThenInclude(staff => staff!.Vacancy)
-            .ThenInclude(vacancy => vacancy!.JobTitleNav)
+            .ThenInclude(vacancy => vacancy!.DesignationNav)
             .Where(session =>
                 session.SessionDate >= dateFrom &&
                 session.SessionDate <= dateTo &&
@@ -795,8 +799,8 @@ public sealed class AttendanceService : IAttendanceService
                     ? session.Person.Staff.Vacancy.Department
                     : string.Empty,
                 Designation = session.Person != null && session.Person.Staff != null && session.Person.Staff.Vacancy != null
-                    ? (session.Person.Staff.Vacancy.JobTitleNav != null
-                        ? session.Person.Staff.Vacancy.JobTitleNav.TitleName
+                    ? (session.Person.Staff.Vacancy.DesignationNav != null
+                        ? session.Person.Staff.Vacancy.DesignationNav.Name
                         : session.Person.Staff.Vacancy.JobTitle)
                     : string.Empty,
             })
@@ -845,7 +849,7 @@ public sealed class AttendanceService : IAttendanceService
         return await GetAttendanceReportAsync(
             identityUserId,
             organizationWide,
-            selfOnly: false,
+            selfOnly: true,
             dateFrom,
             dateTo,
             cancellationToken);
@@ -1091,13 +1095,22 @@ public sealed class AttendanceService : IAttendanceService
 
     private async Task<Dictionary<string, MonthlyAttendanceChartLegendItemDto>> GetAttendanceDisplayStyleMapAsync(CancellationToken cancellationToken)
     {
-        // Combine the configured attendance processes instead of stopping at the
-        // first non-empty one. Older databases may keep TP under Attendance while
-        // newer display codes such as T-P live under Attendance Display Status.
-        var legend = (await GetLegendForProcessAsync(AttendanceStatusProcessName, cancellationToken))
-            .Concat(await GetLegendForProcessAsync(AttendanceDisplayStatusProcessName, cancellationToken))
-            .Concat(await GetLegendForProcessAsync("Monthly Attendance Chart", cancellationToken))
-            .ToList();
+        var query = from actionStatus in _db.PlatformSettingActionStatuses.AsNoTracking()
+                    where actionStatus.Action.Name == "Attendance"
+                    join crDb in _db.PlatformSettingStatusCrDbValues.AsNoTracking()
+                        on actionStatus.StatusId equals crDb.StatusId
+                    select new MonthlyAttendanceChartLegendItemDto
+                    {
+                        Id = actionStatus.Id,
+                        Code = crDb.DbValue ?? "",
+                        StatusName = actionStatus.Status.Name,
+                        ColorCode = actionStatus.Color != null ? actionStatus.Color.ColorCode : "#64748B",
+                        FontColor = actionStatus.Color != null ? actionStatus.Color.FontColor : "#FFFFFF",
+                        FontSize = "12px",
+                        DisplayOrder = actionStatus.Id
+                    };
+
+        var legend = await query.ToListAsync(cancellationToken);
 
         return legend
             .Where(item => !string.IsNullOrWhiteSpace(item.Code))
@@ -1259,7 +1272,7 @@ public sealed class AttendanceService : IAttendanceService
                 EmployeeNumber = s.LoginId ?? s.Vacancy!.VacancyCode,
                 EmployeeName = s.Person!.FullName,
                 Department = s.Vacancy!.Department ?? s.Vacancy.Organization!.Name,
-                Designation = s.Vacancy.JobTitleNav != null ? s.Vacancy.JobTitleNav.TitleName : (s.Vacancy.JobTitle ?? string.Empty),
+                Designation = s.Vacancy.DesignationNav != null ? s.Vacancy.DesignationNav.Name : (s.Vacancy.JobTitle ?? string.Empty),
                 s.Person.ReportsToPersonId,
                 s.Person.ShiftStartTime,
                 s.Person.ShiftEndTime,
@@ -1572,7 +1585,7 @@ public sealed class AttendanceService : IAttendanceService
                 BreakMinutes = source.TotalBreakMinutes ?? 0,
                 RequiredMinutes = required,
                 Present = displayCode?.Equals("P", StringComparison.OrdinalIgnoreCase) == true || displayCode?.Equals("T-P", StringComparison.OrdinalIgnoreCase) == true,
-                Absent = missingCheckIn || absentByRule || displayCode?.Equals("A", StringComparison.OrdinalIgnoreCase) == true || source.AttendanceStatusId == policy.AbsentStatusId,
+                Absent = missingCheckIn || absentByRule || displayCode?.Equals("A", StringComparison.OrdinalIgnoreCase) == true || source.AttendanceStatusId == policy.PlatformAbsentStatusId,
                 OnLeave = displayCode?.Equals("L", StringComparison.OrdinalIgnoreCase) == true,
                 Remote = source.AttendanceWorkMode?.Equals("Remote", StringComparison.OrdinalIgnoreCase) == true,
                 MissingCheckIn = missingCheckIn,
@@ -1610,6 +1623,13 @@ public sealed class AttendanceService : IAttendanceService
 
         try
         {
+            return await CreateDailyReportQuery(tenantId, visiblePersonIds, dateFrom, dateTo)
+                .ToListAsync(cancellationToken);
+        }
+        catch (InvalidOperationException ex) when (ex.Message.Contains("StatusFontSize", StringComparison.OrdinalIgnoreCase))
+        {
+            AttendanceRecordSchema.ResetCameraReportSchema();
+            await AttendanceRecordSchema.EnsureCameraColumnsAsync(_db, cancellationToken);
             return await CreateDailyReportQuery(tenantId, visiblePersonIds, dateFrom, dateTo)
                 .ToListAsync(cancellationToken);
         }
@@ -2058,14 +2078,14 @@ public sealed class AttendanceService : IAttendanceService
                     ? (int?)person.Staff.Vacancy.OrganizationId
                     : null,
                 JobTitle = person.Staff != null && person.Staff.Vacancy != null
-                    ? (person.Staff.Vacancy.JobTitleNav != null
-                        ? person.Staff.Vacancy.JobTitleNav.TitleName
+                    ? (person.Staff.Vacancy.DesignationNav != null
+                        ? person.Staff.Vacancy.DesignationNav.Name
                         : person.Staff.Vacancy.JobTitle)
                     : null,
                 AttendanceScope = person.Staff != null &&
                     person.Staff.Vacancy != null &&
-                    person.Staff.Vacancy.JobTitleNav != null
-                        ? person.Staff.Vacancy.JobTitleNav.AttendanceVisibilityScope
+                    person.Staff.Vacancy.DesignationNav != null
+                        ? person.Staff.Vacancy.DesignationNav.AttendanceVisibilityScope
                         : AttendanceVisibilityScope.Self
             })
             .FirstOrDefaultAsync(cancellationToken);
@@ -2083,8 +2103,8 @@ public sealed class AttendanceService : IAttendanceService
                     ? (int?)person.Staff.Vacancy.OrganizationId
                     : null,
                 JobTitle = person.Staff != null && person.Staff.Vacancy != null
-                    ? (person.Staff.Vacancy.JobTitleNav != null
-                        ? person.Staff.Vacancy.JobTitleNav.TitleName
+                    ? (person.Staff.Vacancy.DesignationNav != null
+                        ? person.Staff.Vacancy.DesignationNav.Name
                         : person.Staff.Vacancy.JobTitle)
                     : null
             })
@@ -2229,7 +2249,7 @@ public sealed class AttendanceService : IAttendanceService
             ?? throw new KeyNotFoundException("The selected employee was not found in your organization.");
 
         var person = await _db.Persons.AsNoTracking().Where(p => p.PersonId == personId)
-            .Select(p => new { p.TimeZoneId, p.ShiftStartTime, p.ShiftEndTime }).FirstAsync(cancellationToken);
+            .Select(p => new { p.TenantId, p.TimeZoneId, p.ShiftStartTime, p.ShiftEndTime }).FirstAsync(cancellationToken);
         var schedules = await _db.EmployeeTimingSchedules.AsNoTracking()
             .Where(schedule =>
                 schedule.StaffId == employee.StaffId &&
@@ -2238,9 +2258,12 @@ public sealed class AttendanceService : IAttendanceService
             .ToDictionaryAsync(schedule => schedule.ScheduleDate, cancellationToken);
         var dateFrom = new DateOnly(year, month, 1);
         var dateTo = dateFrom.AddMonths(1);
-        var records = await _db.AttendanceRecords.AsNoTracking().Include(r => r.AttendanceStatus)
+        var records = await _db.AttendanceRecords.AsNoTracking().Include(r => r.PlatformActionStatus).ThenInclude(p => p.Status).Include(r => r.PlatformActionStatus).ThenInclude(p => p.Color)
             .Where(r => r.PersonId == personId && r.AttendanceDate >= dateFrom && r.AttendanceDate < dateTo)
             .OrderByDescending(r => r.AttendanceDate).ToListAsync(cancellationToken);
+        var statusCodes = await _db.PlatformSettingStatusCrDbValues.AsNoTracking()
+            .Where(x => x.TenantId == person.TenantId || x.TenantId == null)
+            .ToDictionaryAsync(x => x.StatusId, x => x.DbValue, cancellationToken);
         var rows = records.Select(r =>
         {
             var end = r.CheckOutUtc;
@@ -2261,9 +2284,10 @@ public sealed class AttendanceService : IAttendanceService
                 CheckOut = r.CheckOutUtc.HasValue ? r.CheckOutUtc.Value.ToString("HH:mm") : null,
                 WorkingMinutes = worked, BreakMinutes = r.TotalBreakMinutes, RequiredMinutes = required,
                 ShortMinutes = r.CheckOutUtc.HasValue ? Math.Max(0, required - worked) : 0,
-                AttendanceStatusId = r.AttendanceStatusId, StatusCode = r.AttendanceStatus?.Code,
-                StatusName = r.AttendanceStatus?.Status?.StatusName,
-                StatusColorCode = r.AttendanceStatus?.ColorStyle?.ColorCode
+                AttendanceStatusId = r.PlatformActionStatusId,
+                StatusCode = r.PlatformActionStatus?.StatusId != null && statusCodes.TryGetValue(r.PlatformActionStatus.StatusId, out var code) ? code : null,
+                StatusName = r.PlatformActionStatus?.Status?.Name,
+                StatusColorCode = r.PlatformActionStatus?.Color?.ColorCode
             };
         }).ToList();
         return new MonthlyAttendanceReportDto { Employee = employee, Year = year, Month = month, Rows = rows };

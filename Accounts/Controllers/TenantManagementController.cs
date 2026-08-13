@@ -83,7 +83,7 @@ namespace Accounts.Controllers
                         ? (p.Staff.Vacancy.Organization != null && p.Staff.Vacancy.Organization.Label == "Department"
                             ? p.Staff.Vacancy.Organization.Name : p.Staff.Vacancy.Department) : null,
                     jobTitle = p.Staff != null && p.Staff.Vacancy != null
-                        ? (p.Staff.Vacancy.JobTitleNav != null ? p.Staff.Vacancy.JobTitleNav.TitleName : p.Staff.Vacancy.JobTitle)
+                        ? (p.Staff.Vacancy.DesignationNav != null ? p.Staff.Vacancy.DesignationNav.Name : p.Staff.Vacancy.JobTitle)
                         : null
                 }).OrderBy(x => x.name).ToListAsync(ct);
             return Ok(new

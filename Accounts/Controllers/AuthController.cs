@@ -432,6 +432,20 @@ namespace Accounts.Controllers
                     permissionDetails = new List<object>()
                 });
 
+            // Chat is a tenant-enabled self-service module. Persist its menu
+            // grants for active staff before resolving either RBAC generation.
+            try
+            {
+                await EnsureStaffChatMenuGrantAsync(person, ct);
+            }
+            catch (DbUpdateException)
+            {
+                // Concurrent session/menu requests may race while creating the
+                // same unique default grant. The winning transaction has already
+                // persisted it, so discard this request's duplicate tracked rows.
+                _db.ChangeTracker.Clear();
+            }
+
             // Direct admin grants (PersonMenus + PersonFeatures) — primary model
             if (await _personAccess.HasPersonGrantsAsync(person.PersonId, ct))
             {
@@ -530,6 +544,112 @@ namespace Accounts.Controllers
                 });
             }
             return result;
+        }
+
+        private async Task EnsureStaffChatMenuGrantAsync(Person person, CancellationToken cancellationToken)
+        {
+            if (!person.IsActive || person.Staff == null) return;
+
+            var chatMenu = await _db.Menus.AsNoTracking()
+                .Where(menu => menu.IsActive && menu.Route == "/chat")
+                .Select(menu => new { menu.Id, menu.ParentId })
+                .SingleOrDefaultAsync(cancellationToken);
+            if (chatMenu == null) return;
+
+            var tenantAllowsChat = await _db.TenantMenuPermissions.AsNoTracking()
+                .AnyAsync(grant =>
+                    grant.TenantId == person.TenantId &&
+                    grant.MenuId == chatMenu.Id &&
+                    grant.IsAllow &&
+                    grant.CanView, cancellationToken);
+            if (!tenantAllowsChat) return;
+
+            var menuIds = chatMenu.ParentId.HasValue
+                ? new[] { chatMenu.ParentId.Value, chatMenu.Id }
+                : new[] { chatMenu.Id };
+            var permissionIds = await _db.MenuPermissions.AsNoTracking()
+                .Where(mapping => menuIds.Contains(mapping.MenuId))
+                .Select(mapping => mapping.PermissionId)
+                .Distinct()
+                .ToListAsync(cancellationToken);
+            var usesDirectPersonAccess = await _db.Set<PersonMenu>().AsNoTracking()
+                .AnyAsync(grant => grant.PersonId == person.PersonId, cancellationToken);
+
+            if (usesDirectPersonAccess)
+            {
+                var existingMenus = await _db.Set<PersonMenu>()
+                    .Where(grant => grant.PersonId == person.PersonId && menuIds.Contains(grant.MenuId))
+                    .Select(grant => grant.MenuId)
+                    .ToListAsync(cancellationToken);
+                _db.Set<PersonMenu>().AddRange(menuIds
+                    .Except(existingMenus)
+                    .Select(menuId => new PersonMenu
+                    {
+                        PersonId = person.PersonId,
+                        MenuId = menuId,
+                        GrantedBy = "SYSTEM_CHAT",
+                    }));
+
+                var existingFeatures = await _db.Set<PersonFeature>()
+                    .Where(grant =>
+                        grant.PersonId == person.PersonId &&
+                        permissionIds.Contains(grant.PermissionId))
+                    .Select(grant => grant.PermissionId)
+                    .ToListAsync(cancellationToken);
+                _db.Set<PersonFeature>().AddRange(permissionIds
+                    .Except(existingFeatures)
+                    .Select(permissionId => new PersonFeature
+                    {
+                        PersonId = person.PersonId,
+                        PermissionId = permissionId,
+                        GrantedBy = "SYSTEM_CHAT",
+                    }));
+            }
+            else
+            {
+                var existingAccess = await _db.StaffMenuAccesses
+                    .Where(access => access.StaffId == person.Staff.StaffId && menuIds.Contains(access.MenuId))
+                    .ToListAsync(cancellationToken);
+                foreach (var access in existingAccess) access.IsAllow = true;
+                foreach (var menuId in menuIds.Except(existingAccess.Select(access => access.MenuId)))
+                    _db.StaffMenuAccesses.Add(new StaffMenuAccess
+                    {
+                        StaffId = person.Staff.StaffId,
+                        MenuId = menuId,
+                        IsAllow = true,
+                        GrantedBy = "SYSTEM_CHAT",
+                    });
+                await _db.SaveChangesAsync(cancellationToken);
+
+                var accessRows = await _db.StaffMenuAccesses
+                    .Where(access => access.StaffId == person.Staff.StaffId && menuIds.Contains(access.MenuId))
+                    .ToListAsync(cancellationToken);
+                var permissionMenu = await _db.MenuPermissions.AsNoTracking()
+                    .Where(mapping => menuIds.Contains(mapping.MenuId))
+                    .Select(mapping => new { mapping.MenuId, mapping.PermissionId })
+                    .ToListAsync(cancellationToken);
+                var accessIds = accessRows.Select(access => access.Id).ToArray();
+                var existingFeatures = await _db.AccessFeatures
+                    .Where(feature => accessIds.Contains(feature.StaffMenuAccessId))
+                    .Select(feature => new { feature.StaffMenuAccessId, feature.PermissionId })
+                    .ToListAsync(cancellationToken);
+                var existingPairs = existingFeatures
+                    .Select(feature => (feature.StaffMenuAccessId, feature.PermissionId))
+                    .ToHashSet();
+                foreach (var access in accessRows)
+                foreach (var permissionId in permissionMenu
+                    .Where(mapping => mapping.MenuId == access.MenuId)
+                    .Select(mapping => mapping.PermissionId))
+                    if (!existingPairs.Contains((access.Id, permissionId)))
+                        _db.AccessFeatures.Add(new AccessFeature
+                        {
+                            StaffMenuAccessId = access.Id,
+                            PermissionId = permissionId,
+                            IsAllow = true,
+                        });
+            }
+
+            await _db.SaveChangesAsync(cancellationToken);
         }
 
         private static List<object> BuildFullTreeStatic(int? parentId, ILookup<int?, Accounts.Models.Menu> lookup)

@@ -45,21 +45,21 @@ namespace Accounts.Controllers
                         ? (p.Staff.Vacancy.Organization != null && p.Staff.Vacancy.Organization.Label == "Department"
                             ? p.Staff.Vacancy.Organization.Name : p.Staff.Vacancy.Department) : null,
                     Designation = p.Staff.Vacancy != null
-                        ? (p.Staff.Vacancy.JobTitleNav != null ? p.Staff.Vacancy.JobTitleNav.TitleName : p.Staff.Vacancy.JobTitle) : null,
+                        ? (p.Staff.Vacancy.DesignationNav != null ? p.Staff.Vacancy.DesignationNav.Name : p.Staff.Vacancy.JobTitle) : null,
                     p.ReportsToPersonId,
                     ReportsToName = p.ReportsToPerson != null ? p.ReportsToPerson.FullName : null,
                     ReportsToDepartment = p.ReportsToPerson != null && p.ReportsToPerson.Staff != null && p.ReportsToPerson.Staff.Vacancy != null
                         ? (p.ReportsToPerson.Staff.Vacancy.Organization != null && p.ReportsToPerson.Staff.Vacancy.Organization.Label == "Department"
                             ? p.ReportsToPerson.Staff.Vacancy.Organization.Name : p.ReportsToPerson.Staff.Vacancy.Department) : null,
                     ReportsToDesignation = p.ReportsToPerson != null && p.ReportsToPerson.Staff != null && p.ReportsToPerson.Staff.Vacancy != null
-                        ? (p.ReportsToPerson.Staff.Vacancy.JobTitleNav != null ? p.ReportsToPerson.Staff.Vacancy.JobTitleNav.TitleName : p.ReportsToPerson.Staff.Vacancy.JobTitle) : null,
+                        ? (p.ReportsToPerson.Staff.Vacancy.DesignationNav != null ? p.ReportsToPerson.Staff.Vacancy.DesignationNav.Name : p.ReportsToPerson.Staff.Vacancy.JobTitle) : null,
                     p.AlternativeReportsToPersonId,
                     AlternativeReportsToName = p.AlternativeReportsToPerson != null ? p.AlternativeReportsToPerson.FullName : null,
                     AlternativeReportsToDepartment = p.AlternativeReportsToPerson != null && p.AlternativeReportsToPerson.Staff != null && p.AlternativeReportsToPerson.Staff.Vacancy != null
                         ? (p.AlternativeReportsToPerson.Staff.Vacancy.Organization != null && p.AlternativeReportsToPerson.Staff.Vacancy.Organization.Label == "Department"
                             ? p.AlternativeReportsToPerson.Staff.Vacancy.Organization.Name : p.AlternativeReportsToPerson.Staff.Vacancy.Department) : null,
                     AlternativeReportsToDesignation = p.AlternativeReportsToPerson != null && p.AlternativeReportsToPerson.Staff != null && p.AlternativeReportsToPerson.Staff.Vacancy != null
-                        ? (p.AlternativeReportsToPerson.Staff.Vacancy.JobTitleNav != null ? p.AlternativeReportsToPerson.Staff.Vacancy.JobTitleNav.TitleName : p.AlternativeReportsToPerson.Staff.Vacancy.JobTitle) : null
+                        ? (p.AlternativeReportsToPerson.Staff.Vacancy.DesignationNav != null ? p.AlternativeReportsToPerson.Staff.Vacancy.DesignationNav.Name : p.AlternativeReportsToPerson.Staff.Vacancy.JobTitle) : null
                 }).OrderBy(x => x.FullName).ToListAsync(ct);
             return Ok(rows);
         }
@@ -160,7 +160,7 @@ namespace Accounts.Controllers
                         ? (p.Staff.Vacancy.Organization != null && p.Staff.Vacancy.Organization.Label == "Department"
                             ? p.Staff.Vacancy.Organization.Name : p.Staff.Vacancy.Department) : null,
                     Designation = p.Staff.Vacancy != null
-                        ? (p.Staff.Vacancy.JobTitleNav != null ? p.Staff.Vacancy.JobTitleNav.TitleName : p.Staff.Vacancy.JobTitle) : null
+                        ? (p.Staff.Vacancy.DesignationNav != null ? p.Staff.Vacancy.DesignationNav.Name : p.Staff.Vacancy.JobTitle) : null
                 })
                 .OrderBy(p => p.FullName)
                 .ToListAsync(ct);
@@ -177,8 +177,8 @@ namespace Accounts.Controllers
                     PersonId = p.PersonId,
                     ReportsToPersonId = p.ReportsToPersonId,
                     JobTitleId = p.Staff!.Vacancy!.JobTitleId,
-                    JobTitleName = p.Staff.Vacancy.JobTitleNav != null
-                        ? p.Staff.Vacancy.JobTitleNav.TitleName
+                    JobTitleName = p.Staff.Vacancy.DesignationNav != null
+                        ? p.Staff.Vacancy.DesignationNav.Name
                         : p.Staff.Vacancy.JobTitle
                 })
                 .ToListAsync(ct);

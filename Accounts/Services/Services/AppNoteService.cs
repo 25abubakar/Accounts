@@ -531,14 +531,14 @@ namespace Accounts.Services.Services
                         ? (int?)person.Staff.Vacancy.OrganizationId
                         : null,
                     JobTitle = person.Staff != null && person.Staff.Vacancy != null
-                        ? (person.Staff.Vacancy.JobTitleNav != null
-                            ? person.Staff.Vacancy.JobTitleNav.TitleName
+                        ? (person.Staff.Vacancy.DesignationNav != null
+                            ? person.Staff.Vacancy.DesignationNav.Name
                             : person.Staff.Vacancy.JobTitle)
                         : null,
                     InstructionScope = person.Staff != null &&
                         person.Staff.Vacancy != null &&
-                        person.Staff.Vacancy.JobTitleNav != null
-                            ? person.Staff.Vacancy.JobTitleNav.AttendanceVisibilityScope
+                        person.Staff.Vacancy.DesignationNav != null
+                            ? person.Staff.Vacancy.DesignationNav.AttendanceVisibilityScope
                             : AttendanceVisibilityScope.Self
                 })
                 .FirstOrDefaultAsync(ct);
@@ -564,8 +564,8 @@ namespace Accounts.Services.Services
                     person.Staff.VacancyId,
                     OrganizationId = person.Staff.Vacancy != null ? (int?)person.Staff.Vacancy.OrganizationId : null,
                     JobTitle = person.Staff.Vacancy != null
-                        ? (person.Staff.Vacancy.JobTitleNav != null
-                            ? person.Staff.Vacancy.JobTitleNav.TitleName
+                        ? (person.Staff.Vacancy.DesignationNav != null
+                            ? person.Staff.Vacancy.DesignationNav.Name
                             : person.Staff.Vacancy.JobTitle)
                         : null,
                     Department = person.Staff.Vacancy != null ? person.Staff.Vacancy.Department : null

@@ -23,13 +23,20 @@ public sealed partial class PlatformTypesController : ControllerBase
     private readonly ITenantService _tenant;
     private readonly RbacService _rbac;
     private readonly TenantPermissionService _tenantPermissions;
+    private readonly PlatformSettingsProvisioningService _provisioning;
 
-    public PlatformTypesController(ApplicationDbContext db, ITenantService tenant, RbacService rbac, TenantPermissionService tenantPermissions)
+    public PlatformTypesController(
+        ApplicationDbContext db,
+        ITenantService tenant,
+        RbacService rbac,
+        TenantPermissionService tenantPermissions,
+        PlatformSettingsProvisioningService provisioning)
     {
         _db = db;
         _tenant = tenant;
         _rbac = rbac;
         _tenantPermissions = tenantPermissions;
+        _provisioning = provisioning;
     }
 
     [HttpGet]
@@ -38,6 +45,9 @@ public sealed partial class PlatformTypesController : ControllerBase
         if (_tenant.IsSuperAdmin) return Ok(Array.Empty<PlatformTypeCategoryDto>());
         if (!_tenant.TenantId.HasValue) return Forbid();
         if (!await HasActionAsync("VIEW", ct)) return Forbid();
+
+        if (_tenant.TenantId.HasValue)
+            await _provisioning.EnsureTenantPlatformSettingsAsync(_tenant.TenantId.Value, ct: ct);
 
         var categories = await _db.PlatformTypeCategories.AsNoTracking()
             .Where(category => category.IsActive)
@@ -48,8 +58,8 @@ public sealed partial class PlatformTypesController : ControllerBase
             .OrderBy(value => value.DisplayOrder == 0 ? int.MaxValue : value.DisplayOrder)
             .ThenBy(value => value.Name)
             .ToListAsync(ct);
-        var designations = await _db.JobTitles.AsNoTracking()
-            .OrderBy(title => title.TitleName)
+        var designations = await _db.Designations.AsNoTracking()
+            .OrderBy(title => title.Name)
             .ToListAsync(ct);
 
         var result = categories.Select(category => new PlatformTypeCategoryDto
@@ -64,7 +74,7 @@ public sealed partial class PlatformTypesController : ControllerBase
                 {
                     Id = title.Id,
                     CategoryId = category.Id,
-                    Name = title.TitleName,
+                    Name = title.Name,
                     Code = $"DESIGNATION_{title.Id}",
                     DisplayOrder = index + 1,
                     IsActive = true
@@ -88,7 +98,7 @@ public sealed partial class PlatformTypesController : ControllerBase
         if (category == null)
             return NotFound(new { message = "Type category not found." });
         if (category.Code == "DESIGNATION")
-            return BadRequest(new { message = "Designations are managed through the designation master." });
+            return BadRequest(new { message = "Designations are managed on the Designation tab and sync automatically from the designation master." });
 
         var name = dto.Name.Trim();
         var code = NormalizeCode(dto.Code, name);

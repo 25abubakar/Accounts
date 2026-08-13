@@ -217,6 +217,16 @@ namespace Accounts.Services.Services
             if (await _db.Vacancies.AnyAsync(v => v.OrganizationId == id))
                 return (false, "Cannot delete — this node has vacancies. Delete vacancies first.");
 
+            var tenantName = await _db.Tenants
+                .Where(t => t.OrganizationTreeId == id)
+                .Select(t => t.TenantName)
+                .FirstOrDefaultAsync();
+            if (tenantName != null)
+                return (false, $"Cannot delete — this node is assigned to tenant '{tenantName}'. Remove or reassign the tenant first.");
+
+            if (await _db.ChatWorkspaces.AnyAsync(w => w.OrganizationTreeId == id))
+                return (false, "Cannot delete — this node has an active chat workspace. Remove the tenant first.");
+
             _db.OrganizationTree.Remove(node);
             await _db.SaveChangesAsync();
             return (true, $"Node '{node.Name}' (ID: {id}) deleted.");

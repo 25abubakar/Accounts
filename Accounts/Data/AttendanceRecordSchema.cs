@@ -5,17 +5,20 @@ namespace Accounts.Data;
 public static class AttendanceRecordSchema
 {
     private static readonly SemaphoreSlim LocalGate = new(1, 1);
-    private static bool CameraReportSchemaEnsured;
+    private const int CameraReportSchemaVersion = 2;
+    private static int AppliedCameraReportSchemaVersion;
     private static bool DeductionReportProcedureEnsured;
+
+    public static void ResetCameraReportSchema() => AppliedCameraReportSchemaVersion = 0;
 
     public static async Task EnsureCameraColumnsAsync(ApplicationDbContext db, CancellationToken ct = default)
     {
-        if (CameraReportSchemaEnsured) return;
+        if (AppliedCameraReportSchemaVersion >= CameraReportSchemaVersion) return;
 
         await LocalGate.WaitAsync(ct);
         try
         {
-            if (CameraReportSchemaEnsured) return;
+            if (AppliedCameraReportSchemaVersion >= CameraReportSchemaVersion) return;
 
             await db.Database.ExecuteSqlRawAsync(
                 """
@@ -37,6 +40,9 @@ public static class AttendanceRecordSchema
 
                         IF COL_LENGTH(N'[dbo].[AttendanceRecords]', N'CameraCheckOutUtc') IS NULL
                             ALTER TABLE [dbo].[AttendanceRecords] ADD [CameraCheckOutUtc] datetime2 NULL;
+
+                        IF COL_LENGTH(N'[dbo].[AttendanceRecords]', N'PlatformActionStatusId') IS NULL
+                            ALTER TABLE [dbo].[AttendanceRecords] ADD [PlatformActionStatusId] int NULL;
                     END;
 
                     IF OBJECT_ID(N'[dbo].[AttendanceRuleSettings]', N'U') IS NOT NULL
@@ -47,20 +53,84 @@ public static class AttendanceRecordSchema
                             CONSTRAINT DF_AttendanceRuleSettings_EarlyCheckoutAbsentAfterMinutes DEFAULT(120);
                     END;
 
+                    IF OBJECT_ID(N'[dbo].[AttendanceEntryTypes]', N'U') IS NOT NULL
+                       AND COL_LENGTH(N'[dbo].[AttendanceEntryTypes]', N'Code') IS NULL
+                    BEGIN
+                        ALTER TABLE [dbo].[AttendanceEntryTypes] ADD [Code] nvarchar(30) NULL;
+                        UPDATE dbo.AttendanceEntryTypes
+                           SET Code = N'CHECK'
+                         WHERE Name IN (N'Check In / Out', N'Check In/Out', N'Check')
+                            OR Name LIKE N'%Check%In%';
+                        UPDATE dbo.AttendanceEntryTypes
+                           SET Code = N'NONE'
+                         WHERE Name IN (N'No attendance', N'No Attendance')
+                            OR Name LIKE N'%No attendance%';
+                        UPDATE dbo.AttendanceEntryTypes
+                           SET Code = N'MANUAL'
+                         WHERE Name LIKE N'%Manual%';
+                        UPDATE dbo.AttendanceEntryTypes
+                           SET Code = CONCAT(N'TYPE_', Id)
+                         WHERE Code IS NULL OR LTRIM(RTRIM(Code)) = N'';
+                        ALTER TABLE [dbo].[AttendanceEntryTypes] ALTER COLUMN [Code] nvarchar(30) NOT NULL;
+                        IF NOT EXISTS (
+                            SELECT 1
+                            FROM sys.indexes
+                            WHERE name = N'UQ_AttendanceEntryTypes_Code'
+                              AND object_id = OBJECT_ID(N'dbo.AttendanceEntryTypes'))
+                            CREATE UNIQUE INDEX UQ_AttendanceEntryTypes_Code ON dbo.AttendanceEntryTypes(Code);
+                    END;
+
+                    IF OBJECT_ID(N'[dbo].[AttendanceWorkModes]', N'U') IS NOT NULL
+                       AND COL_LENGTH(N'[dbo].[AttendanceWorkModes]', N'Code') IS NULL
+                    BEGIN
+                        ALTER TABLE [dbo].[AttendanceWorkModes] ADD [Code] nvarchar(30) NULL;
+                        UPDATE dbo.AttendanceWorkModes
+                           SET Code = CONCAT(N'MODE_', Id)
+                         WHERE Code IS NULL OR LTRIM(RTRIM(Code)) = N'';
+                        ALTER TABLE [dbo].[AttendanceWorkModes] ALTER COLUMN [Code] nvarchar(30) NOT NULL;
+                        IF NOT EXISTS (
+                            SELECT 1
+                            FROM sys.indexes
+                            WHERE name = N'UQ_AttendanceWorkModes_Code'
+                              AND object_id = OBJECT_ID(N'dbo.AttendanceWorkModes'))
+                            CREATE UNIQUE INDEX UQ_AttendanceWorkModes_Code ON dbo.AttendanceWorkModes(Code);
+                    END;
+
+                    IF OBJECT_ID(N'[dbo].[AttendanceEntryTypes]', N'U') IS NOT NULL
+                    BEGIN
+                        IF NOT EXISTS (SELECT 1 FROM dbo.AttendanceEntryTypes WHERE Code = N'CHECK')
+                            INSERT dbo.AttendanceEntryTypes(Code, Name, IsActive) VALUES (N'CHECK', N'Check In / Out', 1);
+                        IF NOT EXISTS (SELECT 1 FROM dbo.AttendanceEntryTypes WHERE Code = N'NONE')
+                            INSERT dbo.AttendanceEntryTypes(Code, Name, IsActive) VALUES (N'NONE', N'No attendance', 1);
+                        IF NOT EXISTS (SELECT 1 FROM dbo.AttendanceEntryTypes WHERE Code = N'MANUAL')
+                            INSERT dbo.AttendanceEntryTypes(Code, Name, IsActive) VALUES (N'MANUAL', N'Manual', 1);
+                    END;
+
                     EXEC(N'
                     CREATE OR ALTER PROCEDURE dbo.usp_Attendance_DailyReport
                         @TenantId int, @DateFrom date, @DateTo date, @VisiblePersonIds nvarchar(max)
                     AS
                     BEGIN
                         SET NOCOUNT ON;
-                        DECLARE @ProcessId int,@DayOff int,@Holiday int;
+                        DECLARE @ProcessId int,@DayOff int,@Holiday int,@PlatformDayOff int,@PlatformHoliday int;
                         SELECT @ProcessId=Id FROM dbo.Processes WHERE ProcessName=N''Attendance'';
-                        SELECT TOP(1) @DayOff=Id FROM dbo.ProcessStatusStyles
-                            WHERE ProcessId=@ProcessId AND Code=N''DO'' AND IsActive=1 AND (TenantId=@TenantId OR TenantId IS NULL)
-                            ORDER BY CASE WHEN TenantId=@TenantId THEN 0 ELSE 1 END;
-                        SELECT TOP(1) @Holiday=Id FROM dbo.ProcessStatusStyles
-                            WHERE ProcessId=@ProcessId AND Code=N''H'' AND IsActive=1 AND (TenantId=@TenantId OR TenantId IS NULL)
-                            ORDER BY CASE WHEN TenantId=@TenantId THEN 0 ELSE 1 END;
+                        
+                        DECLARE @PlatformActionId int;
+                        SELECT TOP(1) @PlatformActionId=Id FROM PlatformSettings.Actions WHERE Name=N''Attendance'' AND TenantId=@TenantId;
+
+                        SELECT TOP(1) @DayOff=pss.Id, @PlatformDayOff=pas.Id
+                        FROM dbo.ProcessStatusStyles pss
+                        INNER JOIN PlatformSettings.StatusCrDbValues crdb ON crdb.DbValue=pss.Code AND (crdb.TenantId=pss.TenantId OR crdb.TenantId IS NULL)
+                        INNER JOIN PlatformSettings.ActionStatuses pas ON pas.StatusId=crdb.StatusId AND pas.ActionId=@PlatformActionId
+                        WHERE pss.ProcessId=@ProcessId AND pss.Code=N''DO'' AND pss.IsActive=1 AND (pss.TenantId=@TenantId OR pss.TenantId IS NULL)
+                        ORDER BY CASE WHEN pss.TenantId=@TenantId THEN 0 ELSE 1 END;
+                        
+                        SELECT TOP(1) @Holiday=pss.Id, @PlatformHoliday=pas.Id
+                        FROM dbo.ProcessStatusStyles pss
+                        INNER JOIN PlatformSettings.StatusCrDbValues crdb ON crdb.DbValue=pss.Code AND (crdb.TenantId=pss.TenantId OR crdb.TenantId IS NULL)
+                        INNER JOIN PlatformSettings.ActionStatuses pas ON pas.StatusId=crdb.StatusId AND pas.ActionId=@PlatformActionId
+                        WHERE pss.ProcessId=@ProcessId AND pss.Code=N''H'' AND pss.IsActive=1 AND (pss.TenantId=@TenantId OR pss.TenantId IS NULL)
+                        ORDER BY CASE WHEN pss.TenantId=@TenantId THEN 0 ELSE 1 END;
 
                         ;WITH Dates AS(
                             SELECT @DateFrom AttendanceDate UNION ALL
@@ -75,11 +145,11 @@ public static class AttendanceRecordSchema
                                 COALESCE(vacancy.Department,organization.Name) Department,
                                 COALESCE(jobTitle.TitleName,vacancy.JobTitle,N'''') Designation,
                                 dates.AttendanceDate,
-                                COALESCE(attendance.AttendanceStatusId,
+                                COALESCE(attendance.PlatformActionStatusId,
                                     CASE WHEN effective.IsOn=0 THEN
                                         CASE WHEN timingHoliday.ValueCode IN(N''HOLIDAY'',N''ANNUAL_HOLIDAY'')
-                                             THEN COALESCE(@Holiday,@DayOff)
-                                             ELSE COALESCE(@DayOff,@Holiday) END END) AttendanceStatusId,
+                                             THEN COALESCE(@PlatformHoliday,@PlatformDayOff)
+                                             ELSE COALESCE(@PlatformDayOff,@PlatformHoliday) END END) PlatformActionStatusId,
                                 COALESCE(attendance.AttendanceEntryTypeId,mapRule.AttendanceEntryTypeId) AttendanceEntryTypeId,
                                 attendance.AttendanceWorkModeId,
                                 attendance.CheckInUtc,attendance.CheckOutUtc,
@@ -94,7 +164,7 @@ public static class AttendanceRecordSchema
                             FROM VisiblePeople visible
                             JOIN dbo.Persons person
                               ON person.PersonId=visible.PersonId AND person.IsActive=1 AND person.TenantId=@TenantId
-                            JOIN dbo.StaffVacancy staff ON staff.PersonId=person.PersonId
+                            JOIN dbo.StaffVacancy staff ON staff.PersonId=person.PersonId AND staff.TenantId=@TenantId
                             JOIN dbo.Vacancies vacancy ON vacancy.VacancyId=staff.VacancyId
                             LEFT JOIN dbo.JobTitles jobTitle ON jobTitle.Id=vacancy.JobTitleId
                             LEFT JOIN dbo.OrganizationTree organization ON organization.Id=vacancy.OrganizationId
@@ -124,8 +194,12 @@ public static class AttendanceRecordSchema
                         )
                         SELECT rowData.Id,rowData.PersonId,rowData.EmployeeNumber,rowData.EmployeeName,
                             rowData.Department,rowData.Designation,rowData.AttendanceDate,
-                            rowData.AttendanceStatusId,statusDefinition.StatusName,statusStyle.Code StatusCode,
-                            color.ColorCode StatusColorCode,color.FontColor StatusFontColor,color.FontSize StatusFontSize,
+                            rowData.PlatformActionStatusId AS AttendanceStatusId,
+                            platformStatus.Name StatusName,
+                            platformCrDb.DbValue StatusCode,
+                            platformColor.ColorCode StatusColorCode,
+                            platformColor.FontColor StatusFontColor,
+                            ''12px'' StatusFontSize,
                             rowData.AttendanceEntryTypeId,
                             COALESCE(entryType.Name,CASE WHEN rowData.Id IS NULL THEN noEntry.Name END) AttendanceEntryType,
                             rowData.AttendanceWorkModeId,workMode.Name AttendanceWorkMode,
@@ -137,9 +211,10 @@ public static class AttendanceRecordSchema
                             rowData.EarlyCheckoutAbsentAfterMinutes,
                             rowData.MissingCheckoutAfterShiftEndMinutes
                         FROM ReportRows rowData
-                        LEFT JOIN dbo.ProcessStatusStyles statusStyle ON statusStyle.Id=rowData.AttendanceStatusId
-                        LEFT JOIN dbo.Statuses statusDefinition ON statusDefinition.Id=statusStyle.StatusId
-                        LEFT JOIN dbo.ColorStyles color ON color.Id=statusStyle.ColorStyleId
+                        LEFT JOIN PlatformSettings.ActionStatuses platformActionStatus ON platformActionStatus.Id=rowData.PlatformActionStatusId
+                        LEFT JOIN PlatformSettings.Statuses platformStatus ON platformStatus.Id=platformActionStatus.StatusId
+                        LEFT JOIN PlatformSettings.StatusCrDbValues platformCrDb ON platformCrDb.StatusId=platformStatus.Id AND (platformCrDb.TenantId=@TenantId OR platformCrDb.TenantId IS NULL)
+                        LEFT JOIN PlatformSettings.Colors platformColor ON platformColor.Id=platformActionStatus.ColorId
                         LEFT JOIN dbo.AttendanceEntryTypes entryType ON entryType.Id=rowData.AttendanceEntryTypeId
                         LEFT JOIN dbo.AttendanceEntryTypes noEntry ON noEntry.Code=N''NONE'' AND noEntry.IsActive=1
                         LEFT JOIN dbo.AttendanceWorkModes workMode ON workMode.Id=rowData.AttendanceWorkModeId
@@ -159,7 +234,7 @@ public static class AttendanceRecordSchema
                 """,
                 ct);
 
-            CameraReportSchemaEnsured = true;
+            AppliedCameraReportSchemaVersion = CameraReportSchemaVersion;
         }
         finally
         {

@@ -1,6 +1,7 @@
 using Accounts.Data;
 using Accounts.Models;
 using Accounts.Services.Interfaces;
+using Accounts.Services.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc;
@@ -29,18 +30,21 @@ namespace Accounts.Controllers
         private readonly ApplicationDbContext        _db;
         private readonly UserManager<ApplicationUser> _userManager;
         private readonly RoleManager<IdentityRole>   _roleManager;
-        private readonly IOrganizationService        _orgService;
+        private readonly IOrganizationService _orgService;
+        private readonly PlatformSettingsProvisioningService _provisioning;
 
         public TenantController(
-            ApplicationDbContext         db,
+            ApplicationDbContext db,
             UserManager<ApplicationUser> userManager,
-            RoleManager<IdentityRole>    roleManager,
-            IOrganizationService         orgService)
+            RoleManager<IdentityRole> roleManager,
+            IOrganizationService orgService,
+            PlatformSettingsProvisioningService provisioning)
         {
-            _db          = db;
+            _db = db;
             _userManager = userManager;
             _roleManager = roleManager;
-            _orgService  = orgService;
+            _orgService = orgService;
+            _provisioning = provisioning;
         }
 
         // ── GET /api/tenants ──────────────────────────────────────────────────
@@ -375,6 +379,8 @@ namespace Accounts.Controllers
                     }
 
                     await tx.CommitAsync();
+
+                    await _provisioning.EnsureTenantPlatformSettingsAsync(tenant.Id, ct: default);
 
                     result = Ok(new
                     {
