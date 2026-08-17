@@ -14,6 +14,7 @@ public sealed class AttendanceRecord : ITenantEntity
     public DateTime? EffectiveCheckOutUtc { get; set; }
     public int? AttendanceStatusId { get; set; }
     public int? PlatformActionStatusId { get; set; }
+    public int? CameraPlatformActionStatusId { get; set; }
     public int? AttendanceEntryTypeId { get; set; }
     public int? AttendanceWorkModeId { get; set; }
     public DateTime? CheckInUtc { get; set; }
@@ -36,7 +37,8 @@ public sealed class AttendanceRecord : ITenantEntity
     public Person Person { get; set; } = null!;
     public ProcessStatusStyle? AttendanceStatus { get; set; }
     public PlatformSettingActionStatus? PlatformActionStatus { get; set; }
-    public AttendanceEntryType? AttendanceEntryType { get; set; }
+    public PlatformSettingActionStatus? CameraPlatformActionStatus { get; set; }
+    public AttendanceType? AttendanceEntryType { get; set; }
     public AttendanceWorkMode? AttendanceWorkMode { get; set; }
     public ProcessStatusStyle? VerificationStatus { get; set; }
     public PlatformSettingActionStatus? PlatformVerificationStatus { get; set; }

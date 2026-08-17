@@ -24,6 +24,11 @@ public sealed class AttendanceDailyReportRow
     public DateTime? CheckOutUtc { get; set; }
     public DateTime? CameraCheckInUtc { get; set; }
     public DateTime? CameraCheckOutUtc { get; set; }
+    public int? CameraAttendanceStatusId { get; set; }
+    public string? CameraStatusName { get; set; }
+    public string? CameraStatusCode { get; set; }
+    public string? CameraStatusColorCode { get; set; }
+    public string? CameraStatusFontColor { get; set; }
     public int? TotalBreakMinutes { get; set; }
     public string ShiftStartTime { get; set; } = "09:00";
     public string ShiftEndTime { get; set; } = "18:00";

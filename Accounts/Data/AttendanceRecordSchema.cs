@@ -5,7 +5,7 @@ namespace Accounts.Data;
 public static class AttendanceRecordSchema
 {
     private static readonly SemaphoreSlim LocalGate = new(1, 1);
-    private const int CameraReportSchemaVersion = 2;
+    private const int CameraReportSchemaVersion = 4;
     private static int AppliedCameraReportSchemaVersion;
     private static bool DeductionReportProcedureEnsured;
 
@@ -53,31 +53,31 @@ public static class AttendanceRecordSchema
                             CONSTRAINT DF_AttendanceRuleSettings_EarlyCheckoutAbsentAfterMinutes DEFAULT(120);
                     END;
 
-                    IF OBJECT_ID(N'[dbo].[AttendanceEntryTypes]', N'U') IS NOT NULL
-                       AND COL_LENGTH(N'[dbo].[AttendanceEntryTypes]', N'Code') IS NULL
+                    IF OBJECT_ID(N'[PlatformTypes].[AttendanceTypes]', N'U') IS NOT NULL
+                       AND COL_LENGTH(N'[PlatformTypes].[AttendanceTypes]', N'Code') IS NULL
                     BEGIN
-                        ALTER TABLE [dbo].[AttendanceEntryTypes] ADD [Code] nvarchar(30) NULL;
-                        UPDATE dbo.AttendanceEntryTypes
+                        ALTER TABLE [PlatformTypes].[AttendanceTypes] ADD [Code] nvarchar(30) NULL;
+                        UPDATE PlatformTypes.AttendanceTypes
                            SET Code = N'CHECK'
                          WHERE Name IN (N'Check In / Out', N'Check In/Out', N'Check')
                             OR Name LIKE N'%Check%In%';
-                        UPDATE dbo.AttendanceEntryTypes
+                        UPDATE PlatformTypes.AttendanceTypes
                            SET Code = N'NONE'
                          WHERE Name IN (N'No attendance', N'No Attendance')
                             OR Name LIKE N'%No attendance%';
-                        UPDATE dbo.AttendanceEntryTypes
+                        UPDATE PlatformTypes.AttendanceTypes
                            SET Code = N'MANUAL'
                          WHERE Name LIKE N'%Manual%';
-                        UPDATE dbo.AttendanceEntryTypes
+                        UPDATE PlatformTypes.AttendanceTypes
                            SET Code = CONCAT(N'TYPE_', Id)
                          WHERE Code IS NULL OR LTRIM(RTRIM(Code)) = N'';
-                        ALTER TABLE [dbo].[AttendanceEntryTypes] ALTER COLUMN [Code] nvarchar(30) NOT NULL;
+                        ALTER TABLE [PlatformTypes].[AttendanceTypes] ALTER COLUMN [Code] nvarchar(30) NOT NULL;
                         IF NOT EXISTS (
                             SELECT 1
                             FROM sys.indexes
-                            WHERE name = N'UQ_AttendanceEntryTypes_Code'
-                              AND object_id = OBJECT_ID(N'dbo.AttendanceEntryTypes'))
-                            CREATE UNIQUE INDEX UQ_AttendanceEntryTypes_Code ON dbo.AttendanceEntryTypes(Code);
+                            WHERE name = N'UQ_AttendanceTypes_Code'
+                              AND object_id = OBJECT_ID(N'PlatformTypes.AttendanceTypes'))
+                            CREATE UNIQUE INDEX UQ_AttendanceTypes_Code ON PlatformTypes.AttendanceTypes(Code);
                     END;
 
                     IF OBJECT_ID(N'[dbo].[AttendanceWorkModes]', N'U') IS NOT NULL
@@ -94,16 +94,6 @@ public static class AttendanceRecordSchema
                             WHERE name = N'UQ_AttendanceWorkModes_Code'
                               AND object_id = OBJECT_ID(N'dbo.AttendanceWorkModes'))
                             CREATE UNIQUE INDEX UQ_AttendanceWorkModes_Code ON dbo.AttendanceWorkModes(Code);
-                    END;
-
-                    IF OBJECT_ID(N'[dbo].[AttendanceEntryTypes]', N'U') IS NOT NULL
-                    BEGIN
-                        IF NOT EXISTS (SELECT 1 FROM dbo.AttendanceEntryTypes WHERE Code = N'CHECK')
-                            INSERT dbo.AttendanceEntryTypes(Code, Name, IsActive) VALUES (N'CHECK', N'Check In / Out', 1);
-                        IF NOT EXISTS (SELECT 1 FROM dbo.AttendanceEntryTypes WHERE Code = N'NONE')
-                            INSERT dbo.AttendanceEntryTypes(Code, Name, IsActive) VALUES (N'NONE', N'No attendance', 1);
-                        IF NOT EXISTS (SELECT 1 FROM dbo.AttendanceEntryTypes WHERE Code = N'MANUAL')
-                            INSERT dbo.AttendanceEntryTypes(Code, Name, IsActive) VALUES (N'MANUAL', N'Manual', 1);
                     END;
 
                     EXEC(N'
@@ -153,8 +143,9 @@ public static class AttendanceRecordSchema
                                 COALESCE(attendance.AttendanceEntryTypeId,mapRule.AttendanceEntryTypeId) AttendanceEntryTypeId,
                                 attendance.AttendanceWorkModeId,
                                 attendance.CheckInUtc,attendance.CheckOutUtc,
-                                attendance.CameraCheckInUtc,attendance.CameraCheckOutUtc,
-                                attendance.TotalBreakMinutes,
+                            attendance.CameraCheckInUtc,attendance.CameraCheckOutUtc,
+                            attendance.CameraPlatformActionStatusId,
+                            attendance.TotalBreakMinutes,
                                 CONVERT(char(5),effective.ShiftStart,108) ShiftStartTime,
                                 CONVERT(char(5),effective.ShiftEnd,108) ShiftEndTime,
                                 person.TimeZoneId,person.ReportsToPersonId,
@@ -200,6 +191,11 @@ public static class AttendanceRecordSchema
                             platformColor.ColorCode StatusColorCode,
                             platformColor.FontColor StatusFontColor,
                             ''12px'' StatusFontSize,
+                            rowData.CameraPlatformActionStatusId AS CameraAttendanceStatusId,
+                            cameraStatus.Name AS CameraStatusName,
+                            cameraCrDb.DbValue AS CameraStatusCode,
+                            cameraColor.ColorCode AS CameraStatusColorCode,
+                            cameraColor.FontColor AS CameraStatusFontColor,
                             rowData.AttendanceEntryTypeId,
                             COALESCE(entryType.Name,CASE WHEN rowData.Id IS NULL THEN noEntry.Name END) AttendanceEntryType,
                             rowData.AttendanceWorkModeId,workMode.Name AttendanceWorkMode,
@@ -215,8 +211,12 @@ public static class AttendanceRecordSchema
                         LEFT JOIN PlatformSettings.Statuses platformStatus ON platformStatus.Id=platformActionStatus.StatusId
                         LEFT JOIN PlatformSettings.StatusCrDbValues platformCrDb ON platformCrDb.StatusId=platformStatus.Id AND (platformCrDb.TenantId=@TenantId OR platformCrDb.TenantId IS NULL)
                         LEFT JOIN PlatformSettings.Colors platformColor ON platformColor.Id=platformActionStatus.ColorId
-                        LEFT JOIN dbo.AttendanceEntryTypes entryType ON entryType.Id=rowData.AttendanceEntryTypeId
-                        LEFT JOIN dbo.AttendanceEntryTypes noEntry ON noEntry.Code=N''NONE'' AND noEntry.IsActive=1
+                        LEFT JOIN PlatformSettings.ActionStatuses cameraActionStatus ON cameraActionStatus.Id=rowData.CameraPlatformActionStatusId
+                        LEFT JOIN PlatformSettings.Statuses cameraStatus ON cameraStatus.Id=cameraActionStatus.StatusId
+                        LEFT JOIN PlatformSettings.StatusCrDbValues cameraCrDb ON cameraCrDb.StatusId=cameraStatus.Id AND (cameraCrDb.TenantId=@TenantId OR cameraCrDb.TenantId IS NULL)
+                        LEFT JOIN PlatformSettings.Colors cameraColor ON cameraColor.Id=cameraActionStatus.ColorId
+                        LEFT JOIN PlatformTypes.AttendanceTypes entryType ON entryType.Id=rowData.AttendanceEntryTypeId AND entryType.TenantId=@TenantId
+                        LEFT JOIN PlatformTypes.AttendanceTypes noEntry ON noEntry.Code=N''NONE'' AND noEntry.IsActive=1 AND noEntry.TenantId=@TenantId
                         LEFT JOIN dbo.AttendanceWorkModes workMode ON workMode.Id=rowData.AttendanceWorkModeId
                         ORDER BY rowData.AttendanceDate DESC,rowData.EmployeeName OPTION(MAXRECURSION 367);
                     END');

@@ -85,13 +85,18 @@ namespace Accounts.Migrations
                             COALESCE(TRY_CONVERT(time(0),timing.TimeTo),TRY_CONVERT(time(0),mapRule.TimeTo),TRY_CONVERT(time(0),person.ShiftEndTime)) ShiftEnd
                         ) effective
                     )
-                    SELECT rowData.Id,rowData.PersonId,rowData.EmployeeNumber,rowData.EmployeeName,
-                        rowData.Department,rowData.Designation,rowData.AttendanceDate,
-                        rowData.AttendanceStatusId,statusDefinition.StatusName,statusStyle.Code StatusCode,
-                        color.ColorCode StatusColorCode,color.FontColor StatusFontColor,color.FontSize StatusFontSize,
-                        rowData.AttendanceEntryTypeId,
-                        COALESCE(entryType.Name,CASE WHEN rowData.Id IS NULL THEN noEntry.Name END) AttendanceEntryType,
-                        rowData.AttendanceWorkModeId,workMode.Name AttendanceWorkMode,
+                        SELECT rowData.Id,rowData.PersonId,rowData.EmployeeNumber,rowData.EmployeeName,
+                            rowData.Department,rowData.Designation,rowData.AttendanceDate,
+                            rowData.AttendanceStatusId,statusDefinition.StatusName,statusStyle.Code StatusCode,
+                            color.ColorCode StatusColorCode,color.FontColor StatusFontColor,color.FontSize StatusFontSize,
+                            rowData.CameraPlatformActionStatusId AS CameraAttendanceStatusId,
+                            cameraStatus.Name AS CameraStatusName,
+                            cameraStatusStyle.Code AS CameraStatusCode,
+                            cameraColor.ColorCode AS CameraStatusColorCode,
+                            cameraColor.FontColor AS CameraStatusFontColor,
+                            rowData.AttendanceEntryTypeId,
+                            COALESCE(entryType.Name,CASE WHEN rowData.Id IS NULL THEN noEntry.Name END) AttendanceEntryType,
+                            rowData.AttendanceWorkModeId,workMode.Name AttendanceWorkMode,
                         rowData.CheckInUtc,rowData.CheckOutUtc,
                         rowData.CameraCheckInUtc,rowData.CameraCheckOutUtc,
                         rowData.TotalBreakMinutes,
@@ -100,6 +105,9 @@ namespace Accounts.Migrations
                     LEFT JOIN dbo.ProcessStatusStyles statusStyle ON statusStyle.Id=rowData.AttendanceStatusId
                     LEFT JOIN dbo.Statuses statusDefinition ON statusDefinition.Id=statusStyle.StatusId
                     LEFT JOIN dbo.ColorStyles color ON color.Id=statusStyle.ColorStyleId
+                    LEFT JOIN dbo.ProcessStatusStyles cameraStatusStyle ON cameraStatusStyle.Id=rowData.CameraPlatformActionStatusId
+                    LEFT JOIN dbo.Statuses cameraStatus ON cameraStatus.Id=cameraStatusStyle.StatusId
+                    LEFT JOIN dbo.ColorStyles cameraColor ON cameraColor.Id=cameraStatusStyle.ColorStyleId
                     LEFT JOIN dbo.AttendanceEntryTypes entryType ON entryType.Id=rowData.AttendanceEntryTypeId
                     LEFT JOIN dbo.AttendanceEntryTypes noEntry ON noEntry.Code=N'NONE' AND noEntry.IsActive=1
                     LEFT JOIN dbo.AttendanceWorkModes workMode ON workMode.Id=rowData.AttendanceWorkModeId

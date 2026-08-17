@@ -73,7 +73,6 @@ namespace Accounts.Data
         public DbSet<AttendanceDeductionRequest> AttendanceDeductionRequests => Set<AttendanceDeductionRequest>();
         public DbSet<AttendanceHolidayColorMap> AttendanceHolidayColorMaps => Set<AttendanceHolidayColorMap>();
         public DbSet<AttendanceHolidayColorMapReadRow> AttendanceHolidayColorMapReadRows => Set<AttendanceHolidayColorMapReadRow>();
-        public DbSet<AttendanceEntryType>      AttendanceEntryTypes     => Set<AttendanceEntryType>();
         public DbSet<AttendanceWorkMode>       AttendanceWorkModes      => Set<AttendanceWorkMode>();
         public DbSet<AttendanceDailyReportRow> AttendanceDailyReportRows => Set<AttendanceDailyReportRow>();
         public DbSet<AttendanceDeductionReportRow> AttendanceDeductionReportRows => Set<AttendanceDeductionReportRow>();
@@ -205,6 +204,14 @@ namespace Accounts.Data
                 _tenantService != null && !_tenantService.IsSuperAdmin &&
                 _tenantService.TenantId != null && row.Staff != null &&
                 row.Staff.TenantId == _tenantService.TenantId);
+            builder.Entity<PersonMenu>().HasQueryFilter(row =>
+                _tenantService != null && !_tenantService.IsSuperAdmin &&
+                _tenantService.TenantId != null && row.Person != null &&
+                row.Person.TenantId == _tenantService.TenantId);
+            builder.Entity<PersonFeature>().HasQueryFilter(row =>
+                _tenantService != null && !_tenantService.IsSuperAdmin &&
+                _tenantService.TenantId != null && row.Person != null &&
+                row.Person.TenantId == _tenantService.TenantId);
             builder.Entity<Designation>().HasQueryFilter(row =>
                 _tenantService != null && !_tenantService.IsSuperAdmin &&
                 _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
@@ -262,6 +269,26 @@ namespace Accounts.Data
             builder.Entity<AttendanceHolidayColorMapReadRow>().HasQueryFilter(row =>
                 _tenantService != null && !_tenantService.IsSuperAdmin &&
                 _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
+            builder.Entity<AppNote>().HasQueryFilter(row =>
+                _tenantService != null && !_tenantService.IsSuperAdmin &&
+                _tenantService.TenantId != null &&
+                (row.TenantId == null || row.TenantId == _tenantService.TenantId));
+            builder.Entity<AppNoteTarget>().HasQueryFilter(row =>
+                _tenantService != null && !_tenantService.IsSuperAdmin &&
+                _tenantService.TenantId != null && row.Note != null &&
+                (row.Note.TenantId == null || row.Note.TenantId == _tenantService.TenantId));
+            builder.Entity<AppNoteUserStatus>().HasQueryFilter(row =>
+                _tenantService != null && !_tenantService.IsSuperAdmin &&
+                _tenantService.TenantId != null && row.Note != null &&
+                (row.Note.TenantId == null || row.Note.TenantId == _tenantService.TenantId));
+            builder.Entity<AppNoteUserState>().HasQueryFilter(row =>
+                _tenantService != null && !_tenantService.IsSuperAdmin &&
+                _tenantService.TenantId != null && row.Note != null &&
+                (row.Note.TenantId == null || row.Note.TenantId == _tenantService.TenantId));
+            builder.Entity<AppNoteAttachment>().HasQueryFilter(row =>
+                _tenantService != null && !_tenantService.IsSuperAdmin &&
+                _tenantService.TenantId != null && row.Note != null &&
+                (row.Note.TenantId == null || row.Note.TenantId == _tenantService.TenantId));
             builder.Entity<StaffAssessment>().HasQueryFilter(row =>
                 _tenantService != null && !_tenantService.IsSuperAdmin &&
                 _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
@@ -271,260 +298,6 @@ namespace Accounts.Data
             builder.Entity<AssessmentSchedule>().HasQueryFilter(row =>
                 _tenantService != null && !_tenantService.IsSuperAdmin &&
                 _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
-
-            builder.Entity<Person>()
-                .HasQueryFilter(p =>
-                    _tenantService == null ||
-                    _tenantService.IsSuperAdmin ||
-                    _tenantService.TenantId == null ||
-                    p.TenantId == _tenantService.TenantId);
-
-            builder.Entity<PersonAddress>()
-                .HasQueryFilter(a =>
-                    _tenantService == null ||
-                    _tenantService.IsSuperAdmin ||
-                    _tenantService.TenantId == null ||
-                    a.Person == null ||
-                    a.Person.TenantId == _tenantService.TenantId);
-
-            builder.Entity<PersonContact>()
-                .HasQueryFilter(c =>
-                    _tenantService == null ||
-                    _tenantService.IsSuperAdmin ||
-                    _tenantService.TenantId == null ||
-                    c.Person == null ||
-                    c.Person.TenantId == _tenantService.TenantId);
-
-            builder.Entity<PersonHrProfile>()
-                .HasQueryFilter(p =>
-                    _tenantService == null ||
-                    _tenantService.IsSuperAdmin ||
-                    _tenantService.TenantId == null ||
-                    p.TenantId == _tenantService.TenantId);
-
-            builder.Entity<PersonEducation>()
-                .HasQueryFilter(e =>
-                    _tenantService == null ||
-                    _tenantService.IsSuperAdmin ||
-                    _tenantService.TenantId == null ||
-                    e.TenantId == _tenantService.TenantId);
-
-            builder.Entity<PersonExperience>()
-                .HasQueryFilter(e =>
-                    _tenantService == null ||
-                    _tenantService.IsSuperAdmin ||
-                    _tenantService.TenantId == null ||
-                    e.TenantId == _tenantService.TenantId);
-
-            builder.Entity<PersonHrProfileReadRow>()
-                .HasQueryFilter(p =>
-                    _tenantService == null ||
-                    _tenantService.IsSuperAdmin ||
-                    _tenantService.TenantId == null ||
-                    p.TenantId == _tenantService.TenantId);
-
-            builder.Entity<Vacancy>()
-                .HasQueryFilter(v =>
-                    _tenantService == null ||
-                    _tenantService.IsSuperAdmin ||
-                    _tenantService.TenantId == null ||
-                    v.TenantId == _tenantService.TenantId);
-
-            builder.Entity<StaffVacancy>()
-                .HasQueryFilter(s =>
-                    _tenantService == null ||
-                    _tenantService.IsSuperAdmin ||
-                    _tenantService.TenantId == null ||
-                    s.TenantId == _tenantService.TenantId);
-
-            builder.Entity<StaffDirectoryRow>()
-                .HasQueryFilter(s =>
-                    _tenantService == null ||
-                    _tenantService.IsSuperAdmin ||
-                    _tenantService.TenantId == null ||
-                    s.TenantId == _tenantService.TenantId);
-
-            builder.Entity<StaffAccessGroup>()
-                .HasQueryFilter(g =>
-                    _tenantService == null ||
-                    _tenantService.IsSuperAdmin ||
-                    _tenantService.TenantId == null ||
-                    g.Staff == null ||
-                    g.Staff.TenantId == _tenantService.TenantId);
-
-            builder.Entity<DepartmentAccessMatrix>()
-                .HasQueryFilter(m =>
-                    _tenantService == null ||
-                    _tenantService.IsSuperAdmin ||
-                    _tenantService.TenantId == null ||
-                    m.Staff == null ||
-                    m.Staff.TenantId == _tenantService.TenantId);
-
-            builder.Entity<StaffMenuAccess>()
-                .HasQueryFilter(a =>
-                    _tenantService == null ||
-                    _tenantService.IsSuperAdmin ||
-                    _tenantService.TenantId == null ||
-                    a.Staff == null ||
-                    a.Staff.TenantId == _tenantService.TenantId);
-
-            builder.Entity<PersonMenu>(e =>
-            {
-                e.HasKey(x => new { x.PersonId, x.MenuId });
-                e.HasQueryFilter(m =>
-                    _tenantService == null ||
-                    _tenantService.IsSuperAdmin ||
-                    _tenantService.TenantId == null ||
-                    m.Person == null ||
-                    m.Person.TenantId == _tenantService.TenantId);
-            });
-
-            builder.Entity<PersonFeature>(e =>
-            {
-                e.HasKey(x => new { x.PersonId, x.PermissionId });
-                e.HasQueryFilter(f =>
-                    _tenantService == null ||
-                    _tenantService.IsSuperAdmin ||
-                    _tenantService.TenantId == null ||
-                    f.Person == null ||
-                    f.Person.TenantId == _tenantService.TenantId);
-            });
-
-            builder.Entity<UserPermissionOverride>()
-                .HasQueryFilter(o =>
-                    _tenantService == null ||
-                    _tenantService.IsSuperAdmin ||
-                    _tenantService.TenantId == null ||
-                    o.Staff == null ||
-                    o.Staff.TenantId == _tenantService.TenantId);
-
-            builder.Entity<Designation>()
-                .HasQueryFilter(j =>
-                    _tenantService == null ||
-                    _tenantService.IsSuperAdmin ||
-                    _tenantService.TenantId == null ||
-                    j.TenantId == _tenantService.TenantId);
-
-            builder.Entity<SalaryScale>()
-                .HasQueryFilter(scale =>
-                    _tenantService == null ||
-                    _tenantService.IsSuperAdmin ||
-                    _tenantService.TenantId == null ||
-                    scale.TenantId == _tenantService.TenantId);
-
-            builder.Entity<AttendanceRecord>()
-                .HasQueryFilter(a =>
-                    _tenantService == null ||
-                    _tenantService.IsSuperAdmin ||
-                    _tenantService.TenantId == null ||
-                    a.TenantId == _tenantService.TenantId);
-
-            builder.Entity<ApplicationLoginSession>()
-                .HasQueryFilter(session =>
-                    _tenantService == null ||
-                    _tenantService.IsSuperAdmin ||
-                    _tenantService.TenantId == null ||
-                    session.TenantId == _tenantService.TenantId);
-
-            builder.Entity<EmployeeTimingSchedule>()
-                .HasQueryFilter(schedule =>
-                    _tenantService == null ||
-                    _tenantService.IsSuperAdmin ||
-                    _tenantService.TenantId == null ||
-                    schedule.TenantId == _tenantService.TenantId);
-
-            builder.Entity<AttendanceMapRule>()
-                .HasQueryFilter(rule =>
-                    _tenantService == null ||
-                    _tenantService.IsSuperAdmin ||
-                    _tenantService.TenantId == null ||
-                    rule.TenantId == _tenantService.TenantId);
-
-            builder.Entity<AttendanceMapRuleReadRow>()
-                .HasQueryFilter(rule =>
-                    _tenantService == null ||
-                    _tenantService.IsSuperAdmin ||
-                    _tenantService.TenantId == null ||
-                    rule.TenantId == _tenantService.TenantId);
-
-            builder.Entity<AttendanceRuleSetting>()
-                .HasQueryFilter(rule =>
-                    _tenantService == null ||
-                    _tenantService.IsSuperAdmin ||
-                    _tenantService.TenantId == null ||
-                    rule.TenantId == _tenantService.TenantId);
-
-            builder.Entity<WorkflowApprovalRequest>()
-                .HasQueryFilter(request =>
-                    _tenantService == null ||
-                    _tenantService.IsSuperAdmin ||
-                    _tenantService.TenantId == null ||
-                    request.TenantId == _tenantService.TenantId);
-
-            builder.Entity<AttendanceRuleSettingReadRow>()
-                .HasQueryFilter(rule =>
-                    _tenantService == null ||
-                    _tenantService.IsSuperAdmin ||
-                    _tenantService.TenantId == null ||
-                    rule.TenantId == _tenantService.TenantId);
-
-            builder.Entity<AttendanceHolidayColorMap>()
-                .HasQueryFilter(map =>
-                    _tenantService == null ||
-                    _tenantService.IsSuperAdmin ||
-                    _tenantService.TenantId == null ||
-                    map.TenantId == _tenantService.TenantId);
-
-            builder.Entity<AttendanceHolidayColorMapReadRow>()
-                .HasQueryFilter(map =>
-                    _tenantService == null ||
-                    _tenantService.IsSuperAdmin ||
-                    _tenantService.TenantId == null ||
-                    map.TenantId == _tenantService.TenantId);
-
-            builder.Entity<AppNote>()
-                .HasQueryFilter(n =>
-                    _tenantService == null ||
-                    _tenantService.IsSuperAdmin ||
-                    _tenantService.TenantId == null ||
-                    n.TenantId == null ||
-                    n.TenantId == _tenantService.TenantId);
-
-            builder.Entity<AppNoteTarget>()
-                .HasQueryFilter(t =>
-                    _tenantService == null ||
-                    _tenantService.IsSuperAdmin ||
-                    _tenantService.TenantId == null ||
-                    t.Note == null ||
-                    t.Note.TenantId == null ||
-                    t.Note.TenantId == _tenantService.TenantId);
-
-            builder.Entity<AppNoteUserStatus>()
-                .HasQueryFilter(s =>
-                    _tenantService == null ||
-                    _tenantService.IsSuperAdmin ||
-                    _tenantService.TenantId == null ||
-                    s.Note == null ||
-                    s.Note.TenantId == null ||
-                    s.Note.TenantId == _tenantService.TenantId);
-
-            builder.Entity<AppNoteUserState>()
-                .HasQueryFilter(s =>
-                    _tenantService == null ||
-                    _tenantService.IsSuperAdmin ||
-                    _tenantService.TenantId == null ||
-                    s.Note == null ||
-                    s.Note.TenantId == null ||
-                    s.Note.TenantId == _tenantService.TenantId);
-
-            builder.Entity<AppNoteAttachment>()
-                .HasQueryFilter(a =>
-                    _tenantService == null ||
-                    _tenantService.IsSuperAdmin ||
-                    _tenantService.TenantId == null ||
-                    a.Note == null ||
-                    a.Note.TenantId == null ||
-                    a.Note.TenantId == _tenantService.TenantId);
 
             // ——— ApplicationUser (AspNetUsers) — multi-tenant columns ————————————
             builder.Entity<ApplicationUser>(e =>
@@ -1008,7 +781,7 @@ namespace Accounts.Data
                 e.HasOne(x => x.Person).WithMany().HasForeignKey(x => x.PersonId).OnDelete(DeleteBehavior.Restrict);
                 e.HasOne(x => x.AttendanceStatus).WithMany().HasForeignKey(x => x.AttendanceStatusId).OnDelete(DeleteBehavior.Restrict);
                 e.HasOne(x => x.PlatformActionStatus).WithMany().HasForeignKey(x => x.PlatformActionStatusId).OnDelete(DeleteBehavior.Restrict);
-                e.HasOne(x => x.AttendanceEntryType).WithMany(x => x.Records).HasForeignKey(x => x.AttendanceEntryTypeId).OnDelete(DeleteBehavior.Restrict);
+                e.HasOne(x => x.AttendanceEntryType).WithMany().HasForeignKey(x => x.AttendanceEntryTypeId).OnDelete(DeleteBehavior.Restrict);
                 e.HasOne(x => x.AttendanceWorkMode).WithMany(x => x.Records).HasForeignKey(x => x.AttendanceWorkModeId).OnDelete(DeleteBehavior.Restrict);
                 e.HasOne(x => x.VerificationStatus).WithMany().HasForeignKey(x => x.VerificationStatusId).OnDelete(DeleteBehavior.Restrict);
                 e.HasOne(x => x.PlatformVerificationStatus).WithMany().HasForeignKey(x => x.PlatformVerificationStatusId).OnDelete(DeleteBehavior.Restrict);
@@ -1164,14 +937,6 @@ namespace Accounts.Data
                 e.Property(x => x.HolidayTypeCode).HasMaxLength(100);
                 e.Property(x => x.HolidayTypeName).HasMaxLength(200);
                 e.Property(x => x.ColorCode).HasMaxLength(7);
-            });
-
-            builder.Entity<AttendanceEntryType>(e =>
-            {
-                e.HasKey(x => x.Id);
-                e.Property(x => x.Code).HasMaxLength(30).IsRequired();
-                e.Property(x => x.Name).HasMaxLength(100).IsRequired();
-                e.HasIndex(x => x.Code).IsUnique();
             });
 
             builder.Entity<AttendanceWorkMode>(e =>
@@ -1566,6 +1331,39 @@ namespace Accounts.Data
                 // StaffMenuAccess â†’ AccessFeatures cascade is configured on the parent side above
             });
 
+            builder.Entity<PersonMenu>(e =>
+            {
+                e.ToTable("PersonMenus");
+                e.HasKey(x => new { x.PersonId, x.MenuId });
+                e.Property(x => x.GrantedBy).HasMaxLength(450);
+                e.Property(x => x.GrantedOnUtc).HasDefaultValueSql("SYSUTCDATETIME()");
+                e.HasIndex(x => x.MenuId);
+                e.HasOne(x => x.Person)
+                 .WithMany()
+                 .HasForeignKey(x => x.PersonId)
+                 .OnDelete(DeleteBehavior.Cascade);
+                e.HasOne(x => x.Menu)
+                 .WithMany()
+                 .HasForeignKey(x => x.MenuId)
+                 .OnDelete(DeleteBehavior.Cascade);
+            });
+
+            builder.Entity<PersonFeature>(e =>
+            {
+                e.ToTable("PersonFeatures");
+                e.HasKey(x => new { x.PersonId, x.PermissionId });
+                e.Property(x => x.GrantedBy).HasMaxLength(450);
+                e.Property(x => x.GrantedOnUtc).HasDefaultValueSql("SYSUTCDATETIME()");
+                e.HasIndex(x => x.PermissionId);
+                e.HasOne(x => x.Person)
+                 .WithMany()
+                 .HasForeignKey(x => x.PersonId)
+                 .OnDelete(DeleteBehavior.Cascade);
+                e.HasOne(x => x.Feature)
+                 .WithMany()
+                 .HasForeignKey(x => x.PermissionId)
+                 .OnDelete(DeleteBehavior.Cascade);
+            });
             builder.Entity<StaffAssessment>().HasIndex(row => new
             {
                 row.TenantId, row.AssessorPersonId, row.SubjectPersonId,

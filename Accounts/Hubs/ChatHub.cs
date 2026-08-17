@@ -52,6 +52,11 @@ public sealed class ChatHub(
         {
             Context.Abort();
         }
+        catch (OperationCanceledException)
+        {
+            // Client disconnected while connecting, just abort cleanly
+            Context.Abort();
+        }
     }
 
     public override async Task OnDisconnectedAsync(Exception? exception)
@@ -80,10 +85,17 @@ public sealed class ChatHub(
 
     public async Task JoinConversation(long conversationId)
     {
-        var personId = CurrentPersonId();
-        if (!await chatService.IsConversationMemberAsync(personId, conversationId, Context.ConnectionAborted))
-            throw new HubException("You are not a member of this conversation.");
-        await Groups.AddToGroupAsync(Context.ConnectionId, ConversationGroup(conversationId));
+        try
+        {
+            var personId = CurrentPersonId();
+            if (!await chatService.IsConversationMemberAsync(personId, conversationId, Context.ConnectionAborted))
+                throw new HubException("You are not a member of this conversation.");
+            await Groups.AddToGroupAsync(Context.ConnectionId, ConversationGroup(conversationId));
+        }
+        catch (OperationCanceledException)
+        {
+            // Ignore cancelled operations
+        }
     }
 
     public async Task LeaveConversation(long conversationId) =>
@@ -91,11 +103,18 @@ public sealed class ChatHub(
 
     public async Task SetTyping(long conversationId, bool isTyping)
     {
-        var personId = CurrentPersonId();
-        if (!await chatService.IsConversationMemberAsync(personId, conversationId, Context.ConnectionAborted))
-            throw new HubException("You are not a member of this conversation.");
-        await Clients.OthersInGroup(ConversationGroup(conversationId))
-            .SendAsync("typingChanged", new { conversationId, personId, isTyping });
+        try
+        {
+            var personId = CurrentPersonId();
+            if (!await chatService.IsConversationMemberAsync(personId, conversationId, Context.ConnectionAborted))
+                throw new HubException("You are not a member of this conversation.");
+            await Clients.OthersInGroup(ConversationGroup(conversationId))
+                .SendAsync("typingChanged", new { conversationId, personId, isTyping });
+        }
+        catch (OperationCanceledException)
+        {
+            // Ignore cancelled operations
+        }
     }
 
     private Guid CurrentPersonId()

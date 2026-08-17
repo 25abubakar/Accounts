@@ -52,7 +52,10 @@ public sealed class AttendanceController : ControllerBase
 
     [HttpGet("entry-types")]
     public async Task<IActionResult> EntryTypes([FromServices] Accounts.Data.ApplicationDbContext db, CancellationToken ct) =>
-        Ok(await db.AttendanceEntryTypes.AsNoTracking().Where(x => x.IsActive).OrderBy(x => x.Name)
+        Ok(await db.AttendanceTypes.AsNoTracking()
+            .Where(x => x.IsActive && x.TenantId == _tenant.RequiredTenantId)
+            .OrderBy(x => x.DisplayOrder)
+            .ThenBy(x => x.Name)
             .Select(x => new { x.Id, x.Code, x.Name }).ToListAsync(ct));
 
     [HttpGet("map-attendance")]
@@ -97,8 +100,8 @@ public sealed class AttendanceController : ControllerBase
             .AnyAsync(staff => staff.StaffId == dto.StaffId && staff.TenantId == tenantId, ct);
         if (!staffExists) return NotFound(new { message = "Staff member was not found in the current organization." });
 
-        var attendanceType = await _db.AttendanceEntryTypes
-            .SingleOrDefaultAsync(type => type.Id == dto.AttendanceEntryTypeId && type.IsActive, ct);
+        var attendanceType = await _db.AttendanceTypes
+            .SingleOrDefaultAsync(type => type.Id == dto.AttendanceEntryTypeId && type.IsActive && type.TenantId == tenantId, ct);
         if (attendanceType == null) return BadRequest(new { message = "Select an active attendance type." });
 
         var shift = await _db.AppLookupValues.AsNoTracking()
@@ -479,11 +482,14 @@ public sealed class AttendanceController : ControllerBase
         if (checkInUtc.HasValue && checkOutUtc.HasValue && checkOutUtc.Value < checkInUtc.Value)
             checkOutUtc = checkOutUtc.Value.AddDays(1);
 
-        var checkEntryType = await _db.AttendanceEntryTypes.SingleOrDefaultAsync(x => x.Code == "CHECK" && x.IsActive, ct);
+        var checkEntryType = await _db.AttendanceTypes.SingleOrDefaultAsync(x =>
+            x.IsActive &&
+            x.TenantId == person.TenantId &&
+            (x.Code == "CHECK_IN_OUT" || x.Code == "CHECK"), ct);
         if (checkEntryType == null) return BadRequest(new { message = "Check in/Out attendance type is not configured." });
-        var cameraEntryTypeId = await _db.AttendanceEntryTypes
+        var cameraEntryTypeId = await _db.AttendanceTypes
             .AsNoTracking()
-            .Where(x => x.Code == "CAMERA")
+            .Where(x => x.Code == "CAMERA" && x.TenantId == person.TenantId)
             .Select(x => (int?)x.Id)
             .SingleOrDefaultAsync(ct);
         var isMappedForCheckInOut = await _db.AttendanceMapRules
@@ -873,8 +879,8 @@ public sealed class AttendanceController : ControllerBase
         if (dto.WeekendChargeValue is < 0 or > 31) return BadRequest(new { message = "Weekend charged value must be between 0 and 31." });
         if (dto.AdjustAbsentDays is < 0 or > 31) return BadRequest(new { message = "Adjust absent days must be between 0 and 31." });
 
-        var attendanceType = await _db.AttendanceEntryTypes
-            .SingleOrDefaultAsync(type => type.Id == dto.AttendanceEntryTypeId && type.IsActive, ct);
+        var attendanceType = await _db.AttendanceTypes
+            .SingleOrDefaultAsync(type => type.Id == dto.AttendanceEntryTypeId && type.IsActive && type.TenantId == tenantId, ct);
         if (attendanceType == null) return BadRequest(new { message = "Select an active attendance type." });
 
         var duplicate = await _db.AttendanceRuleSettings.AsNoTracking()
@@ -940,7 +946,7 @@ public sealed class AttendanceController : ControllerBase
 
     private static AttendanceRuleSettingDto ToAttendanceRuleSettingDto(
         AttendanceRuleSetting rule,
-        AttendanceEntryType attendanceType) => new()
+        AttendanceType attendanceType) => new()
     {
         Id = rule.Id,
         AttendanceEntryTypeId = rule.AttendanceEntryTypeId,

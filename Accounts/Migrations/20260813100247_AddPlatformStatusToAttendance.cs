@@ -378,8 +378,9 @@ namespace Accounts.Migrations
                     JOIN dbo.AttendanceMapRules mapRule
                       ON mapRule.StaffId = staff.StaffId
                      AND mapRule.TenantId = @TenantId
-                    JOIN dbo.AttendanceEntryTypes entryType
+                    JOIN PlatformTypes.AttendanceTypes entryType
                       ON entryType.Id = mapRule.AttendanceEntryTypeId
+                     AND entryType.TenantId = mapRule.TenantId
                      AND entryType.IsActive = 1
                     CROSS JOIN Dates dates
                     LEFT JOIN dbo.AttendanceRuleSettings setting
@@ -400,8 +401,7 @@ namespace Accounts.Migrations
                     FROM EffectiveDays effective
                     WHERE effective.IsOn = 1
                       AND effective.IsOpenAttendance = 0
-                      AND effective.AttendanceTypeCode <> N'NONE'
-                      AND effective.PriorMonthlyAbsentCount >= effective.AdjustAbsentDays
+                      AND effective.AttendanceTypeCode NOT IN (N'NONE', N'NOT_REQUIRED')
                       AND @AsOfUtc > DATEADD(
                             minute,
                             effective.AbsentAfterMinutes,
@@ -439,10 +439,9 @@ namespace Accounts.Migrations
                                THEN @Present
                            WHEN attendance.AttendanceStatusId = @ShortLeave
                                THEN @ShortLeave
-                           WHEN attendance.CheckInUtc IS NULL
-                                AND @AsOfUtc > effective.CheckInAbsentDeadline
-                                AND effective.PriorMonthlyAbsentCount >= effective.AdjustAbsentDays
-                               THEN @Absent
+                            WHEN attendance.CheckInUtc IS NULL
+                                 AND @AsOfUtc > effective.CheckInAbsentDeadline
+                                THEN @Absent
                            WHEN attendance.CheckInUtc IS NULL
                                THEN attendance.AttendanceStatusId
                            WHEN attendance.CheckOutUtc IS NULL
@@ -480,10 +479,9 @@ namespace Accounts.Migrations
                                THEN @PlatformPresent
                            WHEN attendance.AttendanceStatusId = @ShortLeave
                                THEN @PlatformShortLeave
-                           WHEN attendance.CheckInUtc IS NULL
-                                AND @AsOfUtc > effective.CheckInAbsentDeadline
-                                AND effective.PriorMonthlyAbsentCount >= effective.AdjustAbsentDays
-                               THEN @PlatformAbsent
+                            WHEN attendance.CheckInUtc IS NULL
+                                 AND @AsOfUtc > effective.CheckInAbsentDeadline
+                                THEN @PlatformAbsent
                            WHEN attendance.CheckInUtc IS NULL
                                THEN attendance.PlatformActionStatusId
                            WHEN attendance.CheckOutUtc IS NULL

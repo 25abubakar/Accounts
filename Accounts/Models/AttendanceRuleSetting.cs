@@ -28,6 +28,13 @@ public sealed class AttendanceRuleSetting
     public int AccountLockAbsentDays { get; set; }
     public decimal WeekendChargeValue { get; set; }
     public int AdjustAbsentDays { get; set; }
+
+    public int? PlatformLateStatusId { get; set; }
+    public int? PlatformExtremeLateStatusId { get; set; }
+    public int ExtremeLateAfterMinutes { get; set; } = 120;
+    public int? PlatformEarlyDepartureStatusId { get; set; }
+    public int? PlatformExtremeEarlyDepartureStatusId { get; set; }
+    public int ExtremeEarlyDepartureAfterMinutes { get; set; } = 120;
     public bool IsApproved { get; set; }
     public bool IsActive { get; set; } = true;
 
@@ -44,5 +51,5 @@ public sealed class AttendanceRuleSetting
     public DateTime? ModifiedDate { get; set; }
 
     public Tenant Tenant { get; set; } = null!;
-    public AttendanceEntryType AttendanceEntryType { get; set; } = null!;
+    public AttendanceType AttendanceEntryType { get; set; } = null!;
 }

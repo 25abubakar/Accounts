@@ -33,5 +33,5 @@ public sealed class AttendanceMapRule : ITenantEntity
     public DateTime? ModifiedDate { get; set; }
 
     public StaffVacancy Staff { get; set; } = null!;
-    public AttendanceEntryType AttendanceEntryType { get; set; } = null!;
+    public AttendanceType AttendanceEntryType { get; set; } = null!;
 }
