@@ -1311,7 +1311,7 @@ namespace Accounts.Data
                  .OnDelete(DeleteBehavior.Cascade);
             });
 
-            // â”€â”€ AccessFeatures (RBAC Tier-2) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+            // ——— AccessFeatures (RBAC Tier-2) ———————————————————————————————————
             builder.Entity<AccessFeature>(e =>
             {
                 e.ToTable("AccessFeatures");
@@ -1384,7 +1384,9 @@ namespace Accounts.Data
                 e.HasIndex(x => new { x.WorkspaceId, x.PairKey })
                     .IsUnique()
                     .HasFilter("[Status] = 'Pending'");
-                e.HasIndex(x => new { x.TenantId, x.ReceiverPersonId, x.Status, x.CreatedOnUtc });
+                e.HasIndex(x => new { x.TenantId, x.ReceiverPersonId, x.Status, x.CreatedOnUtc }).IsDescending(false, false, false, true);
+                e.HasIndex(x => new { x.TenantId, x.SenderPersonId, x.Status, x.CreatedOnUtc }).IsDescending(false, false, false, true);
+                e.HasIndex(x => new { x.TenantId, x.PairKey, x.Status });
                 e.HasOne<ChatWorkspace>().WithMany().HasForeignKey(x => x.WorkspaceId).OnDelete(DeleteBehavior.Cascade);
                 e.HasOne<Person>().WithMany().HasForeignKey(x => x.SenderPersonId).OnDelete(DeleteBehavior.Restrict);
                 e.HasOne<Person>().WithMany().HasForeignKey(x => x.ReceiverPersonId).OnDelete(DeleteBehavior.Restrict);
@@ -1395,6 +1397,7 @@ namespace Accounts.Data
                 e.HasIndex(x => new { x.WorkspaceId, x.DirectPairKey })
                     .IsUnique()
                     .HasFilter("[DirectPairKey] IS NOT NULL");
+                e.HasIndex(x => new { x.TenantId, x.WorkspaceId, x.CreatedOnUtc }).IsDescending(false, false, true);
                 e.HasIndex(x => new { x.TenantId, x.IsActive, x.CreatedOnUtc });
                 e.HasOne<ChatWorkspace>().WithMany().HasForeignKey(x => x.WorkspaceId).OnDelete(DeleteBehavior.Cascade);
                 e.HasOne<Person>().WithMany().HasForeignKey(x => x.CreatedByPersonId).OnDelete(DeleteBehavior.Restrict);
@@ -1403,7 +1406,8 @@ namespace Accounts.Data
             builder.Entity<ChatConversationMember>(e =>
             {
                 e.HasIndex(x => new { x.ConversationId, x.PersonId }).IsUnique();
-                e.HasIndex(x => new { x.TenantId, x.PersonId, x.LeftOnUtc });
+                e.HasIndex(x => new { x.TenantId, x.PersonId, x.LeftOnUtc, x.ConversationId });
+                e.HasIndex(x => new { x.TenantId, x.ConversationId, x.LeftOnUtc, x.PersonId });
                 e.HasOne<ChatConversation>().WithMany().HasForeignKey(x => x.ConversationId).OnDelete(DeleteBehavior.Cascade);
                 e.HasOne<Person>().WithMany().HasForeignKey(x => x.PersonId).OnDelete(DeleteBehavior.Restrict);
             });
@@ -1411,6 +1415,8 @@ namespace Accounts.Data
             builder.Entity<ChatMessage>(e =>
             {
                 e.HasIndex(x => new { x.ConversationId, x.Id });
+                e.HasIndex(x => new { x.TenantId, x.ConversationId, x.Id }).IsDescending(false, false, true);
+                e.HasIndex(x => new { x.TenantId, x.ConversationId, x.CreatedOnUtc }).IsDescending(false, false, true);
                 e.HasIndex(x => new { x.TenantId, x.SenderPersonId, x.ClientMessageId }).IsUnique();
                 e.HasOne<ChatConversation>().WithMany().HasForeignKey(x => x.ConversationId).OnDelete(DeleteBehavior.Cascade);
                 e.HasOne<Person>().WithMany().HasForeignKey(x => x.SenderPersonId).OnDelete(DeleteBehavior.Restrict);
@@ -1434,6 +1440,7 @@ namespace Accounts.Data
             builder.Entity<ChatBlock>(e =>
             {
                 e.HasIndex(x => new { x.TenantId, x.BlockerPersonId, x.BlockedPersonId }).IsUnique();
+                e.HasIndex(x => new { x.TenantId, x.BlockedPersonId, x.BlockerPersonId });
                 e.HasOne<Person>().WithMany().HasForeignKey(x => x.BlockerPersonId).OnDelete(DeleteBehavior.Restrict);
                 e.HasOne<Person>().WithMany().HasForeignKey(x => x.BlockedPersonId).OnDelete(DeleteBehavior.Restrict);
             });
@@ -1461,4 +1468,6 @@ namespace Accounts.Data
         }
     }
 }
+
+
 

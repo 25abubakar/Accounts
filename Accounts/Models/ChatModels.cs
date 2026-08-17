@@ -61,6 +61,7 @@ public sealed class ChatConversationMember : ITenantEntity
     public DateTime? ClearedBeforeUtc { get; set; }
     public bool IsMuted { get; set; }
     public bool IsPinned { get; set; }
+    public bool HasUnreadMention { get; set; }
 }
 
 [Table("ChatMessages")]

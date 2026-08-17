@@ -4,7 +4,11 @@ namespace Accounts.Services.Interfaces;
 
 public interface IChatService
 {
-    Task<(Guid PersonId, int TenantId, long WorkspaceId, int CompanyOrganizationTreeId)> ResolveCallerAsync(
+    Task<(Guid PersonId, int TenantId, long WorkspaceId, int TenantOrganizationTreeId)> ResolveCallerAsync(
+        string identityUserId,
+        CancellationToken cancellationToken = default);
+
+    Task<ChatBootstrapDto> GetBootstrapAsync(
         string identityUserId,
         CancellationToken cancellationToken = default);
 
@@ -59,6 +63,7 @@ public interface IChatService
         string fileName,
         string contentType,
         byte[] content,
+        long? replyToMessageId = null,
         CancellationToken cancellationToken = default);
 
     Task<ChatMessageDto> EditMessageAsync(

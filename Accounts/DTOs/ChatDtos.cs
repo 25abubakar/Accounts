@@ -60,7 +60,8 @@ public sealed record ChatConversationDto(
     bool IsMuted,
     bool IsPinned,
     bool IsOnline,
-    DateTime? LastSeenUtc);
+    DateTime? LastSeenUtc,
+    bool HasUnreadMention);
 
 public sealed record CreateChatRequestDto(Guid ReceiverPersonId, string? Message);
 public sealed record CreateChatGroupDto(string Title, IReadOnlyList<Guid> MemberPersonIds);
@@ -81,3 +82,25 @@ public sealed record ChatGroupMemberDto(
 public sealed record AddChatGroupMembersDto(IReadOnlyList<Guid> MemberPersonIds);
 public sealed record UpdateChatMemberRoleDto(string MemberRole);
 public sealed record UpdatePrivacySettingsDto(bool ShowLastSeen);
+
+public sealed record ChatBootstrapDto(
+    ChatPersonDto CurrentUser,
+    IReadOnlyList<ChatConversationDto> Conversations,
+    int PendingRequestsCount
+);
+
+public class ChatConversationResult
+{
+    public long Id { get; set; }
+    public string ConversationType { get; set; } = null!;
+    public string DisplayName { get; set; } = null!;
+    public string? PhotoUrl { get; set; }
+    public Guid? OtherPersonId { get; set; }
+    public string? LastMessage { get; set; }
+    public DateTime? LastMessageOnUtc { get; set; }
+    public int UnreadCount { get; set; }
+    public bool IsMuted { get; set; }
+    public bool IsPinned { get; set; }
+    public bool HasUnreadMention { get; set; }
+    public DateTime? LastSeenUtc { get; set; }
+}

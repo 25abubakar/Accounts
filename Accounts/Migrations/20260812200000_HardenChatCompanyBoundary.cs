@@ -29,7 +29,7 @@ public sealed class HardenChatCompanyBoundary : Migration
             DELETE workspace
             FROM dbo.ChatWorkspaces workspace
             JOIN dbo.OrganizationTree node ON node.Id = workspace.OrganizationTreeId
-            WHERE node.Label <> N'Company'
+            WHERE node.Label NOT IN (N'Company', N'Group')
               AND NOT EXISTS (
                   SELECT 1 FROM dbo.ChatConversations conversation
                   WHERE conversation.WorkspaceId = workspace.Id)

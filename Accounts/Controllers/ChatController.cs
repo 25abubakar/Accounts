@@ -20,6 +20,10 @@ public sealed class ChatController(
     ApplicationDbContext db,
     IHubContext<ChatHub> hub) : ControllerBase
 {
+    [HttpGet("bootstrap")]
+    public Task<IActionResult> Bootstrap(CancellationToken cancellationToken = default) =>
+        ExecuteAsync(async () => Ok(await chat.GetBootstrapAsync(UserId(), cancellationToken)));
+
     [HttpGet("directory")]
     public Task<IActionResult> Directory(
         [FromQuery] string? search,
@@ -107,6 +111,7 @@ public sealed class ChatController(
         IFormFile file,
         [FromForm] Guid clientMessageId,
         [FromForm] string? caption,
+        [FromForm] long? replyToMessageId,
         CancellationToken cancellationToken) =>
         ExecuteAsync(async () =>
         {
@@ -125,6 +130,7 @@ public sealed class ChatController(
                 file.FileName,
                 file.ContentType,
                 stream.ToArray(),
+                replyToMessageId,
                 cancellationToken);
             await NotifyMembersAsync(conversationId, "messageReceived", message, cancellationToken);
             return Ok(message);

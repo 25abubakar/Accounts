@@ -1,0 +1,93 @@
+using System;
+using Microsoft.EntityFrameworkCore.Migrations;
+
+#nullable disable
+
+namespace Accounts.Migrations
+{
+    /// <inheritdoc />
+    public partial class AddChatGetConversationsSP : Migration
+    {
+        /// <inheritdoc />
+        protected override void Up(MigrationBuilder migrationBuilder)
+        {
+            migrationBuilder.Sql(@"
+CREATE OR ALTER PROCEDURE usp_Chat_GetConversations
+    @TenantId INT,
+    @PersonId UNIQUEIDENTIFIER
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SELECT 
+        c.Id,
+        c.ConversationType,
+        CASE 
+            WHEN c.ConversationType = 'Direct' THEN ISNULL(otherPerson.FirstName + ' ' + otherPerson.LastName, 'Unavailable staff')
+            ELSE ISNULL(c.Title, 'Group conversation')
+        END AS DisplayName,
+        CASE 
+            WHEN c.ConversationType = 'Direct' THEN otherPerson.ProfilePhotoUrl
+            ELSE NULL
+        END AS PhotoUrl,
+        CASE 
+            WHEN c.ConversationType = 'Direct' THEN otherMember.PersonId
+            ELSE NULL
+        END AS OtherPersonId,
+        CASE 
+            WHEN lastMsg.DeletedOnUtc IS NULL THEN lastMsg.Body
+            ELSE 'Message deleted'
+        END AS LastMessage,
+        lastMsg.CreatedOnUtc AS LastMessageOnUtc,
+        (
+            SELECT COUNT(*)
+            FROM ChatMessages msg
+            WHERE msg.ConversationId = c.Id
+              AND msg.Id > ISNULL(member.LastReadMessageId, 0)
+              AND msg.SenderPersonId <> @PersonId
+        ) AS UnreadCount,
+        member.IsMuted,
+        member.IsPinned,
+        member.HasUnreadMention,
+        CASE 
+            WHEN otherPerson.ShowLastSeen = 1 THEN otherPerson.LastSeenUtc 
+            ELSE NULL 
+        END AS LastSeenUtc
+    FROM ChatConversationMembers member
+    INNER JOIN ChatConversations c ON member.ConversationId = c.Id
+    OUTER APPLY (
+        SELECT TOP 1 om.PersonId
+        FROM ChatConversationMembers om
+        WHERE om.ConversationId = c.Id 
+          AND om.PersonId <> @PersonId 
+          AND om.LeftOnUtc IS NULL
+    ) otherMember
+    LEFT JOIN Persons otherPerson ON otherMember.PersonId = otherPerson.PersonId 
+                                  AND otherPerson.TenantId = @TenantId
+    OUTER APPLY (
+        SELECT TOP 1 msg.Body, msg.CreatedOnUtc, msg.DeletedOnUtc
+        FROM ChatMessages msg
+        WHERE msg.ConversationId = c.Id
+          AND (member.ClearedBeforeUtc IS NULL OR msg.CreatedOnUtc > member.ClearedBeforeUtc)
+          AND NOT EXISTS (
+              SELECT 1 FROM ChatMessageDeletions d 
+              WHERE d.MessageId = msg.Id AND d.PersonId = @PersonId
+          )
+        ORDER BY msg.Id DESC
+    ) lastMsg
+    WHERE member.TenantId = @TenantId
+      AND member.PersonId = @PersonId
+      AND member.LeftOnUtc IS NULL
+      AND c.IsActive = 1
+    ORDER BY ISNULL(lastMsg.CreatedOnUtc, c.CreatedOnUtc) DESC;
+END;
+            ");
+        }
+
+        /// <inheritdoc />
+        protected override void Down(MigrationBuilder migrationBuilder)
+        {
+            migrationBuilder.Sql("DROP PROCEDURE IF EXISTS usp_Chat_GetConversations");
+        }
+    }
+}

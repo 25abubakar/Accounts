@@ -89,7 +89,7 @@ public sealed class ChatHub(
         {
             var personId = CurrentPersonId();
             if (!await chatService.IsConversationMemberAsync(personId, conversationId, Context.ConnectionAborted))
-                throw new HubException("You are not a member of this conversation.");
+                return;
             await Groups.AddToGroupAsync(Context.ConnectionId, ConversationGroup(conversationId));
         }
         catch (OperationCanceledException)
@@ -107,7 +107,7 @@ public sealed class ChatHub(
         {
             var personId = CurrentPersonId();
             if (!await chatService.IsConversationMemberAsync(personId, conversationId, Context.ConnectionAborted))
-                throw new HubException("You are not a member of this conversation.");
+                return;
             await Clients.OthersInGroup(ConversationGroup(conversationId))
                 .SendAsync("typingChanged", new { conversationId, personId, isTyping });
         }
