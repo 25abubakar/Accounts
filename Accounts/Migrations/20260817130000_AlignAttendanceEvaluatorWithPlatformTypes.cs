@@ -67,6 +67,13 @@ public sealed class AlignAttendanceEvaluatorWithPlatformTypes : Migration
                 N'AND effective.PriorMonthlyAbsentCount >= effective.AdjustAbsentDays',
                 N'');
 
+            -- A 120-minute window that starts at 09:00 expires at exactly 11:00.
+            -- Use an inclusive boundary so the scheduled evaluator does not have
+            -- to wait for a later poll before persisting Absent.
+            SET @Definition = REPLACE(@Definition,
+                N'AND @AsOfUtc > DATEADD(',
+                N'AND @AsOfUtc >= DATEADD(');
+
             IF @Definition LIKE N'%JOIN dbo.AttendanceEntryTypes entryType%'
                OR @Definition NOT LIKE N'%JOIN PlatformTypes.AttendanceTypes entryType%'
                OR @Definition NOT LIKE N'%entryType.TenantId = mapRule.TenantId%'

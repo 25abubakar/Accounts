@@ -402,7 +402,7 @@ namespace Accounts.Migrations
                     WHERE effective.IsOn = 1
                       AND effective.IsOpenAttendance = 0
                       AND effective.AttendanceTypeCode NOT IN (N'NONE', N'NOT_REQUIRED')
-                      AND @AsOfUtc > DATEADD(
+                      AND @AsOfUtc >= DATEADD(
                             minute,
                             effective.AbsentAfterMinutes,
                             DATEADD(
