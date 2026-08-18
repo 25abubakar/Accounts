@@ -137,6 +137,7 @@ builder.Services.AddResponseCompression(options =>
 });
 
 // ── 7. Dependency Injection ──────────────────────────────────────────────────
+builder.Services.AddMemoryCache(options => { options.SizeLimit = 10_000; });
 builder.Services.AddHttpContextAccessor();
 builder.Services.AddScoped<IClaimsTransformation,
     Accounts.Authorization.OrganizationCeoClaimsTransformation>();

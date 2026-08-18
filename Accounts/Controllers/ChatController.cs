@@ -243,6 +243,31 @@ public sealed class ChatController(
             return NoContent();
         });
 
+    [HttpPost("conversations/{conversationId:long}/photo")]
+    [Consumes("multipart/form-data")]
+    public Task<IActionResult> UpdateGroupPhoto(
+        long conversationId,
+        IFormFile photo,
+        [FromServices] IWebHostEnvironment env,
+        CancellationToken cancellationToken) =>
+        ExecuteAsync(async () =>
+        {
+            if (photo == null || photo.Length == 0) return BadRequest(new { error = "No file uploaded." });
+            var url = await chat.UpdateGroupPhotoAsync(UserId(), conversationId, photo, env, cancellationToken);
+            return Ok(new { photoUrl = url });
+        });
+
+    [HttpPut("conversations/{conversationId:long}/name")]
+    public Task<IActionResult> UpdateGroupName(
+        long conversationId,
+        [FromBody] UpdateGroupNameDto dto,
+        CancellationToken cancellationToken) =>
+        ExecuteAsync(async () =>
+        {
+            await chat.UpdateGroupNameAsync(UserId(), conversationId, dto.Title, cancellationToken);
+            return NoContent();
+        });
+
     [HttpPost("blocks/{personId:guid}")]
     public Task<IActionResult> Block(
         Guid personId,
@@ -358,6 +383,7 @@ public sealed class ChatController(
         ChatNotFoundException => NotFound(new { message = exception.Message }),
         ChatConflictException => Conflict(new { message = exception.Message }),
         OperationCanceledException => StatusCode(499),
+        Microsoft.Data.SqlClient.SqlException sql when ChatExceptionHelper.IsCancellation(sql) => StatusCode(499),
         _ => Problem(
             title: "Chat operation failed",
             detail: HttpContext.RequestServices.GetRequiredService<IWebHostEnvironment>().IsDevelopment()

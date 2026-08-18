@@ -82,6 +82,7 @@ public sealed record ChatGroupMemberDto(
 public sealed record AddChatGroupMembersDto(IReadOnlyList<Guid> MemberPersonIds);
 public sealed record UpdateChatMemberRoleDto(string MemberRole);
 public sealed record UpdatePrivacySettingsDto(bool ShowLastSeen);
+public sealed record UpdateGroupNameDto(string Title);
 
 public sealed record ChatBootstrapDto(
     ChatPersonDto CurrentUser,

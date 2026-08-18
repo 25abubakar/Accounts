@@ -1,4 +1,6 @@
 using Accounts.DTOs;
+using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Hosting;
 
 namespace Accounts.Services.Interfaces;
 
@@ -110,6 +112,19 @@ public interface IChatService
     Task ClearConversationAsync(
         string identityUserId,
         long conversationId,
+        CancellationToken cancellationToken = default);
+
+    Task<string> UpdateGroupPhotoAsync(
+        string identityUserId,
+        long conversationId,
+        IFormFile photo,
+        IWebHostEnvironment env,
+        CancellationToken cancellationToken = default);
+
+    Task UpdateGroupNameAsync(
+        string identityUserId,
+        long conversationId,
+        string title,
         CancellationToken cancellationToken = default);
 
     Task BlockAsync(

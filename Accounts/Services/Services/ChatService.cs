@@ -4,13 +4,17 @@ using Accounts.DTOs;
 using Accounts.Models;
 using Accounts.Services.Interfaces;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Caching.Memory;
+using Microsoft.AspNetCore.Hosting;
 
 namespace Accounts.Services.Services;
 
 public sealed class ChatService(
     ApplicationDbContext db,
     ITenantService tenant,
-    ChatPresenceTracker presence) : IChatService
+    ChatPresenceTracker presence,
+    IMemoryCache cache,
+    IWebHostEnvironment env) : IChatService
 {
     private static readonly HashSet<string> AllowedAttachmentTypes = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -32,30 +36,48 @@ public sealed class ChatService(
         if (_callerContext.HasValue)
             return _callerContext.Value;
 
+        // FIX #6: Try IMemoryCache before hitting the DB (5-min sliding window)
+        var cacheKey = $"chat:caller:{identityUserId}";
+        if (cache.TryGetValue(cacheKey, out (Guid PersonId, int TenantId, long WorkspaceId, int TenantOrganizationTreeId) cached))
+        {
+            _callerContext = cached;
+            return cached;
+        }
+
         if (tenant.IsSuperAdmin || !tenant.TenantId.HasValue)
             throw new ChatForbiddenException("Chat is available only to active tenant staff.");
 
         var tenantId = tenant.TenantId.Value;
         var person = await db.Persons.AsNoTracking()
-            .Where(person =>
-                person.TenantId == tenantId &&
-                person.IdentityUserId == identityUserId &&
-                person.IsActive &&
-                person.Staff != null &&
-                person.Staff.VacancyId != null &&
-                person.Staff.Vacancy != null &&
-                person.Staff.Vacancy.IsFilled)
-            .Select(person => new
+            .Where(item =>
+                item.TenantId == tenantId &&
+                item.IdentityUserId == identityUserId &&
+                item.IsActive)
+            .Select(item => new
             {
-                person.PersonId,
-                person.EmploymentStatus,
-                OrganizationId = person.Staff!.Vacancy!.OrganizationId,
+                item.PersonId,
+                item.EmploymentStatus,
             })
-            .SingleOrDefaultAsync(cancellationToken);
+            .FirstOrDefaultAsync(cancellationToken);
 
         if (person == null ||
             string.Equals(person.EmploymentStatus, "Fired", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(person.EmploymentStatus, "Retired", StringComparison.OrdinalIgnoreCase))
+            throw new ChatForbiddenException("An active staff profile is required to use chat.");
+
+        var hasActiveAssignment = await db.StaffVacancies.AsNoTracking()
+            .Where(staff =>
+                staff.TenantId == tenantId &&
+                staff.PersonId == person.PersonId &&
+                staff.VacancyId != null)
+            .Join(
+                db.Vacancies.AsNoTracking().Where(vacancy => vacancy.TenantId == tenantId && vacancy.IsFilled),
+                staff => staff.VacancyId,
+                vacancy => vacancy.VacancyId,
+                (_, vacancy) => vacancy.VacancyId)
+            .AnyAsync(cancellationToken);
+
+        if (!hasActiveAssignment)
             throw new ChatForbiddenException("An active staff profile is required to use chat.");
 
         var tenantRecord = await db.Tenants.AsNoTracking()
@@ -95,8 +117,17 @@ public sealed class ChatService(
         if (!workspaceId.HasValue)
             throw new ChatConflictException("The chat workspace could not be initialized.");
 
-        _callerContext = (person.PersonId, tenantId, workspaceId.Value, tenantRecord.OrganizationTreeId);
-        return _callerContext.Value;
+        var result = (person.PersonId, tenantId, workspaceId.Value, tenantRecord.OrganizationTreeId);
+        _callerContext = result;
+
+        // Store in cache for 5 minutes sliding — safe because workspace/person rarely changes
+        cache.Set(cacheKey, result, new MemoryCacheEntryOptions
+        {
+            SlidingExpiration = TimeSpan.FromMinutes(5),
+            Size = 1,
+        });
+
+        return result;
     }
 
     public async Task<ChatBootstrapDto> GetBootstrapAsync(string identityUserId, CancellationToken cancellationToken = default)
@@ -654,6 +685,16 @@ public sealed class ChatService(
             db.ChatMessages.Add(message);
             await TrackMentionsAsync(conversationId, body, caller.PersonId, cancellationToken);
             await db.SaveChangesAsync(cancellationToken);
+            var uploadDir = Path.Combine(env.WebRootPath ?? Path.Combine(Directory.GetCurrentDirectory(), "wwwroot"), "chat-uploads");
+            Directory.CreateDirectory(uploadDir);
+            var extension = Path.GetExtension(safeFileName);
+            if (string.IsNullOrWhiteSpace(extension)) extension = ".dat";
+            var relativePath = $"{caller.TenantId}/{conversationId}/{message.Id}{extension}";
+            var fullPath = Path.Combine(uploadDir, caller.TenantId.ToString(), conversationId.ToString());
+            Directory.CreateDirectory(fullPath);
+            var finalFilePath = Path.Combine(fullPath, $"{message.Id}{extension}");
+            await File.WriteAllBytesAsync(finalFilePath, content, cancellationToken);
+
             db.ChatAttachments.Add(new ChatAttachment
             {
                 TenantId = caller.TenantId,
@@ -661,7 +702,7 @@ public sealed class ChatService(
                 FileName = safeFileName,
                 ContentType = contentType,
                 FileSize = content.LongLength,
-                Content = content,
+                FilePath = relativePath,
             });
             await db.SaveChangesAsync(cancellationToken);
             await transaction.CommitAsync(cancellationToken);
@@ -773,7 +814,7 @@ public sealed class ChatService(
                     FileName = att.FileName,
                     ContentType = att.ContentType,
                     FileSize = att.FileSize,
-                    Content = att.Content,
+                    FilePath = att.FilePath,
                     CreatedOnUtc = DateTime.UtcNow
                 });
             }
@@ -795,7 +836,7 @@ public sealed class ChatService(
             {
                 item.FileName,
                 item.ContentType,
-                item.Content,
+                item.FilePath,
                 ConversationId = db.ChatMessages
                     .Where(message => message.Id == item.MessageId)
                     .Select(message => message.ConversationId)
@@ -804,7 +845,13 @@ public sealed class ChatService(
             .SingleOrDefaultAsync(cancellationToken);
         if (attachment == null) throw new ChatNotFoundException("The attachment was not found.");
         await RequireMembershipAsync(caller.PersonId, attachment.ConversationId, cancellationToken);
-        return new ChatAttachmentContentDto(attachment.FileName, attachment.ContentType, attachment.Content);
+
+        var uploadDir = Path.Combine(env.WebRootPath ?? Path.Combine(Directory.GetCurrentDirectory(), "wwwroot"), "chat-uploads");
+        var fullPath = Path.Combine(uploadDir, attachment.FilePath.Replace("/", "\\"));
+        if (!File.Exists(fullPath)) throw new ChatNotFoundException("The attachment file is missing from the server.");
+        var bytes = await File.ReadAllBytesAsync(fullPath, cancellationToken);
+
+        return new ChatAttachmentContentDto(attachment.FileName, attachment.ContentType, bytes);
     }
 
     public async Task<ChatMessageDto> SetReactionAsync(
@@ -910,6 +957,65 @@ public sealed class ChatService(
         membership.LastReadMessageId = await db.ChatMessages.AsNoTracking()
             .Where(message => message.ConversationId == conversationId)
             .MaxAsync(message => (long?)message.Id, cancellationToken);
+        await db.SaveChangesAsync(cancellationToken);
+    }
+
+    public async Task<string> UpdateGroupPhotoAsync(
+        string identityUserId,
+        long conversationId,
+        IFormFile photo,
+        IWebHostEnvironment env,
+        CancellationToken cancellationToken = default)
+    {
+        var caller = await ResolveCallerAsync(identityUserId, cancellationToken);
+        var membership = await RequireMembershipAsync(caller.PersonId, conversationId, cancellationToken);
+        if (membership.MemberRole != "Admin")
+            throw new ChatForbiddenException("Only admins can change the group photo.");
+
+        var conversation = await db.ChatConversations
+            .Where(c => c.TenantId == caller.TenantId && c.Id == conversationId && c.ConversationType == "Group")
+            .FirstOrDefaultAsync(cancellationToken)
+            ?? throw new ChatNotFoundException("Group not found.");
+
+        // Delete old photo if present
+        if (!string.IsNullOrWhiteSpace(conversation.PhotoUrl))
+        {
+            var oldPath = Path.Combine(env.WebRootPath, conversation.PhotoUrl.TrimStart('/').Replace('/', Path.DirectorySeparatorChar));
+            if (File.Exists(oldPath)) File.Delete(oldPath);
+        }
+
+        // Save new photo
+        var uploadDir = Path.Combine(env.WebRootPath, "chat-group-photos");
+        Directory.CreateDirectory(uploadDir);
+        var ext = Path.GetExtension(photo.FileName).ToLowerInvariant();
+        var allowedExts = new[] { ".jpg", ".jpeg", ".png", ".webp", ".gif" };
+        if (!allowedExts.Contains(ext)) ext = ".jpg";
+        var fileName = $"group_{conversationId}_{Guid.NewGuid():N}{ext}";
+        var filePath = Path.Combine(uploadDir, fileName);
+        using (var stream = new FileStream(filePath, FileMode.Create, FileAccess.Write))
+            await photo.CopyToAsync(stream, cancellationToken);
+
+        conversation.PhotoUrl = $"/chat-group-photos/{fileName}";
+        await db.SaveChangesAsync(cancellationToken);
+        return conversation.PhotoUrl;
+    }
+
+    public async Task UpdateGroupNameAsync(
+        string identityUserId,
+        long conversationId,
+        string title,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(title)) throw new ChatConflictException("Group name cannot be empty.");
+        var caller = await ResolveCallerAsync(identityUserId, cancellationToken);
+        var membership = await RequireMembershipAsync(caller.PersonId, conversationId, cancellationToken);
+        if (membership.MemberRole != "Admin")
+            throw new ChatForbiddenException("Only admins can rename the group.");
+        var conversation = await db.ChatConversations
+            .Where(c => c.TenantId == caller.TenantId && c.Id == conversationId && c.ConversationType == "Group")
+            .FirstOrDefaultAsync(cancellationToken)
+            ?? throw new ChatNotFoundException("Group not found.");
+        conversation.Title = title.Trim()[..Math.Min(title.Trim().Length, 200)];
         await db.SaveChangesAsync(cancellationToken);
     }
 

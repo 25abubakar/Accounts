@@ -1432,7 +1432,6 @@ namespace Accounts.Data
 
             builder.Entity<ChatAttachment>(e =>
             {
-                e.Property(x => x.Content).HasColumnType("varbinary(max)");
                 e.HasIndex(x => new { x.MessageId, x.Id });
                 e.HasOne<ChatMessage>().WithMany().HasForeignKey(x => x.MessageId).OnDelete(DeleteBehavior.Cascade);
             });

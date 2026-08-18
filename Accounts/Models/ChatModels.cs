@@ -41,6 +41,7 @@ public sealed class ChatConversation : ITenantEntity
     [MaxLength(20)] public string ConversationType { get; set; } = "Direct";
     [MaxLength(200)] public string? Title { get; set; }
     [MaxLength(73)] public string? DirectPairKey { get; set; }
+    [MaxLength(500)] public string? PhotoUrl { get; set; }
     public Guid CreatedByPersonId { get; set; }
     public DateTime CreatedOnUtc { get; set; } = DateTime.UtcNow;
     public bool IsActive { get; set; } = true;
@@ -113,7 +114,7 @@ public sealed class ChatAttachment : ITenantEntity
     [MaxLength(255)] public string FileName { get; set; } = string.Empty;
     [MaxLength(100)] public string ContentType { get; set; } = "application/octet-stream";
     public long FileSize { get; set; }
-    public byte[] Content { get; set; } = [];
+    [MaxLength(500)] public string FilePath { get; set; } = string.Empty;
     public DateTime CreatedOnUtc { get; set; } = DateTime.UtcNow;
 }
 

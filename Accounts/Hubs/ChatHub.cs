@@ -52,9 +52,9 @@ public sealed class ChatHub(
         {
             Context.Abort();
         }
-        catch (OperationCanceledException)
+        catch (Exception ex) when (ChatExceptionHelper.IsCancellation(ex))
         {
-            // Client disconnected while connecting, just abort cleanly
+            // Client disconnected or the request was cancelled while resolving the caller.
             Context.Abort();
         }
     }
@@ -123,5 +123,15 @@ public sealed class ChatHub(
             value is Guid personId)
             return personId;
         throw new HubException("An active staff profile is required.");
+    }
+
+    public async Task Typing(long conversationId)
+    {
+        if (Context.Items.TryGetValue(PersonIdKey, out var pidObj) && pidObj is Guid personId)
+        {
+            // Broadcast "userTyping" to all members of the conversation EXCEPT the sender.
+            await Clients.OthersInGroup(ConversationGroup(conversationId))
+                .SendAsync("userTyping", new { conversationId, personId });
+        }
     }
 }
