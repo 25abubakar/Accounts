@@ -447,7 +447,7 @@ public sealed class ChatService(
             r.IsPinned,
             r.OtherPersonId.HasValue && presence.IsOnline(r.OtherPersonId.Value),
             r.LastSeenUtc,
-            r.HasUnreadMention
+            r.HasUnreadMention, r.IsBlockedByMe, r.IsBlockedByOther
         ))
         .OrderByDescending(item => item.IsPinned)
         .ThenByDescending(item => item.LastMessageOnUtc ?? DateTime.MinValue)
@@ -1207,8 +1207,24 @@ public sealed class ChatService(
     {
         if (messages.Count == 0) return [];
         var messageIds = messages.Select(message => message.Id).ToArray();
+        var conversationIds = messages.Select(message => message.ConversationId).Distinct().ToArray();
+        
         var senderIds = messages.Select(message => message.SenderPersonId).Distinct().ToArray();
-        var people = await LoadPeopleAsync(senderIds, cancellationToken);
+        
+        var allMemberPersonIds = await db.ChatConversationMembers.AsNoTracking()
+            .Where(m => conversationIds.Contains(m.ConversationId) && m.PersonId != callerPersonId && m.LeftOnUtc == null)
+            .Select(m => m.PersonId)
+            .Distinct()
+            .ToArrayAsync(cancellationToken);
+            
+        var peopleToLoad = senderIds.Union(allMemberPersonIds).ToArray();
+        var people = await LoadPeopleAsync(peopleToLoad, cancellationToken);
+        
+        var readStates = await db.ChatConversationMembers.AsNoTracking()
+            .Where(m => conversationIds.Contains(m.ConversationId) && m.PersonId != callerPersonId && m.LeftOnUtc == null)
+            .Select(m => new { m.ConversationId, m.PersonId, m.LastReadMessageId })
+            .ToListAsync(cancellationToken);
+
         var reactions = await db.ChatMessageReactions.AsNoTracking()
             .Where(reaction => messageIds.Contains(reaction.MessageId))
             .ToListAsync(cancellationToken);
@@ -1244,6 +1260,43 @@ public sealed class ChatService(
                     attachment.FileSize,
                     $"/api/chat/attachments/{attachment.Id}"))
                 .ToList();
+                
+            string status = "Sent";
+            if (message.SenderPersonId == callerPersonId)
+            {
+                var otherMembers = readStates.Where(rs => rs.ConversationId == message.ConversationId).ToList();
+                if (otherMembers.Count > 0)
+                {
+                    bool isReadByAny = otherMembers.Any(rs => rs.LastReadMessageId >= message.Id);
+                    if (isReadByAny)
+                    {
+                        status = "Read";
+                    }
+                    else
+                    {
+                        bool isDeliveredToAll = true;
+                        foreach(var m in otherMembers)
+                        {
+                            if (people.TryGetValue(m.PersonId, out var op))
+                            {
+                                bool deliveredToThisUser = op.IsOnline || (op.LastSeenUtc.HasValue && op.LastSeenUtc.Value >= message.CreatedOnUtc);
+                                if (!deliveredToThisUser) 
+                                {
+                                    isDeliveredToAll = false;
+                                    break;
+                                }
+                            }
+                            else
+                            {
+                                isDeliveredToAll = false;
+                                break;
+                            }
+                        }
+                        if (isDeliveredToAll) status = "Delivered";
+                    }
+                }
+            }
+            
             return new ChatMessageDto(
                 message.Id,
                 message.ConversationId,
@@ -1255,6 +1308,7 @@ public sealed class ChatService(
                 message.CreatedOnUtc,
                 message.EditedOnUtc,
                 message.DeletedOnUtc.HasValue,
+                status,
                 messageReactions,
                 messageAttachments);
         }).ToList();
@@ -1363,6 +1417,54 @@ public sealed class ChatService(
             membership.MemberRole = dto.MemberRole;
             await db.SaveChangesAsync(cancellationToken);
         }
+    }
+
+    
+    public async Task<IReadOnlyList<MessageDeliveryInfoDto>> GetMessageDeliveryInfoAsync(
+        string identityUserId,
+        long messageId,
+        CancellationToken cancellationToken = default)
+    {
+        var caller = await ResolveCallerAsync(identityUserId, cancellationToken);
+        
+        var message = await db.ChatMessages.AsNoTracking()
+            .SingleOrDefaultAsync(m => m.Id == messageId, cancellationToken);
+        if (message == null) throw new ChatNotFoundException("The message was not found.");
+        
+        if (message.SenderPersonId != caller.PersonId)
+            throw new ChatForbiddenException("Only the sender can view delivery info.");
+
+        var members = await db.ChatConversationMembers.AsNoTracking()
+            .Where(m => m.ConversationId == message.ConversationId && m.PersonId != caller.PersonId && m.LeftOnUtc == null)
+            .ToListAsync(cancellationToken);
+            
+        var memberIds = members.Select(m => m.PersonId).ToArray();
+        var people = await LoadPeopleAsync(memberIds, cancellationToken);
+        
+        var result = new List<MessageDeliveryInfoDto>();
+        foreach(var member in members)
+        {
+            people.TryGetValue(member.PersonId, out var p);
+            string status = "Sent";
+            
+            if (member.LastReadMessageId >= message.Id)
+            {
+                status = "Read";
+            }
+            else if (p != null && (p.IsOnline || (p.LastSeenUtc.HasValue && p.LastSeenUtc.Value >= message.CreatedOnUtc)))
+            {
+                status = "Delivered";
+            }
+            
+            result.Add(new MessageDeliveryInfoDto(
+                member.PersonId,
+                p?.FullName ?? "Unknown",
+                p?.PhotoUrl,
+                status
+            ));
+        }
+        
+        return result;
     }
 
     public async Task UpdatePrivacySettingsAsync(string identityUserId, UpdatePrivacySettingsDto dto, CancellationToken cancellationToken = default)

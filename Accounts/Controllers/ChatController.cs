@@ -376,6 +376,21 @@ public sealed class ChatController(
         }
     }
 
+    
+    [HttpGet("messages/{messageId}/info")]
+    public async Task<IActionResult> GetMessageDeliveryInfo(long messageId, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var info = await chatService.GetMessageDeliveryInfoAsync(User.GetUserId(), messageId, cancellationToken);
+            return Ok(info);
+        }
+        catch (Exception exception)
+        {
+            return MapException(exception);
+        }
+    }
+
     private IActionResult MapException(Exception exception) => exception switch
     {
         ChatValidationException => BadRequest(new { message = exception.Message }),
