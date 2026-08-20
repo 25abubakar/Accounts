@@ -405,6 +405,39 @@ public sealed class AttendanceController : ControllerBase
         return await Execute(() => _service.GetDeductionReportAsync(UserId(), orgWide, year, month, ct));
     }
 
+    [HttpPost("deductions/approve-overtime")]
+    public async Task<IActionResult> ApproveOvertime([FromBody] ApproveOvertimeRequestDto dto, CancellationToken ct)
+    {
+        if (!_tenant.TenantId.HasValue) return Forbid();
+        if (!await HasAttendanceMenuActionAsync("EDIT", ct, "/attendance/deduction"))
+            return Forbid();
+
+        var record = await _db.AttendanceMonthlySettlements
+            .FirstOrDefaultAsync(s => s.PersonId == dto.PersonId 
+                                      && s.SettlementYear == dto.Year 
+                                      && s.SettlementMonth == dto.Month
+                                      && s.TenantId == _tenant.RequiredTenantId, ct);
+
+        if (record == null)
+        {
+            record = new AttendanceMonthlySettlement
+            {
+                TenantId = _tenant.RequiredTenantId,
+                PersonId = dto.PersonId,
+                SettlementYear = dto.Year,
+                SettlementMonth = dto.Month
+            };
+            _db.AttendanceMonthlySettlements.Add(record);
+        }
+
+        record.IsOvertimeApproved = dto.IsApproved;
+        record.ApprovedByUserId = UserId();
+        record.ApprovedDateUtc = PakistanClock.Now();
+
+        await _db.SaveChangesAsync(ct);
+        return Ok(new { message = "Overtime approval status updated." });
+    }
+
     [HttpPost("deductions/requests")]
     public async Task<IActionResult> CreateDeductionRequest([FromBody] SaveAttendanceDeductionRequestDto dto, CancellationToken ct)
     {

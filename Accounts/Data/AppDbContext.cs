@@ -71,6 +71,7 @@ namespace Accounts.Data
         public DbSet<WorkflowApprovalRequest> WorkflowApprovalRequests => Set<WorkflowApprovalRequest>();
         public DbSet<AttendanceRuleSettingReadRow> AttendanceRuleSettingReadRows => Set<AttendanceRuleSettingReadRow>();
         public DbSet<AttendanceDeductionRequest> AttendanceDeductionRequests => Set<AttendanceDeductionRequest>();
+        public DbSet<AttendanceMonthlySettlement> AttendanceMonthlySettlements => Set<AttendanceMonthlySettlement>();
         public DbSet<AttendanceWorkMode>       AttendanceWorkModes      => Set<AttendanceWorkMode>();
         public DbSet<AttendanceDailyReportRow> AttendanceDailyReportRows => Set<AttendanceDailyReportRow>();
         public DbSet<AttendanceDeductionReportRow> AttendanceDeductionReportRows => Set<AttendanceDeductionReportRow>();
@@ -238,6 +239,9 @@ namespace Accounts.Data
                 _tenantService != null && !_tenantService.IsSuperAdmin &&
                 _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
             builder.Entity<AttendanceDeductionRequest>().HasQueryFilter(row =>
+                _tenantService != null && !_tenantService.IsSuperAdmin &&
+                _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
+            builder.Entity<AttendanceMonthlySettlement>().HasQueryFilter(row =>
                 _tenantService != null && !_tenantService.IsSuperAdmin &&
                 _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
             builder.Entity<ApplicationLoginSession>().HasQueryFilter(row =>
@@ -479,6 +483,14 @@ namespace Accounts.Data
                  .WithMany()
                  .HasForeignKey(x => x.TenantId)
                  .OnDelete(DeleteBehavior.Restrict);
+            });
+
+            builder.Entity<AttendanceMonthlySettlement>(e =>
+            {
+                e.ToTable("AttendanceMonthlySettlements");
+                e.HasKey(x => x.Id);
+                e.HasIndex(x => new { x.TenantId, x.PersonId, x.SettlementYear, x.SettlementMonth }).IsUnique();
+                e.HasOne(x => x.Person).WithMany().HasForeignKey(x => x.PersonId).OnDelete(DeleteBehavior.Restrict);
             });
 
             // ——— AppNote: optional TenantId FK ——————————————————————————————————
@@ -934,12 +946,11 @@ namespace Accounts.Data
                 e.Property(x => x.EmployeeName).HasMaxLength(200);
                 e.Property(x => x.JobTitle).HasMaxLength(150);
                 e.Property(x => x.Department).HasMaxLength(200);
-                e.Property(x => x.DeductionDays).HasColumnType("decimal(18,2)");
-                e.Property(x => x.GrossDeduction).HasColumnType("decimal(18,2)");
-                e.Property(x => x.AdjustAmount).HasColumnType("decimal(18,2)");
-                e.Property(x => x.NetDeduction).HasColumnType("decimal(18,2)");
-                e.Property(x => x.PerHour).HasColumnType("decimal(18,2)");
                 e.Property(x => x.PerDay).HasColumnType("decimal(18,2)");
+                e.Property(x => x.PerHour).HasColumnType("decimal(18,2)");
+                e.Property(x => x.NetDeduction).HasColumnType("decimal(18,2)");
+                e.Property(x => x.OvertimeBonusAmount).HasColumnType("decimal(18,2)");
+                e.Property(x => x.FinalSalary).HasColumnType("decimal(18,2)");
             });
 
             builder.Entity<AttendancePolicy>(e =>

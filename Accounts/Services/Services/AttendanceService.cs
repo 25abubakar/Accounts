@@ -949,23 +949,19 @@ public sealed class AttendanceService : IAttendanceService
                     EmployeeName = row.EmployeeName,
                     JobTitle = row.JobTitle,
                     Department = row.Department,
-                    Day = row.Day,
                     Month = row.Month,
                     Year = row.Year,
-                    TotalWorkingMinutes = row.TotalWorkingMinutes,
-                    TotalAttendanceMinutes = row.TotalAttendanceMinutes,
-                    HoursDiffMinutes = row.HoursDiffMinutes,
-                    DeductionMinutes = row.DeductionMinutes,
-                    DeductionDays = row.DeductionDays,
-                    HoursAdjustMinutes = row.HoursAdjustMinutes,
-                    NetStandardMinutes = row.NetStandardMinutes,
-                    GrossDeduction = row.GrossDeduction,
-                    AdjustAmount = row.AdjustAmount,
-                    NetDeduction = row.NetDeduction,
-                    PerHour = row.PerHour,
                     PerDay = row.PerDay,
-                    Approved = row.Approved,
-                    Pending = row.Pending
+                    PerHour = row.PerHour,
+                    MonthWorkingDays = row.MonthWorkingDays,
+                    MonthWorkingMinutes = row.MonthWorkingMinutes,
+                    MonthAttendanceMinutes = row.MonthAttendanceMinutes,
+                    NetShortMinutes = row.NetShortMinutes,
+                    NetOvertimeMinutes = row.NetOvertimeMinutes,
+                    NetDeduction = row.NetDeduction,
+                    OvertimeBonusAmount = row.OvertimeBonusAmount,
+                    IsOvertimeApproved = row.IsOvertimeApproved,
+                    FinalSalary = row.FinalSalary
                 }).ToList()
             };
         }
@@ -1237,7 +1233,10 @@ public sealed class AttendanceService : IAttendanceService
             var statusCode = source.StatusCode;
             var isScheduledOff = statusCode is not null &&
                 (statusCode.Equals("DO", StringComparison.OrdinalIgnoreCase) ||
-                 statusCode.Equals("H", StringComparison.OrdinalIgnoreCase));
+                 statusCode.Equals("H", StringComparison.OrdinalIgnoreCase) ||
+                 statusCode.Equals("HO", StringComparison.OrdinalIgnoreCase) ||
+                 statusName.Equals("Holiday", StringComparison.OrdinalIgnoreCase) ||
+                 statusName.Equals("Day Off", StringComparison.OrdinalIgnoreCase));
             var required = isScheduledOff ? 0 :
                 source.AttendanceEntryTypeId.HasValue &&
                 ruleSettingsByEntryType.TryGetValue(source.AttendanceEntryTypeId.Value, out var configuredRule)
@@ -1440,6 +1439,20 @@ public sealed class AttendanceService : IAttendanceService
                 MissingCheckOut = missingCheckOut,
                 Comments = verification?.CameraRemarks
             });
+        }
+
+        foreach (var group in rows.GroupBy(r => r.PersonId))
+        {
+            int cumulativeRequired = 0;
+            int cumulativeWorking = 0;
+            foreach (var row in group.OrderBy(r => r.Date))
+            {
+                cumulativeRequired += row.RequiredMinutes;
+                cumulativeWorking += row.WorkingMinutes;
+                row.CumulativeRequiredMinutes = cumulativeRequired;
+                row.CumulativeWorkingMinutes = cumulativeWorking;
+                row.CrDbMinutes = row.WorkingMinutes - row.RequiredMinutes;
+            }
         }
 
         return new DailyAttendanceReportDto { DateFrom = dateFrom, DateTo = dateTo, Rows = rows, Summary = BuildDailyAttendanceSummary(rows) };

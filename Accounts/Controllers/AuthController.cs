@@ -432,19 +432,15 @@ namespace Accounts.Controllers
                     permissionDetails = new List<object>()
                 });
 
-            // Chat is a tenant-enabled self-service module. Persist its menu
-            // grants for active staff before resolving either RBAC generation.
-            try
-            {
-                await EnsureStaffChatMenuGrantAsync(person, ct);
-            }
-            catch (DbUpdateException)
-            {
-                // Concurrent session/menu requests may race while creating the
-                // same unique default grant. The winning transaction has already
-                // persisted it, so discard this request's duplicate tracked rows.
-                _db.ChangeTracker.Clear();
-            }
+            // Removed: Do not automatically grant chat access. Chat should follow standard RBAC.
+            // try
+            // {
+            //     await EnsureStaffChatMenuGrantAsync(person, ct);
+            // }
+            // catch (DbUpdateException)
+            // {
+            //     _db.ChangeTracker.Clear();
+            // }
 
             // Direct admin grants (PersonMenus + PersonFeatures) — primary model
             if (await _personAccess.HasPersonGrantsAsync(person.PersonId, ct))
