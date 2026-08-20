@@ -5,7 +5,7 @@ namespace Accounts.Data;
 public static class AttendanceRecordSchema
 {
     private static readonly SemaphoreSlim LocalGate = new(1, 1);
-    private const int CameraReportSchemaVersion = 4;
+    private const int CameraReportSchemaVersion = 5;
     private static int AppliedCameraReportSchemaVersion;
     private static bool DeductionReportProcedureEnsured;
 
@@ -108,19 +108,17 @@ public static class AttendanceRecordSchema
                         DECLARE @PlatformActionId int;
                         SELECT TOP(1) @PlatformActionId=Id FROM PlatformSettings.Actions WHERE Name=N''Attendance'' AND TenantId=@TenantId;
 
-                        SELECT TOP(1) @DayOff=pss.Id, @PlatformDayOff=pas.Id
-                        FROM dbo.ProcessStatusStyles pss
-                        INNER JOIN PlatformSettings.StatusCrDbValues crdb ON crdb.DbValue=pss.Code AND (crdb.TenantId=pss.TenantId OR crdb.TenantId IS NULL)
-                        INNER JOIN PlatformSettings.ActionStatuses pas ON pas.StatusId=crdb.StatusId AND pas.ActionId=@PlatformActionId
-                        WHERE pss.ProcessId=@ProcessId AND pss.Code=N''DO'' AND pss.IsActive=1 AND (pss.TenantId=@TenantId OR pss.TenantId IS NULL)
-                        ORDER BY CASE WHEN pss.TenantId=@TenantId THEN 0 ELSE 1 END;
+                        SELECT TOP(1) @PlatformDayOff = pas.Id
+                        FROM PlatformSettings.Statuses s
+                        JOIN PlatformSettings.ActionStatuses pas ON pas.StatusId = s.Id
+                        WHERE pas.ActionId = @PlatformActionId AND s.Name = N''Day Off'' AND (pas.TenantId = @TenantId OR pas.TenantId IS NULL)
+                        ORDER BY CASE WHEN pas.TenantId=@TenantId THEN 0 ELSE 1 END;
                         
-                        SELECT TOP(1) @Holiday=pss.Id, @PlatformHoliday=pas.Id
-                        FROM dbo.ProcessStatusStyles pss
-                        INNER JOIN PlatformSettings.StatusCrDbValues crdb ON crdb.DbValue=pss.Code AND (crdb.TenantId=pss.TenantId OR crdb.TenantId IS NULL)
-                        INNER JOIN PlatformSettings.ActionStatuses pas ON pas.StatusId=crdb.StatusId AND pas.ActionId=@PlatformActionId
-                        WHERE pss.ProcessId=@ProcessId AND pss.Code=N''H'' AND pss.IsActive=1 AND (pss.TenantId=@TenantId OR pss.TenantId IS NULL)
-                        ORDER BY CASE WHEN pss.TenantId=@TenantId THEN 0 ELSE 1 END;
+                        SELECT TOP(1) @PlatformHoliday = pas.Id
+                        FROM PlatformSettings.Statuses s
+                        JOIN PlatformSettings.ActionStatuses pas ON pas.StatusId = s.Id
+                        WHERE pas.ActionId = @PlatformActionId AND s.Name = N''Holiday'' AND (pas.TenantId = @TenantId OR pas.TenantId IS NULL)
+                        ORDER BY CASE WHEN pas.TenantId=@TenantId THEN 0 ELSE 1 END;
 
                         ;WITH Dates AS(
                             SELECT @DateFrom AttendanceDate UNION ALL

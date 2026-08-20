@@ -174,4 +174,9 @@ public interface IChatService
         string identityUserId,
         UpdatePrivacySettingsDto dto,
         CancellationToken cancellationToken = default);
+
+    Task<IReadOnlyList<MessageDeliveryInfoDto>> GetMessageDeliveryInfoAsync(
+        string identityUserId,
+        long messageId,
+        CancellationToken cancellationToken = default);
 }

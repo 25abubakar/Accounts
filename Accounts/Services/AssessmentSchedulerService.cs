@@ -55,7 +55,7 @@ public sealed class AssessmentSchedulerService(IServiceScopeFactory scopeFactory
                     var incomplete = await db.StaffAssessments.IgnoreQueryFilters().AnyAsync(x => x.TenantId == tenantId && x.AssessorPersonId == assessor.PersonId && x.AssessmentYear == today.Year && x.AssessmentMonth == today.Month && x.Rating == null, ct);
                     if (!incomplete) continue;
                     var entityId = $"{today:yyyy-MM-dd}:{assessor.PersonId:N}";
-                    if (await db.AppNotes.AsNoTracking().AnyAsync(x => x.EntityType == "ASSESSMENT_REMINDER" && x.EntityId == entityId, ct)) continue;
+                    if (await db.AppNotes.IgnoreQueryFilters().AsNoTracking().AnyAsync(x => x.EntityType == "ASSESSMENT_REMINDER" && x.EntityId == entityId, ct)) continue;
                     db.AppNotes.Add(new AppNote { TenantId = tenantId, Title = "Monthly assessment is pending", NoteBody = $"Please complete your team assessment for {today:MMMM yyyy}.", NoteTypeCode = "NOTIFICATION", SourceTypeCode = "ADMIN", CategoryCode = "ASSESSMENT", PriorityCode = "HIGH", VisibilityTypeCode = "STAFF", MenuCode = "/assessment/mark", ModuleName = "Assessment", EntityType = "ASSESSMENT_REMINDER", EntityId = entityId, StartDateUtc = DateTime.UtcNow, EndDateUtc = DateTime.UtcNow.AddDays(2), IsPublished = true, IsActive = true, AllowDismiss = true, CreatedBy = "SYSTEM", CreatedOnUtc = DateTime.UtcNow, Targets = [new AppNoteTarget { TargetTypeCode = "STAFF", TargetValue = assessor.PersonId.ToString(), IsActive = true }] });
                     await db.SaveChangesAsync(ct);
                 }

@@ -16,17 +16,6 @@ public sealed class ChatService(
     IMemoryCache cache,
     IWebHostEnvironment env) : IChatService
 {
-    private static readonly HashSet<string> AllowedAttachmentTypes = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "image/jpeg", "image/png", "image/gif", "image/webp",
-        "application/pdf", "text/plain",
-        "application/msword",
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        "application/vnd.ms-excel",
-        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        "application/zip",
-    };
-
     private (Guid PersonId, int TenantId, long WorkspaceId, int TenantOrganizationTreeId)? _callerContext;
 
     public async Task<(Guid PersonId, int TenantId, long WorkspaceId, int TenantOrganizationTreeId)> ResolveCallerAsync(
@@ -588,7 +577,7 @@ public sealed class ChatService(
         if (body.Length > 4000) throw new ChatValidationException("Messages cannot exceed 4,000 characters.");
         if (dto.ClientMessageId == Guid.Empty) throw new ChatValidationException("A client message ID is required.");
 
-        await EnsureCanSendAsync(caller.TenantId, caller.PersonId, conversationId, cancellationToken);
+        var ghostBlockerId = await EnsureCanSendAsync(caller.TenantId, caller.PersonId, conversationId, cancellationToken);
 
         if (dto.ReplyToMessageId.HasValue)
         {
@@ -620,6 +609,11 @@ public sealed class ChatService(
         try
         {
             await db.SaveChangesAsync(cancellationToken);
+            if (ghostBlockerId.HasValue)
+            {
+                db.ChatMessageDeletions.Add(new ChatMessageDeletion { TenantId = caller.TenantId, MessageId = message.Id, PersonId = ghostBlockerId.Value, DeletedOnUtc = DateTime.UtcNow });
+                await db.SaveChangesAsync(cancellationToken);
+            }
         }
         catch (DbUpdateException)
         {
@@ -651,8 +645,6 @@ public sealed class ChatService(
         if (clientMessageId == Guid.Empty) throw new ChatValidationException("A client message ID is required.");
         if (content.Length == 0 || content.Length > 10 * 1024 * 1024)
             throw new ChatValidationException("Attachments must be between 1 byte and 10 MB.");
-        if (!AllowedAttachmentTypes.Contains(contentType))
-            throw new ChatValidationException("This attachment type is not allowed.");
 
         var safeFileName = Path.GetFileName(fileName);
         if (string.IsNullOrWhiteSpace(safeFileName))
@@ -729,6 +721,9 @@ public sealed class ChatService(
             
         if (message.DeletedOnUtc.HasValue)
             throw new ChatValidationException("Cannot edit a deleted message.");
+
+        if ((DateTime.UtcNow - message.CreatedOnUtc).TotalMinutes > 60)
+            throw new ChatValidationException("Messages can only be edited within 60 minutes of sending.");
 
         message.Body = dto.Body;
         message.EditedOnUtc = DateTime.UtcNow;
@@ -1147,24 +1142,35 @@ public sealed class ChatService(
             (block.BlockerPersonId == secondPersonId && block.BlockedPersonId == firstPersonId)),
             cancellationToken);
 
-    private async Task EnsureCanSendAsync(
+    private async Task<Guid?> EnsureCanSendAsync(
         int tenantId,
         Guid personId,
         long conversationId,
         CancellationToken cancellationToken)
     {
-        var otherPersonIds = await db.ChatConversationMembers.AsNoTracking()
-            .Where(member =>
-                member.TenantId == tenantId &&
-                member.ConversationId == conversationId &&
-                member.PersonId != personId &&
-                member.LeftOnUtc == null)
-            .Select(member => member.PersonId)
-            .ToListAsync(cancellationToken);
+        var conversation = await db.ChatConversations.AsNoTracking()
+            .FirstOrDefaultAsync(c => c.Id == conversationId, cancellationToken);
+            
+        if (conversation == null || conversation.ConversationType == "Group") 
+            return null;
 
-        var blockedPersonIds = await GetBlockedPersonIdsAsync(tenantId, personId, cancellationToken);
-        if (otherPersonIds.Intersect(blockedPersonIds).Any())
-            throw new ChatForbiddenException("Messages cannot be sent in this conversation.");
+        var otherPersonId = await db.ChatConversationMembers.AsNoTracking()
+            .Where(m => m.ConversationId == conversationId && m.PersonId != personId && m.LeftOnUtc == null)
+            .Select(m => m.PersonId)
+            .FirstOrDefaultAsync(cancellationToken);
+
+        if (otherPersonId == Guid.Empty) return null;
+
+        var isBlocker = await db.ChatBlocks.AsNoTracking()
+            .AnyAsync(b => b.TenantId == tenantId && b.BlockerPersonId == personId && b.BlockedPersonId == otherPersonId, cancellationToken);
+            
+        if (isBlocker)
+            throw new ChatForbiddenException("You cannot send messages because you have blocked this user.");
+
+        var isBlockedByOther = await db.ChatBlocks.AsNoTracking()
+            .AnyAsync(b => b.TenantId == tenantId && b.BlockerPersonId == otherPersonId && b.BlockedPersonId == personId, cancellationToken);
+            
+        return isBlockedByOther ? otherPersonId : null;
     }
 
     private async Task<Dictionary<Guid, ChatPersonDto>> LoadPeopleAsync(
@@ -1267,8 +1273,8 @@ public sealed class ChatService(
                 var otherMembers = readStates.Where(rs => rs.ConversationId == message.ConversationId).ToList();
                 if (otherMembers.Count > 0)
                 {
-                    bool isReadByAny = otherMembers.Any(rs => rs.LastReadMessageId >= message.Id);
-                    if (isReadByAny)
+                    bool isReadByAll = otherMembers.All(rs => rs.LastReadMessageId >= message.Id);
+                    if (isReadByAll)
                     {
                         status = "Read";
                     }
@@ -1279,7 +1285,7 @@ public sealed class ChatService(
                         {
                             if (people.TryGetValue(m.PersonId, out var op))
                             {
-                                bool deliveredToThisUser = op.IsOnline || (op.LastSeenUtc.HasValue && op.LastSeenUtc.Value >= message.CreatedOnUtc);
+                                bool deliveredToThisUser = (m.LastReadMessageId >= message.Id) || op.IsOnline || (op.LastSeenUtc.HasValue && op.LastSeenUtc.Value >= message.CreatedOnUtc);
                                 if (!deliveredToThisUser) 
                                 {
                                     isDeliveredToAll = false;

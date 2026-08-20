@@ -183,6 +183,7 @@ public sealed class AttendanceService : IAttendanceService
         var timing = await ResolveEffectiveTimingAsync(person, record.AttendanceDate, attendanceRule, cancellationToken);
         if (record.CheckOutUtc.HasValue) throw new InvalidOperationException("You have already checked out today.");
         var now = PakistanClock.Now();
+        //var now = new DateTime(2026, 8, 21, 6, 0, 0);
         var policy = await LoadPolicyAsync(person.TenantId, cancellationToken);
         var checkoutExpiryMinutes = attendanceRule?.MissingCheckoutAfterShiftEndMinutes
             ?? policy.MissingCheckoutAfterShiftEndMinutes;
@@ -1065,10 +1066,10 @@ public sealed class AttendanceService : IAttendanceService
         return (await GetAttendanceDisplayStyleMapAsync(cancellationToken)).Values.ToList();
     }
 
-    private async Task<Dictionary<int, MonthlyAttendanceChartLegendItemDto>> GetAttendanceDisplayStyleMapByIdAsync(CancellationToken cancellationToken)
+    private async Task<Dictionary<int, MonthlyAttendanceChartLegendItemDto>> GetAttendanceDisplayStyleMapByIdAsync(int tenantId, CancellationToken cancellationToken)
     {
         var query = from actionStatus in _db.PlatformSettingActionStatuses.AsNoTracking()
-                    where actionStatus.Action.Name == "Attendance"
+                    where actionStatus.Action.Name == "Attendance" && actionStatus.TenantId == tenantId
                     join crDb in _db.PlatformSettingStatusCrDbValues.AsNoTracking()
                         on actionStatus.StatusId equals crDb.StatusId into crDbGroup
                     from crDb in crDbGroup.DefaultIfEmpty()
@@ -1185,7 +1186,7 @@ public sealed class AttendanceService : IAttendanceService
             cancellationToken);
 
         var policy = await LoadPolicyAsync(tenantId, cancellationToken);
-        var legendItems = await GetAttendanceDisplayStyleMapByIdAsync(cancellationToken);
+        var legendItems = await GetAttendanceDisplayStyleMapByIdAsync(tenantId, cancellationToken);
         var displayStylesByCode = legendItems.Values
             .Where(x => !string.IsNullOrWhiteSpace(x.Code))
             .GroupBy(x => x.Code.Trim(), StringComparer.OrdinalIgnoreCase)

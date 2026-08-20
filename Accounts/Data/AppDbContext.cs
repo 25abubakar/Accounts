@@ -71,8 +71,6 @@ namespace Accounts.Data
         public DbSet<WorkflowApprovalRequest> WorkflowApprovalRequests => Set<WorkflowApprovalRequest>();
         public DbSet<AttendanceRuleSettingReadRow> AttendanceRuleSettingReadRows => Set<AttendanceRuleSettingReadRow>();
         public DbSet<AttendanceDeductionRequest> AttendanceDeductionRequests => Set<AttendanceDeductionRequest>();
-        public DbSet<AttendanceHolidayColorMap> AttendanceHolidayColorMaps => Set<AttendanceHolidayColorMap>();
-        public DbSet<AttendanceHolidayColorMapReadRow> AttendanceHolidayColorMapReadRows => Set<AttendanceHolidayColorMapReadRow>();
         public DbSet<AttendanceWorkMode>       AttendanceWorkModes      => Set<AttendanceWorkMode>();
         public DbSet<AttendanceDailyReportRow> AttendanceDailyReportRows => Set<AttendanceDailyReportRow>();
         public DbSet<AttendanceDeductionReportRow> AttendanceDeductionReportRows => Set<AttendanceDeductionReportRow>();
@@ -261,12 +259,6 @@ namespace Accounts.Data
                 _tenantService != null && !_tenantService.IsSuperAdmin &&
                 _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
             builder.Entity<AttendanceRuleSettingReadRow>().HasQueryFilter(row =>
-                _tenantService != null && !_tenantService.IsSuperAdmin &&
-                _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
-            builder.Entity<AttendanceHolidayColorMap>().HasQueryFilter(row =>
-                _tenantService != null && !_tenantService.IsSuperAdmin &&
-                _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
-            builder.Entity<AttendanceHolidayColorMapReadRow>().HasQueryFilter(row =>
                 _tenantService != null && !_tenantService.IsSuperAdmin &&
                 _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
             builder.Entity<AppNote>().HasQueryFilter(row =>
@@ -918,25 +910,6 @@ namespace Accounts.Data
                 e.Property(x => x.CreatedDate).HasDefaultValueSql("SYSUTCDATETIME()");
                 e.HasIndex(x => new { x.TenantId, x.DeductionYear, x.DeductionMonth });
                 e.HasOne<Tenant>().WithMany().HasForeignKey(x => x.TenantId).OnDelete(DeleteBehavior.Restrict);
-            });
-
-            builder.Entity<AttendanceHolidayColorMap>(e =>
-            {
-                e.HasKey(x => x.Id);
-                e.Property(x => x.HolidayTypeCode).HasMaxLength(100).IsRequired();
-                e.Property(x => x.ColorCode).HasMaxLength(7).IsRequired();
-                e.Property(x => x.CreatedDate).HasDefaultValueSql("SYSUTCDATETIME()");
-                e.HasIndex(x => new { x.TenantId, x.HolidayTypeCode }).IsUnique();
-                e.HasOne(x => x.Tenant).WithMany().HasForeignKey(x => x.TenantId).OnDelete(DeleteBehavior.Restrict);
-            });
-
-            builder.Entity<AttendanceHolidayColorMapReadRow>(e =>
-            {
-                e.HasNoKey();
-                e.ToView("vw_AttendanceHolidayColorMaps", "dbo");
-                e.Property(x => x.HolidayTypeCode).HasMaxLength(100);
-                e.Property(x => x.HolidayTypeName).HasMaxLength(200);
-                e.Property(x => x.ColorCode).HasMaxLength(7);
             });
 
             builder.Entity<AttendanceWorkMode>(e =>

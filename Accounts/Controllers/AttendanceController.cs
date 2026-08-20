@@ -156,33 +156,32 @@ public sealed class AttendanceController : ControllerBase
     public async Task<IActionResult> MapColors(CancellationToken ct)
     {
         if (!_tenant.TenantId.HasValue) return Ok(Array.Empty<AttendanceHolidayColorMapDto>());
-        if (!await HasAttendanceMenuActionAsync("VIEW", ct, "/attendance/rules/map-color"))
-            return Forbid();
 
-        await EnsureDefaultHolidayColorMapsAsync(ct);
-
-        var maps = await _db.AttendanceHolidayColorMapReadRows.AsNoTracking()
-            .Where(map => map.TenantId == _tenant.RequiredTenantId)
-            .OrderBy(map => map.Id)
-            .Select(map => new AttendanceHolidayColorMapDto
-            {
-                Id = map.Id,
-                HolidayTypeCode = map.HolidayTypeCode,
-                HolidayTypeName = map.HolidayTypeName,
-                ColorCode = map.ColorCode
-            })
-            .ToListAsync(ct);
+        // Map AppLookupValues -> PlatformSettings.StatusCrDbValues
+        // We know that Holiday types (AppLookupValues TIMING_HOLIDAY_TYPE) are:
+        // DAY_OFF, HOLIDAY, ANNUAL_HOLIDAY, WORKING_DAY
+        // And StatusCrDbValues for ActionId=1 (Attendance) are: DO, HO, H, WD (or whatever user set)
+        // Since the user might have named their statuses exactly as the Lookup Display Texts,
+        // we can join on the Status Name = Lookup Display Text!
+        
+        var maps = await (from lookup in _db.AppLookupValues
+                          join type in _db.AppLookupTypes on lookup.LookupTypeId equals type.LookupTypeId
+                          where type.LookupTypeCode == "TIMING_HOLIDAY_TYPE" && lookup.IsActive
+                          join status in _db.PlatformSettingStatuses on lookup.DisplayText equals status.Name
+                          join actionStatus in _db.PlatformSettingActionStatuses on status.Id equals actionStatus.StatusId
+                          join action in _db.PlatformSettingActions on actionStatus.ActionId equals action.Id
+                          join color in _db.PlatformSettingColors on actionStatus.ColorId equals color.Id
+                          where action.Name == "Attendance" && (actionStatus.TenantId == _tenant.RequiredTenantId || actionStatus.TenantId == null)
+                          select new AttendanceHolidayColorMapDto
+                          {
+                              Id = lookup.LookupValueId,
+                              HolidayTypeCode = lookup.ValueCode,
+                              HolidayTypeName = lookup.DisplayText,
+                              ColorCode = color.ColorCode
+                          }).Distinct().ToListAsync(ct);
 
         return Ok(maps);
     }
-
-    [HttpPost("rules/map-color")]
-    public Task<IActionResult> CreateMapColor([FromBody] SaveAttendanceHolidayColorMapDto dto, CancellationToken ct) =>
-        SaveMapColor(null, dto, ct);
-
-    [HttpPut("rules/map-color/{id:int}")]
-    public Task<IActionResult> UpdateMapColor(int id, [FromBody] SaveAttendanceHolidayColorMapDto dto, CancellationToken ct) =>
-        SaveMapColor(id, dto, ct);
 
     [HttpPost("me/toggle-break")]
     public Task<IActionResult> ToggleBreak(CancellationToken ct) => Execute(() => _service.ToggleBreakAsync(UserId(), ct));
@@ -220,6 +219,12 @@ public sealed class AttendanceController : ControllerBase
                 AccountLockAbsentDays = rule.AccountLockAbsentDays,
                 WeekendChargeValue = rule.WeekendChargeValue,
                 AdjustAbsentDays = rule.AdjustAbsentDays,
+                ExtremeLateAfterMinutes = rule.ExtremeLateAfterMinutes,
+                PlatformLateStatusId = rule.PlatformLateStatusId,
+                PlatformExtremeLateStatusId = rule.PlatformExtremeLateStatusId,
+                ExtremeEarlyDepartureAfterMinutes = rule.ExtremeEarlyDepartureAfterMinutes,
+                PlatformEarlyDepartureStatusId = rule.PlatformEarlyDepartureStatusId,
+                PlatformExtremeEarlyDepartureStatusId = rule.PlatformExtremeEarlyDepartureStatusId,
                 IsApproved = rule.IsApproved,
                 IsActive = rule.IsActive,
                 Remarks = rule.Remarks
@@ -742,115 +747,6 @@ public sealed class AttendanceController : ControllerBase
         IsOpenAttendance = rule.IsOpenAttendance,
     };
 
-    private async Task<IActionResult> SaveMapColor(
-        int? id,
-        SaveAttendanceHolidayColorMapDto dto,
-        CancellationToken ct)
-    {
-        if (!_tenant.TenantId.HasValue) return Forbid();
-        if (!await HasAttendanceMenuActionAsync(id.HasValue ? "EDIT" : "ADD", ct, "/attendance/rules/map-color"))
-            return Forbid();
-
-        var holidayTypeCode = dto.HolidayTypeCode?.Trim() ?? string.Empty;
-        var holidayType = await _db.AppLookupValues.AsNoTracking()
-            .Where(value => value.IsActive && value.LookupType != null && value.LookupType.IsActive
-                && value.LookupType.LookupTypeCode == "TIMING_HOLIDAY_TYPE"
-                && value.ValueCode == holidayTypeCode)
-            .Select(value => new { value.ValueCode, value.DisplayText })
-            .SingleOrDefaultAsync(ct);
-        if (holidayType == null) return BadRequest(new { message = "Select an active holiday type." });
-
-        var colorCode = dto.ColorCode?.Trim().ToUpperInvariant() ?? string.Empty;
-        if (!Regex.IsMatch(colorCode, "^#[0-9A-F]{6}$", RegexOptions.CultureInvariant))
-            return BadRequest(new { message = "Select a valid six-digit color." });
-        var colorIsAllowed = await _db.AppLookupValues.AsNoTracking()
-            .AnyAsync(value => value.IsActive && value.LookupType != null && value.LookupType.IsActive
-                && value.LookupType.LookupTypeCode == "ATTENDANCE_MAP_COLOR"
-                && value.ValueCode == colorCode, ct);
-        if (!colorIsAllowed) return BadRequest(new { message = "Select an active color from the map color list." });
-
-        var duplicate = await _db.AttendanceHolidayColorMaps.AsNoTracking()
-            .AnyAsync(map =>
-                map.TenantId == _tenant.RequiredTenantId &&
-                map.HolidayTypeCode == holidayType.ValueCode &&
-                (!id.HasValue || map.Id != id.Value), ct);
-        if (duplicate) return BadRequest(new { message = "This holiday type already has a color mapping." });
-
-        AttendanceHolidayColorMap map;
-        var now = PakistanClock.Now();
-        if (id.HasValue)
-        {
-            var existingMap = await _db.AttendanceHolidayColorMaps.SingleOrDefaultAsync(
-                item => item.Id == id.Value && item.TenantId == _tenant.RequiredTenantId, ct);
-            if (existingMap == null) return NotFound(new { message = "The color mapping was not found." });
-            map = existingMap;
-            map.ModifiedByUserId = UserId();
-            map.ModifiedDate = now;
-        }
-        else
-        {
-            map = new AttendanceHolidayColorMap
-            {
-                TenantId = _tenant.RequiredTenantId,
-                CreatedByUserId = UserId(),
-                CreatedDate = now
-            };
-            _db.AttendanceHolidayColorMaps.Add(map);
-        }
-
-        map.HolidayTypeCode = holidayType.ValueCode;
-        map.ColorCode = colorCode;
-        await _db.SaveChangesAsync(ct);
-
-        return Ok(ToHolidayColorMapDto(map, holidayType.DisplayText));
-    }
-
-    private async Task EnsureDefaultHolidayColorMapsAsync(CancellationToken ct)
-    {
-        var tenantId = _tenant.RequiredTenantId;
-        var now = PakistanClock.Now();
-        var userId = UserId();
-        var defaults = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
-        {
-            ["HOLIDAY"] = "#3B82F6",
-            ["WORKING_DAY"] = "#10B981",
-            ["ANNUAL_HOLIDAY"] = "#F59E0B",
-            ["DAY_OFF"] = "#06B6D4",
-        };
-
-        var activeHolidayCodes = await _db.AppLookupValues.AsNoTracking()
-            .Where(value => value.IsActive &&
-                value.LookupType != null &&
-                value.LookupType.IsActive &&
-                value.LookupType.LookupTypeCode == "TIMING_HOLIDAY_TYPE" &&
-                defaults.Keys.Contains(value.ValueCode))
-            .Select(value => value.ValueCode)
-            .ToListAsync(ct);
-
-        if (activeHolidayCodes.Count == 0) return;
-
-        var existingCodes = await _db.AttendanceHolidayColorMaps.AsNoTracking()
-            .Where(map => map.TenantId == tenantId && activeHolidayCodes.Contains(map.HolidayTypeCode))
-            .Select(map => map.HolidayTypeCode)
-            .ToListAsync(ct);
-
-        var existingSet = existingCodes.ToHashSet(StringComparer.OrdinalIgnoreCase);
-        foreach (var holidayCode in activeHolidayCodes)
-        {
-            if (existingSet.Contains(holidayCode)) continue;
-            _db.AttendanceHolidayColorMaps.Add(new AttendanceHolidayColorMap
-            {
-                TenantId = tenantId,
-                HolidayTypeCode = holidayCode,
-                ColorCode = defaults.TryGetValue(holidayCode, out var colorCode) ? colorCode : "#0EA5E9",
-                CreatedByUserId = userId,
-                CreatedDate = now
-            });
-        }
-
-        await _db.SaveChangesAsync(ct);
-    }
-
     private async Task<IActionResult> SaveAttendanceRuleSetting(
         int? id,
         SaveAttendanceRuleSettingDto dto,
@@ -926,6 +822,12 @@ public sealed class AttendanceController : ControllerBase
         rule.AccountLockAbsentDays = dto.AccountLockAbsentDays;
         rule.WeekendChargeValue = dto.WeekendChargeValue;
         rule.AdjustAbsentDays = dto.AdjustAbsentDays;
+        rule.ExtremeLateAfterMinutes = dto.ExtremeLateAfterMinutes;
+        rule.PlatformLateStatusId = dto.PlatformLateStatusId;
+        rule.PlatformExtremeLateStatusId = dto.PlatformExtremeLateStatusId;
+        rule.ExtremeEarlyDepartureAfterMinutes = dto.ExtremeEarlyDepartureAfterMinutes;
+        rule.PlatformEarlyDepartureStatusId = dto.PlatformEarlyDepartureStatusId;
+        rule.PlatformExtremeEarlyDepartureStatusId = dto.PlatformExtremeEarlyDepartureStatusId;
         rule.IsApproved = dto.IsApproved;
         rule.IsActive = dto.IsActive;
         rule.Remarks = string.IsNullOrWhiteSpace(dto.Remarks) ? null : dto.Remarks.Trim();
@@ -934,15 +836,7 @@ public sealed class AttendanceController : ControllerBase
         return Ok(ToAttendanceRuleSettingDto(rule, attendanceType));
     }
 
-    private static AttendanceHolidayColorMapDto ToHolidayColorMapDto(
-        AttendanceHolidayColorMap map,
-        string holidayTypeName) => new()
-    {
-        Id = map.Id,
-        HolidayTypeCode = map.HolidayTypeCode,
-        HolidayTypeName = holidayTypeName,
-        ColorCode = map.ColorCode
-    };
+
 
     private static AttendanceRuleSettingDto ToAttendanceRuleSettingDto(
         AttendanceRuleSetting rule,
@@ -966,6 +860,12 @@ public sealed class AttendanceController : ControllerBase
         AccountLockAbsentDays = rule.AccountLockAbsentDays,
         WeekendChargeValue = rule.WeekendChargeValue,
         AdjustAbsentDays = rule.AdjustAbsentDays,
+        ExtremeLateAfterMinutes = rule.ExtremeLateAfterMinutes,
+        PlatformLateStatusId = rule.PlatformLateStatusId,
+        PlatformExtremeLateStatusId = rule.PlatformExtremeLateStatusId,
+        ExtremeEarlyDepartureAfterMinutes = rule.ExtremeEarlyDepartureAfterMinutes,
+        PlatformEarlyDepartureStatusId = rule.PlatformEarlyDepartureStatusId,
+        PlatformExtremeEarlyDepartureStatusId = rule.PlatformExtremeEarlyDepartureStatusId,
         IsApproved = rule.IsApproved,
         IsActive = rule.IsActive,
         Remarks = rule.Remarks

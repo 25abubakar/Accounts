@@ -45,6 +45,7 @@ public sealed record ChatMessageDto(
     DateTime CreatedOnUtc,
     DateTime? EditedOnUtc,
     bool IsDeleted,
+    string Status,
     IReadOnlyList<ChatReactionDto> Reactions,
     IReadOnlyList<ChatAttachmentDto> Attachments);
 
@@ -61,7 +62,7 @@ public sealed record ChatConversationDto(
     bool IsPinned,
     bool IsOnline,
     DateTime? LastSeenUtc,
-    bool HasUnreadMention);
+    bool HasUnreadMention, bool IsBlockedByMe = false, bool IsBlockedByOther = false);
 
 public sealed record CreateChatRequestDto(Guid ReceiverPersonId, string? Message);
 public sealed record CreateChatGroupDto(string Title, IReadOnlyList<Guid> MemberPersonIds);
@@ -109,6 +110,8 @@ public class ChatConversationResult
     public int UnreadCount { get; set; }
     public bool IsMuted { get; set; }
     public bool IsPinned { get; set; }
+    public bool IsBlockedByMe { get; set; }
+    public bool IsBlockedByOther { get; set; }
     public bool HasUnreadMention { get; set; }
     public DateTime? LastSeenUtc { get; set; }
 }

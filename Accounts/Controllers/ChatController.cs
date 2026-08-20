@@ -309,6 +309,23 @@ public sealed class ChatController(
             .Where(member => member.ConversationId == conversationId && member.LeftOnUtc == null)
             .Select(member => member.PersonId)
             .ToListAsync(cancellationToken);
+
+        var conversation = await db.ChatConversations.AsNoTracking().FirstOrDefaultAsync(c => c.Id == conversationId, cancellationToken);
+        if (conversation?.ConversationType == "Direct")
+        {
+             try 
+             {
+                 var senderPersonId = (await chat.ResolveCallerAsync(UserId(), cancellationToken)).PersonId;
+                 var blockedBy = await db.ChatBlocks.AsNoTracking()
+                     .Where(b => b.BlockedPersonId == senderPersonId)
+                     .Select(b => b.BlockerPersonId)
+                     .ToListAsync(cancellationToken);
+                 
+                 people = people.Except(blockedBy).ToList();
+             }
+             catch { }
+        }
+
         await Task.WhenAll(people.Select(personId =>
             hub.Clients.Group(ChatHub.PersonGroup(personId))
                 .SendAsync(eventName, payload, cancellationToken)));
@@ -382,7 +399,7 @@ public sealed class ChatController(
     {
         try
         {
-            var info = await chatService.GetMessageDeliveryInfoAsync(User.GetUserId(), messageId, cancellationToken);
+            var info = await chat.GetMessageDeliveryInfoAsync(UserId(), messageId, cancellationToken);
             return Ok(info);
         }
         catch (Exception exception)
