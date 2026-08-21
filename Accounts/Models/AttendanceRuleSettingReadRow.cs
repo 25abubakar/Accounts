@@ -30,5 +30,6 @@ public sealed class AttendanceRuleSettingReadRow
     public int? PlatformExtremeEarlyDepartureStatusId { get; set; }
     public bool IsApproved { get; set; }
     public bool IsActive { get; set; }
+    public bool IsOvertimeBonusActive { get; set; }
     public string? Remarks { get; set; }
 }

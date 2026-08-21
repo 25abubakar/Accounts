@@ -21,5 +21,8 @@ public sealed class AttendanceDeductionReportRow
     public decimal NetDeduction { get; set; }
     public decimal OvertimeBonusAmount { get; set; }
     public bool IsOvertimeApproved { get; set; }
+    public decimal AdjustmentAmount { get; set; }
+    public bool IsAdjustmentApproved { get; set; }
+    public string? AdjustmentRemarks { get; set; }
     public decimal FinalSalary { get; set; }
 }

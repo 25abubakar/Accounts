@@ -359,6 +359,17 @@ public sealed class ApproveOvertimeRequestDto
     public bool IsApproved { get; set; }
 }
 
+public sealed class ApproveAdjustmentRequestDto { public Guid PersonId { get; set; } public int Month { get; set; } public int Year { get; set; } public int PinCode { get; set; } }
+
+public sealed class SaveAdjustmentRequestDto
+{
+    public Guid PersonId { get; set; }
+    public int Month { get; set; }
+    public int Year { get; set; }
+    public decimal? AdjustmentAmount { get; set; }
+    public string? Remarks { get; set; }
+}
+
 public sealed class SaveAttendanceDeductionRequestDto
 {
     public string? RegNo { get; set; }
@@ -510,6 +521,7 @@ public sealed class AttendanceRuleSettingDto
     public int? PlatformExtremeEarlyDepartureStatusId { get; set; }
     public bool IsApproved { get; set; }
     public bool IsActive { get; set; }
+    public bool IsOvertimeBonusActive { get; set; }
     public string? Remarks { get; set; }
 }
 
@@ -538,5 +550,6 @@ public sealed class SaveAttendanceRuleSettingDto
     public int? PlatformExtremeEarlyDepartureStatusId { get; set; }
     public bool IsApproved { get; set; }
     public bool IsActive { get; set; } = true;
+    public bool IsOvertimeBonusActive { get; set; }
     public string? Remarks { get; set; }
 }

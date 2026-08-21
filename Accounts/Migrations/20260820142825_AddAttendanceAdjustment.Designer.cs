@@ -4,6 +4,7 @@ using Accounts.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 #nullable disable
@@ -11,9 +12,11 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace Accounts.Migrations
 {
     [DbContext(typeof(ApplicationDbContext))]
-    partial class ApplicationDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260820142825_AddAttendanceAdjustment")]
+    partial class AddAttendanceAdjustment
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -1119,9 +1122,6 @@ namespace Accounts.Migrations
 
                     b.Property<DateTime?>("ApprovedDateUtc")
                         .HasColumnType("datetime2");
-
-                    b.Property<bool>("IsAdjustmentApproved")
-                        .HasColumnType("bit");
 
                     b.Property<bool>("IsOvertimeApproved")
                         .HasColumnType("bit");
@@ -3584,30 +3584,6 @@ namespace Accounts.Migrations
                     b.HasIndex("TenantId", "CategoryId", "DisplayOrder");
 
                     b.ToTable("PlatformTypeValues", (string)null);
-                });
-
-            modelBuilder.Entity("Accounts.Models.ProcessApprovalCode", b =>
-                {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("int");
-
-                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
-
-                    b.Property<int>("PinCode")
-                        .HasColumnType("int");
-
-                    b.Property<string>("ProcessName")
-                        .IsRequired()
-                        .HasMaxLength(100)
-                        .HasColumnType("nvarchar(100)");
-
-                    b.Property<int>("TenantId")
-                        .HasColumnType("int");
-
-                    b.HasKey("Id");
-
-                    b.ToTable("ProcessApprovalCodes");
                 });
 
             modelBuilder.Entity("Accounts.Models.ProcessMaster", b =>

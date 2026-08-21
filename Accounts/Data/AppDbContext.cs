@@ -56,6 +56,7 @@ namespace Accounts.Data
         public DbSet<PlatformSettingActionStatus> PlatformSettingActionStatuses => Set<PlatformSettingActionStatus>();
         public DbSet<PlatformSettingStatusCrDbValue> PlatformSettingStatusCrDbValues => Set<PlatformSettingStatusCrDbValue>();
         public DbSet<ProcessMaster>            Processes                => Set<ProcessMaster>();
+        public DbSet<ProcessApprovalCode> ProcessApprovalCodes => Set<ProcessApprovalCode>();
         public DbSet<StatusDefinition>         Statuses                 => Set<StatusDefinition>();
         public DbSet<ColorStyle>               ColorStyles              => Set<ColorStyle>();
         public DbSet<ProcessStatusStyle>       ProcessStatusStyles      => Set<ProcessStatusStyle>();

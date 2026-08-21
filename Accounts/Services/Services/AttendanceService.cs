@@ -924,6 +924,8 @@ public sealed class AttendanceService : IAttendanceService
             selfOnly: !organizationWide,
             cancellationToken);
 
+        System.IO.File.WriteAllText("deduction_log.txt", $"orgWide={organizationWide}, selfOnly={!organizationWide}, count={visibility.VisiblePersonIds.Count}, caller={visibility.CallerPersonId}");
+
         try
         {
             var sqlRows = await _db.AttendanceDeductionReportRows

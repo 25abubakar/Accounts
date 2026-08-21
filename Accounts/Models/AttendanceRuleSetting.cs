@@ -37,6 +37,7 @@ public sealed class AttendanceRuleSetting
     public int ExtremeEarlyDepartureAfterMinutes { get; set; } = 120;
     public bool IsApproved { get; set; }
     public bool IsActive { get; set; } = true;
+    public bool IsOvertimeBonusActive { get; set; }
 
     [MaxLength(500)]
     public string? Remarks { get; set; }

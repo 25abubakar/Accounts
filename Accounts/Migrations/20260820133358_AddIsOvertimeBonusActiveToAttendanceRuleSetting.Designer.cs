@@ -4,6 +4,7 @@ using Accounts.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 #nullable disable
@@ -11,9 +12,11 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace Accounts.Migrations
 {
     [DbContext(typeof(ApplicationDbContext))]
-    partial class ApplicationDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260820133358_AddIsOvertimeBonusActiveToAttendanceRuleSetting")]
+    partial class AddIsOvertimeBonusActiveToAttendanceRuleSetting
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -803,9 +806,6 @@ namespace Accounts.Migrations
 
             modelBuilder.Entity("Accounts.Models.AttendanceDeductionReportRow", b =>
                 {
-                    b.Property<decimal>("AdjustmentAmount")
-                        .HasColumnType("decimal(18,2)");
-
                     b.Property<string>("Department")
                         .IsRequired()
                         .HasMaxLength(200)
@@ -1106,22 +1106,12 @@ namespace Accounts.Migrations
 
                     SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<long>("Id"));
 
-                    b.Property<decimal?>("AdjustmentAmount")
-                        .HasColumnType("decimal(18,2)");
-
-                    b.Property<string>("AdjustmentRemarks")
-                        .HasMaxLength(255)
-                        .HasColumnType("nvarchar(255)");
-
                     b.Property<string>("ApprovedByUserId")
                         .HasMaxLength(100)
                         .HasColumnType("nvarchar(100)");
 
                     b.Property<DateTime?>("ApprovedDateUtc")
                         .HasColumnType("datetime2");
-
-                    b.Property<bool>("IsAdjustmentApproved")
-                        .HasColumnType("bit");
 
                     b.Property<bool>("IsOvertimeApproved")
                         .HasColumnType("bit");
@@ -3584,30 +3574,6 @@ namespace Accounts.Migrations
                     b.HasIndex("TenantId", "CategoryId", "DisplayOrder");
 
                     b.ToTable("PlatformTypeValues", (string)null);
-                });
-
-            modelBuilder.Entity("Accounts.Models.ProcessApprovalCode", b =>
-                {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("int");
-
-                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
-
-                    b.Property<int>("PinCode")
-                        .HasColumnType("int");
-
-                    b.Property<string>("ProcessName")
-                        .IsRequired()
-                        .HasMaxLength(100)
-                        .HasColumnType("nvarchar(100)");
-
-                    b.Property<int>("TenantId")
-                        .HasColumnType("int");
-
-                    b.HasKey("Id");
-
-                    b.ToTable("ProcessApprovalCodes");
                 });
 
             modelBuilder.Entity("Accounts.Models.ProcessMaster", b =>

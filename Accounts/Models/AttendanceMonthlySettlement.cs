@@ -18,6 +18,11 @@ public sealed class AttendanceMonthlySettlement : ITenantEntity
     [MaxLength(100)] public string? ApprovedByUserId { get; set; }
     public DateTime? ApprovedDateUtc { get; set; }
 
+    [Column(TypeName = "decimal(18,2)")]
+    public decimal? AdjustmentAmount { get; set; }
+    public bool IsAdjustmentApproved { get; set; }
+    [MaxLength(255)] public string? AdjustmentRemarks { get; set; }
+
     public Person? Person { get; set; }
 }
 

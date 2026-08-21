@@ -318,7 +318,8 @@ public static class AttendanceRecordSchema
                             COALESCE(NULLIF(person.ShiftStartTime, N''), N'09:00') AS ShiftStartTime,
                             COALESCE(NULLIF(person.ShiftEndTime, N''), N'18:00') AS ShiftEndTime,
                             COALESCE(hr.CurrentPay, hr.BasicSalary, 0) AS CurrentPay,
-                            ruleSetting.WorkingMinutes AS RuleWorkingMinutes
+                            ruleSetting.WorkingMinutes AS RuleWorkingMinutes,
+                            COALESCE(ruleSetting.IsOvertimeBonusActive, 0) AS IsOvertimeBonusActive
                         FROM VisiblePeople visible
                         JOIN dbo.Persons person ON person.PersonId = visible.PersonId AND person.TenantId = @TenantId AND person.IsActive = 1
                         JOIN dbo.StaffVacancy staff ON staff.PersonId = person.PersonId AND staff.TenantId = @TenantId
@@ -339,6 +340,7 @@ public static class AttendanceRecordSchema
                             staff.JobTitle,
                             staff.Department,
                             staff.CurrentPay,
+                              staff.IsOvertimeBonusActive,
                             CASE
                                 WHEN COALESCE(schedule.IsOn, CASE WHEN ((DATEDIFF(day, '19000101', dates.AttendanceDate) % 7 + 7) % 7) IN (5,6) THEN 0 ELSE 1 END) = 0 THEN 0
                                 WHEN COALESCE(schedule.WorkingMinutes, 0) > 0 THEN schedule.WorkingMinutes
@@ -373,6 +375,7 @@ public static class AttendanceRecordSchema
                             MAX(JobTitle) AS JobTitle,
                             MAX(Department) AS Department,
                             MAX(CurrentPay) AS CurrentPay,
+                              CAST(MAX(CAST(IsOvertimeBonusActive AS int)) AS bit) AS IsOvertimeBonusActive,
                             SUM(CASE WHEN TotalWorkingMinutes > 0 THEN 1 ELSE 0 END) AS MonthWorkingDays,
                             SUM(TotalWorkingMinutes) AS MonthWorkingMinutes,
                             SUM(TotalAttendanceMinutes) AS MonthAttendanceMinutes
@@ -412,9 +415,10 @@ public static class AttendanceRecordSchema
                         c.NetShortMinutes,
                         c.NetOvertimeMinutes,
                         CAST((c.NetShortMinutes / 60.0) * c.PerHour AS decimal(18,2)) AS NetDeduction,
-                        CAST((c.NetOvertimeMinutes / 60.0) * c.PerHour AS decimal(18,2)) AS OvertimeBonusAmount,
+                        CAST(CASE WHEN c.IsOvertimeBonusActive = 1 THEN (c.NetOvertimeMinutes / 60.0) * c.PerHour ELSE 0 END AS decimal(18,2)) AS OvertimeBonusAmount,
                         CAST(COALESCE(s.IsOvertimeApproved, 0) AS bit) AS IsOvertimeApproved,
-                        CAST(c.CurrentPay - ((c.NetShortMinutes / 60.0) * c.PerHour) + (CASE WHEN s.IsOvertimeApproved = 1 THEN (c.NetOvertimeMinutes / 60.0) * c.PerHour ELSE 0 END) AS decimal(18,2)) AS FinalSalary
+                        CAST(COALESCE(s.AdjustmentAmount, 0) AS decimal(18,2)) AS AdjustmentAmount,
+                        CAST(c.CurrentPay - ((c.NetShortMinutes / 60.0) * c.PerHour) + (CASE WHEN s.IsOvertimeApproved = 1 AND c.IsOvertimeBonusActive = 1 THEN (c.NetOvertimeMinutes / 60.0) * c.PerHour ELSE 0 END) + COALESCE(s.AdjustmentAmount, 0) AS decimal(18,2)) AS FinalSalary
                     FROM CalculatedRows c
                     LEFT JOIN dbo.AttendanceMonthlySettlements s ON s.PersonId = c.PersonId AND s.SettlementYear = @Year AND s.SettlementMonth = @Month AND s.TenantId = @TenantId
                     ORDER BY c.EmployeeName;

@@ -227,6 +227,7 @@ public sealed class AttendanceController : ControllerBase
                 PlatformExtremeEarlyDepartureStatusId = rule.PlatformExtremeEarlyDepartureStatusId,
                 IsApproved = rule.IsApproved,
                 IsActive = rule.IsActive,
+                IsOvertimeBonusActive = rule.IsOvertimeBonusActive,
                 Remarks = rule.Remarks
             })
             .ToListAsync(ct);
@@ -401,8 +402,8 @@ public sealed class AttendanceController : ControllerBase
     {
         if (!await HasAttendanceMenuActionAsync("VIEW", ct, "/attendance/deduction"))
             return Forbid();
-        var orgWide = await CanViewOrganizationAsync(ct);
-        return await Execute(() => _service.GetDeductionReportAsync(UserId(), orgWide, year, month, ct));
+        // As per requirements: Deduction page always shows overall staff (not hierarchy wise) for anyone with access.
+        return await Execute(() => _service.GetDeductionReportAsync(UserId(), organizationWide: true, year, month, ct));
     }
 
     [HttpPost("deductions/approve-overtime")]
@@ -436,6 +437,71 @@ public sealed class AttendanceController : ControllerBase
 
         await _db.SaveChangesAsync(ct);
         return Ok(new { message = "Overtime approval status updated." });
+    }
+
+    [HttpPost("deductions/adjustment")]
+    public async Task<IActionResult> SaveAdjustment([FromBody] SaveAdjustmentRequestDto dto, CancellationToken ct)
+    {
+        if (!_tenant.TenantId.HasValue) return Forbid();
+        if (!await HasAttendanceMenuActionAsync("EDIT", ct, "/attendance/deduction"))
+            return Forbid();
+
+        var record = await _db.AttendanceMonthlySettlements
+            .FirstOrDefaultAsync(s => s.PersonId == dto.PersonId 
+                                      && s.SettlementYear == dto.Year 
+                                      && s.SettlementMonth == dto.Month
+                                      && s.TenantId == _tenant.RequiredTenantId, ct);
+
+        if (record == null)
+        {
+            record = new AttendanceMonthlySettlement
+            {
+                TenantId = _tenant.RequiredTenantId,
+                PersonId = dto.PersonId,
+                SettlementYear = dto.Year,
+                SettlementMonth = dto.Month
+            };
+            _db.AttendanceMonthlySettlements.Add(record);
+        }
+
+        record.AdjustmentAmount = dto.AdjustmentAmount;
+        record.AdjustmentRemarks = string.IsNullOrWhiteSpace(dto.Remarks) ? null : dto.Remarks.Trim();
+
+        await _db.SaveChangesAsync(ct);
+        return Ok(new { message = "Adjustment saved successfully." });
+    }
+
+    [HttpPost("deductions/adjustment/approve")]
+    public async Task<IActionResult> ApproveAdjustment([FromBody] ApproveAdjustmentRequestDto dto, CancellationToken ct)
+    {
+        if (!_tenant.TenantId.HasValue) return Forbid();
+        if (!await HasAttendanceMenuActionAsync("EDIT", ct, "/attendance/deduction"))
+            return Forbid();
+
+        var validCode = await _db.ProcessApprovalCodes.FirstOrDefaultAsync(x => x.TenantId == _tenant.RequiredTenantId && x.ProcessName == "DeductionAdjustment", ct);
+        if (validCode == null || validCode.PinCode != dto.PinCode)
+        {
+            return BadRequest(new { message = "Invalid approval code." });
+        }
+
+        var record = await _db.AttendanceMonthlySettlements
+            .FirstOrDefaultAsync(s => s.PersonId == dto.PersonId 
+                                      && s.SettlementYear == dto.Year 
+                                      && s.SettlementMonth == dto.Month
+                                      && s.TenantId == _tenant.RequiredTenantId, ct);
+
+        if (record == null)
+            return NotFound(new { message = "Adjustment record not found." });
+
+        if (record.IsAdjustmentApproved)
+            return BadRequest(new { message = "Already approved." });
+
+        record.IsAdjustmentApproved = true;
+        record.ApprovedByUserId = UserId();
+        record.ApprovedDateUtc = DateTime.UtcNow;
+
+        await _db.SaveChangesAsync(ct);
+        return Ok(new { message = "Adjustment approved successfully." });
     }
 
     [HttpPost("deductions/requests")]
@@ -719,7 +785,7 @@ public sealed class AttendanceController : ControllerBase
         if (TenantPermissionService.IsSuperAdmin(User)) return true;
         if (TenantPermissionService.IsTenantAdmin(User))
             return await _tenantPermissions.HasMenuRouteAsync(User,
-                ["/attendance/daily-report", "/attendance/staff", "/attendance/report", "/attendance/timing-chart"], "VIEW", ct);
+                ["/attendance/daily-report", "/attendance/staff", "/attendance/report", "/attendance/timing-chart", "/attendance/deduction"], "VIEW", ct);
         return false;
     }
 
@@ -863,6 +929,7 @@ public sealed class AttendanceController : ControllerBase
         rule.PlatformExtremeEarlyDepartureStatusId = dto.PlatformExtremeEarlyDepartureStatusId;
         rule.IsApproved = dto.IsApproved;
         rule.IsActive = dto.IsActive;
+        rule.IsOvertimeBonusActive = dto.IsOvertimeBonusActive;
         rule.Remarks = string.IsNullOrWhiteSpace(dto.Remarks) ? null : dto.Remarks.Trim();
 
         await _db.SaveChangesAsync(ct);
@@ -901,6 +968,7 @@ public sealed class AttendanceController : ControllerBase
         PlatformExtremeEarlyDepartureStatusId = rule.PlatformExtremeEarlyDepartureStatusId,
         IsApproved = rule.IsApproved,
         IsActive = rule.IsActive,
+        IsOvertimeBonusActive = rule.IsOvertimeBonusActive,
         Remarks = rule.Remarks
     };
 
@@ -926,3 +994,4 @@ public sealed class AttendanceController : ControllerBase
         return trimmed.Length > maxLength ? trimmed[..maxLength] : trimmed;
     }
 }
+

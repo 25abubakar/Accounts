@@ -35,7 +35,9 @@ namespace Accounts.Services.Services
             string? entityId,
             CancellationToken ct)
         {
-            var now = PakistanClock.Now();
+            try
+            {
+                var now = PakistanClock.Now();
             var recordKey = (entityType != null && entityId != null)
                 ? $"{entityType}:{entityId}"
                 : null;
@@ -231,6 +233,11 @@ namespace Accounts.Services.Services
                     return ToDto(n, state);
                 })
                 .ToList();
+            }
+            catch (OperationCanceledException)
+            {
+                return new List<AppNoteDto>();
+            }
         }
 
         // ── Get By Id ─────────────────────────────────────────────────────────
