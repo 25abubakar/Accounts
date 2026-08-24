@@ -14,6 +14,7 @@ namespace Accounts.Controllers;
 [ApiController]
 [Route("api/chat")]
 [Authorize]
+[AutoValidateAntiforgeryToken]
 [Produces("application/json")]
 public sealed class ChatController(
     IChatService chat,
@@ -92,6 +93,33 @@ public sealed class ChatController(
         ExecuteAsync(async () => Ok(await chat.GetMessagesAsync(
             UserId(), conversationId, beforeId, take, cancellationToken)));
 
+    [HttpGet("conversations/{conversationId:long}/messages/search")]
+    public Task<IActionResult> SearchMessages(
+        long conversationId,
+        [FromQuery] string q,
+        [FromQuery] int take = 50,
+        CancellationToken cancellationToken = default) =>
+        ExecuteAsync(async () => Ok(await chat.SearchMessagesAsync(
+            UserId(), conversationId, q, take, cancellationToken)));
+    [HttpGet("conversations/{conversationId:long}/shared-attachments")]
+    public Task<IActionResult> SharedAttachments(
+        long conversationId,
+        [FromQuery] string? category,
+        [FromQuery] long? beforeId,
+        [FromQuery] int take = 60,
+        CancellationToken cancellationToken = default) =>
+        ExecuteAsync(async () => Ok(await chat.GetSharedAttachmentsAsync(
+            UserId(), conversationId, category, beforeId, take, cancellationToken)));
+
+    [HttpPut("conversations/{conversationId:long}/unread")]
+    public Task<IActionResult> MarkUnread(
+        long conversationId,
+        CancellationToken cancellationToken = default) =>
+        ExecuteAsync(async () =>
+        {
+            await chat.MarkUnreadAsync(UserId(), conversationId, cancellationToken);
+            return NoContent();
+        });
     [HttpPost("conversations/{conversationId:long}/messages")]
     public Task<IActionResult> SendMessage(
         long conversationId,
@@ -254,6 +282,7 @@ public sealed class ChatController(
         {
             if (photo == null || photo.Length == 0) return BadRequest(new { error = "No file uploaded." });
             var url = await chat.UpdateGroupPhotoAsync(UserId(), conversationId, photo, env, cancellationToken);
+            await NotifyMembersAsync(conversationId, "conversationUpdated", new { conversationId, photoUrl = url }, cancellationToken);
             return Ok(new { photoUrl = url });
         });
 
@@ -265,6 +294,7 @@ public sealed class ChatController(
         ExecuteAsync(async () =>
         {
             await chat.UpdateGroupNameAsync(UserId(), conversationId, dto.Title, cancellationToken);
+            await NotifyMembersAsync(conversationId, "conversationUpdated", new { conversationId, title = dto.Title.Trim() }, cancellationToken);
             return NoContent();
         });
 
@@ -345,6 +375,7 @@ public sealed class ChatController(
         ExecuteAsync(async () =>
         {
             await chat.AddGroupMembersAsync(UserId(), conversationId, dto, cancellationToken);
+            await NotifyMembersAsync(conversationId, "groupMembersUpdated", new { conversationId }, cancellationToken);
             return Ok();
         });
 
@@ -356,6 +387,8 @@ public sealed class ChatController(
         ExecuteAsync(async () =>
         {
             await chat.RemoveGroupMemberAsync(UserId(), conversationId, personId, cancellationToken);
+            await NotifyMembersAsync(conversationId, "groupMembersUpdated", new { conversationId }, cancellationToken);
+            await hub.Clients.Group(ChatHub.PersonGroup(personId)).SendAsync("groupMembersUpdated", new { conversationId }, cancellationToken);
             return Ok();
         });
 
@@ -368,6 +401,7 @@ public sealed class ChatController(
         ExecuteAsync(async () =>
         {
             await chat.UpdateMemberRoleAsync(UserId(), conversationId, personId, dto, cancellationToken);
+            await NotifyMembersAsync(conversationId, "groupMembersUpdated", new { conversationId }, cancellationToken);
             return Ok();
         });
 

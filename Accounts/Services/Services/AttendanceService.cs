@@ -924,8 +924,6 @@ public sealed class AttendanceService : IAttendanceService
             selfOnly: !organizationWide,
             cancellationToken);
 
-        System.IO.File.WriteAllText("deduction_log.txt", $"orgWide={organizationWide}, selfOnly={!organizationWide}, count={visibility.VisiblePersonIds.Count}, caller={visibility.CallerPersonId}");
-
         try
         {
             var sqlRows = await _db.AttendanceDeductionReportRows
@@ -963,6 +961,10 @@ public sealed class AttendanceService : IAttendanceService
                     NetDeduction = row.NetDeduction,
                     OvertimeBonusAmount = row.OvertimeBonusAmount,
                     IsOvertimeApproved = row.IsOvertimeApproved,
+                    IsOvertimeBonusActive = row.IsOvertimeBonusActive,
+                    AdjustmentAmount = row.AdjustmentAmount,
+                    IsAdjustmentApproved = row.IsAdjustmentApproved,
+                    AdjustmentRemarks = row.AdjustmentRemarks,
                     FinalSalary = row.FinalSalary
                 }).ToList()
             };

@@ -17,7 +17,18 @@ namespace Accounts.Middleware
                 var userId = context.User.FindFirstValue(ClaimTypes.NameIdentifier);
                 if (!string.IsNullOrWhiteSpace(userId))
                 {
-                    var decision = await accessService.ValidateAsync(userId, context.RequestAborted);
+                    AccountScopeAccessResult decision;
+                    try
+                    {
+                        decision = await accessService.ValidateAsync(userId, context.RequestAborted);
+                    }
+                    catch (OperationCanceledException) when (context.RequestAborted.IsCancellationRequested)
+                    {
+                        // Browsers routinely cancel in-flight API calls during navigation,
+                        // refresh, and component cleanup. The response is already abandoned,
+                        // so SQL cancellation must not be treated as an application failure.
+                        return;
+                    }
                     if (!decision.IsAllowed)
                     {
                         await context.SignOutAsync();

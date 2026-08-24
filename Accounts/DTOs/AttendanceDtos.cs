@@ -341,6 +341,10 @@ public sealed class AttendanceDeductionRowDto
     public decimal NetDeduction { get; set; }
     public decimal OvertimeBonusAmount { get; set; }
     public bool IsOvertimeApproved { get; set; }
+    public bool IsOvertimeBonusActive { get; set; }
+    public decimal AdjustmentAmount { get; set; }
+    public bool IsAdjustmentApproved { get; set; }
+    public string? AdjustmentRemarks { get; set; }
     public decimal FinalSalary { get; set; }
 }
 

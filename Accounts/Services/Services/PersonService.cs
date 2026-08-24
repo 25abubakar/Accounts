@@ -4,6 +4,7 @@ using Accounts.Models;
 using Accounts.Services.Interfaces;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
+using System.Globalization;
 
 namespace Accounts.Services.Services
 {
@@ -201,14 +202,28 @@ namespace Accounts.Services.Services
             profile.PostingPerDay = dto.PostingPerDay;
             profile.PromotionFrom = dto.PromotionFrom;
             profile.PromotionTo = dto.PromotionTo;
-            profile.Scale = dto.Scale?.Trim();
+            var scaleName = dto.Scale?.Trim();
+            SalaryScale? selectedScale = null;
+            if (!string.IsNullOrWhiteSpace(scaleName))
+            {
+                selectedScale = await _db.SalaryScales.AsNoTracking()
+                    .FirstOrDefaultAsync(scale => scale.TenantId == person.TenantId && scale.IsActive && scale.ScaleName == scaleName);
+                if (selectedScale == null) return (null, "The selected salary scale is not active or does not belong to this company.");
+            }
+            var workingDays = decimal.TryParse(dto.WorkingDays, NumberStyles.Number, CultureInfo.InvariantCulture, out var parsedDays) && parsedDays > 0 ? parsedDays : 26m;
+            var workingHours = decimal.TryParse(dto.WorkingHours, NumberStyles.Number, CultureInfo.InvariantCulture, out var parsedHours) && parsedHours > 0 ? parsedHours : ResolveWorkingHours(dto.TimingFrom, dto.TimingTo);
+            var basicSalary = selectedScale?.BasicSalary ?? dto.BasicSalary;
+            var perDay = basicSalary.HasValue ? decimal.Round(basicSalary.Value / workingDays, 2, MidpointRounding.AwayFromZero) : dto.AccountsPerDay;
+            var perHour = perDay.HasValue ? decimal.Round(perDay.Value / workingHours, 2, MidpointRounding.AwayFromZero) : dto.AccountsPerHour;
+
+            profile.Scale = scaleName;
             profile.ScaleDate = dto.ScaleDate;
-            profile.BasicSalary = dto.BasicSalary;
-            profile.IncrementSalary = dto.IncrementSalary;
-            profile.MaxSalary = dto.MaxSalary;
-            profile.CurrentPay = dto.CurrentPay;
-            profile.AccountsPerDay = dto.AccountsPerDay;
-            profile.AccountsPerHour = dto.AccountsPerHour;
+            profile.BasicSalary = basicSalary;
+            profile.IncrementSalary = selectedScale?.YearlyIncrement ?? dto.IncrementSalary;
+            profile.MaxSalary = selectedScale?.MaximumSalary ?? dto.MaxSalary;
+            profile.CurrentPay = selectedScale?.BasicSalary ?? dto.CurrentPay;
+            profile.AccountsPerDay = perDay;
+            profile.AccountsPerHour = perHour;
             profile.LeaveFrom = dto.LeaveFrom;
             profile.LeaveTo = dto.LeaveTo;
             profile.LeaveEntitled = dto.LeaveEntitled;
@@ -1389,6 +1404,15 @@ namespace Accounts.Services.Services
                     SortOrder = x.SortOrder
                 }).ToList()
             };
+        }
+        private static decimal ResolveWorkingHours(string? from, string? to)
+        {
+            if (TimeOnly.TryParse(from, out var start) && TimeOnly.TryParse(to, out var end))
+            {
+                var minutes = ((end.ToTimeSpan() - start.ToTimeSpan()).TotalMinutes + 1440) % 1440;
+                if (minutes > 0) return (decimal)(minutes / 60d);
+            }
+            return 8m;
         }
     }
 }

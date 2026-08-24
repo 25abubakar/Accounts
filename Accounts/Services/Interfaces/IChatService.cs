@@ -51,6 +51,24 @@ public interface IChatService
         int take,
         CancellationToken cancellationToken = default);
 
+    Task<IReadOnlyList<ChatMessageDto>> SearchMessagesAsync(
+        string identityUserId,
+        long conversationId,
+        string query,
+        int take,
+        CancellationToken cancellationToken = default);
+    Task<IReadOnlyList<ChatSharedAttachmentDto>> GetSharedAttachmentsAsync(
+        string identityUserId,
+        long conversationId,
+        string? category,
+        long? beforeId,
+        int take,
+        CancellationToken cancellationToken = default);
+
+    Task MarkUnreadAsync(
+        string identityUserId,
+        long conversationId,
+        CancellationToken cancellationToken = default);
     Task<ChatMessageDto> SendMessageAsync(
         string identityUserId,
         long conversationId,

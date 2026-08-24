@@ -413,6 +413,16 @@ public sealed class AttendanceController : ControllerBase
         if (!await HasAttendanceMenuActionAsync("EDIT", ct, "/attendance/deduction"))
             return Forbid();
 
+        var overtimeEnabled = await (from staff in _db.StaffVacancies.AsNoTracking()
+                                     join map in _db.AttendanceMapRules.AsNoTracking() on staff.StaffId equals map.StaffId
+                                     join rule in _db.AttendanceRuleSettings.AsNoTracking() on map.AttendanceEntryTypeId equals rule.AttendanceEntryTypeId
+                                     where staff.TenantId == _tenant.RequiredTenantId && staff.PersonId == dto.PersonId
+                                           && map.TenantId == _tenant.RequiredTenantId && rule.TenantId == _tenant.RequiredTenantId
+                                           && rule.IsActive && rule.IsApproved && rule.IsOvertimeBonusActive
+                                     select rule.Id).AnyAsync(ct);
+        if (!overtimeEnabled)
+            return BadRequest(new { message = "Overtime bonus is not active in this employee's attendance rule." });
+
         var record = await _db.AttendanceMonthlySettlements
             .FirstOrDefaultAsync(s => s.PersonId == dto.PersonId 
                                       && s.SettlementYear == dto.Year 
@@ -491,7 +501,16 @@ public sealed class AttendanceController : ControllerBase
                                       && s.TenantId == _tenant.RequiredTenantId, ct);
 
         if (record == null)
-            return NotFound(new { message = "Adjustment record not found." });
+        {
+            record = new AttendanceMonthlySettlement
+            {
+                TenantId = _tenant.RequiredTenantId,
+                PersonId = dto.PersonId,
+                SettlementYear = dto.Year,
+                SettlementMonth = dto.Month
+            };
+            _db.AttendanceMonthlySettlements.Add(record);
+        }
 
         if (record.IsAdjustmentApproved)
             return BadRequest(new { message = "Already approved." });
@@ -501,7 +520,7 @@ public sealed class AttendanceController : ControllerBase
         record.ApprovedDateUtc = DateTime.UtcNow;
 
         await _db.SaveChangesAsync(ct);
-        return Ok(new { message = "Adjustment approved successfully." });
+        return Ok(new { message = "Deduction approved successfully." });
     }
 
     [HttpPost("deductions/requests")]

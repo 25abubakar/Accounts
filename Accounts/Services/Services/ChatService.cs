@@ -564,6 +564,105 @@ public sealed class ChatService(
         return await MapMessagesAsync(messages, caller.PersonId, cancellationToken);
     }
 
+    public async Task<IReadOnlyList<ChatMessageDto>> SearchMessagesAsync(
+        string identityUserId,
+        long conversationId,
+        string query,
+        int take,
+        CancellationToken cancellationToken = default)
+    {
+        var caller = await ResolveCallerAsync(identityUserId, cancellationToken);
+        var membership = await RequireMembershipAsync(caller.PersonId, conversationId, cancellationToken);
+        var term = query?.Trim() ?? string.Empty;
+        if (term.Length < 2) return [];
+        take = Math.Clamp(take, 1, 100);
+
+        var messages = await db.ChatMessages.AsNoTracking()
+            .Where(message =>
+                message.ConversationId == conversationId &&
+                message.DeletedOnUtc == null &&
+                message.Body.Contains(term) &&
+                (!membership.ClearedBeforeUtc.HasValue || message.CreatedOnUtc > membership.ClearedBeforeUtc.Value) &&
+                !db.ChatMessageDeletions.Any(d => d.MessageId == message.Id && d.PersonId == caller.PersonId))
+            .OrderByDescending(message => message.Id)
+            .Take(take)
+            .ToListAsync(cancellationToken);
+        messages.Reverse();
+        return await MapMessagesAsync(messages, caller.PersonId, cancellationToken);
+    }
+    public async Task<IReadOnlyList<ChatSharedAttachmentDto>> GetSharedAttachmentsAsync(
+        string identityUserId,
+        long conversationId,
+        string? category,
+        long? beforeId,
+        int take,
+        CancellationToken cancellationToken = default)
+    {
+        var caller = await ResolveCallerAsync(identityUserId, cancellationToken);
+        var membership = await RequireMembershipAsync(caller.PersonId, conversationId, cancellationToken);
+        take = Math.Clamp(take, 1, 100);
+        var mediaOnly = string.Equals(category, "media", StringComparison.OrdinalIgnoreCase);
+        var filesOnly = string.Equals(category, "files", StringComparison.OrdinalIgnoreCase);
+
+        var query =
+            from attachment in db.ChatAttachments.AsNoTracking()
+            join message in db.ChatMessages.AsNoTracking() on attachment.MessageId equals message.Id
+            where message.ConversationId == conversationId &&
+                  message.DeletedOnUtc == null &&
+                  (!membership.ClearedBeforeUtc.HasValue || message.CreatedOnUtc > membership.ClearedBeforeUtc.Value) &&
+                  !db.ChatMessageDeletions.Any(deletion => deletion.MessageId == message.Id && deletion.PersonId == caller.PersonId) &&
+                  (!mediaOnly || attachment.ContentType.StartsWith("image/") || attachment.ContentType.StartsWith("video/")) &&
+                  (!filesOnly || (!attachment.ContentType.StartsWith("image/") && !attachment.ContentType.StartsWith("video/")))
+            select new
+            {
+                attachment.Id,
+                attachment.MessageId,
+                attachment.FileName,
+                attachment.ContentType,
+                attachment.FileSize,
+                message.SenderPersonId,
+                message.CreatedOnUtc,
+            };
+        if (beforeId.HasValue) query = query.Where(item => item.Id < beforeId.Value);
+        var rows = await query.OrderByDescending(item => item.Id).Take(take).ToListAsync(cancellationToken);
+        var people = await LoadPeopleAsync(rows.Select(item => item.SenderPersonId).Distinct().ToArray(), cancellationToken);
+        return rows.Select(item => new ChatSharedAttachmentDto(
+            item.Id,
+            item.MessageId,
+            item.FileName,
+            item.ContentType,
+            item.FileSize,
+            $"/api/chat/attachments/{item.Id}",
+            item.SenderPersonId,
+            people.TryGetValue(item.SenderPersonId, out var sender) ? sender.FullName : "Former staff",
+            item.CreatedOnUtc)).ToList();
+    }
+
+    public async Task MarkUnreadAsync(
+        string identityUserId,
+        long conversationId,
+        CancellationToken cancellationToken = default)
+    {
+        var caller = await ResolveCallerAsync(identityUserId, cancellationToken);
+        var membership = await RequireMembershipAsync(caller.PersonId, conversationId, cancellationToken);
+        var latestIncomingId = await db.ChatMessages.AsNoTracking()
+            .Where(message => message.ConversationId == conversationId &&
+                              message.SenderPersonId != caller.PersonId &&
+                              message.DeletedOnUtc == null &&
+                              (!membership.ClearedBeforeUtc.HasValue || message.CreatedOnUtc > membership.ClearedBeforeUtc.Value) &&
+                              !db.ChatMessageDeletions.Any(deletion => deletion.MessageId == message.Id && deletion.PersonId == caller.PersonId))
+            .OrderByDescending(message => message.Id)
+            .Select(message => (long?)message.Id)
+            .FirstOrDefaultAsync(cancellationToken);
+        if (!latestIncomingId.HasValue) return;
+
+        membership.LastReadMessageId = await db.ChatMessages.AsNoTracking()
+            .Where(message => message.ConversationId == conversationId && message.Id < latestIncomingId.Value)
+            .OrderByDescending(message => message.Id)
+            .Select(message => (long?)message.Id)
+            .FirstOrDefaultAsync(cancellationToken);
+        await db.SaveChangesAsync(cancellationToken);
+    }
     public async Task<ChatMessageDto> SendMessageAsync(
         string identityUserId,
         long conversationId,
@@ -650,6 +749,7 @@ public sealed class ChatService(
         if (string.IsNullOrWhiteSpace(safeFileName))
             throw new ChatValidationException("A valid attachment file name is required.");
         if (safeFileName.Length > 255) safeFileName = safeFileName[..255];
+        var safeContentType = ValidateAttachment(safeFileName, content);
         var body = caption?.Trim() ?? string.Empty;
         if (body.Length > 4000) throw new ChatValidationException("The attachment caption is too long.");
 
@@ -677,7 +777,7 @@ public sealed class ChatService(
             db.ChatMessages.Add(message);
             await TrackMentionsAsync(conversationId, body, caller.PersonId, cancellationToken);
             await db.SaveChangesAsync(cancellationToken);
-            var uploadDir = Path.Combine(env.WebRootPath ?? Path.Combine(Directory.GetCurrentDirectory(), "wwwroot"), "chat-uploads");
+            var uploadDir = Path.Combine(env.ContentRootPath, "App_Data", "chat-uploads");
             Directory.CreateDirectory(uploadDir);
             var extension = Path.GetExtension(safeFileName);
             if (string.IsNullOrWhiteSpace(extension)) extension = ".dat";
@@ -692,7 +792,7 @@ public sealed class ChatService(
                 TenantId = caller.TenantId,
                 MessageId = message.Id,
                 FileName = safeFileName,
-                ContentType = contentType,
+                ContentType = safeContentType,
                 FileSize = content.LongLength,
                 FilePath = relativePath,
             });
@@ -725,7 +825,10 @@ public sealed class ChatService(
         if ((DateTime.UtcNow - message.CreatedOnUtc).TotalMinutes > 60)
             throw new ChatValidationException("Messages can only be edited within 60 minutes of sending.");
 
-        message.Body = dto.Body;
+        var body = dto.Body?.Trim() ?? string.Empty;
+        if (body.Length == 0 || body.Length > 4000)
+            throw new ChatValidationException("Edited messages must contain 1 to 4,000 characters.");
+        message.Body = body;
         message.EditedOnUtc = DateTime.UtcNow;
 
         await db.SaveChangesAsync(cancellationToken);
@@ -779,7 +882,9 @@ public sealed class ChatService(
             .SingleOrDefaultAsync(cancellationToken)
             ?? throw new ChatNotFoundException("The source message could not be found.");
 
+        await RequireMembershipAsync(caller.PersonId, sourceMessage.ConversationId, cancellationToken);
         await RequireMembershipAsync(caller.PersonId, targetConversationId, cancellationToken);
+        await EnsureCanSendAsync(caller.TenantId, caller.PersonId, targetConversationId, cancellationToken);
 
         var attachments = await db.ChatAttachments.AsNoTracking()
             .Where(a => a.MessageId == sourceMessageId)
@@ -841,8 +946,13 @@ public sealed class ChatService(
         if (attachment == null) throw new ChatNotFoundException("The attachment was not found.");
         await RequireMembershipAsync(caller.PersonId, attachment.ConversationId, cancellationToken);
 
-        var uploadDir = Path.Combine(env.WebRootPath ?? Path.Combine(Directory.GetCurrentDirectory(), "wwwroot"), "chat-uploads");
+        var uploadDir = Path.Combine(env.ContentRootPath, "App_Data", "chat-uploads");
         var fullPath = Path.Combine(uploadDir, attachment.FilePath.Replace("/", "\\"));
+        if (!File.Exists(fullPath))
+        {
+            var legacyRoot = Path.Combine(env.WebRootPath ?? Path.Combine(env.ContentRootPath, "wwwroot"), "chat-uploads");
+            fullPath = Path.Combine(legacyRoot, attachment.FilePath.Replace("/", "\\"));
+        }
         if (!File.Exists(fullPath)) throw new ChatNotFoundException("The attachment file is missing from the server.");
         var bytes = await File.ReadAllBytesAsync(fullPath, cancellationToken);
 
@@ -866,11 +976,11 @@ public sealed class ChatService(
         await RequireMembershipAsync(caller.PersonId, message.ConversationId, cancellationToken);
 
         var existing = await db.ChatMessageReactions
-            .SingleOrDefaultAsync(reaction =>
-                reaction.MessageId == messageId &&
-                reaction.PersonId == caller.PersonId &&
-                reaction.Emoji == emoji, cancellationToken);
-        if (existing == null)
+            .Where(reaction => reaction.MessageId == messageId && reaction.PersonId == caller.PersonId)
+            .ToListAsync(cancellationToken);
+        var sameReaction = existing.Any(reaction => reaction.Emoji == emoji);
+        if (existing.Count > 0) db.ChatMessageReactions.RemoveRange(existing);
+        if (!sameReaction)
             db.ChatMessageReactions.Add(new ChatMessageReaction
             {
                 TenantId = caller.TenantId,
@@ -878,8 +988,6 @@ public sealed class ChatService(
                 PersonId = caller.PersonId,
                 Emoji = emoji,
             });
-        else
-            db.ChatMessageReactions.Remove(existing);
 
         await db.SaveChangesAsync(cancellationToken);
         return (await MapMessagesAsync([message], caller.PersonId, cancellationToken))[0];
@@ -1413,6 +1521,9 @@ public sealed class ChatService(
 
     public async Task UpdateMemberRoleAsync(string identityUserId, long conversationId, Guid memberPersonId, UpdateChatMemberRoleDto dto, CancellationToken cancellationToken = default)
     {
+        var role = dto.MemberRole?.Trim();
+        if (role is not ("Admin" or "Member"))
+            throw new ChatValidationException("Member role must be Admin or Member.");
         var caller = await ResolveCallerAsync(identityUserId, cancellationToken);
         var adminCheck = await db.ChatConversationMembers.FirstOrDefaultAsync(m => m.TenantId == caller.TenantId && m.ConversationId == conversationId && m.PersonId == caller.PersonId && m.LeftOnUtc == null, cancellationToken);
         if (adminCheck == null || adminCheck.MemberRole != "Admin") throw new ChatForbiddenException("Only admins can change roles.");
@@ -1420,7 +1531,7 @@ public sealed class ChatService(
         var membership = await db.ChatConversationMembers.FirstOrDefaultAsync(m => m.TenantId == caller.TenantId && m.ConversationId == conversationId && m.PersonId == memberPersonId && m.LeftOnUtc == null, cancellationToken);
         if (membership != null)
         {
-            membership.MemberRole = dto.MemberRole;
+            membership.MemberRole = role;
             await db.SaveChangesAsync(cancellationToken);
         }
     }
@@ -1484,6 +1595,38 @@ public sealed class ChatService(
         }
     }
 
+    private static readonly IReadOnlyDictionary<string, (string ContentType, byte[][] Signatures)> AllowedChatFiles =
+        new Dictionary<string, (string, byte[][])>(StringComparer.OrdinalIgnoreCase)
+        {
+            [".jpg"] = ("image/jpeg", [new byte[] { 0xFF, 0xD8, 0xFF }]),
+            [".jpeg"] = ("image/jpeg", [new byte[] { 0xFF, 0xD8, 0xFF }]),
+            [".png"] = ("image/png", [new byte[] { 0x89, 0x50, 0x4E, 0x47 }]),
+            [".gif"] = ("image/gif", ["GIF87a"u8.ToArray(), "GIF89a"u8.ToArray()]),
+            [".webp"] = ("image/webp", ["RIFF"u8.ToArray()]),
+            [".pdf"] = ("application/pdf", ["%PDF"u8.ToArray()]),
+            [".zip"] = ("application/zip", [new byte[] { 0x50, 0x4B, 0x03, 0x04 }]),
+            [".docx"] = ("application/vnd.openxmlformats-officedocument.wordprocessingml.document", [new byte[] { 0x50, 0x4B, 0x03, 0x04 }]),
+            [".xlsx"] = ("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", [new byte[] { 0x50, 0x4B, 0x03, 0x04 }]),
+            [".txt"] = ("text/plain", []),
+            [".csv"] = ("text/csv", []),
+            [".mp4"] = ("video/mp4", [])
+        };
+
+    private static string ValidateAttachment(string fileName, byte[] content)
+    {
+        var extension = Path.GetExtension(fileName);
+        if (!AllowedChatFiles.TryGetValue(extension, out var rule))
+            throw new ChatValidationException("This attachment type is not allowed.");
+        if (rule.Signatures.Length > 0 && !rule.Signatures.Any(signature => content.AsSpan().StartsWith(signature)))
+            throw new ChatValidationException("The attachment content does not match its file type.");
+        if (extension.Equals(".webp", StringComparison.OrdinalIgnoreCase) &&
+            (content.Length < 12 || !content.AsSpan(8, 4).SequenceEqual("WEBP"u8)))
+            throw new ChatValidationException("The WebP attachment is invalid.");
+        if (extension.Equals(".mp4", StringComparison.OrdinalIgnoreCase) &&
+            (content.Length < 12 || !content.AsSpan(4, 4).SequenceEqual("ftyp"u8)))
+            throw new ChatValidationException("The MP4 attachment is invalid.");
+        return rule.ContentType;
+    }
     private static string? TrimOrNull(string? value, int maxLength)
     {
         if (string.IsNullOrWhiteSpace(value)) return null;

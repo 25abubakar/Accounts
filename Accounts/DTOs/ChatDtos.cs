@@ -29,6 +29,16 @@ public sealed record ChatAttachmentDto(
     long FileSize,
     string DownloadUrl);
 
+public sealed record ChatSharedAttachmentDto(
+    long Id,
+    long MessageId,
+    string FileName,
+    string ContentType,
+    long FileSize,
+    string DownloadUrl,
+    Guid SenderPersonId,
+    string SenderName,
+    DateTime CreatedOnUtc);
 public sealed record ChatAttachmentContentDto(
     string FileName,
     string ContentType,
