@@ -8,30 +8,54 @@ namespace Accounts.Services.Services
     public sealed class AccountScopeAccessService : IAccountScopeAccessService
     {
         private readonly ApplicationDbContext _db;
+        private readonly ILogger<AccountScopeAccessService> _logger;
 
-        public AccountScopeAccessService(ApplicationDbContext db) => _db = db;
+        public AccountScopeAccessService(ApplicationDbContext db, ILogger<AccountScopeAccessService> logger)
+        {
+            _db = db;
+            _logger = logger;
+        }
 
         public async Task<AccountScopeAccessResult> ValidateAsync(
             string userId, CancellationToken cancellationToken = default)
         {
             if (_db.Database.IsSqlServer())
             {
-                var decisions = await _db.Database.SqlQueryRaw<AccountScopeValidationRow>(
-                    "EXEC dbo.usp_AccountScope_ValidateAccess @UserId",
-                    new SqlParameter("@UserId", userId))
-                    .ToListAsync(cancellationToken);
+                try
+                {
+                    var decisions = await _db.Database.SqlQueryRaw<AccountScopeValidationRow>(
+                        "EXEC dbo.usp_AccountScope_ValidateAccess @UserId",
+                        new SqlParameter("@UserId", userId))
+                        .ToListAsync(cancellationToken);
 
-                var decision = decisions.FirstOrDefault();
+                    var decision = decisions.FirstOrDefault();
+                    if (decision == null)
+                        return AccountScopeAccessResult.Denied("Unable to validate this account. Contact your administrator.");
 
-                if (decision == null)
-                    return AccountScopeAccessResult.Denied("Unable to validate this account. Contact your administrator.");
-
-                return decision.IsAllowed
-                    ? AccountScopeAccessResult.Allowed()
-                    : new AccountScopeAccessResult(
-                        false,
-                        string.IsNullOrWhiteSpace(decision.Code) ? "ACCOUNT_SCOPE_DISABLED" : decision.Code,
-                        string.IsNullOrWhiteSpace(decision.Message) ? "This account is disabled or locked." : decision.Message);
+                    return decision.IsAllowed
+                        ? AccountScopeAccessResult.Allowed()
+                        : new AccountScopeAccessResult(
+                            false,
+                            string.IsNullOrWhiteSpace(decision.Code) ? "ACCOUNT_SCOPE_DISABLED" : decision.Code,
+                            string.IsNullOrWhiteSpace(decision.Message) ? "This account is disabled or locked." : decision.Message);
+                }
+                catch (SqlException exception) when (cancellationToken.IsCancellationRequested)
+                {
+                    throw new OperationCanceledException(
+                        "Account-scope validation was cancelled because the HTTP request ended.",
+                        exception,
+                        cancellationToken);
+                }
+                catch (SqlException exception)
+                {
+                    // The LINQ path below implements the same fail-closed checks. It
+                    // keeps authentication available if the stored procedure is
+                    // temporarily unavailable, has a deployment-version mismatch,
+                    // or SQL Server terminates the command after retry exhaustion.
+                    _logger.LogWarning(
+                        exception,
+                        "Stored-procedure account-scope validation failed; using the fail-closed EF validation path.");
+                }
             }
 
             var user = await _db.Users.AsNoTracking()
