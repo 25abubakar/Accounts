@@ -285,6 +285,13 @@ namespace Accounts.Controllers
                 new("Status",               "Palette",            "/settings/statuses",    "Platform Settings",   7, new()),
                 new("Settings",             "SlidersHorizontal",  "/settings/configuration", "Platform Settings", 10, new()),
                 new("Scale",                "BadgeDollarSign",    "/settings/scales",      "Platform Settings",   8, new()),
+
+                // Library (parent group)
+                new("Library",              "LibraryBig",         null,                        null,                 80, new()),
+                new("Library Type",         "Tags",               "/library/types",           "Library",             1, new()),
+                new("Library",              "Files",              "/library",                 "Library",             2, new()),
+                new("File Converter",       "FileCog",            "/library/file-converter",  "Library",             3, new()),
+                new("Generate Invoice",     "ReceiptText",        "/library/generate-invoice", "Library",             4, new()),
             };
 
             // Valid feature keys (only save permissions that exist in Features table)

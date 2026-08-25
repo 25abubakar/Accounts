@@ -11,7 +11,9 @@ using Accounts.Repositories.Interfaces;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Antiforgery;
 using Microsoft.AspNetCore.ResponseCompression;
+using Microsoft.AspNetCore.SignalR;
 using Accounts.Hubs;
+using Accounts.Idempotency;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -86,16 +88,21 @@ builder.Services.AddHttpClient("CountriesNow", client =>
     client.BaseAddress = new Uri("https://countriesnow.space/api/v0.1/"));
 
 // ── 5. CORS ──────────────────────────────────────────────────────────────────
+var allowedFrontendOrigins =
+    builder.Configuration.GetSection("Frontend:AllowedOrigins").Get<string[]>()
+    ??
+    [
+        "http://localhost:5173",
+        "https://localhost:5173",
+        "http://localhost:3000",
+        "https://localhost:3000",
+        "http://localhost:8080",
+        "http://127.0.0.1:8080",
+    ];
 builder.Services.AddCors(options =>
 {
     options.AddPolicy("AllowReactApp", policy =>
-        policy.WithOrigins(
-                  "http://localhost:5173",
-                  "https://localhost:5173",
-                  "http://localhost:3000",
-                  "https://localhost:3000",
-                  "http://localhost:8080",
-                  "http://127.0.0.1:8080")
+        policy.WithOrigins(allowedFrontendOrigins)
               .AllowAnyHeader()
               .AllowAnyMethod()
               .AllowCredentials());
@@ -126,7 +133,11 @@ builder.Services.AddSignalR(options =>
 {
     options.EnableDetailedErrors = builder.Environment.IsDevelopment();
     options.MaximumReceiveMessageSize = 64 * 1024;
+    options.KeepAliveInterval = TimeSpan.FromSeconds(15);
+    options.ClientTimeoutInterval = TimeSpan.FromSeconds(45);
 });
+builder.Services.AddSingleton<IUserIdProvider, NameIdentifierUserIdProvider>();
+builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddResponseCompression(options =>
 {
     options.EnableForHttps = true;
@@ -166,7 +177,21 @@ builder.Services.AddHostedService(serviceProvider =>
     serviceProvider.GetRequiredService<AssessmentSchedulerService>());
 builder.Services.AddScoped<IOrganizationDataScopeService, OrganizationDataScopeService>();
 builder.Services.AddScoped<IChatService, ChatService>();
+builder.Services.AddScoped<IChatRuleService, ChatRuleService>();
+builder.Services.AddHostedService<ChatViewOnceCleanupService>();
 builder.Services.AddSingleton<ChatPresenceTracker>();
+builder.Services.AddSingleton<IRealtimePublisher, SignalRRealtimePublisher>();
+builder.Services.AddOptions<IdempotencyOptions>()
+    .Bind(builder.Configuration.GetSection(IdempotencyOptions.SectionName))
+    .Validate(options => options.DefaultTtlHours > 0, "DefaultTtlHours must be positive.")
+    .Validate(options => options.ProcessingLeaseSeconds > 0, "ProcessingLeaseSeconds must be positive.")
+    .Validate(options => options.MaxRequestBodyBytes > 0, "MaxRequestBodyBytes must be positive.")
+    .Validate(options => options.MaxResponseBodyBytes > 0, "MaxResponseBodyBytes must be positive.")
+    .Validate(options => options.CleanupIntervalMinutes > 0, "CleanupIntervalMinutes must be positive.")
+    .ValidateOnStart();
+builder.Services.AddScoped<IIdempotencyStore, EfIdempotencyStore>();
+builder.Services.AddScoped<IdempotencyMiddleware>();
+builder.Services.AddHostedService<IdempotencyCleanupService>();
 
 // ── Communication Center ──────────────────────────────────────────────────────
 builder.Services.AddScoped<IAppNoteService, AppNoteService>();
@@ -180,6 +205,8 @@ builder.Services.AddScoped<PlatformSettingsProvisioningService>();
 builder.Services.AddScoped<IAttendanceStatusRepository, AttendanceStatusRepository>();
 builder.Services.AddScoped<IAttendanceStatusService, AttendanceStatusService>();
 builder.Services.AddScoped<IAttendanceService, AttendanceService>();
+builder.Services.AddScoped<AttendanceFinalizationService>();
+builder.Services.AddHostedService<AttendanceFinalizationScheduler>();
 builder.Services.AddAutoMapper(_ => { }, typeof(Program).Assembly);
 
 // ── Dynamic Permission-Based Authorization ────────────────────────────────────
@@ -229,6 +256,7 @@ app.UseMiddleware<RequestCancellationMiddleware>();
 app.UseAuthentication();
 app.UseMiddleware<AccountScopeAccessMiddleware>();
 app.UseAuthorization();
+app.UseMiddleware<IdempotencyMiddleware>();
 
 app.MapGet("/api/security/csrf-token", (HttpContext context, IAntiforgery antiforgery) =>
 {
@@ -237,6 +265,7 @@ app.MapGet("/api/security/csrf-token", (HttpContext context, IAntiforgery antifo
 }).AllowAnonymous();
 app.MapControllers();
 app.MapHub<ChatHub>("/hubs/chat");
+app.MapHub<ApplicationRealtimeHub>("/hubs/application");
 app.MapRazorPages();
 
 app.Run();

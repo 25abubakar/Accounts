@@ -63,6 +63,10 @@ namespace Accounts.Services.Services
 
             // ── 3. Resolve effective permissions ─────────────────────────────
             var allowedPermissionIds = await GetEffectivePermissionIdsAsync(staffId, cancellationToken);
+            await AddSupervisorAttendancePermissionAsync(
+                staffId,
+                allowedPermissionIds,
+                cancellationToken);
 
             // ── 4. Build filtered sidebar in-memory ───────────────────────────
             var result = new UserMenuSessionDto
@@ -80,6 +84,63 @@ namespace Accounts.Services.Services
             }
 
             return result;
+        }
+
+        private async Task AddSupervisorAttendancePermissionAsync(
+            Guid staffId,
+            HashSet<int> allowedPermissionIds,
+            CancellationToken cancellationToken)
+        {
+            var supervisorPersonId = await _db.StaffVacancies.AsNoTracking()
+                .Where(staff => staff.StaffId == staffId && staff.PersonId.HasValue)
+                .Select(staff => staff.PersonId)
+                .SingleOrDefaultAsync(cancellationToken);
+            if (!supervisorPersonId.HasValue)
+                return;
+
+            var hasAssignedEmployees = await (
+                from person in _db.Persons.AsNoTracking()
+                join staff in _db.StaffVacancies.AsNoTracking()
+                    on (Guid?)person.PersonId equals staff.PersonId
+                join mapRule in _db.AttendanceMapRules.AsNoTracking()
+                    on staff.StaffId equals mapRule.StaffId
+                join entryType in _db.AttendanceTypes.AsNoTracking()
+                    on mapRule.AttendanceEntryTypeId equals entryType.Id
+                where
+                    person.IsActive &&
+                    person.ReportsToPersonId == supervisorPersonId.Value &&
+                    entryType.IsActive &&
+                    entryType.Code == "BY_SUPERVISOR"
+                select person.PersonId)
+                .AnyAsync(cancellationToken);
+            if (!hasAssignedEmployees)
+                return;
+
+            var supervisorMenu = await _db.Menus.AsNoTracking()
+                .Where(menu => menu.IsActive && menu.Route == "/attendance/by-supervisor")
+                .Select(menu => new { menu.Id, menu.ParentId })
+                .SingleOrDefaultAsync(cancellationToken);
+            if (supervisorMenu == null)
+                return;
+
+            var menuIds = new List<int> { supervisorMenu.Id };
+            var parentId = supervisorMenu.ParentId;
+            while (parentId.HasValue)
+            {
+                menuIds.Add(parentId.Value);
+                parentId = await _db.Menus.AsNoTracking()
+                    .Where(menu => menu.Id == parentId.Value && menu.IsActive)
+                    .Select(menu => menu.ParentId)
+                    .SingleOrDefaultAsync(cancellationToken);
+            }
+
+            var supervisorMenuPermissions = await _db.MenuPermissions.AsNoTracking()
+                .Where(permission => menuIds.Contains(permission.MenuId))
+                .Select(permission => permission.PermissionId)
+                .Distinct()
+                .ToListAsync(cancellationToken);
+            foreach (var permissionId in supervisorMenuPermissions)
+                allowedPermissionIds.Add(permissionId);
         }
 
         // ─────────────────────────────────────────────────────────────────────

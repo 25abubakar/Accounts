@@ -685,6 +685,79 @@ namespace Accounts.Migrations
                     b.ToTable("AssessmentSchedules", "dbo");
                 });
 
+            modelBuilder.Entity("Accounts.Models.AttendanceDailyFinalization", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<long>("Id"));
+
+                    b.Property<DateOnly>("AttendanceDate")
+                        .HasColumnType("date");
+
+                    b.Property<long?>("AttendanceRecordId")
+                        .HasColumnType("bigint");
+
+                    b.Property<DateTime?>("FinalizedDateUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<bool>("IsFinalized")
+                        .HasColumnType("bit");
+
+                    b.Property<bool>("IsFullDayAbsent")
+                        .HasColumnType("bit");
+
+                    b.Property<bool>("IsWorkingDay")
+                        .HasColumnType("bit");
+
+                    b.Property<DateTime>("LastEvaluatedDateUtc")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("datetime2")
+                        .HasDefaultValueSql("SYSUTCDATETIME()");
+
+                    b.Property<int>("OvertimeMinutes")
+                        .HasColumnType("int");
+
+                    b.Property<Guid>("PersonId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<int>("RequiredMinutes")
+                        .HasColumnType("int");
+
+                    b.Property<int>("ShortMinutes")
+                        .HasColumnType("int");
+
+                    b.Property<Guid>("StaffId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("State")
+                        .IsRequired()
+                        .HasMaxLength(30)
+                        .HasColumnType("nvarchar(30)");
+
+                    b.Property<int>("TenantId")
+                        .HasColumnType("int");
+
+                    b.Property<int>("WorkedMinutes")
+                        .HasColumnType("int");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("AttendanceRecordId");
+
+                    b.HasIndex("PersonId");
+
+                    b.HasIndex("StaffId");
+
+                    b.HasIndex("TenantId", "AttendanceDate", "IsFinalized");
+
+                    b.HasIndex("TenantId", "PersonId", "AttendanceDate")
+                        .IsUnique();
+
+                    b.ToTable("AttendanceDailyFinalizations", (string)null);
+                });
+
             modelBuilder.Entity("Accounts.Models.AttendanceDailyReportRow", b =>
                 {
                     b.Property<int?>("AbsentAfterShiftStartMinutes")
@@ -806,6 +879,9 @@ namespace Accounts.Migrations
                     b.Property<decimal>("AdjustmentAmount")
                         .HasColumnType("decimal(18,2)");
 
+                    b.Property<string>("AdjustmentRemarks")
+                        .HasColumnType("nvarchar(max)");
+
                     b.Property<string>("Department")
                         .IsRequired()
                         .HasMaxLength(200)
@@ -822,13 +898,22 @@ namespace Accounts.Migrations
                     b.Property<long>("Id")
                         .HasColumnType("bigint");
 
+                    b.Property<bool>("IsAdjustmentApproved")
+                        .HasColumnType("bit");
+
                     b.Property<bool>("IsOvertimeApproved")
+                        .HasColumnType("bit");
+
+                    b.Property<bool>("IsOvertimeBonusActive")
                         .HasColumnType("bit");
 
                     b.Property<string>("JobTitle")
                         .IsRequired()
                         .HasMaxLength(150)
                         .HasColumnType("nvarchar(150)");
+
+                    b.Property<DateOnly?>("LastFinalizedDate")
+                        .HasColumnType("date");
 
                     b.Property<int>("Month")
                         .HasColumnType("int");
@@ -851,8 +936,14 @@ namespace Accounts.Migrations
                     b.Property<int>("NetShortMinutes")
                         .HasColumnType("int");
 
+                    b.Property<int>("OpenDays")
+                        .HasColumnType("int");
+
                     b.Property<decimal>("OvertimeBonusAmount")
                         .HasColumnType("decimal(18,2)");
+
+                    b.Property<int>("PendingReviewDays")
+                        .HasColumnType("int");
 
                     b.Property<decimal>("PerDay")
                         .HasColumnType("decimal(18,2)");
@@ -1333,6 +1424,17 @@ namespace Accounts.Migrations
                     b.Property<int?>("PlatformVerificationStatusId")
                         .HasColumnType("int");
 
+                    b.Property<string>("SupervisorRecordedByUserId")
+                        .HasMaxLength(450)
+                        .HasColumnType("nvarchar(450)");
+
+                    b.Property<DateTime?>("SupervisorRecordedDate")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("SupervisorRemarks")
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)");
+
                     b.Property<int>("TenantId")
                         .HasColumnType("int");
 
@@ -1677,15 +1779,32 @@ namespace Accounts.Migrations
                     b.Property<long>("FileSize")
                         .HasColumnType("bigint");
 
+                    b.Property<bool>("IsViewOnce")
+                        .HasColumnType("bit");
+
                     b.Property<long>("MessageId")
                         .HasColumnType("bigint");
 
                     b.Property<int>("TenantId")
                         .HasColumnType("int");
 
+                    b.Property<DateTime?>("ViewOnceConsumedOnUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<DateTime?>("ViewOnceExpiredOnUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<Guid?>("ViewOnceOpenedByPersonId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime?>("ViewOnceOpenedOnUtc")
+                        .HasColumnType("datetime2");
+
                     b.HasKey("Id");
 
                     b.HasIndex("MessageId", "Id");
+
+                    b.HasIndex("TenantId", "IsViewOnce", "ViewOnceConsumedOnUtc", "ViewOnceExpiredOnUtc");
 
                     b.ToTable("ChatAttachments");
                 });
@@ -1926,6 +2045,9 @@ namespace Accounts.Migrations
                     b.Property<DateTime?>("DeletedOnUtc")
                         .HasColumnType("datetime2");
 
+                    b.Property<DateTime?>("DeliveryTrackingClearedOnUtc")
+                        .HasColumnType("datetime2");
+
                     b.Property<DateTime?>("EditedOnUtc")
                         .HasColumnType("datetime2");
 
@@ -2016,6 +2138,53 @@ namespace Accounts.Migrations
                         .IsUnique();
 
                     b.ToTable("ChatMessageReactions");
+                });
+
+            modelBuilder.Entity("Accounts.Models.ChatRuleSetting", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<bool>("AllowDeleteForEveryone")
+                        .HasColumnType("bit");
+
+                    b.Property<bool>("AllowMessageEditing")
+                        .HasColumnType("bit");
+
+                    b.Property<bool>("AllowViewOnceMedia")
+                        .HasColumnType("bit");
+
+                    b.Property<DateTime>("CreatedOnUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<int>("DeleteForEveryoneWindowMinutes")
+                        .HasColumnType("int");
+
+                    b.Property<int>("EditWindowMinutes")
+                        .HasColumnType("int");
+
+                    b.Property<int>("TenantId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("UpdatedByUserId")
+                        .HasMaxLength(450)
+                        .HasColumnType("nvarchar(450)");
+
+                    b.Property<DateTime>("UpdatedOnUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<int>("ViewOnceUnopenedExpiryHours")
+                        .HasColumnType("int");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TenantId")
+                        .IsUnique();
+
+                    b.ToTable("ChatRuleSettings");
                 });
 
             modelBuilder.Entity("Accounts.Models.ChatWorkspace", b =>
@@ -2256,10 +2425,7 @@ namespace Accounts.Migrations
 
                     b.HasIndex("StaffId", "ScheduleYear", "ScheduleMonth");
 
-                    b.ToTable("EmployeeTimingSchedules", null, t =>
-                        {
-                            t.HasCheckConstraint("CK_EmployeeTimingSchedules_RequiredWeekend", "(((DATEDIFF(day,'19000101',[ScheduleDate]) % 7 + 7) % 7) NOT IN (5,6)) OR (((DATEDIFF(day,'19000101',[ScheduleDate]) % 7 + 7) % 7) IN (5,6) AND [IsOn] = 0 AND [TimeFrom] IS NULL AND [TimeTo] IS NULL AND [WorkingMinutes] = 0)");
-                        });
+                    b.ToTable("EmployeeTimingSchedules", (string)null);
                 });
 
             modelBuilder.Entity("Accounts.Models.Feature", b =>
@@ -2300,6 +2466,508 @@ namespace Accounts.Migrations
                         .IsUnique();
 
                     b.ToTable("Features", (string)null);
+                });
+
+            modelBuilder.Entity("Accounts.Models.GeneratedInvoice", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<long>("Id"));
+
+                    b.Property<string>("CreatedByUserId")
+                        .HasMaxLength(450)
+                        .HasColumnType("nvarchar(450)");
+
+                    b.Property<DateTime>("CreatedOnUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("Currency")
+                        .IsRequired()
+                        .HasMaxLength(10)
+                        .HasColumnType("nvarchar(10)");
+
+                    b.Property<string>("CustomerAddress")
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)");
+
+                    b.Property<string>("CustomerEmail")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<string>("CustomerName")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<decimal>("DiscountAmount")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<DateOnly?>("DueDate")
+                        .HasColumnType("date");
+
+                    b.Property<string>("InvoiceNumber")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .HasColumnType("nvarchar(50)");
+
+                    b.Property<DateOnly>("IssueDate")
+                        .HasColumnType("date");
+
+                    b.Property<string>("Notes")
+                        .HasMaxLength(2000)
+                        .HasColumnType("nvarchar(2000)");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(30)
+                        .HasColumnType("nvarchar(30)");
+
+                    b.Property<decimal>("Subtotal")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<decimal>("TaxAmount")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<decimal>("TaxRate")
+                        .HasColumnType("decimal(9,4)");
+
+                    b.Property<int>("TenantId")
+                        .HasColumnType("int");
+
+                    b.Property<decimal>("TotalAmount")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<DateTime?>("UpdatedOnUtc")
+                        .HasColumnType("datetime2");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TenantId", "InvoiceNumber")
+                        .IsUnique();
+
+                    b.HasIndex("TenantId", "IssueDate", "Status");
+
+                    b.ToTable("GeneratedInvoices");
+                });
+
+            modelBuilder.Entity("Accounts.Models.GeneratedInvoiceLine", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<long>("Id"));
+
+                    b.Property<string>("Description")
+                        .IsRequired()
+                        .HasMaxLength(300)
+                        .HasColumnType("nvarchar(300)");
+
+                    b.Property<int>("DisplayOrder")
+                        .HasColumnType("int");
+
+                    b.Property<long>("InvoiceId")
+                        .HasColumnType("bigint");
+
+                    b.Property<decimal>("LineTotal")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<decimal>("Quantity")
+                        .HasColumnType("decimal(18,4)");
+
+                    b.Property<decimal>("UnitPrice")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("InvoiceId", "DisplayOrder");
+
+                    b.ToTable("GeneratedInvoiceLines");
+                });
+
+            modelBuilder.Entity("Accounts.Models.IdempotencyRecord", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime?>("CompletedUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<DateTime>("CreatedUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<DateTime>("ExpiresUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("FailureReason")
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)");
+
+                    b.Property<string>("HttpMethod")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("nvarchar(16)");
+
+                    b.Property<Guid>("IdempotencyKey")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime>("LeaseExpiresUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<Guid>("LockToken")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<byte[]>("RequestHash")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("binary(32)")
+                        .IsFixedLength();
+
+                    b.Property<string>("RequestPath")
+                        .IsRequired()
+                        .HasMaxLength(1024)
+                        .HasColumnType("nvarchar(1024)");
+
+                    b.Property<byte[]>("ResponseBody")
+                        .HasColumnType("varbinary(max)");
+
+                    b.Property<string>("ResponseContentType")
+                        .HasMaxLength(256)
+                        .HasColumnType("nvarchar(256)");
+
+                    b.Property<string>("ResponseHeadersJson")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<int?>("ResponseStatusCode")
+                        .HasColumnType("int");
+
+                    b.Property<byte[]>("RowVersion")
+                        .IsConcurrencyToken()
+                        .IsRequired()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("rowversion");
+
+                    b.Property<byte[]>("ScopeHash")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("binary(32)")
+                        .IsFixedLength();
+
+                    b.Property<byte>("Status")
+                        .HasColumnType("tinyint");
+
+                    b.Property<int?>("TenantId")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime>("UpdatedUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("UserId")
+                        .IsRequired()
+                        .HasMaxLength(450)
+                        .HasColumnType("nvarchar(450)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ExpiresUtc");
+
+                    b.HasIndex("ScopeHash", "IdempotencyKey")
+                        .IsUnique();
+
+                    b.HasIndex("Status", "LeaseExpiresUtc");
+
+                    b.ToTable("IdempotencyRecords", "Infrastructure");
+                });
+
+            modelBuilder.Entity("Accounts.Models.LibraryCategory", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<string>("Code")
+                        .IsRequired()
+                        .HasMaxLength(30)
+                        .HasColumnType("nvarchar(30)");
+
+                    b.Property<DateTime>("CreatedOnUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("Description")
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)");
+
+                    b.Property<int>("DisplayOrder")
+                        .HasColumnType("int");
+
+                    b.Property<bool>("IsActive")
+                        .HasColumnType("bit");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(120)
+                        .HasColumnType("nvarchar(120)");
+
+                    b.Property<int>("TenantId")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime?>("UpdatedOnUtc")
+                        .HasColumnType("datetime2");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TenantId", "Code")
+                        .IsUnique();
+
+                    b.HasIndex("TenantId", "Name")
+                        .IsUnique();
+
+                    b.HasIndex("TenantId", "IsActive", "DisplayOrder");
+
+                    b.ToTable("LibraryCategories");
+                });
+
+            modelBuilder.Entity("Accounts.Models.LibraryDocument", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<long>("Id"));
+
+                    b.Property<string>("AssetKind")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(20)
+                        .HasColumnType("nvarchar(20)")
+                        .HasDefaultValue("Document");
+
+                    b.Property<string>("ContentType")
+                        .IsRequired()
+                        .HasMaxLength(150)
+                        .HasColumnType("nvarchar(150)");
+
+                    b.Property<DateTime>("CreatedOnUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("Description")
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)");
+
+                    b.Property<string>("FileExtension")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("nvarchar(20)");
+
+                    b.Property<long>("FileSizeBytes")
+                        .HasColumnType("bigint");
+
+                    b.Property<bool>("IsActive")
+                        .HasColumnType("bit");
+
+                    b.Property<int>("LibraryTypeId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("OriginalFileName")
+                        .IsRequired()
+                        .HasMaxLength(260)
+                        .HasColumnType("nvarchar(260)");
+
+                    b.Property<string>("StoredFileName")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<int>("TenantId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("Title")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<DateTime?>("UpdatedOnUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("UploadedByUserId")
+                        .HasMaxLength(450)
+                        .HasColumnType("nvarchar(450)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("LibraryTypeId");
+
+                    b.HasIndex("TenantId", "Title");
+
+                    b.HasIndex("TenantId", "LibraryTypeId", "IsActive", "CreatedOnUtc");
+
+                    b.HasIndex("TenantId", "AssetKind", "LibraryTypeId", "IsActive", "CreatedOnUtc");
+
+                    b.ToTable("LibraryDocuments");
+                });
+
+            modelBuilder.Entity("Accounts.Models.LibrarySubType", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<string>("Code")
+                        .IsRequired()
+                        .HasMaxLength(30)
+                        .HasColumnType("nvarchar(30)");
+
+                    b.Property<DateTime>("CreatedOnUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("Description")
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)");
+
+                    b.Property<int>("DisplayOrder")
+                        .HasColumnType("int");
+
+                    b.Property<bool>("IsActive")
+                        .HasColumnType("bit");
+
+                    b.Property<int>("LibraryTypeId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(120)
+                        .HasColumnType("nvarchar(120)");
+
+                    b.Property<int>("TenantId")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime?>("UpdatedOnUtc")
+                        .HasColumnType("datetime2");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("LibraryTypeId");
+
+                    b.HasIndex("TenantId", "IsActive", "DisplayOrder");
+
+                    b.HasIndex("TenantId", "LibraryTypeId", "Code")
+                        .IsUnique();
+
+                    b.HasIndex("TenantId", "LibraryTypeId", "Name")
+                        .IsUnique();
+
+                    b.ToTable("LibrarySubTypes");
+                });
+
+            modelBuilder.Entity("Accounts.Models.LibraryTemplate", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<long>("Id"));
+
+                    b.Property<string>("Content")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("CreatedByUserId")
+                        .HasMaxLength(450)
+                        .HasColumnType("nvarchar(450)");
+
+                    b.Property<DateTime>("CreatedOnUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("Description")
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)");
+
+                    b.Property<bool>("IsActive")
+                        .HasColumnType("bit");
+
+                    b.Property<int>("LibraryTypeId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<int>("TenantId")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime?>("UpdatedOnUtc")
+                        .HasColumnType("datetime2");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("LibraryTypeId");
+
+                    b.HasIndex("TenantId", "Name");
+
+                    b.HasIndex("TenantId", "LibraryTypeId", "IsActive", "CreatedOnUtc");
+
+                    b.ToTable("LibraryTemplates");
+                });
+
+            modelBuilder.Entity("Accounts.Models.LibraryType", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<string>("Code")
+                        .IsRequired()
+                        .HasMaxLength(30)
+                        .HasColumnType("nvarchar(30)");
+
+                    b.Property<DateTime>("CreatedOnUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("Description")
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)");
+
+                    b.Property<int>("DisplayOrder")
+                        .HasColumnType("int");
+
+                    b.Property<bool>("IsActive")
+                        .HasColumnType("bit");
+
+                    b.Property<bool>("IsHardCopyRequired")
+                        .HasColumnType("bit");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(120)
+                        .HasColumnType("nvarchar(120)");
+
+                    b.Property<int>("TenantId")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime?>("UpdatedOnUtc")
+                        .HasColumnType("datetime2");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TenantId", "Code")
+                        .IsUnique();
+
+                    b.HasIndex("TenantId", "Name")
+                        .IsUnique();
+
+                    b.HasIndex("TenantId", "IsActive", "DisplayOrder");
+
+                    b.ToTable("LibraryTypes");
                 });
 
             modelBuilder.Entity("Accounts.Models.Menu", b =>
@@ -4876,6 +5544,26 @@ namespace Accounts.Migrations
                     b.Navigation("Staff");
                 });
 
+            modelBuilder.Entity("Accounts.Models.AttendanceDailyFinalization", b =>
+                {
+                    b.HasOne("Accounts.Models.AttendanceRecord", null)
+                        .WithMany()
+                        .HasForeignKey("AttendanceRecordId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
+                    b.HasOne("Accounts.Models.Person", null)
+                        .WithMany()
+                        .HasForeignKey("PersonId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("Accounts.Models.StaffVacancy", null)
+                        .WithMany()
+                        .HasForeignKey("StaffId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
             modelBuilder.Entity("Accounts.Models.AttendanceDeductionRequest", b =>
                 {
                     b.HasOne("Accounts.Models.Tenant", null)
@@ -5216,6 +5904,15 @@ namespace Accounts.Migrations
                         .IsRequired();
                 });
 
+            modelBuilder.Entity("Accounts.Models.ChatRuleSetting", b =>
+                {
+                    b.HasOne("Accounts.Models.Tenant", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
             modelBuilder.Entity("Accounts.Models.ChatWorkspace", b =>
                 {
                     b.HasOne("Accounts.Models.OrganizationTree", null)
@@ -5290,6 +5987,95 @@ namespace Accounts.Migrations
                     b.Navigation("HolidayType");
 
                     b.Navigation("Staff");
+                });
+
+            modelBuilder.Entity("Accounts.Models.GeneratedInvoice", b =>
+                {
+                    b.HasOne("Accounts.Models.Tenant", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("Accounts.Models.GeneratedInvoiceLine", b =>
+                {
+                    b.HasOne("Accounts.Models.GeneratedInvoice", "Invoice")
+                        .WithMany("Lines")
+                        .HasForeignKey("InvoiceId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Invoice");
+                });
+
+            modelBuilder.Entity("Accounts.Models.LibraryCategory", b =>
+                {
+                    b.HasOne("Accounts.Models.Tenant", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("Accounts.Models.LibraryDocument", b =>
+                {
+                    b.HasOne("Accounts.Models.LibraryType", "LibraryType")
+                        .WithMany("Documents")
+                        .HasForeignKey("LibraryTypeId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("Accounts.Models.Tenant", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("LibraryType");
+                });
+
+            modelBuilder.Entity("Accounts.Models.LibrarySubType", b =>
+                {
+                    b.HasOne("Accounts.Models.LibraryType", "LibraryType")
+                        .WithMany("SubTypes")
+                        .HasForeignKey("LibraryTypeId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("Accounts.Models.Tenant", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("LibraryType");
+                });
+
+            modelBuilder.Entity("Accounts.Models.LibraryTemplate", b =>
+                {
+                    b.HasOne("Accounts.Models.LibraryType", "LibraryType")
+                        .WithMany("Templates")
+                        .HasForeignKey("LibraryTypeId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("Accounts.Models.Tenant", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("LibraryType");
+                });
+
+            modelBuilder.Entity("Accounts.Models.LibraryType", b =>
+                {
+                    b.HasOne("Accounts.Models.Tenant", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
                 });
 
             modelBuilder.Entity("Accounts.Models.Menu", b =>
@@ -5852,6 +6638,20 @@ namespace Accounts.Migrations
                     b.Navigation("RolePermissions");
 
                     b.Navigation("UserPermissionOverrides");
+                });
+
+            modelBuilder.Entity("Accounts.Models.GeneratedInvoice", b =>
+                {
+                    b.Navigation("Lines");
+                });
+
+            modelBuilder.Entity("Accounts.Models.LibraryType", b =>
+                {
+                    b.Navigation("Documents");
+
+                    b.Navigation("SubTypes");
+
+                    b.Navigation("Templates");
                 });
 
             modelBuilder.Entity("Accounts.Models.Menu", b =>

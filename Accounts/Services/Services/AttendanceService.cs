@@ -20,7 +20,12 @@ public sealed class AttendanceService : IAttendanceService
     private const string WorkingDayCode = "WORKING_DAY";
     private const string DayOffCode = "DAY_OFF";
     private readonly ApplicationDbContext _db;
-    public AttendanceService(ApplicationDbContext db) => _db = db;
+    private readonly AttendanceFinalizationService _finalization;
+    public AttendanceService(ApplicationDbContext db, AttendanceFinalizationService finalization)
+    {
+        _db = db;
+        _finalization = finalization;
+    }
 
     public async Task<MyAttendanceTodayDto> GetTodayAsync(string identityUserId, CancellationToken cancellationToken = default)
     {
@@ -499,7 +504,9 @@ public sealed class AttendanceService : IAttendanceService
             identityUserId, organizationWide, staffId, cancellationToken);
         var requestedTiming = await ValidateTimingScheduleAsync(
             employee, dto.HolidayTypeId, dto.TimeFrom, dto.TimeTo, dto.IsOn, cancellationToken);
-        var timing = await ApplyRequiredWeekendRuleAsync(holidayDate, requestedTiming, cancellationToken);
+        // An explicit Timing Chart entry is authoritative on every calendar day.
+        // Saturday/Sunday defaults are applied only while no schedule row exists.
+        var timing = requestedTiming;
         EmployeeTimingSchedule? savedSchedule = null;
 
         // SQL Server retry-on-failure requires every user transaction to run inside
@@ -544,6 +551,12 @@ public sealed class AttendanceService : IAttendanceService
             await transaction.CommitAsync(cancellationToken);
             savedSchedule = schedule;
         });
+
+        await _finalization.RefreshPeriodAsync(
+            employee.TenantId,
+            holidayDate.Year,
+            holidayDate.Month,
+            cancellationToken);
 
         var holidayTypes = await GetTimingHolidayTypesAsync(cancellationToken);
         return MapTimingChartSchedule(
@@ -600,7 +613,6 @@ public sealed class AttendanceService : IAttendanceService
 
             foreach (var date in dates)
             {
-                var timing = await ApplyRequiredWeekendRuleAsync(date, requestedTiming, cancellationToken);
                 if (!existing.TryGetValue(date, out var schedule))
                 {
                     schedule = new EmployeeTimingSchedule
@@ -616,11 +628,11 @@ public sealed class AttendanceService : IAttendanceService
                     _db.EmployeeTimingSchedules.Add(schedule);
                 }
 
-                schedule.HolidayTypeId = timing.HolidayTypeId;
-                schedule.TimeFrom = timing.TimeFrom;
-                schedule.TimeTo = timing.TimeTo;
-                schedule.IsOn = timing.IsOn;
-                schedule.WorkingMinutes = timing.WorkingMinutes;
+                schedule.HolidayTypeId = requestedTiming.HolidayTypeId;
+                schedule.TimeFrom = requestedTiming.TimeFrom;
+                schedule.TimeTo = requestedTiming.TimeTo;
+                schedule.IsOn = requestedTiming.IsOn;
+                schedule.WorkingMinutes = requestedTiming.WorkingMinutes;
                 schedule.ModifiedByUserId = identityUserId;
                 schedule.ModifiedDate = now;
             }
@@ -629,6 +641,15 @@ public sealed class AttendanceService : IAttendanceService
             await EvaluateStatusesAsync(employee.TenantId, dto.DateFrom, dto.DateTo, cancellationToken);
             await transaction.CommitAsync(cancellationToken);
         });
+
+        foreach (var period in dates.Select(date => (date.Year, date.Month)).Distinct())
+        {
+            await _finalization.RefreshPeriodAsync(
+                employee.TenantId,
+                period.Year,
+                period.Month,
+                cancellationToken);
+        }
 
         return new TimingChartScheduleRangeResultDto
         {
@@ -653,7 +674,10 @@ public sealed class AttendanceService : IAttendanceService
             identityUserId, organizationWide, selfOnly: false, dateFrom, dateTo, cancellationToken);
 
         if (includeAllAttendanceTypes)
+        {
+            await EnrichAttendancePayDetailsAsync(report, callerPerson.TenantId, cancellationToken);
             return report;
+        }
 
         var checkInOutTypeId = await _db.AttendanceTypes.AsNoTracking()
             .Where(type =>
@@ -697,13 +721,15 @@ public sealed class AttendanceService : IAttendanceService
                               row.AttendanceType.Equals("Check In / Out", StringComparison.OrdinalIgnoreCase))
                 .ToList();
 
-        return new DailyAttendanceReportDto
+        var filteredReport = new DailyAttendanceReportDto
         {
             DateFrom = report.DateFrom,
             DateTo = report.DateTo,
             Rows = rows,
             Summary = BuildDailyAttendanceSummary(rows)
         };
+        await EnrichAttendancePayDetailsAsync(filteredReport, callerPerson.TenantId, cancellationToken);
+        return filteredReport;
     }
 
     public async Task<DailyAttendanceReportDto> GetRemoteAttendanceReportAsync(
@@ -841,16 +867,320 @@ public sealed class AttendanceService : IAttendanceService
         string identityUserId, bool organizationWide, DateOnly dateFrom, DateOnly dateTo,
         CancellationToken cancellationToken = default)
     {
+        var (callerPerson, _) = await ResolvePersonAsync(identityUserId, cancellationToken);
         var canViewHistory = organizationWide ||
             await HasAttendanceHistoryAccessAsync(identityUserId, "/attendance/staff", "OWN_HISTORY", cancellationToken);
         EnsureAllowedAttendancePeriod(canViewHistory, dateFrom, dateTo);
-        return await GetAttendanceReportAsync(
+        var report = await GetAttendanceReportAsync(
             identityUserId,
             organizationWide,
             selfOnly: true,
             dateFrom,
             dateTo,
             cancellationToken);
+        await EnrichAttendancePayDetailsAsync(report, callerPerson.TenantId, cancellationToken);
+        return report;
+    }
+
+    private async Task EnrichAttendancePayDetailsAsync(
+        DailyAttendanceReportDto report,
+        int tenantId,
+        CancellationToken cancellationToken)
+    {
+        foreach (var row in report.Rows)
+            row.StatusChange = row.Comments;
+
+        foreach (var periodRows in report.Rows.GroupBy(row => (row.Date.Year, row.Date.Month)))
+        {
+            var year = periodRows.Key.Year;
+            var month = periodRows.Key.Month;
+            var personIds = periodRows.Select(row => row.PersonId).Distinct().ToArray();
+            if (personIds.Length == 0) continue;
+
+            await _finalization.RefreshPeriodAsync(tenantId, year, month, cancellationToken);
+
+            var monthStart = new DateOnly(year, month, 1);
+            var monthEnd = monthStart.AddMonths(1).AddDays(-1);
+            var finalizations = await _db.AttendanceDailyFinalizations
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .Where(row =>
+                    row.TenantId == tenantId &&
+                    personIds.Contains(row.PersonId) &&
+                    row.AttendanceDate >= monthStart &&
+                    row.AttendanceDate <= monthEnd)
+                .OrderBy(row => row.AttendanceDate)
+                .ThenBy(row => row.Id)
+                .ToListAsync(cancellationToken);
+
+            var rateRows = await _db.AttendanceDeductionReportRows
+                .FromSqlRaw(
+                    "EXEC dbo.usp_Attendance_DeductionReport @TenantId, @Year, @Month, @VisiblePersonIds",
+                    new SqlParameter("@TenantId", tenantId),
+                    new SqlParameter("@Year", year),
+                    new SqlParameter("@Month", month),
+                    new SqlParameter("@VisiblePersonIds", JsonSerializer.Serialize(personIds)))
+                .AsNoTracking()
+                .ToListAsync(cancellationToken);
+            var ratesByPerson = rateRows
+                .GroupBy(row => row.PersonId)
+                .ToDictionary(group => group.Key, group => group.First());
+            var reportRowsByDay = periodRows.ToDictionary(row => (row.PersonId, row.Date));
+
+            foreach (var reportRowsForPerson in periodRows.GroupBy(row => row.PersonId))
+            {
+                if (!ratesByPerson.TryGetValue(reportRowsForPerson.Key, out var rate)) continue;
+                foreach (var reportRow in reportRowsForPerson)
+                {
+                    reportRow.PerDay = rate.PerDay;
+                    reportRow.PerHour = rate.PerHour;
+                }
+            }
+
+            foreach (var personFinalizations in finalizations.GroupBy(row => row.PersonId))
+            {
+                if (!ratesByPerson.TryGetValue(personFinalizations.Key, out var rate)) continue;
+
+                var ordered = personFinalizations
+                    .OrderBy(row => row.AttendanceDate)
+                    .ThenBy(row => row.Id)
+                    .ToList();
+                var rawShortMinutes = ordered
+                    .Where(row => row.IsFinalized)
+                    .Sum(row => Math.Max(0, row.ShortMinutes));
+                var remainingAbsentWaiverMinutes = Math.Max(0, rawShortMinutes - rate.NetShortMinutes);
+                var cumulativeDeductibleMinutes = 0;
+
+                foreach (var finalization in ordered)
+                {
+                    var deductibleMinutes = 0;
+                    if (finalization.IsFinalized)
+                    {
+                        deductibleMinutes = Math.Max(0, finalization.ShortMinutes);
+                        if (finalization.IsFullDayAbsent && remainingAbsentWaiverMinutes > 0)
+                        {
+                            var waivedMinutes = Math.Min(deductibleMinutes, remainingAbsentWaiverMinutes);
+                            deductibleMinutes -= waivedMinutes;
+                            remainingAbsentWaiverMinutes -= waivedMinutes;
+                        }
+                        cumulativeDeductibleMinutes += deductibleMinutes;
+                    }
+
+                    if (!reportRowsByDay.TryGetValue(
+                            (finalization.PersonId, finalization.AttendanceDate),
+                            out var reportRow))
+                        continue;
+
+                    reportRow.DeductionAmount = finalization.IsFinalized
+                        ? CalculateDeductionAmount(deductibleMinutes, rate.PerHour)
+                        : null;
+                    reportRow.TotalDeductionAmount = CalculateDeductionAmount(
+                        cumulativeDeductibleMinutes,
+                        rate.PerHour);
+                }
+            }
+        }
+    }
+
+    private static decimal CalculateDeductionAmount(int minutes, decimal perHour) =>
+        decimal.Round(Math.Max(0, minutes) / 60m * Math.Max(0m, perHour), 2, MidpointRounding.AwayFromZero);
+
+    public async Task<DailyAttendanceReportDto> GetSupervisorAttendanceReportAsync(
+        string identityUserId,
+        DateOnly attendanceDate,
+        CancellationToken cancellationToken = default)
+    {
+        var today = DateOnly.FromDateTime(PakistanClock.Now());
+        if (attendanceDate == default || attendanceDate > today)
+            throw new ArgumentOutOfRangeException(
+                nameof(attendanceDate),
+                "Select today or an earlier attendance date.");
+
+        await AttendanceRecordSchema.EnsureCameraColumnsAsync(_db, cancellationToken);
+        var (supervisor, assignments) = await ResolveSupervisorAssignmentsAsync(
+            identityUserId,
+            cancellationToken);
+
+        if (assignments.Count == 0)
+        {
+            return new DailyAttendanceReportDto
+            {
+                DateFrom = attendanceDate,
+                DateTo = attendanceDate
+            };
+        }
+
+        await EvaluateStatusesAsync(
+            supervisor.TenantId,
+            attendanceDate,
+            attendanceDate,
+            cancellationToken);
+
+        var people = assignments
+            .ToDictionary(item => item.PersonId, item => item.FullName);
+        people[supervisor.PersonId] = supervisor.FullName;
+
+        var report = await BuildDailyReportFromProcedureAsync(
+            supervisor.TenantId,
+            supervisor.PersonId,
+            assignments.Select(item => item.PersonId).ToHashSet(),
+            people,
+            attendanceDate,
+            attendanceDate,
+            cancellationToken);
+
+        var staffIdByPersonId = assignments.ToDictionary(
+            item => item.PersonId,
+            item => item.StaffId);
+        var assignmentStaffIds = staffIdByPersonId.Values.ToArray();
+        var schedules = await _db.EmployeeTimingSchedules.AsNoTracking()
+            .Where(item =>
+                assignmentStaffIds.Contains(item.StaffId) &&
+                item.ScheduleDate == attendanceDate)
+            .ToDictionaryAsync(item => item.StaffId, cancellationToken);
+        foreach (var row in report.Rows)
+        {
+            var staffId = staffIdByPersonId[row.PersonId];
+            row.IsWorkingDay = SupervisorAttendanceTime.IsWorkingDay(
+                attendanceDate,
+                schedules.TryGetValue(staffId, out var schedule) ? schedule.IsOn : null);
+            if (!row.IsWorkingDay)
+                row.RequiredMinutes = 0;
+        }
+
+        report.Summary = BuildDailyAttendanceSummary(report.Rows);
+        return report;
+    }
+
+    public async Task<SupervisorAttendanceSaveResultDto> SaveSupervisorAttendanceAsync(
+        string identityUserId,
+        SaveSupervisorAttendanceDto dto,
+        CancellationToken cancellationToken = default)
+    {
+        var today = DateOnly.FromDateTime(PakistanClock.Now());
+        if (dto.AttendanceDate == default || dto.AttendanceDate > today)
+            throw new ArgumentOutOfRangeException(
+                nameof(dto.AttendanceDate),
+                "Supervisor attendance cannot be entered for a future date.");
+
+        var entries = dto.Entries?.ToList() ?? [];
+        if (entries.Count == 0)
+            throw new ArgumentException("Enter at least one attendance row.");
+        if (entries.Count > 250)
+            throw new ArgumentException("A maximum of 250 attendance rows can be saved at once.");
+        if (entries.Any(item => item.PersonId == Guid.Empty))
+            throw new ArgumentException("Every attendance row must identify an employee.");
+        if (entries.GroupBy(item => item.PersonId).Any(group => group.Count() > 1))
+            throw new ArgumentException("The same employee cannot appear more than once.");
+
+        var parsedTimes = entries.ToDictionary(
+            item => item.PersonId,
+            item =>
+            {
+                var parsed = SupervisorAttendanceTime.Parse(
+                    dto.AttendanceDate,
+                    item.CheckInTime,
+                    item.CheckOutTime);
+                if (!parsed.CheckIn.HasValue && !parsed.CheckOut.HasValue)
+                    throw new ArgumentException(
+                        "Enter a check-in or check-out time for every changed row.");
+                return parsed;
+            });
+
+        var executionStrategy = _db.Database.CreateExecutionStrategy();
+        return await executionStrategy.ExecuteAsync(async () =>
+        {
+            await using var transaction = await _db.Database.BeginTransactionAsync(cancellationToken);
+            var (supervisor, assignments) = await ResolveSupervisorAssignmentsAsync(
+                identityUserId,
+                cancellationToken);
+            var assignmentByPersonId = assignments.ToDictionary(item => item.PersonId);
+
+            var unauthorized = entries
+                .Where(item => !assignmentByPersonId.ContainsKey(item.PersonId))
+                .Select(item => item.PersonId)
+                .ToList();
+            if (unauthorized.Count > 0)
+                throw new UnauthorizedAccessException(
+                    "You can mark attendance only for active employees who directly report to you and are mapped to By Supervisor.");
+
+            var staffIds = assignments
+                .Where(item => parsedTimes.ContainsKey(item.PersonId))
+                .Select(item => item.StaffId)
+                .ToArray();
+            var schedules = await _db.EmployeeTimingSchedules.AsNoTracking()
+                .Where(item =>
+                    staffIds.Contains(item.StaffId) &&
+                    item.ScheduleDate == dto.AttendanceDate)
+                .ToDictionaryAsync(item => item.StaffId, cancellationToken);
+
+            foreach (var entry in entries)
+            {
+                var assignment = assignmentByPersonId[entry.PersonId];
+                var isWorkingDay = SupervisorAttendanceTime.IsWorkingDay(
+                    dto.AttendanceDate,
+                    schedules.TryGetValue(assignment.StaffId, out var schedule) ? schedule.IsOn : null);
+                if (!isWorkingDay)
+                    throw new InvalidOperationException(
+                        $"{assignment.FullName} is scheduled off on {dto.AttendanceDate:yyyy-MM-dd}. Turn the day on in Timing Chart before entering attendance.");
+            }
+
+            var targetPersonIds = entries.Select(item => item.PersonId).ToArray();
+            var records = await _db.AttendanceRecords
+                .Where(item =>
+                    targetPersonIds.Contains(item.PersonId) &&
+                    item.AttendanceDate == dto.AttendanceDate)
+                .ToDictionaryAsync(item => item.PersonId, cancellationToken);
+            var onsiteWorkModeId = await _db.AttendanceWorkModes.AsNoTracking()
+                .Where(item => item.IsActive && item.Code == "ONSITE")
+                .Select(item => (int?)item.Id)
+                .FirstOrDefaultAsync(cancellationToken);
+            var now = PakistanClock.Now();
+
+            foreach (var entry in entries)
+            {
+                var assignment = assignmentByPersonId[entry.PersonId];
+                if (!records.TryGetValue(entry.PersonId, out var record))
+                {
+                    record = new AttendanceRecord
+                    {
+                        TenantId = supervisor.TenantId,
+                        PersonId = entry.PersonId,
+                        AttendanceDate = dto.AttendanceDate,
+                        CreatedDate = now
+                    };
+                    _db.AttendanceRecords.Add(record);
+                }
+
+                var times = parsedTimes[entry.PersonId];
+                record.AttendanceEntryTypeId = assignment.AttendanceEntryTypeId;
+                record.AttendanceWorkModeId ??= onsiteWorkModeId;
+                record.CheckInUtc = times.CheckIn;
+                record.CheckOutUtc = times.CheckOut;
+                record.TotalBreakMinutes = 0;
+                record.BreakStartedUtc = null;
+                record.SupervisorRecordedByUserId = identityUserId;
+                record.SupervisorRecordedDate = now;
+                record.SupervisorRemarks = string.IsNullOrWhiteSpace(entry.Remarks)
+                    ? null
+                    : entry.Remarks.Trim()[..Math.Min(entry.Remarks.Trim().Length, 1000)];
+                record.ModifiedDate = now;
+            }
+
+            await _db.SaveChangesAsync(cancellationToken);
+            await EvaluateStatusesAsync(
+                supervisor.TenantId,
+                dto.AttendanceDate,
+                dto.AttendanceDate,
+                cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
+
+            return new SupervisorAttendanceSaveResultDto
+            {
+                AttendanceDate = dto.AttendanceDate,
+                SavedEntries = entries.Count
+            };
+        });
     }
 
     public async Task<bool> CanViewHistoricalAttendanceAsync(
@@ -916,12 +1246,16 @@ public sealed class AttendanceService : IAttendanceService
         if (year is < 2000 or > 2100 || month is < 1 or > 12)
             throw new ArgumentOutOfRangeException(nameof(month), "A valid deduction month is required.");
 
-        await AttendanceRecordSchema.EnsureDeductionReportProcedureAsync(_db, cancellationToken);
-
         var visibility = await ResolveAttendanceVisibilityAsync(
             identityUserId,
             organizationWide,
             selfOnly: !organizationWide,
+            cancellationToken);
+
+        await _finalization.RefreshPeriodAsync(
+            visibility.TenantId,
+            year,
+            month,
             cancellationToken);
 
         try
@@ -965,7 +1299,10 @@ public sealed class AttendanceService : IAttendanceService
                     AdjustmentAmount = row.AdjustmentAmount,
                     IsAdjustmentApproved = row.IsAdjustmentApproved,
                     AdjustmentRemarks = row.AdjustmentRemarks,
-                    FinalSalary = row.FinalSalary
+                    FinalSalary = row.FinalSalary,
+                    PendingReviewDays = row.PendingReviewDays,
+                    OpenDays = row.OpenDays,
+                    LastFinalizedDate = row.LastFinalizedDate
                 }).ToList()
             };
         }
@@ -1435,13 +1772,16 @@ public sealed class AttendanceService : IAttendanceService
                 IsCurrentUser = source.PersonId == callerPersonId,
                 BreakMinutes = source.TotalBreakMinutes ?? 0,
                 RequiredMinutes = required,
+                IsWorkingDay = !isScheduledOff,
+                ShiftStartTime = source.ShiftStartTime,
+                ShiftEndTime = source.ShiftEndTime,
                 Present = !isNotRequired && string.Equals(displayName, "Present", StringComparison.OrdinalIgnoreCase),
                 Absent = !isNotRequired && (string.Equals(displayName, "Absent", StringComparison.OrdinalIgnoreCase) || source.AttendanceStatusId == policy.PlatformAbsentStatusId),
                 OnLeave = !isNotRequired && (string.Equals(displayName, "Leave", StringComparison.OrdinalIgnoreCase) || string.Equals(displayName, "Short Leave", StringComparison.OrdinalIgnoreCase)),
                 Remote = string.Equals(source.AttendanceWorkMode?.Trim(), "Remote", StringComparison.OrdinalIgnoreCase),
                 MissingCheckIn = missingCheckIn,
                 MissingCheckOut = missingCheckOut,
-                Comments = verification?.CameraRemarks
+                Comments = verification?.SupervisorRemarks ?? verification?.CameraRemarks
             });
         }
 
@@ -1534,13 +1874,6 @@ public sealed class AttendanceService : IAttendanceService
         EffectiveAttendanceRule? attendanceRule,
         CancellationToken cancellationToken)
     {
-        // Weekend policy is organization-wide and cannot be overridden by a
-        // stale or manually inserted schedule row.
-        if (date.DayOfWeek == DayOfWeek.Saturday)
-            return new EffectiveTiming(false, DayOffCode, null, null);
-        if (date.DayOfWeek == DayOfWeek.Sunday)
-            return new EffectiveTiming(false, HolidayCode, null, null);
-
         var schedule = await _db.EmployeeTimingSchedules.AsNoTracking()
             .Include(item => item.HolidayType)
             .FirstOrDefaultAsync(item =>
@@ -1552,6 +1885,14 @@ public sealed class AttendanceService : IAttendanceService
                 schedule.HolidayType.ValueCode,
                 schedule.TimeFrom ?? attendanceRule?.TimeFrom ?? person.ShiftStartTime,
                 schedule.TimeTo ?? attendanceRule?.TimeTo ?? person.ShiftEndTime);
+
+        // Weekends remain off by default. An explicit employee Timing Chart
+        // schedule may turn the day on, which is required for manual supervisor
+        // attendance and the shared attendance/deduction calculation pipeline.
+        if (date.DayOfWeek == DayOfWeek.Saturday)
+            return new EffectiveTiming(false, DayOffCode, null, null);
+        if (date.DayOfWeek == DayOfWeek.Sunday)
+            return new EffectiveTiming(false, HolidayCode, null, null);
 
         return new EffectiveTiming(
             true,
@@ -1746,24 +2087,6 @@ public sealed class AttendanceService : IAttendanceService
         return new ValidatedTimingSchedule(effectiveHolidayTypeId, holidayTypeCode, timeFrom, timeTo, isOn, workingMinutes);
     }
 
-    private async Task<ValidatedTimingSchedule> ApplyRequiredWeekendRuleAsync(
-        DateOnly date,
-        ValidatedTimingSchedule requested,
-        CancellationToken cancellationToken) => date.DayOfWeek switch
-    {
-        DayOfWeek.Saturday => await RequiredOffScheduleAsync(DayOffCode, cancellationToken),
-        DayOfWeek.Sunday => await RequiredOffScheduleAsync(HolidayCode, cancellationToken),
-        _ => requested
-    };
-
-    private async Task<ValidatedTimingSchedule> RequiredOffScheduleAsync(
-        string holidayTypeCode,
-        CancellationToken cancellationToken)
-    {
-        var holidayType = await GetTimingHolidayTypeByCodeAsync(holidayTypeCode, cancellationToken);
-        return new ValidatedTimingSchedule(holidayType.LookupValueId, holidayType.ValueCode, null, null, false, 0);
-    }
-
     private async Task<(int LookupValueId, string ValueCode, string DisplayText)> GetTimingHolidayTypeByCodeAsync(
         string holidayTypeCode,
         CancellationToken cancellationToken)
@@ -1846,24 +2169,18 @@ public sealed class AttendanceService : IAttendanceService
         DateOnly date,
         IReadOnlyDictionary<string, TimingChartHolidayTypeDto> holidayTypesByCode)
     {
-        var requiredWeekendType = date.DayOfWeek switch
+        var defaultHolidayType = date.DayOfWeek switch
         {
             DayOfWeek.Saturday => DayOffCode,
             DayOfWeek.Sunday => HolidayCode,
-            _ => null
+            _ => WorkingDayCode
         };
-        var isOn = requiredWeekendType == null && (schedule?.IsOn ?? true);
-        var holidayType = requiredWeekendType ?? schedule?.HolidayType?.ValueCode ?? WorkingDayCode;
+        var isOn = SupervisorAttendanceTime.IsWorkingDay(date, schedule?.IsOn);
+        var holidayType = schedule?.HolidayType?.ValueCode ?? defaultHolidayType;
         holidayTypesByCode.TryGetValue(holidayType, out var holidayTypeInfo);
-        var holidayTypeId = requiredWeekendType == null
-            ? schedule?.HolidayTypeId ?? holidayTypeInfo?.Id ?? 0
-            : holidayTypeInfo?.Id ?? 0;
-        var timeFrom = requiredWeekendType == null
-            ? schedule != null ? schedule.TimeFrom : employee.DefaultTimeFrom
-            : null;
-        var timeTo = requiredWeekendType == null
-            ? schedule != null ? schedule.TimeTo : employee.DefaultTimeTo
-            : null;
+        var holidayTypeId = schedule?.HolidayTypeId ?? holidayTypeInfo?.Id ?? 0;
+        var timeFrom = isOn ? schedule?.TimeFrom ?? employee.DefaultTimeFrom : null;
+        var timeTo = isOn ? schedule?.TimeTo ?? employee.DefaultTimeTo : null;
         var workingMinutes = isOn && timeFrom != null && timeTo != null
             ? schedule?.WorkingMinutes > 0 ? schedule.WorkingMinutes : ShiftMinutes(timeFrom, timeTo)
             : 0;
@@ -2066,6 +2383,52 @@ public sealed class AttendanceService : IAttendanceService
         public IReadOnlyList<AttendanceVisibilityPerson> People { get; init; } = [];
         public HashSet<Guid> VisiblePersonIds { get; init; } = [];
     }
+
+    private async Task<(Person Supervisor, List<SupervisorAssignment> Assignments)>
+        ResolveSupervisorAssignmentsAsync(
+            string identityUserId,
+            CancellationToken cancellationToken)
+    {
+        var supervisor = await _db.Persons.AsNoTracking()
+            .SingleOrDefaultAsync(
+                person => person.IdentityUserId == identityUserId && person.IsActive,
+                cancellationToken)
+            ?? throw new KeyNotFoundException(
+                "No active supervisor profile is linked to this account.");
+
+        var assignments = await (
+            from person in _db.Persons.AsNoTracking()
+            join staff in _db.StaffVacancies.AsNoTracking()
+                on (Guid?)person.PersonId equals staff.PersonId
+            join mapRule in _db.AttendanceMapRules.AsNoTracking()
+                on staff.StaffId equals mapRule.StaffId
+            join entryType in _db.AttendanceTypes.AsNoTracking()
+                on mapRule.AttendanceEntryTypeId equals entryType.Id
+            where
+                person.IsActive &&
+                person.TenantId == supervisor.TenantId &&
+                person.ReportsToPersonId == supervisor.PersonId &&
+                staff.TenantId == supervisor.TenantId &&
+                mapRule.TenantId == supervisor.TenantId &&
+                entryType.TenantId == supervisor.TenantId &&
+                entryType.IsActive &&
+                entryType.Code == "BY_SUPERVISOR"
+            orderby person.FullName
+            select new SupervisorAssignment(
+                person.PersonId,
+                staff.StaffId,
+                person.FullName,
+                mapRule.AttendanceEntryTypeId))
+            .ToListAsync(cancellationToken);
+
+        return (supervisor, assignments);
+    }
+
+    private sealed record SupervisorAssignment(
+        Guid PersonId,
+        Guid StaffId,
+        string FullName,
+        int AttendanceEntryTypeId);
 
     private static int AttendanceRoleRank(string? title)
     {

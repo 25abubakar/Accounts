@@ -79,6 +79,7 @@ public sealed class ChatMessage : ITenantEntity
     public DateTime CreatedOnUtc { get; set; } = DateTime.UtcNow;
     public DateTime? EditedOnUtc { get; set; }
     public DateTime? DeletedOnUtc { get; set; }
+    public DateTime? DeliveryTrackingClearedOnUtc { get; set; }
 }
 
 [Table("ChatMessageDeletions")]
@@ -115,7 +116,29 @@ public sealed class ChatAttachment : ITenantEntity
     [MaxLength(100)] public string ContentType { get; set; } = "application/octet-stream";
     public long FileSize { get; set; }
     [MaxLength(500)] public string FilePath { get; set; } = string.Empty;
+    public bool IsViewOnce { get; set; }
+    public DateTime? ViewOnceOpenedOnUtc { get; set; }
+    public Guid? ViewOnceOpenedByPersonId { get; set; }
+    public DateTime? ViewOnceConsumedOnUtc { get; set; }
+    public DateTime? ViewOnceExpiredOnUtc { get; set; }
     public DateTime CreatedOnUtc { get; set; } = DateTime.UtcNow;
+}
+
+[Table("ChatRuleSettings")]
+public sealed class ChatRuleSetting : ITenantEntity
+{
+    [Key]
+    public int Id { get; set; }
+    public int TenantId { get; set; }
+    public bool AllowMessageEditing { get; set; } = true;
+    public int EditWindowMinutes { get; set; } = 15;
+    public bool AllowDeleteForEveryone { get; set; } = true;
+    public int DeleteForEveryoneWindowMinutes { get; set; } = 60 * 60;
+    public bool AllowViewOnceMedia { get; set; } = true;
+    public int ViewOnceUnopenedExpiryHours { get; set; } = 14 * 24;
+    [MaxLength(450)] public string? UpdatedByUserId { get; set; }
+    public DateTime CreatedOnUtc { get; set; } = DateTime.UtcNow;
+    public DateTime UpdatedOnUtc { get; set; } = DateTime.UtcNow;
 }
 
 [Table("ChatBlocks")]

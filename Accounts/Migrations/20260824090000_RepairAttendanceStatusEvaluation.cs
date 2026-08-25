@@ -189,17 +189,17 @@ public sealed class RepairAttendanceStatusEvaluation : Migration
                 WHERE action.Name = N'Attendance'
                 GROUP BY actionStatus.TenantId
             )
-            UPDATE rule
-               SET PlatformLateStatusId = COALESCE(rule.PlatformLateStatusId, mapping.LateStatusId),
-                   PlatformExtremeLateStatusId = COALESCE(rule.PlatformExtremeLateStatusId, mapping.ExtremeLateStatusId),
-                   PlatformEarlyDepartureStatusId = COALESCE(rule.PlatformEarlyDepartureStatusId, mapping.EarlyStatusId),
-                   PlatformExtremeEarlyDepartureStatusId = COALESCE(rule.PlatformExtremeEarlyDepartureStatusId, mapping.ExtremeEarlyStatusId)
-            FROM dbo.AttendanceRuleSettings rule
-            INNER JOIN StatusMappings mapping ON mapping.TenantId = rule.TenantId
-            WHERE rule.PlatformLateStatusId IS NULL
-               OR rule.PlatformExtremeLateStatusId IS NULL
-               OR rule.PlatformEarlyDepartureStatusId IS NULL
-               OR rule.PlatformExtremeEarlyDepartureStatusId IS NULL;
+            UPDATE ruleSetting
+               SET PlatformLateStatusId = COALESCE(ruleSetting.PlatformLateStatusId, mapping.LateStatusId),
+                   PlatformExtremeLateStatusId = COALESCE(ruleSetting.PlatformExtremeLateStatusId, mapping.ExtremeLateStatusId),
+                   PlatformEarlyDepartureStatusId = COALESCE(ruleSetting.PlatformEarlyDepartureStatusId, mapping.EarlyStatusId),
+                   PlatformExtremeEarlyDepartureStatusId = COALESCE(ruleSetting.PlatformExtremeEarlyDepartureStatusId, mapping.ExtremeEarlyStatusId)
+            FROM dbo.AttendanceRuleSettings ruleSetting
+            INNER JOIN StatusMappings mapping ON mapping.TenantId = ruleSetting.TenantId
+            WHERE ruleSetting.PlatformLateStatusId IS NULL
+               OR ruleSetting.PlatformExtremeLateStatusId IS NULL
+               OR ruleSetting.PlatformEarlyDepartureStatusId IS NULL
+               OR ruleSetting.PlatformExtremeEarlyDepartureStatusId IS NULL;
             """);
     }
 

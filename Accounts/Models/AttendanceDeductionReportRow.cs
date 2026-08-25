@@ -26,4 +26,7 @@ public sealed class AttendanceDeductionReportRow
     public bool IsAdjustmentApproved { get; set; }
     public string? AdjustmentRemarks { get; set; }
     public decimal FinalSalary { get; set; }
+    public int PendingReviewDays { get; set; }
+    public int OpenDays { get; set; }
+    public DateOnly? LastFinalizedDate { get; set; }
 }

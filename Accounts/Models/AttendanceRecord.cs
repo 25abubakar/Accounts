@@ -29,6 +29,11 @@ public sealed class AttendanceRecord : ITenantEntity
     public long? ApprovalRequestId { get; set; }
     [MaxLength(1000)]
     public string? CameraRemarks { get; set; }
+    [MaxLength(450)]
+    public string? SupervisorRecordedByUserId { get; set; }
+    public DateTime? SupervisorRecordedDate { get; set; }
+    [MaxLength(1000)]
+    public string? SupervisorRemarks { get; set; }
     public DateTime? BreakStartedUtc { get; set; }
     public int TotalBreakMinutes { get; set; }
     public DateTime CreatedDate { get; set; }

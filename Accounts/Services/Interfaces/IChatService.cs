@@ -48,6 +48,7 @@ public interface IChatService
         string identityUserId,
         long conversationId,
         long? beforeId,
+        long? afterId,
         int take,
         CancellationToken cancellationToken = default);
 
@@ -83,6 +84,7 @@ public interface IChatService
         string fileName,
         string contentType,
         byte[] content,
+        bool viewOnce = false,
         long? replyToMessageId = null,
         CancellationToken cancellationToken = default);
 
@@ -196,5 +198,10 @@ public interface IChatService
     Task<IReadOnlyList<MessageDeliveryInfoDto>> GetMessageDeliveryInfoAsync(
         string identityUserId,
         long messageId,
+        CancellationToken cancellationToken = default);
+
+    Task<(ChatAttachmentContentDto Content, ChatMessageDto Message)> OpenViewOnceAttachmentAsync(
+        string identityUserId,
+        long attachmentId,
         CancellationToken cancellationToken = default);
 }

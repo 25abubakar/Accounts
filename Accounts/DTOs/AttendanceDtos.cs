@@ -244,9 +244,17 @@ public sealed class DailyAttendanceRowDto
     public bool IsCurrentUser { get; set; }
     public int BreakMinutes { get; set; }
     public int RequiredMinutes { get; set; }
+    public bool IsWorkingDay { get; set; }
+    public string? ShiftStartTime { get; set; }
+    public string? ShiftEndTime { get; set; }
     public int CumulativeRequiredMinutes { get; set; }
     public int CumulativeWorkingMinutes { get; set; }
     public int CrDbMinutes { get; set; }
+    public decimal? PerDay { get; set; }
+    public decimal? PerHour { get; set; }
+    public decimal? DeductionAmount { get; set; }
+    public decimal? TotalDeductionAmount { get; set; }
+    public string? StatusChange { get; set; }
     public bool Present { get; set; }
     public bool Absent { get; set; }
     public bool OnLeave { get; set; }
@@ -285,6 +293,27 @@ public sealed class SaveCameraAttendanceDto
     public string? CheckInTime { get; set; }
     public string? CheckOutTime { get; set; }
     public string? Remarks { get; set; }
+}
+
+public sealed class SaveSupervisorAttendanceDto
+{
+    public DateOnly AttendanceDate { get; set; }
+    public IReadOnlyList<SupervisorAttendanceEntryDto> Entries { get; set; } =
+        Array.Empty<SupervisorAttendanceEntryDto>();
+}
+
+public sealed class SupervisorAttendanceEntryDto
+{
+    public Guid PersonId { get; set; }
+    public string? CheckInTime { get; set; }
+    public string? CheckOutTime { get; set; }
+    public string? Remarks { get; set; }
+}
+
+public sealed class SupervisorAttendanceSaveResultDto
+{
+    public DateOnly AttendanceDate { get; set; }
+    public int SavedEntries { get; set; }
 }
 
 public sealed class ReviewCameraAttendanceDto
@@ -346,6 +375,9 @@ public sealed class AttendanceDeductionRowDto
     public bool IsAdjustmentApproved { get; set; }
     public string? AdjustmentRemarks { get; set; }
     public decimal FinalSalary { get; set; }
+    public int PendingReviewDays { get; set; }
+    public int OpenDays { get; set; }
+    public DateOnly? LastFinalizedDate { get; set; }
 }
 
 public sealed class AttendanceDeductionReportDto

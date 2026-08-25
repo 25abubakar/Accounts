@@ -38,6 +38,13 @@ namespace Accounts.Data
         public DbSet<Designation>              Designations             => Set<Designation>();
         public DbSet<Designation>              JobTitles                => Set<Designation>();
         public DbSet<SalaryScale>              SalaryScales             => Set<SalaryScale>();
+        public DbSet<LibraryCategory>          LibraryCategories        => Set<LibraryCategory>();
+        public DbSet<LibraryType>              LibraryTypes             => Set<LibraryType>();
+        public DbSet<LibrarySubType>           LibrarySubTypes          => Set<LibrarySubType>();
+        public DbSet<LibraryDocument>          LibraryDocuments         => Set<LibraryDocument>();
+        public DbSet<LibraryTemplate>          LibraryTemplates         => Set<LibraryTemplate>();
+        public DbSet<GeneratedInvoice>         GeneratedInvoices        => Set<GeneratedInvoice>();
+        public DbSet<GeneratedInvoiceLine>     GeneratedInvoiceLines    => Set<GeneratedInvoiceLine>();
         public DbSet<PlatformTypeCategory>     PlatformTypeCategories   => Set<PlatformTypeCategory>();
         public DbSet<PlatformTypeValue>        PlatformTypeValues       => Set<PlatformTypeValue>();
         public DbSet<ContractType>             ContractTypes            => Set<ContractType>();
@@ -73,6 +80,7 @@ namespace Accounts.Data
         public DbSet<AttendanceRuleSettingReadRow> AttendanceRuleSettingReadRows => Set<AttendanceRuleSettingReadRow>();
         public DbSet<AttendanceDeductionRequest> AttendanceDeductionRequests => Set<AttendanceDeductionRequest>();
         public DbSet<AttendanceMonthlySettlement> AttendanceMonthlySettlements => Set<AttendanceMonthlySettlement>();
+        public DbSet<AttendanceDailyFinalization> AttendanceDailyFinalizations => Set<AttendanceDailyFinalization>();
         public DbSet<AttendanceWorkMode>       AttendanceWorkModes      => Set<AttendanceWorkMode>();
         public DbSet<AttendanceDailyReportRow> AttendanceDailyReportRows => Set<AttendanceDailyReportRow>();
         public DbSet<AttendanceDeductionReportRow> AttendanceDeductionReportRows => Set<AttendanceDeductionReportRow>();
@@ -120,6 +128,8 @@ namespace Accounts.Data
         public DbSet<ChatMessageDeletion> ChatMessageDeletions => Set<ChatMessageDeletion>();
         public DbSet<ChatAttachment> ChatAttachments => Set<ChatAttachment>();
         public DbSet<ChatBlock> ChatBlocks => Set<ChatBlock>();
+        public DbSet<ChatRuleSetting> ChatRuleSettings => Set<ChatRuleSetting>();
+        public DbSet<IdempotencyRecord> IdempotencyRecords => Set<IdempotencyRecord>();
 
         protected override void OnModelCreating(ModelBuilder builder)
         {
@@ -154,6 +164,9 @@ namespace Accounts.Data
                 _tenantService != null && !_tenantService.IsSuperAdmin &&
                 _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
             builder.Entity<ChatBlock>().HasQueryFilter(row =>
+                _tenantService != null && !_tenantService.IsSuperAdmin &&
+                _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
+            builder.Entity<ChatRuleSetting>().HasQueryFilter(row =>
                 _tenantService != null && !_tenantService.IsSuperAdmin &&
                 _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
             builder.Entity<Person>().HasQueryFilter(row =>
@@ -218,6 +231,28 @@ namespace Accounts.Data
             builder.Entity<SalaryScale>().HasQueryFilter(row =>
                 _tenantService != null && !_tenantService.IsSuperAdmin &&
                 _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
+            builder.Entity<LibraryCategory>().HasQueryFilter(row =>
+                _tenantService != null && !_tenantService.IsSuperAdmin &&
+                _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
+            builder.Entity<LibraryType>().HasQueryFilter(row =>
+                _tenantService != null && !_tenantService.IsSuperAdmin &&
+                _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
+            builder.Entity<LibrarySubType>().HasQueryFilter(row =>
+                _tenantService != null && !_tenantService.IsSuperAdmin &&
+                _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
+            builder.Entity<LibraryDocument>().HasQueryFilter(row =>
+                _tenantService != null && !_tenantService.IsSuperAdmin &&
+                _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
+            builder.Entity<LibraryTemplate>().HasQueryFilter(row =>
+                _tenantService != null && !_tenantService.IsSuperAdmin &&
+                _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
+            builder.Entity<GeneratedInvoice>().HasQueryFilter(row =>
+                _tenantService != null && !_tenantService.IsSuperAdmin &&
+                _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
+            builder.Entity<GeneratedInvoiceLine>().HasQueryFilter(row =>
+                _tenantService != null && !_tenantService.IsSuperAdmin &&
+                _tenantService.TenantId != null && row.Invoice != null &&
+                row.Invoice.TenantId == _tenantService.TenantId);
             builder.Entity<PlatformTypeValue>().HasQueryFilter(row =>
                 _tenantService != null && !_tenantService.IsSuperAdmin &&
                 _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
@@ -243,6 +278,9 @@ namespace Accounts.Data
                 _tenantService != null && !_tenantService.IsSuperAdmin &&
                 _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
             builder.Entity<AttendanceMonthlySettlement>().HasQueryFilter(row =>
+                _tenantService != null && !_tenantService.IsSuperAdmin &&
+                _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
+            builder.Entity<AttendanceDailyFinalization>().HasQueryFilter(row =>
                 _tenantService != null && !_tenantService.IsSuperAdmin &&
                 _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
             builder.Entity<ApplicationLoginSession>().HasQueryFilter(row =>
@@ -809,10 +847,7 @@ namespace Accounts.Data
 
             builder.Entity<EmployeeTimingSchedule>(e =>
             {
-                e.ToTable("EmployeeTimingSchedules", table => table.HasCheckConstraint(
-                    "CK_EmployeeTimingSchedules_RequiredWeekend",
-                    "(((DATEDIFF(day,'19000101',[ScheduleDate]) % 7 + 7) % 7) NOT IN (5,6)) OR " +
-                    "(((DATEDIFF(day,'19000101',[ScheduleDate]) % 7 + 7) % 7) IN (5,6) AND [IsOn] = 0 AND [TimeFrom] IS NULL AND [TimeTo] IS NULL AND [WorkingMinutes] = 0)"));
+                e.ToTable("EmployeeTimingSchedules");
                 e.HasKey(x => x.Id);
                 e.Property(x => x.Id).ValueGeneratedOnAdd();
                 e.Property(x => x.TimeFrom).HasMaxLength(5);
@@ -1418,7 +1453,84 @@ namespace Accounts.Data
             builder.Entity<ChatAttachment>(e =>
             {
                 e.HasIndex(x => new { x.MessageId, x.Id });
+                e.HasIndex(x => new { x.TenantId, x.IsViewOnce, x.ViewOnceConsumedOnUtc, x.ViewOnceExpiredOnUtc });
                 e.HasOne<ChatMessage>().WithMany().HasForeignKey(x => x.MessageId).OnDelete(DeleteBehavior.Cascade);
+            });
+
+            builder.Entity<LibraryCategory>(e =>
+            {
+                e.HasIndex(x => new { x.TenantId, x.Code }).IsUnique();
+                e.HasIndex(x => new { x.TenantId, x.Name }).IsUnique();
+                e.HasIndex(x => new { x.TenantId, x.IsActive, x.DisplayOrder });
+                e.HasOne<Tenant>().WithMany().HasForeignKey(x => x.TenantId).OnDelete(DeleteBehavior.Restrict);
+            });
+
+            builder.Entity<LibraryType>(e =>
+            {
+                e.HasIndex(x => new { x.TenantId, x.Code }).IsUnique();
+                e.HasIndex(x => new { x.TenantId, x.Name }).IsUnique();
+                e.HasIndex(x => new { x.TenantId, x.IsActive, x.DisplayOrder });
+                e.HasOne<Tenant>().WithMany().HasForeignKey(x => x.TenantId).OnDelete(DeleteBehavior.Restrict);
+            });
+
+            builder.Entity<LibrarySubType>(e =>
+            {
+                e.HasIndex(x => new { x.TenantId, x.LibraryTypeId, x.Code }).IsUnique();
+                e.HasIndex(x => new { x.TenantId, x.LibraryTypeId, x.Name }).IsUnique();
+                e.HasIndex(x => new { x.TenantId, x.IsActive, x.DisplayOrder });
+                e.HasOne<Tenant>().WithMany().HasForeignKey(x => x.TenantId).OnDelete(DeleteBehavior.Restrict);
+                e.HasOne(x => x.LibraryType).WithMany(x => x.SubTypes).HasForeignKey(x => x.LibraryTypeId).OnDelete(DeleteBehavior.Restrict);
+            });
+
+            builder.Entity<LibraryDocument>(e =>
+            {
+                e.Property(x => x.AssetKind).HasDefaultValue("Document");
+                e.HasIndex(x => new { x.TenantId, x.LibraryTypeId, x.IsActive, x.CreatedOnUtc });
+                e.HasIndex(x => new { x.TenantId, x.AssetKind, x.LibraryTypeId, x.IsActive, x.CreatedOnUtc });
+                e.HasIndex(x => new { x.TenantId, x.Title });
+                e.HasOne<Tenant>().WithMany().HasForeignKey(x => x.TenantId).OnDelete(DeleteBehavior.Restrict);
+                e.HasOne(x => x.LibraryType).WithMany(x => x.Documents).HasForeignKey(x => x.LibraryTypeId).OnDelete(DeleteBehavior.Restrict);
+            });
+
+            builder.Entity<LibraryTemplate>(e =>
+            {
+                e.HasIndex(x => new { x.TenantId, x.LibraryTypeId, x.IsActive, x.CreatedOnUtc });
+                e.HasIndex(x => new { x.TenantId, x.Name });
+                e.HasOne<Tenant>().WithMany().HasForeignKey(x => x.TenantId).OnDelete(DeleteBehavior.Restrict);
+                e.HasOne(x => x.LibraryType).WithMany(x => x.Templates).HasForeignKey(x => x.LibraryTypeId).OnDelete(DeleteBehavior.Restrict);
+            });
+
+            builder.Entity<GeneratedInvoice>(e =>
+            {
+                e.HasIndex(x => new { x.TenantId, x.InvoiceNumber }).IsUnique();
+                e.HasIndex(x => new { x.TenantId, x.IssueDate, x.Status });
+                e.HasOne<Tenant>().WithMany().HasForeignKey(x => x.TenantId).OnDelete(DeleteBehavior.Restrict);
+            });
+
+            builder.Entity<GeneratedInvoiceLine>(e =>
+            {
+                e.HasIndex(x => new { x.InvoiceId, x.DisplayOrder });
+                e.HasOne(x => x.Invoice).WithMany(x => x.Lines).HasForeignKey(x => x.InvoiceId).OnDelete(DeleteBehavior.Cascade);
+            });
+
+            builder.Entity<AttendanceDailyFinalization>(e =>
+            {
+                e.ToTable("AttendanceDailyFinalizations");
+                e.HasKey(x => x.Id);
+                e.Property(x => x.Id).ValueGeneratedOnAdd();
+                e.Property(x => x.State).HasMaxLength(30).IsRequired();
+                e.Property(x => x.LastEvaluatedDateUtc).HasDefaultValueSql("SYSUTCDATETIME()");
+                e.HasIndex(x => new { x.TenantId, x.PersonId, x.AttendanceDate }).IsUnique();
+                e.HasIndex(x => new { x.TenantId, x.AttendanceDate, x.IsFinalized });
+                e.HasOne<Person>().WithMany().HasForeignKey(x => x.PersonId).OnDelete(DeleteBehavior.Restrict);
+                e.HasOne<StaffVacancy>().WithMany().HasForeignKey(x => x.StaffId).OnDelete(DeleteBehavior.Restrict);
+                e.HasOne<AttendanceRecord>().WithMany().HasForeignKey(x => x.AttendanceRecordId).OnDelete(DeleteBehavior.SetNull);
+            });
+
+            builder.Entity<ChatRuleSetting>(e =>
+            {
+                e.HasIndex(x => x.TenantId).IsUnique();
+                e.HasOne<Tenant>().WithMany().HasForeignKey(x => x.TenantId).OnDelete(DeleteBehavior.Cascade);
             });
 
             builder.Entity<ChatBlock>(e =>
@@ -1427,6 +1539,23 @@ namespace Accounts.Data
                 e.HasIndex(x => new { x.TenantId, x.BlockedPersonId, x.BlockerPersonId });
                 e.HasOne<Person>().WithMany().HasForeignKey(x => x.BlockerPersonId).OnDelete(DeleteBehavior.Restrict);
                 e.HasOne<Person>().WithMany().HasForeignKey(x => x.BlockedPersonId).OnDelete(DeleteBehavior.Restrict);
+            });
+
+            builder.Entity<IdempotencyRecord>(e =>
+            {
+                e.ToTable("IdempotencyRecords", "Infrastructure");
+                e.HasKey(x => x.Id);
+                e.Property(x => x.ScopeHash).HasMaxLength(32).IsFixedLength();
+                e.Property(x => x.RequestHash).HasMaxLength(32).IsFixedLength();
+                e.Property(x => x.UserId).HasMaxLength(450);
+                e.Property(x => x.HttpMethod).HasMaxLength(16);
+                e.Property(x => x.RequestPath).HasMaxLength(1024);
+                e.Property(x => x.ResponseContentType).HasMaxLength(256);
+                e.Property(x => x.FailureReason).HasMaxLength(500);
+                e.Property(x => x.RowVersion).IsRowVersion();
+                e.HasIndex(x => new { x.ScopeHash, x.IdempotencyKey }).IsUnique();
+                e.HasIndex(x => x.ExpiresUtc);
+                e.HasIndex(x => new { x.Status, x.LeaseExpiresUtc });
             });
         }
 

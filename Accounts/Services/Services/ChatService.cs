@@ -14,7 +14,8 @@ public sealed class ChatService(
     ITenantService tenant,
     ChatPresenceTracker presence,
     IMemoryCache cache,
-    IWebHostEnvironment env) : IChatService
+    IWebHostEnvironment env,
+    IChatRuleService ruleService) : IChatService
 {
     private (Guid PersonId, int TenantId, long WorkspaceId, int TenantOrganizationTreeId)? _callerContext;
 
@@ -436,7 +437,12 @@ public sealed class ChatService(
             r.IsPinned,
             r.OtherPersonId.HasValue && presence.IsOnline(r.OtherPersonId.Value),
             r.LastSeenUtc,
-            r.HasUnreadMention, r.IsBlockedByMe, r.IsBlockedByOther
+            r.HasUnreadMention,
+            r.LastReadMessageId,
+            r.FirstUnreadMessageId,
+            r.FirstUnreadMentionMessageId,
+            r.IsBlockedByMe,
+            r.IsBlockedByOther
         ))
         .OrderByDescending(item => item.IsPinned)
         .ThenByDescending(item => item.LastMessageOnUtc ?? DateTime.MinValue)
@@ -543,24 +549,37 @@ public sealed class ChatService(
         string identityUserId,
         long conversationId,
         long? beforeId,
+        long? afterId,
         int take,
         CancellationToken cancellationToken = default)
     {
         var caller = await ResolveCallerAsync(identityUserId, cancellationToken);
         var membership = await RequireMembershipAsync(caller.PersonId, conversationId, cancellationToken);
         take = Math.Clamp(take, 1, 100);
+        if (beforeId.HasValue && afterId.HasValue)
+            throw new ChatValidationException("Use either the older-message cursor or the newer-message cursor, not both.");
 
         var query = db.ChatMessages.AsNoTracking()
             .Where(message =>
                 message.ConversationId == conversationId &&
                 (!membership.ClearedBeforeUtc.HasValue || message.CreatedOnUtc > membership.ClearedBeforeUtc.Value) &&
                 !db.ChatMessageDeletions.Any(d => d.MessageId == message.Id && d.PersonId == caller.PersonId));
-        if (beforeId.HasValue) query = query.Where(message => message.Id < beforeId.Value);
-
-        var messages = await query.OrderByDescending(message => message.Id)
-            .Take(take)
-            .ToListAsync(cancellationToken);
-        messages.Reverse();
+        List<ChatMessage> messages;
+        if (afterId.HasValue)
+        {
+            messages = await query.Where(message => message.Id > afterId.Value)
+                .OrderBy(message => message.Id)
+                .Take(take)
+                .ToListAsync(cancellationToken);
+        }
+        else
+        {
+            if (beforeId.HasValue) query = query.Where(message => message.Id < beforeId.Value);
+            messages = await query.OrderByDescending(message => message.Id)
+                .Take(take)
+                .ToListAsync(cancellationToken);
+            messages.Reverse();
+        }
         return await MapMessagesAsync(messages, caller.PersonId, cancellationToken);
     }
 
@@ -609,6 +628,7 @@ public sealed class ChatService(
             join message in db.ChatMessages.AsNoTracking() on attachment.MessageId equals message.Id
             where message.ConversationId == conversationId &&
                   message.DeletedOnUtc == null &&
+                  !attachment.IsViewOnce &&
                   (!membership.ClearedBeforeUtc.HasValue || message.CreatedOnUtc > membership.ClearedBeforeUtc.Value) &&
                   !db.ChatMessageDeletions.Any(deletion => deletion.MessageId == message.Id && deletion.PersonId == caller.PersonId) &&
                   (!mediaOnly || attachment.ContentType.StartsWith("image/") || attachment.ContentType.StartsWith("video/")) &&
@@ -735,6 +755,7 @@ public sealed class ChatService(
         string fileName,
         string contentType,
         byte[] content,
+        bool viewOnce = false,
         long? replyToMessageId = null,
         CancellationToken cancellationToken = default)
     {
@@ -750,6 +771,21 @@ public sealed class ChatService(
             throw new ChatValidationException("A valid attachment file name is required.");
         if (safeFileName.Length > 255) safeFileName = safeFileName[..255];
         var safeContentType = ValidateAttachment(safeFileName, content);
+        if (viewOnce)
+        {
+            var rules = await ruleService.GetEffectiveAsync(caller.TenantId, cancellationToken);
+            if (!rules.AllowViewOnceMedia)
+                throw new ChatValidationException("View Once media is disabled by Chat Rules.");
+            if (!safeContentType.StartsWith("image/", StringComparison.OrdinalIgnoreCase) &&
+                !safeContentType.StartsWith("video/", StringComparison.OrdinalIgnoreCase))
+                throw new ChatValidationException("View Once is available only for photos and videos.");
+            var conversationType = await db.ChatConversations.AsNoTracking()
+                .Where(item => item.Id == conversationId)
+                .Select(item => item.ConversationType)
+                .SingleAsync(cancellationToken);
+            if (!string.Equals(conversationType, "Direct", StringComparison.OrdinalIgnoreCase))
+                throw new ChatValidationException("View Once media can only be sent in a direct conversation.");
+        }
         var body = caption?.Trim() ?? string.Empty;
         if (body.Length > 4000) throw new ChatValidationException("The attachment caption is too long.");
 
@@ -795,6 +831,7 @@ public sealed class ChatService(
                 ContentType = safeContentType,
                 FileSize = content.LongLength,
                 FilePath = relativePath,
+                IsViewOnce = viewOnce,
             });
             await db.SaveChangesAsync(cancellationToken);
             await transaction.CommitAsync(cancellationToken);
@@ -822,8 +859,15 @@ public sealed class ChatService(
         if (message.DeletedOnUtc.HasValue)
             throw new ChatValidationException("Cannot edit a deleted message.");
 
-        if ((DateTime.UtcNow - message.CreatedOnUtc).TotalMinutes > 60)
-            throw new ChatValidationException("Messages can only be edited within 60 minutes of sending.");
+        var rules = await ruleService.GetEffectiveAsync(caller.TenantId, cancellationToken);
+        if (!rules.AllowMessageEditing)
+            throw new ChatValidationException("Message editing is disabled by Chat Rules.");
+        var hasAttachments = await db.ChatAttachments.AsNoTracking()
+            .AnyAsync(item => item.MessageId == messageId, cancellationToken);
+        if (hasAttachments)
+            throw new ChatValidationException("Only text-based messages can be edited. Photos, videos and documents cannot be edited.");
+        if (!ChatRulePolicy.CanEdit(message, false, caller.PersonId, DateTime.UtcNow, rules))
+            throw new ChatValidationException($"This message can no longer be edited because the {rules.EditWindowMinutes}-minute window has passed.");
 
         var body = dto.Body?.Trim() ?? string.Empty;
         if (body.Length == 0 || body.Length > 4000)
@@ -846,16 +890,47 @@ public sealed class ChatService(
             .Where(m => m.Id == messageId)
             .SingleOrDefaultAsync(cancellationToken)
             ?? throw new ChatNotFoundException("The message could not be found.");
+        await RequireMembershipAsync(caller.PersonId, message.ConversationId, cancellationToken);
 
         if (forEveryone)
         {
+            if (message.DeletedOnUtc.HasValue)
+                return message.ConversationId;
             if (message.SenderPersonId != caller.PersonId)
                 throw new ChatForbiddenException("You can only delete your own messages for everyone.");
-            
+
+            var rules = await ruleService.GetEffectiveAsync(caller.TenantId, cancellationToken);
+            if (!rules.AllowDeleteForEveryone)
+                throw new ChatValidationException("Delete for Everyone is disabled by Chat Rules. You can still use Delete for me.");
+            if (!ChatRulePolicy.CanDeleteForEveryone(message, caller.PersonId, DateTime.UtcNow, rules))
+                throw new ChatValidationException($"Delete for Everyone is no longer available because the {rules.DeleteForEveryoneWindowMinutes}-minute window has passed. You can still use Delete for me.");
+
+            message.Body = ChatRulePolicy.DeletedPlaceholder;
             message.DeletedOnUtc = DateTime.UtcNow;
+            message.DeliveryTrackingClearedOnUtc = message.DeletedOnUtc;
+            var reactions = await db.ChatMessageReactions
+                .Where(item => item.MessageId == messageId)
+                .ToListAsync(cancellationToken);
+            if (reactions.Count > 0) db.ChatMessageReactions.RemoveRange(reactions);
+            var attachments = await db.ChatAttachments
+                .Where(item => item.MessageId == messageId)
+                .ToListAsync(cancellationToken);
+            var attachmentPaths = attachments
+                .Select(item => item.FilePath)
+                .Where(path => !string.IsNullOrWhiteSpace(path))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            if (attachments.Count > 0) db.ChatAttachments.RemoveRange(attachments);
+            await db.SaveChangesAsync(cancellationToken);
+            foreach (var path in attachmentPaths)
+                await DeleteAttachmentFileIfUnreferencedAsync(path, cancellationToken);
+            return message.ConversationId;
         }
         else
         {
+            var exists = await db.ChatMessageDeletions.AsNoTracking()
+                .AnyAsync(item => item.MessageId == messageId && item.PersonId == caller.PersonId, cancellationToken);
+            if (exists) return message.ConversationId;
             var deletion = new ChatMessageDeletion
             {
                 TenantId = caller.TenantId,
@@ -881,6 +956,8 @@ public sealed class ChatService(
             .Where(m => m.Id == sourceMessageId)
             .SingleOrDefaultAsync(cancellationToken)
             ?? throw new ChatNotFoundException("The source message could not be found.");
+        if (sourceMessage.DeletedOnUtc.HasValue)
+            throw new ChatValidationException("A deleted message cannot be forwarded.");
 
         await RequireMembershipAsync(caller.PersonId, sourceMessage.ConversationId, cancellationToken);
         await RequireMembershipAsync(caller.PersonId, targetConversationId, cancellationToken);
@@ -889,6 +966,8 @@ public sealed class ChatService(
         var attachments = await db.ChatAttachments.AsNoTracking()
             .Where(a => a.MessageId == sourceMessageId)
             .ToListAsync(cancellationToken);
+        if (attachments.Any(item => item.IsViewOnce))
+            throw new ChatValidationException("View Once media cannot be forwarded, copied, saved or shared.");
 
         var forwardedMessage = new ChatMessage
         {
@@ -937,6 +1016,8 @@ public sealed class ChatService(
                 item.FileName,
                 item.ContentType,
                 item.FilePath,
+                item.IsViewOnce,
+                item.MessageId,
                 ConversationId = db.ChatMessages
                     .Where(message => message.Id == item.MessageId)
                     .Select(message => message.ConversationId)
@@ -945,6 +1026,12 @@ public sealed class ChatService(
             .SingleOrDefaultAsync(cancellationToken);
         if (attachment == null) throw new ChatNotFoundException("The attachment was not found.");
         await RequireMembershipAsync(caller.PersonId, attachment.ConversationId, cancellationToken);
+        if (attachment.IsViewOnce)
+            throw new ChatValidationException("View Once media cannot be downloaded or saved. Open it from the protected viewer.");
+        var isHidden = await db.ChatMessageDeletions.AsNoTracking()
+            .AnyAsync(item => item.MessageId == attachment.MessageId && item.PersonId == caller.PersonId, cancellationToken);
+        if (isHidden)
+            throw new ChatNotFoundException("The attachment is no longer available in your chat.");
 
         var uploadDir = Path.Combine(env.ContentRootPath, "App_Data", "chat-uploads");
         var fullPath = Path.Combine(uploadDir, attachment.FilePath.Replace("/", "\\"));
@@ -957,6 +1044,61 @@ public sealed class ChatService(
         var bytes = await File.ReadAllBytesAsync(fullPath, cancellationToken);
 
         return new ChatAttachmentContentDto(attachment.FileName, attachment.ContentType, bytes);
+    }
+
+    public async Task<(ChatAttachmentContentDto Content, ChatMessageDto Message)> OpenViewOnceAttachmentAsync(
+        string identityUserId,
+        long attachmentId,
+        CancellationToken cancellationToken = default)
+    {
+        var caller = await ResolveCallerAsync(identityUserId, cancellationToken);
+        var attachment = await db.ChatAttachments
+            .SingleOrDefaultAsync(item => item.Id == attachmentId, cancellationToken)
+            ?? throw new ChatNotFoundException("The View Once media was not found.");
+        if (!attachment.IsViewOnce)
+            throw new ChatValidationException("This attachment is not View Once media.");
+
+        var message = await db.ChatMessages
+            .SingleAsync(item => item.Id == attachment.MessageId, cancellationToken);
+        await RequireMembershipAsync(caller.PersonId, message.ConversationId, cancellationToken);
+        if (message.SenderPersonId == caller.PersonId)
+            throw new ChatForbiddenException("Only the recipient can open View Once media.");
+        if (message.DeletedOnUtc.HasValue)
+            throw new ChatNotFoundException("This View Once media is no longer available.");
+        if (attachment.ViewOnceConsumedOnUtc.HasValue)
+            throw new ChatValidationException("This View Once media has already been opened and is no longer available.");
+
+        var hiddenForCaller = await db.ChatMessageDeletions.AsNoTracking()
+            .AnyAsync(item => item.MessageId == message.Id && item.PersonId == caller.PersonId, cancellationToken);
+        if (hiddenForCaller)
+            throw new ChatNotFoundException("This View Once media is no longer available in your chat.");
+
+        var rules = await ruleService.GetEffectiveAsync(caller.TenantId, cancellationToken);
+        if (ChatRulePolicy.IsViewOnceExpired(attachment, DateTime.UtcNow, rules))
+        {
+            attachment.ViewOnceExpiredOnUtc = DateTime.UtcNow;
+            var expiredPath = attachment.FilePath;
+            attachment.FilePath = string.Empty;
+            await db.SaveChangesAsync(cancellationToken);
+            DeletePhysicalAttachment(expiredPath);
+            throw new ChatValidationException($"This View Once media expired after {rules.ViewOnceUnopenedExpiryHours} hours without being opened.");
+        }
+
+        var fullPath = ResolveAttachmentPath(attachment.FilePath);
+        if (!File.Exists(fullPath))
+            throw new ChatNotFoundException("The View Once media file is missing from the server.");
+        var bytes = await File.ReadAllBytesAsync(fullPath, cancellationToken);
+
+        var consumedPath = attachment.FilePath;
+        DeletePhysicalAttachment(consumedPath);
+        attachment.FilePath = string.Empty;
+        attachment.ViewOnceOpenedOnUtc = DateTime.UtcNow;
+        attachment.ViewOnceOpenedByPersonId = caller.PersonId;
+        attachment.ViewOnceConsumedOnUtc = attachment.ViewOnceOpenedOnUtc;
+        await db.SaveChangesAsync(cancellationToken);
+
+        var mapped = (await MapMessagesAsync([message], caller.PersonId, cancellationToken)).Single();
+        return (new ChatAttachmentContentDto(attachment.FileName, attachment.ContentType, bytes), mapped);
     }
 
     public async Task<ChatMessageDto> SetReactionAsync(
@@ -1344,20 +1486,20 @@ public sealed class ChatService(
             .ToListAsync(cancellationToken);
         var attachments = await db.ChatAttachments.AsNoTracking()
             .Where(attachment => messageIds.Contains(attachment.MessageId))
-            .Select(attachment => new
-            {
-                attachment.Id,
-                attachment.MessageId,
-                attachment.FileName,
-                attachment.ContentType,
-                attachment.FileSize,
-            })
             .ToListAsync(cancellationToken);
+        var rules = await ruleService.GetEffectiveAsync(messages[0].TenantId, cancellationToken);
+        var nowUtc = DateTime.UtcNow;
 
         return messages.Select(message =>
         {
             people.TryGetValue(message.SenderPersonId, out var sender);
-            var messageReactions = reactions
+            var messageAttachmentsSource = attachments
+                .Where(attachment => attachment.MessageId == message.Id)
+                .ToList();
+            var hasViewOnceAttachment = messageAttachmentsSource.Any(attachment => attachment.IsViewOnce);
+            var messageReactions = message.DeletedOnUtc.HasValue
+                ? []
+                : reactions
                 .Where(reaction => reaction.MessageId == message.Id)
                 .GroupBy(reaction => reaction.Emoji)
                 .Select(group => new ChatReactionDto(
@@ -1365,18 +1507,31 @@ public sealed class ChatService(
                     group.Count(),
                     group.Any(reaction => reaction.PersonId == callerPersonId)))
                 .ToList();
-            var messageAttachments = attachments
-                .Where(attachment => attachment.MessageId == message.Id)
+            var messageAttachments = message.DeletedOnUtc.HasValue
+                ? []
+                : messageAttachmentsSource
                 .Select(attachment => new ChatAttachmentDto(
                     attachment.Id,
                     attachment.FileName,
                     attachment.ContentType,
                     attachment.FileSize,
-                    $"/api/chat/attachments/{attachment.Id}"))
+                    attachment.IsViewOnce ? null : $"/api/chat/attachments/{attachment.Id}",
+                    attachment.IsViewOnce,
+                    ChatRulePolicy.ViewOnceState(
+                        attachment,
+                        callerPersonId,
+                        message.SenderPersonId,
+                        nowUtc,
+                        rules),
+                    attachment.IsViewOnce &&
+                    message.SenderPersonId != callerPersonId &&
+                    !attachment.ViewOnceConsumedOnUtc.HasValue &&
+                    !attachment.ViewOnceExpiredOnUtc.HasValue &&
+                    !ChatRulePolicy.IsViewOnceExpired(attachment, nowUtc, rules)))
                 .ToList();
                 
-            string status = "Sent";
-            if (message.SenderPersonId == callerPersonId)
+            string status = message.DeletedOnUtc.HasValue ? "Unavailable" : "Sent";
+            if (!message.DeletedOnUtc.HasValue && message.SenderPersonId == callerPersonId)
             {
                 var otherMembers = readStates.Where(rs => rs.ConversationId == message.ConversationId).ToList();
                 if (otherMembers.Count > 0)
@@ -1417,15 +1572,44 @@ public sealed class ChatService(
                 message.SenderPersonId,
                 sender?.FullName ?? "Former staff",
                 sender?.PhotoUrl,
-                message.DeletedOnUtc.HasValue ? string.Empty : message.Body,
+                message.DeletedOnUtc.HasValue ? ChatRulePolicy.DeletedPlaceholder : message.Body,
                 message.ReplyToMessageId,
                 message.CreatedOnUtc,
                 message.EditedOnUtc,
                 message.DeletedOnUtc.HasValue,
                 status,
                 messageReactions,
-                messageAttachments);
+                messageAttachments,
+                ChatRulePolicy.CanEdit(message, messageAttachmentsSource.Count > 0, callerPersonId, nowUtc, rules),
+                ChatRulePolicy.CanDeleteForEveryone(message, callerPersonId, nowUtc, rules),
+                !message.DeletedOnUtc.HasValue && !hasViewOnceAttachment,
+                ChatRulePolicy.CanViewMessageInfo(message, callerPersonId));
         }).ToList();
+    }
+
+    private string ResolveAttachmentPath(string relativePath)
+    {
+        var uploadDir = Path.Combine(env.ContentRootPath, "App_Data", "chat-uploads");
+        var fullPath = Path.Combine(uploadDir, relativePath.Replace('/', Path.DirectorySeparatorChar));
+        if (File.Exists(fullPath)) return fullPath;
+        var legacyRoot = Path.Combine(env.WebRootPath ?? Path.Combine(env.ContentRootPath, "wwwroot"), "chat-uploads");
+        return Path.Combine(legacyRoot, relativePath.Replace('/', Path.DirectorySeparatorChar));
+    }
+
+    private void DeletePhysicalAttachment(string? relativePath)
+    {
+        if (string.IsNullOrWhiteSpace(relativePath)) return;
+        var fullPath = ResolveAttachmentPath(relativePath);
+        if (File.Exists(fullPath)) File.Delete(fullPath);
+    }
+
+    private async Task DeleteAttachmentFileIfUnreferencedAsync(
+        string relativePath,
+        CancellationToken cancellationToken)
+    {
+        var stillReferenced = await db.ChatAttachments.AsNoTracking()
+            .AnyAsync(item => item.FilePath == relativePath, cancellationToken);
+        if (!stillReferenced) DeletePhysicalAttachment(relativePath);
     }
 
     private static ChatContactRequestDto ToRequestDto(
@@ -1550,6 +1734,8 @@ public sealed class ChatService(
         
         if (message.SenderPersonId != caller.PersonId)
             throw new ChatForbiddenException("Only the sender can view delivery info.");
+        if (!ChatRulePolicy.CanViewMessageInfo(message, caller.PersonId))
+            throw new ChatValidationException("Message Info is unavailable because this message was deleted for everyone and its delivery metadata was cleared.");
 
         var members = await db.ChatConversationMembers.AsNoTracking()
             .Where(m => m.ConversationId == message.ConversationId && m.PersonId != caller.PersonId && m.LeftOnUtc == null)

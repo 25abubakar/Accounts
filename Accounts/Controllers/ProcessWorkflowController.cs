@@ -1,6 +1,7 @@
 using Accounts.Data;
 using Accounts.DTOs;
 using Accounts.Services.Interfaces;
+using Accounts.Idempotency;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.Filters;
@@ -19,11 +20,16 @@ public sealed class ProcessWorkflowController : ControllerBase
 {
     private readonly ApplicationDbContext _db;
     private readonly ITenantService _tenant;
+    private readonly IRealtimePublisher _realtime;
 
-    public ProcessWorkflowController(ApplicationDbContext db, ITenantService tenant)
+    public ProcessWorkflowController(
+        ApplicationDbContext db,
+        ITenantService tenant,
+        IRealtimePublisher realtime)
     {
         _db = db;
         _tenant = tenant;
+        _realtime = realtime;
     }
 
     [HttpGet("lookups")]
@@ -165,6 +171,7 @@ public sealed class ProcessWorkflowController : ControllerBase
     }
 
     [HttpPost("reports")]
+    [Idempotent]
     public async Task<IActionResult> Submit([FromBody] SubmitProcessReportDto dto, CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(dto.Title) || string.IsNullOrWhiteSpace(dto.Description) ||
@@ -196,10 +203,12 @@ public sealed class ProcessWorkflowController : ControllerBase
                     rowVersion = reader.GetString(reader.GetOrdinal("RowVersion"))
                 };
         }, ct);
+        await PublishProcessChangedAsync("submitted");
         return Ok(result);
     }
 
     [HttpPost("tasks/{reportId:long}/actions")]
+    [Idempotent]
     public async Task<IActionResult> Act(long reportId, [FromBody] ProcessReportActionDto dto, CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(dto.ActionCode) || string.IsNullOrWhiteSpace(dto.RowVersion))
@@ -238,8 +247,19 @@ public sealed class ProcessWorkflowController : ControllerBase
                 : BadRequest(new { message = failure.Message });
         }
 
+        await PublishProcessChangedAsync(dto.ActionCode.Trim().ToLowerInvariant(), reportId);
         return Ok(result);
     }
+
+    private Task PublishProcessChangedAsync(string action, long? reportId = null) =>
+        _realtime.PublishEventToTenantAsync(
+            _tenant.RequiredTenantId,
+            RealtimeEventDto.Create(
+                RealtimeEventTypes.ProcessChanged,
+                "process",
+                action,
+                _tenant.RequiredTenantId,
+                reportId?.ToString()));
 
     private static bool TryNormalizeRowVersion(string value, out string normalized)
     {

@@ -27,7 +27,10 @@ public sealed record ChatAttachmentDto(
     string FileName,
     string ContentType,
     long FileSize,
-    string DownloadUrl);
+    string? DownloadUrl,
+    bool IsViewOnce,
+    string ViewOnceState,
+    bool CanOpenViewOnce);
 
 public sealed record ChatSharedAttachmentDto(
     long Id,
@@ -57,7 +60,34 @@ public sealed record ChatMessageDto(
     bool IsDeleted,
     string Status,
     IReadOnlyList<ChatReactionDto> Reactions,
-    IReadOnlyList<ChatAttachmentDto> Attachments);
+    IReadOnlyList<ChatAttachmentDto> Attachments,
+    bool CanEdit,
+    bool CanDeleteForEveryone,
+    bool CanForward,
+    bool CanViewMessageInfo);
+
+public sealed record ChatRuleSettingDto(
+    bool AllowMessageEditing,
+    int EditWindowMinutes,
+    bool AllowDeleteForEveryone,
+    int DeleteForEveryoneWindowMinutes,
+    bool AllowViewOnceMedia,
+    int ViewOnceUnopenedExpiryHours,
+    bool BlockViewOnceForwarding,
+    bool BlockViewOnceDownload,
+    bool BlockViewOnceCopying,
+    bool BlockViewOnceSharing,
+    bool BlockViewOnceStarring,
+    bool BlockViewOnceScreenCapture,
+    DateTime? UpdatedOnUtc);
+
+public sealed record SaveChatRuleSettingDto(
+    bool AllowMessageEditing,
+    int EditWindowMinutes,
+    bool AllowDeleteForEveryone,
+    int DeleteForEveryoneWindowMinutes,
+    bool AllowViewOnceMedia,
+    int ViewOnceUnopenedExpiryHours);
 
 public sealed record ChatConversationDto(
     long Id,
@@ -72,7 +102,12 @@ public sealed record ChatConversationDto(
     bool IsPinned,
     bool IsOnline,
     DateTime? LastSeenUtc,
-    bool HasUnreadMention, bool IsBlockedByMe = false, bool IsBlockedByOther = false);
+    bool HasUnreadMention,
+    long? LastReadMessageId,
+    long? FirstUnreadMessageId,
+    long? FirstUnreadMentionMessageId,
+    bool IsBlockedByMe = false,
+    bool IsBlockedByOther = false);
 
 public sealed record CreateChatRequestDto(Guid ReceiverPersonId, string? Message);
 public sealed record CreateChatGroupDto(string Title, IReadOnlyList<Guid> MemberPersonIds);
@@ -123,5 +158,8 @@ public class ChatConversationResult
     public bool IsBlockedByMe { get; set; }
     public bool IsBlockedByOther { get; set; }
     public bool HasUnreadMention { get; set; }
+    public long? LastReadMessageId { get; set; }
+    public long? FirstUnreadMessageId { get; set; }
+    public long? FirstUnreadMentionMessageId { get; set; }
     public DateTime? LastSeenUtc { get; set; }
 }

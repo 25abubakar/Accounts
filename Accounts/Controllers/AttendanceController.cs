@@ -3,6 +3,7 @@ using Accounts.Data;
 using Accounts.Models;
 using Accounts.Services.Interfaces;
 using Accounts.Services.Services;
+using Accounts.Idempotency;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using System.Security.Claims;
@@ -22,6 +23,8 @@ public sealed class AttendanceController : ControllerBase
     private readonly RbacService _rbac;
     private readonly TenantPermissionService _tenantPermissions;
     private readonly IOrganizationDataScopeService _dataScope;
+    private readonly IRealtimePublisher _realtime;
+    private readonly AttendanceFinalizationService _attendanceFinalization;
 
     public AttendanceController(
         IAttendanceService service,
@@ -29,7 +32,9 @@ public sealed class AttendanceController : ControllerBase
         ITenantService tenant,
         RbacService rbac,
         TenantPermissionService tenantPermissions,
-        IOrganizationDataScopeService dataScope)
+        IOrganizationDataScopeService dataScope,
+        IRealtimePublisher realtime,
+        AttendanceFinalizationService attendanceFinalization)
     {
         _service = service;
         _db = db;
@@ -37,13 +42,16 @@ public sealed class AttendanceController : ControllerBase
         _rbac = rbac;
         _tenantPermissions = tenantPermissions;
         _dataScope = dataScope;
+        _realtime = realtime;
+        _attendanceFinalization = attendanceFinalization;
     }
 
     [HttpGet("me/today")]
     public Task<IActionResult> Today(CancellationToken ct) => Execute(() => _service.GetTodayAsync(UserId(), ct));
 
     [HttpPost("me/check-in")]
-    public Task<IActionResult> CheckIn([FromQuery] int? workModeId, CancellationToken ct) => Execute(() => _service.CheckInAsync(UserId(), workModeId, ct));
+    public Task<IActionResult> CheckIn([FromQuery] int? workModeId, CancellationToken ct) =>
+        ExecuteRealtime(() => _service.CheckInAsync(UserId(), workModeId, ct), "check-in");
 
     [HttpGet("work-modes")]
     public async Task<IActionResult> WorkModes([FromServices] Accounts.Data.ApplicationDbContext db, CancellationToken ct) =>
@@ -184,10 +192,12 @@ public sealed class AttendanceController : ControllerBase
     }
 
     [HttpPost("me/toggle-break")]
-    public Task<IActionResult> ToggleBreak(CancellationToken ct) => Execute(() => _service.ToggleBreakAsync(UserId(), ct));
+    public Task<IActionResult> ToggleBreak(CancellationToken ct) =>
+        ExecuteRealtime(() => _service.ToggleBreakAsync(UserId(), ct), "break-toggled");
 
     [HttpPost("me/check-out")]
-    public Task<IActionResult> CheckOut(CancellationToken ct) => Execute(() => _service.CheckOutAsync(UserId(), ct));
+    public Task<IActionResult> CheckOut(CancellationToken ct) =>
+        ExecuteRealtime(() => _service.CheckOutAsync(UserId(), ct), "check-out");
 
     [HttpGet("rules/settings")]
     public async Task<IActionResult> AttendanceRuleSettings(CancellationToken ct)
@@ -407,11 +417,14 @@ public sealed class AttendanceController : ControllerBase
     }
 
     [HttpPost("deductions/approve-overtime")]
+    [Idempotent]
     public async Task<IActionResult> ApproveOvertime([FromBody] ApproveOvertimeRequestDto dto, CancellationToken ct)
     {
         if (!_tenant.TenantId.HasValue) return Forbid();
         if (!await HasAttendanceMenuActionAsync("EDIT", ct, "/attendance/deduction"))
             return Forbid();
+        if (await HasPendingAttendanceReviewAsync(dto.PersonId, dto.Year, dto.Month, ct))
+            return Conflict(new { message = "Missing or invalid checkout attendance must be resolved before overtime approval." });
 
         var overtimeEnabled = await (from staff in _db.StaffVacancies.AsNoTracking()
                                      join map in _db.AttendanceMapRules.AsNoTracking() on staff.StaffId equals map.StaffId
@@ -446,10 +459,20 @@ public sealed class AttendanceController : ControllerBase
         record.ApprovedDateUtc = PakistanClock.Now();
 
         await _db.SaveChangesAsync(ct);
+        await PublishDeductionChangedAsync(
+            dto.PersonId,
+            dto.Year,
+            dto.Month,
+            dto.IsApproved ? "overtime-approved" : "overtime-unapproved",
+            "Overtime decision updated",
+            dto.IsApproved
+                ? "Your overtime bonus was approved."
+                : "Your overtime bonus approval was withdrawn.");
         return Ok(new { message = "Overtime approval status updated." });
     }
 
     [HttpPost("deductions/adjustment")]
+    [Idempotent]
     public async Task<IActionResult> SaveAdjustment([FromBody] SaveAdjustmentRequestDto dto, CancellationToken ct)
     {
         if (!_tenant.TenantId.HasValue) return Forbid();
@@ -478,15 +501,23 @@ public sealed class AttendanceController : ControllerBase
         record.AdjustmentRemarks = string.IsNullOrWhiteSpace(dto.Remarks) ? null : dto.Remarks.Trim();
 
         await _db.SaveChangesAsync(ct);
+        await PublishDeductionChangedAsync(
+            dto.PersonId,
+            dto.Year,
+            dto.Month,
+            "adjustment-saved");
         return Ok(new { message = "Adjustment saved successfully." });
     }
 
     [HttpPost("deductions/adjustment/approve")]
+    [Idempotent]
     public async Task<IActionResult> ApproveAdjustment([FromBody] ApproveAdjustmentRequestDto dto, CancellationToken ct)
     {
         if (!_tenant.TenantId.HasValue) return Forbid();
         if (!await HasAttendanceMenuActionAsync("EDIT", ct, "/attendance/deduction"))
             return Forbid();
+        if (await HasPendingAttendanceReviewAsync(dto.PersonId, dto.Year, dto.Month, ct))
+            return Conflict(new { message = "Missing or invalid checkout attendance must be resolved before deduction approval." });
 
         var validCode = await _db.ProcessApprovalCodes.FirstOrDefaultAsync(x => x.TenantId == _tenant.RequiredTenantId && x.ProcessName == "DeductionAdjustment", ct);
         if (validCode == null || validCode.PinCode != dto.PinCode)
@@ -520,10 +551,18 @@ public sealed class AttendanceController : ControllerBase
         record.ApprovedDateUtc = DateTime.UtcNow;
 
         await _db.SaveChangesAsync(ct);
+        await PublishDeductionChangedAsync(
+            dto.PersonId,
+            dto.Year,
+            dto.Month,
+            "adjustment-approved",
+            "Deduction approved",
+            "Your monthly deduction adjustment was approved.");
         return Ok(new { message = "Deduction approved successfully." });
     }
 
     [HttpPost("deductions/requests")]
+    [Idempotent]
     public async Task<IActionResult> CreateDeductionRequest([FromBody] SaveAttendanceDeductionRequestDto dto, CancellationToken ct)
     {
         if (!_tenant.TenantId.HasValue) return Forbid();
@@ -566,6 +605,19 @@ public sealed class AttendanceController : ControllerBase
 
         _db.AttendanceDeductionRequests.Add(request);
         await _db.SaveChangesAsync(ct);
+        await _realtime.PublishEventToTenantAsync(
+            _tenant.RequiredTenantId,
+            RealtimeEventDto.Create(
+                RealtimeEventTypes.DeductionChanged,
+                "deduction",
+                "request-submitted",
+                _tenant.RequiredTenantId,
+                request.Id.ToString(CultureInfo.InvariantCulture),
+                new Dictionary<string, string>
+                {
+                    ["year"] = dto.DeductionYear.ToString(CultureInfo.InvariantCulture),
+                    ["month"] = dto.DeductionMonth.ToString(CultureInfo.InvariantCulture),
+                }));
 
         return Ok(new { id = request.Id, message = "Deduction request submitted successfully." });
     }
@@ -673,6 +725,39 @@ public sealed class AttendanceController : ControllerBase
         });
     }
 
+    [HttpPost("types/by-supervisor/entries")]
+    [Idempotent]
+    public async Task<IActionResult> SaveSupervisorAttendance(
+        [FromBody] SaveSupervisorAttendanceDto dto,
+        CancellationToken ct)
+    {
+        try
+        {
+            var result = await _service.SaveSupervisorAttendanceAsync(UserId(), dto, ct);
+            if (_tenant.TenantId.HasValue)
+            {
+                await _realtime.PublishEventToTenantAsync(
+                    _tenant.TenantId.Value,
+                    RealtimeEventDto.Create(
+                        RealtimeEventTypes.AttendanceChanged,
+                        "attendance",
+                        "supervisor-entry-saved",
+                        _tenant.TenantId.Value));
+            }
+
+            return Ok(new
+            {
+                result.AttendanceDate,
+                result.SavedEntries,
+                message = $"{result.SavedEntries} supervisor attendance row(s) saved and recalculated."
+            });
+        }
+        catch (KeyNotFoundException ex) { return NotFound(new { message = ex.Message }); }
+        catch (UnauthorizedAccessException ex) { return StatusCode(StatusCodes.Status403Forbidden, new { message = ex.Message }); }
+        catch (ArgumentException ex) { return BadRequest(new { message = ex.Message }); }
+        catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
+    }
+
     [HttpPost("types/camera/verifications/{requestId:long}/decision")]
     public async Task<IActionResult> ReviewCameraAttendance(
         long requestId,
@@ -758,6 +843,16 @@ public sealed class AttendanceController : ControllerBase
         var orgWide = await CanViewOrganizationAsync(ct);
         return await Execute(() => _service.GetStaffAttendanceReportAsync(UserId(), orgWide, dateFrom, dateTo, ct));
     }
+
+    [HttpGet("report/by-supervisor")]
+    [ResponseCache(NoStore = true, Location = ResponseCacheLocation.None)]
+    public Task<IActionResult> SupervisorAttendanceReport(
+        [FromQuery] DateOnly attendanceDate,
+        CancellationToken ct) =>
+        Execute(() => _service.GetSupervisorAttendanceReportAsync(
+            UserId(),
+            attendanceDate,
+            ct));
 
     [HttpGet("report/staff-attendance/access")]
     [ResponseCache(NoStore = true, Location = ResponseCacheLocation.None)]
@@ -990,6 +1085,89 @@ public sealed class AttendanceController : ControllerBase
         IsOvertimeBonusActive = rule.IsOvertimeBonusActive,
         Remarks = rule.Remarks
     };
+
+    private async Task<bool> HasPendingAttendanceReviewAsync(
+        Guid personId,
+        int year,
+        int month,
+        CancellationToken cancellationToken)
+    {
+        await _attendanceFinalization.RefreshPeriodAsync(
+            _tenant.RequiredTenantId,
+            year,
+            month,
+            cancellationToken);
+
+        return await _db.AttendanceDailyFinalizations.AsNoTracking().AnyAsync(
+            row =>
+                row.TenantId == _tenant.RequiredTenantId &&
+                row.PersonId == personId &&
+                row.AttendanceDate.Year == year &&
+                row.AttendanceDate.Month == month &&
+                row.State == AttendanceFinalizationStates.PendingReview,
+            cancellationToken);
+    }
+
+    private async Task PublishDeductionChangedAsync(
+        Guid personId,
+        int year,
+        int month,
+        string action,
+        string? notificationTitle = null,
+        string? notificationMessage = null)
+    {
+        var tenantId = _tenant.RequiredTenantId;
+        var message = RealtimeEventDto.Create(
+            RealtimeEventTypes.DeductionChanged,
+            "deduction",
+            action,
+            tenantId,
+            personId.ToString(),
+            new Dictionary<string, string>
+            {
+                ["year"] = year.ToString(CultureInfo.InvariantCulture),
+                ["month"] = month.ToString(CultureInfo.InvariantCulture),
+            });
+        await _realtime.PublishEventToTenantAsync(tenantId, message);
+
+        if (!string.IsNullOrWhiteSpace(notificationTitle)
+            && !string.IsNullOrWhiteSpace(notificationMessage))
+        {
+            await _realtime.PublishNotificationToPersonAsync(
+                personId,
+                RealtimeNotificationDto.Create(
+                    "deduction",
+                    "success",
+                    notificationTitle,
+                    notificationMessage,
+                    "/attendance/deduction"));
+        }
+    }
+
+    private async Task<IActionResult> ExecuteRealtime<T>(
+        Func<Task<T>> action,
+        string realtimeAction)
+    {
+        try
+        {
+            var result = await action();
+            if (_tenant.TenantId.HasValue)
+            {
+                await _realtime.PublishEventToTenantAsync(
+                    _tenant.TenantId.Value,
+                    RealtimeEventDto.Create(
+                        RealtimeEventTypes.AttendanceChanged,
+                        "attendance",
+                        realtimeAction,
+                        _tenant.TenantId.Value));
+            }
+            return Ok(result);
+        }
+        catch (KeyNotFoundException ex) { return NotFound(new { message = ex.Message }); }
+        catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
+        catch (ArgumentOutOfRangeException ex) { return BadRequest(new { message = ex.Message }); }
+        catch (UnauthorizedAccessException) { return Unauthorized(); }
+    }
 
     private async Task<IActionResult> Execute<T>(Func<Task<T>> action)
     {

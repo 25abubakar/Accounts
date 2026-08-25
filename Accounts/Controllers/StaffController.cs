@@ -2,6 +2,7 @@ using Accounts.Data;
 using Accounts.Models;
 using Accounts.Services.Interfaces;
 using Accounts.Services.Services;
+using Accounts.Idempotency;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -242,6 +243,7 @@ namespace Accounts.Controllers
         }
 
         [HttpPost("hire/{vacancyId:guid}")]
+        [Idempotent]
         public async Task<IActionResult> Hire(Guid vacancyId, [FromBody] HireStaffDto dto)
         {
             if (await CallerIsSuperAdminAsync()) return Forbid();
@@ -253,6 +255,7 @@ namespace Accounts.Controllers
         }
 
         [HttpPost("hire-person/{vacancyId:guid}")]
+        [Idempotent]
         public async Task<IActionResult> HirePerson(Guid vacancyId, [FromQuery] Guid personId)
         {
             if (await CallerIsSuperAdminAsync()) return Forbid();

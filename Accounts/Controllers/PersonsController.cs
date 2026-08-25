@@ -3,6 +3,7 @@ using Accounts.Data;
 using Accounts.Models;
 using Accounts.Services.Interfaces;
 using Accounts.Services.Services;
+using Accounts.Idempotency;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc;
@@ -267,6 +268,7 @@ namespace Accounts.Controllers
         }
 
         [HttpPost("register")]
+        [Idempotent]
         public async Task<IActionResult> Register([FromBody] RegisterPersonDto? dto)
         {
             if (await CallerIsSuperAdminAsync()) return Forbid();

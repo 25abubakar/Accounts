@@ -88,10 +88,11 @@ public sealed class ChatController(
     public Task<IActionResult> Messages(
         long conversationId,
         [FromQuery] long? beforeId,
+        [FromQuery] long? afterId,
         [FromQuery] int take = 50,
         CancellationToken cancellationToken = default) =>
         ExecuteAsync(async () => Ok(await chat.GetMessagesAsync(
-            UserId(), conversationId, beforeId, take, cancellationToken)));
+            UserId(), conversationId, beforeId, afterId, take, cancellationToken)));
 
     [HttpGet("conversations/{conversationId:long}/messages/search")]
     public Task<IActionResult> SearchMessages(
@@ -139,6 +140,7 @@ public sealed class ChatController(
         IFormFile file,
         [FromForm] Guid clientMessageId,
         [FromForm] string? caption,
+        [FromForm] bool viewOnce,
         [FromForm] long? replyToMessageId,
         CancellationToken cancellationToken) =>
         ExecuteAsync(async () =>
@@ -158,6 +160,7 @@ public sealed class ChatController(
                 file.FileName,
                 file.ContentType,
                 stream.ToArray(),
+                viewOnce,
                 replyToMessageId,
                 cancellationToken);
             await NotifyMembersAsync(conversationId, "messageReceived", message, cancellationToken);
@@ -435,6 +438,36 @@ public sealed class ChatController(
         {
             var info = await chat.GetMessageDeliveryInfoAsync(UserId(), messageId, cancellationToken);
             return Ok(info);
+        }
+        catch (Exception exception)
+        {
+            return MapException(exception);
+        }
+    }
+
+    [HttpPost("attachments/{attachmentId:long}/view-once/open")]
+    public async Task<IActionResult> OpenViewOnceAttachment(
+        long attachmentId,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var result = await chat.OpenViewOnceAttachmentAsync(UserId(), attachmentId, cancellationToken);
+            Response.Headers.CacheControl = "no-store, no-cache, must-revalidate";
+            Response.Headers.Pragma = "no-cache";
+            Response.Headers.Expires = "0";
+            await NotifyMembersAsync(
+                result.Message.ConversationId,
+                "viewOnceConsumed",
+                new
+                {
+                    messageId = result.Message.Id,
+                    conversationId = result.Message.ConversationId,
+                    attachmentId,
+                    state = "Opened",
+                },
+                cancellationToken);
+            return File(result.Content.Content, result.Content.ContentType);
         }
         catch (Exception exception)
         {
