@@ -44,6 +44,20 @@ public sealed class SalaryScalesController : ControllerBase
         return Ok(rows);
     }
 
+    [HttpGet("form-lookups")]
+    public async Task<IActionResult> FormLookups(CancellationToken ct)
+    {
+        if (_tenantService.IsSuperAdmin || !_tenantService.TenantId.HasValue) return Forbid();
+        if (!await HasScaleActionAsync("VIEW", ct)) return Forbid();
+        var rules = await _db.PayScaleRuleRegistrations.AsNoTracking()
+            .Where(x => x.RuleType == "PayScale")
+            .OrderBy(x => x.Name).Select(x => new { x.Id, x.Name }).ToListAsync(ct);
+        var contracts = await _db.ContractTypes.AsNoTracking().Where(x => x.IsActive).OrderBy(x => x.DisplayOrder).ThenBy(x => x.Name).Select(x => x.Name).ToListAsync(ct);
+        var frequencies = await _db.FrequencyTypes.AsNoTracking().Where(x => x.IsActive).OrderBy(x => x.DisplayOrder).ThenBy(x => x.Name).Select(x => x.Name).ToListAsync(ct);
+        var rates = await _db.RateTypes.AsNoTracking().Where(x => x.IsActive).OrderBy(x => x.DisplayOrder).ThenBy(x => x.Name).Select(x => x.Name).ToListAsync(ct);
+        return Ok(new { rules, contracts, frequencies, rates });
+    }
+
     [HttpPost]
     public async Task<IActionResult> Create([FromBody] SaveSalaryScaleDto dto, CancellationToken ct)
     {
@@ -54,6 +68,17 @@ public sealed class SalaryScalesController : ControllerBase
         if (validation != null) return BadRequest(new { message = validation });
 
         var scaleName = dto.ScaleName.Trim();
+        if (string.IsNullOrWhiteSpace(scaleName) && dto.RuleRegistrationId.HasValue)
+        {
+            var ruleName = await _db.PayScaleRuleRegistrations.AsNoTracking()
+                .Where(x => x.Id == dto.RuleRegistrationId.Value && x.RuleType == "PayScale")
+                .Select(x => x.Name).SingleOrDefaultAsync(ct);
+            if (string.IsNullOrWhiteSpace(ruleName)) return BadRequest(new { message = "Select a valid PayScale rule." });
+            var prefix = ruleName.Trim();
+            var existingNames = await _db.SalaryScales.AsNoTracking().Where(x => x.ScaleName.StartsWith(prefix + "-")).Select(x => x.ScaleName).ToListAsync(ct);
+            var next = existingNames.Select(x => int.TryParse(x[(prefix.Length + 1)..], out var number) ? number : 0).DefaultIfEmpty(0).Max() + 1;
+            scaleName = $"{prefix}-{next}";
+        }
         var duplicate = await _db.SalaryScales.AsNoTracking()
             .AnyAsync(scale => scale.TenantId == _tenantService.RequiredTenantId && scale.ScaleName == scaleName, ct);
         if (duplicate) return BadRequest(new { message = "This scale name already exists." });
@@ -63,6 +88,10 @@ public sealed class SalaryScalesController : ControllerBase
             TenantId = _tenantService.RequiredTenantId,
             ScaleName = scaleName,
             DisplayOrder = dto.DisplayOrder,
+            RuleRegistrationId = dto.RuleRegistrationId,
+            ApplicableType = NormalizeText(dto.ApplicableType, "", 50),
+            ApplyAfter = dto.ApplyAfter,
+            IncrementMonth = dto.IncrementMonth,
             ScaleType = NormalizeText(dto.ScaleType, "Regular", 50),
             PayMode = NormalizeText(dto.PayMode, "PM", 20),
             FrequencyType = NormalizeText(dto.FrequencyType ?? dto.ScaleType, "Regular", 50),
@@ -103,6 +132,10 @@ public sealed class SalaryScalesController : ControllerBase
 
         scale.ScaleName = scaleName;
         scale.DisplayOrder = dto.DisplayOrder;
+        scale.RuleRegistrationId = dto.RuleRegistrationId;
+        scale.ApplicableType = NormalizeText(dto.ApplicableType, "", 50);
+        scale.ApplyAfter = dto.ApplyAfter;
+        scale.IncrementMonth = dto.IncrementMonth;
         scale.ScaleType = NormalizeText(dto.ScaleType, "Regular", 50);
         scale.PayMode = NormalizeText(dto.PayMode, "PM", 20);
         scale.FrequencyType = NormalizeText(dto.FrequencyType ?? dto.ScaleType, "Regular", 50);
@@ -171,7 +204,7 @@ public sealed class SalaryScalesController : ControllerBase
 
     private static string? Validate(SaveSalaryScaleDto dto)
     {
-        if (string.IsNullOrWhiteSpace(dto.ScaleName)) return "Scale name is required.";
+        if (string.IsNullOrWhiteSpace(dto.ScaleName) && !dto.RuleRegistrationId.HasValue) return "PayScale rule is required.";
         if (dto.ScaleName.Trim().Length > 100) return "Scale name must be 100 characters or less.";
         if (!string.IsNullOrWhiteSpace(dto.ScaleType) && dto.ScaleType.Trim().Length > 50) return "Scale type must be 50 characters or less.";
         if (!string.IsNullOrWhiteSpace(dto.PayMode) && dto.PayMode.Trim().Length > 20) return "Pay mode must be 20 characters or less.";
@@ -192,6 +225,10 @@ public sealed class SalaryScalesController : ControllerBase
         Id = scale.Id,
         ScaleName = scale.ScaleName,
         DisplayOrder = scale.DisplayOrder,
+        RuleRegistrationId = scale.RuleRegistrationId,
+        ApplicableType = scale.ApplicableType,
+        ApplyAfter = scale.ApplyAfter,
+        IncrementMonth = scale.IncrementMonth,
         ScaleType = scale.ScaleType,
         PayMode = scale.PayMode,
         FrequencyType = scale.FrequencyType,
@@ -214,6 +251,10 @@ public sealed class SalaryScaleDto
     public int Id { get; set; }
     public string ScaleName { get; set; } = string.Empty;
     public int DisplayOrder { get; set; }
+    public int? RuleRegistrationId { get; set; }
+    public string? ApplicableType { get; set; }
+    public int? ApplyAfter { get; set; }
+    public int? IncrementMonth { get; set; }
     public string ScaleType { get; set; } = "Regular";
     public string PayMode { get; set; } = "PM";
     public string FrequencyType { get; set; } = "Regular";
@@ -234,6 +275,10 @@ public sealed class SaveSalaryScaleDto
 {
     public string ScaleName { get; set; } = string.Empty;
     public int DisplayOrder { get; set; }
+    public int? RuleRegistrationId { get; set; }
+    public string? ApplicableType { get; set; }
+    public int? ApplyAfter { get; set; }
+    public int? IncrementMonth { get; set; }
     public string? ScaleType { get; set; }
     public string? PayMode { get; set; }
     public string? FrequencyType { get; set; }

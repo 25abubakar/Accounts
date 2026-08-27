@@ -60,6 +60,63 @@ public sealed class PayScaleSetupController(
         return Ok(await db.PayRules.AsNoTracking().OrderBy(x => x.Name).ToListAsync(ct));
     }
 
+    [HttpGet("allowances")]
+    public async Task<IActionResult> Allowances([FromQuery] string? allowanceCategory, CancellationToken ct)
+    {
+        var denied = await Guard("VIEW", ct); if (denied != null) return denied;
+        var category = NormalizeAllowanceCategory(allowanceCategory);
+        return Ok(await db.PayScaleAllowances.AsNoTracking()
+            .Where(x => x.AllowanceCategory == category)
+            .OrderBy(x => x.Id)
+            .Select(x => new AllowanceRowDto(
+                x.Id, x.AllowanceReference, x.Name, x.SalaryScaleId, x.SalaryScale!.ScaleName,
+                x.AllowanceTypeId, x.AllowanceType!.Name, x.ContractType, x.FrequencyType,
+                x.RateType, x.PayType, x.PayValue, x.CalculatedValue, x.AllowanceCategory))
+            .ToListAsync(ct));
+    }
+
+    [HttpGet("allowance-lookups")]
+    public async Task<IActionResult> AllowanceLookups([FromQuery] string? allowanceCategory, CancellationToken ct)
+    {
+        var denied = await Guard("VIEW", ct); if (denied != null) return denied;
+        var category = NormalizeAllowanceCategory(allowanceCategory);
+        return Ok(new
+        {
+            scales = await db.SalaryScales.AsNoTracking().Where(x => x.IsActive).OrderBy(x => x.ScaleName)
+                .Select(x => new { x.Id, Name = x.ScaleName }).ToListAsync(ct),
+            allowanceTypes = await db.AllowanceTypes.AsNoTracking().Where(x => x.IsActive && x.AllowanceCategory == category)
+                .OrderBy(x => x.DisplayOrder).ThenBy(x => x.Name).Select(x => new { x.Id, x.Name }).ToListAsync(ct),
+            contracts = await db.ContractTypes.AsNoTracking().Where(x => x.IsActive).OrderBy(x => x.DisplayOrder).ThenBy(x => x.Name).Select(x => x.Name).ToListAsync(ct),
+            frequencies = await db.FrequencyTypes.AsNoTracking().Where(x => x.IsActive).OrderBy(x => x.DisplayOrder).ThenBy(x => x.Name).Select(x => x.Name).ToListAsync(ct),
+            rates = await db.RateTypes.AsNoTracking().Where(x => x.IsActive).OrderBy(x => x.DisplayOrder).ThenBy(x => x.Name).Select(x => x.Name).ToListAsync(ct),
+            payTypes = new[] { "Basic" }
+        });
+    }
+
+    [HttpPost("allowances")]
+    public async Task<IActionResult> CreateAllowance(AllowanceSave dto, CancellationToken ct)
+    {
+        var denied = await Guard("ADD", ct); if (denied != null) return denied;
+        var error = await ValidateAllowance(dto, null, ct); if (error != null) return BadRequest(new { message = error });
+        var scale = await db.SalaryScales.SingleAsync(x => x.Id == dto.SalaryScaleId, ct);
+        var row = new PayScaleAllowance { TenantId = tenant.RequiredTenantId };
+        Apply(row, dto, scale);
+        db.Add(row); await db.SaveChangesAsync(ct);
+        return Ok(await AllowanceRow(row.Id, ct));
+    }
+
+    [HttpPut("allowances/{id:int}")]
+    public async Task<IActionResult> UpdateAllowance(int id, AllowanceSave dto, CancellationToken ct)
+    {
+        var denied = await Guard("EDIT", ct); if (denied != null) return denied;
+        var row = await db.PayScaleAllowances.SingleOrDefaultAsync(x => x.Id == id, ct); if (row == null) return NotFound();
+        var error = await ValidateAllowance(dto, id, ct); if (error != null) return BadRequest(new { message = error });
+        var scale = await db.SalaryScales.SingleAsync(x => x.Id == dto.SalaryScaleId, ct);
+        Apply(row, dto, scale); row.UpdatedOnUtc = DateTime.UtcNow;
+        await db.SaveChangesAsync(ct);
+        return Ok(await AllowanceRow(row.Id, ct));
+    }
+
     [HttpPost("rules")]
     public async Task<IActionResult> CreateRule(PayRuleSave dto, CancellationToken ct)
     {
@@ -202,6 +259,17 @@ public sealed class PayScaleSetupController(
         if (!await db.PayRules.AnyAsync(p => p.Id == x.PayRuleId && p.IsActive, ct)) return "Select an active Pay Rule.";
         return null;
     }
+    private async Task<string?> ValidateAllowance(AllowanceSave x, int? id, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(x.Name)) return "Allowance name is required.";
+        if (x.PayValue < 0) return "Pay value cannot be negative.";
+        if (!await db.SalaryScales.AnyAsync(p => p.Id == x.SalaryScaleId && p.IsActive, ct)) return "Select an active Pay Scale.";
+        var category = NormalizeAllowanceCategory(x.AllowanceCategory);
+        if (!await db.AllowanceTypes.AnyAsync(p => p.Id == x.AllowanceTypeId && p.IsActive && p.AllowanceCategory == category, ct)) return "Select a valid Allowance Type.";
+        if (await db.PayScaleAllowances.AnyAsync(p => p.Id != id && p.SalaryScaleId == x.SalaryScaleId && p.AllowanceTypeId == x.AllowanceTypeId && p.Name == x.Name.Trim() && p.AllowanceCategory == category, ct))
+            return "This allowance already exists for the selected scale and allowance type.";
+        return null;
+    }
     private static string? ValidateRuleRegistration(RuleRegistrationSave x)
     {
         var allowedTypes = new[] { "PayScale", "Allowances", "TADA", "Leave" };
@@ -219,12 +287,40 @@ public sealed class PayScaleSetupController(
         return normalized is "APPT" or "NIGHT" ? normalized : "GENERAL";
     }
     private static void Apply(PayRule x, PayRuleSave d) { x.Code=d.Code.Trim(); x.Name=d.Name.Trim(); x.RuleType=string.IsNullOrWhiteSpace(d.RuleType) ? "Standard" : d.RuleType.Trim(); x.DateFrom=d.DateFrom; x.DateTo=d.DateTo; x.WorkingDaysBasis=d.WorkingDaysBasis.Trim(); x.FixedWorkingDays=d.FixedWorkingDays; x.WorkingHoursPerDay=d.WorkingHoursPerDay; x.OvertimeMultiplier=d.OvertimeMultiplier; x.RoundingMode=d.RoundingMode.Trim(); x.IsActive=d.IsActive; x.Description=Clean(d.Description); }
+    private static void Apply(PayScaleAllowance x, AllowanceSave d, SalaryScale scale)
+    {
+        x.AllowanceReference = $"A-{scale.ScaleName}";
+        x.Name = d.Name.Trim();
+        x.SalaryScaleId = d.SalaryScaleId;
+        x.AllowanceTypeId = d.AllowanceTypeId;
+        x.ContractType = Clean(d.ContractType);
+        x.FrequencyType = Clean(d.FrequencyType);
+        x.RateType = Clean(d.RateType);
+        x.PayType = Clean(d.PayType);
+        x.PayValue = d.PayValue;
+        x.AllowanceCategory = NormalizeAllowanceCategory(d.AllowanceCategory);
+        var basis = string.Equals(x.PayType, "Basic", StringComparison.OrdinalIgnoreCase) ? scale.BasicSalary
+            : string.Equals(x.PayType, "Gross", StringComparison.OrdinalIgnoreCase) ? scale.GrossSalary
+            : string.Equals(x.PayType, "CurrentPay", StringComparison.OrdinalIgnoreCase) ? scale.CurrentPay : 0m;
+        x.CalculatedValue = x.RateType?.Contains("Percentage", StringComparison.OrdinalIgnoreCase) == true
+            ? Math.Round(basis * x.PayValue / 100m, 2, MidpointRounding.AwayFromZero)
+            : Math.Round(x.PayValue, 2, MidpointRounding.AwayFromZero);
+    }
     private static void Apply(PlatformTypeTableRow x, PlatformMasterSave d) { x.Code=d.Code.Trim().ToUpperInvariant(); x.Name=d.Name.Trim(); x.DisplayOrder=d.DisplayOrder; x.IsActive=d.IsActive; }
     private static void Apply(SalaryPackage x, SalaryPackageSave d) { x.Code=d.Code.Trim(); x.Name=d.Name.Trim(); x.SalaryScaleId=d.SalaryScaleId; x.PayRuleId=d.PayRuleId; x.IsActive=d.IsActive; x.Description=Clean(d.Description); }
     private static string? Clean(string? x) => string.IsNullOrWhiteSpace(x) ? null : x.Trim();
+    private Task<AllowanceRowDto?> AllowanceRow(int id, CancellationToken ct) => db.PayScaleAllowances.AsNoTracking()
+        .Where(x => x.Id == id)
+        .Select(x => new AllowanceRowDto(
+            x.Id, x.AllowanceReference, x.Name, x.SalaryScaleId, x.SalaryScale!.ScaleName,
+            x.AllowanceTypeId, x.AllowanceType!.Name, x.ContractType, x.FrequencyType,
+            x.RateType, x.PayType, x.PayValue, x.CalculatedValue, x.AllowanceCategory))
+        .SingleOrDefaultAsync(ct);
 }
 
 public sealed record RuleRegistrationSave(string RuleType, string Name, DateTime DateFrom, DateTime DateTo);
 public sealed record PayRuleSave(string Code, string Name, string WorkingDaysBasis, int FixedWorkingDays, decimal WorkingHoursPerDay, decimal OvertimeMultiplier, string RoundingMode, bool IsActive, string? Description, string? RuleType = null, DateTime? DateFrom = null, DateTime? DateTo = null);
 public sealed record PlatformMasterSave(string Code, string Name, int DisplayOrder, bool IsActive, string? AllowanceCategory = null);
 public sealed record SalaryPackageSave(string Code, string Name, int SalaryScaleId, int PayRuleId, bool IsActive, string? Description);
+public sealed record AllowanceSave(string Name, int SalaryScaleId, int AllowanceTypeId, string? ContractType, string? FrequencyType, string? RateType, string? PayType, decimal PayValue, string? AllowanceCategory = "GENERAL");
+public sealed record AllowanceRowDto(int Id, string AllowanceRef, string AllowName, int SalaryScaleId, string Scale, int AllowanceTypeId, string AllowanceType, string? ContractType, string? FrequencyType, string? RateType, string? PayType, decimal PayValue, decimal CalculatedValue, string AllowanceCategory);

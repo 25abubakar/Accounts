@@ -106,6 +106,28 @@ public sealed class PayScaleRuleRegistration : ITenantEntity
     public DateTime? UpdatedOnUtc { get; set; }
 }
 
+[Table("PayScaleAllowances")]
+public sealed class PayScaleAllowance : ITenantEntity
+{
+    [Key] public int Id { get; set; }
+    public int TenantId { get; set; }
+    [Required, MaxLength(30)] public string AllowanceReference { get; set; } = string.Empty;
+    [Required, MaxLength(120)] public string Name { get; set; } = string.Empty;
+    public int SalaryScaleId { get; set; }
+    public int AllowanceTypeId { get; set; }
+    [MaxLength(50)] public string? ContractType { get; set; }
+    [MaxLength(50)] public string? FrequencyType { get; set; }
+    [MaxLength(50)] public string? RateType { get; set; }
+    [MaxLength(50)] public string? PayType { get; set; }
+    [Column(TypeName = "decimal(18,4)")] public decimal PayValue { get; set; }
+    [Column(TypeName = "decimal(18,2)")] public decimal CalculatedValue { get; set; }
+    [Required, MaxLength(20)] public string AllowanceCategory { get; set; } = "GENERAL";
+    public DateTime CreatedOnUtc { get; set; } = DateTime.UtcNow;
+    public DateTime? UpdatedOnUtc { get; set; }
+    public SalaryScale? SalaryScale { get; set; }
+    public AllowanceType? AllowanceType { get; set; }
+}
+
 [Table("PayRules")]
 public sealed class PayRule : ITenantEntity
 {

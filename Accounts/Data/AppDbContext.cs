@@ -52,6 +52,7 @@ namespace Accounts.Data
         public DbSet<PayrollTaxSlab>           PayrollTaxSlabs         => Set<PayrollTaxSlab>();
         public DbSet<EobiEligibility>          EobiEligibilities       => Set<EobiEligibility>();
         public DbSet<PayScaleRuleRegistration> PayScaleRuleRegistrations => Set<PayScaleRuleRegistration>();
+        public DbSet<PayScaleAllowance>        PayScaleAllowances      => Set<PayScaleAllowance>();
         public DbSet<PayRule>                  PayRules                => Set<PayRule>();
         public DbSet<SalaryPackage>             SalaryPackages          => Set<SalaryPackage>();
         public DbSet<PlatformTypeCategory>     PlatformTypeCategories   => Set<PlatformTypeCategory>();
@@ -253,6 +254,8 @@ namespace Accounts.Data
             builder.Entity<EobiEligibility>().HasQueryFilter(row =>
                 _tenantService != null && !_tenantService.IsSuperAdmin && _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
             builder.Entity<PayScaleRuleRegistration>().HasQueryFilter(row =>
+                _tenantService != null && !_tenantService.IsSuperAdmin && _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
+            builder.Entity<PayScaleAllowance>().HasQueryFilter(row =>
                 _tenantService != null && !_tenantService.IsSuperAdmin && _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
             builder.Entity<PayRule>().HasQueryFilter(row =>
                 _tenantService != null && !_tenantService.IsSuperAdmin && _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
@@ -542,6 +545,8 @@ namespace Accounts.Data
                 e.Property(x => x.YearlyIncrement).HasColumnType("decimal(18,2)");
                 e.Property(x => x.GrossSalary).HasColumnType("decimal(18,2)");
                 e.Property(x => x.CurrentPay).HasColumnType("decimal(18,2)");
+                e.Property(x => x.ApplicableType).HasMaxLength(50);
+                e.HasOne(x => x.RuleRegistration).WithMany().HasForeignKey(x => x.RuleRegistrationId).OnDelete(DeleteBehavior.Restrict);
                 e.Property(x => x.MedicalAllowance).HasColumnType("decimal(18,2)");
                 e.Property(x => x.TravellingAllowance).HasColumnType("decimal(18,2)");
                 e.Property(x => x.Other).HasColumnType("decimal(18,2)");
@@ -1541,6 +1546,14 @@ namespace Accounts.Data
             {
                 e.HasIndex(x => new { x.TenantId, x.RuleType, x.Name }).IsUnique();
                 e.HasIndex(x => new { x.TenantId, x.DateFrom, x.DateTo });
+                e.HasOne<Tenant>().WithMany().HasForeignKey(x => x.TenantId).OnDelete(DeleteBehavior.Restrict);
+            });
+            builder.Entity<PayScaleAllowance>(e =>
+            {
+                e.HasIndex(x => new { x.TenantId, x.AllowanceCategory, x.SalaryScaleId, x.AllowanceTypeId });
+                e.HasIndex(x => new { x.TenantId, x.AllowanceReference });
+                e.HasOne(x => x.SalaryScale).WithMany().HasForeignKey(x => x.SalaryScaleId).OnDelete(DeleteBehavior.Restrict);
+                e.HasOne(x => x.AllowanceType).WithMany().HasForeignKey(x => x.AllowanceTypeId).OnDelete(DeleteBehavior.Restrict);
                 e.HasOne<Tenant>().WithMany().HasForeignKey(x => x.TenantId).OnDelete(DeleteBehavior.Restrict);
             });
             builder.Entity<PayRule>(e =>

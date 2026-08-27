@@ -4,6 +4,7 @@ using Accounts.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 #nullable disable
@@ -11,9 +12,11 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace Accounts.Migrations
 {
     [DbContext(typeof(ApplicationDbContext))]
-    partial class ApplicationDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260827062040_AddPayScaleRegistrationFields")]
+    partial class AddPayScaleRegistrationFields
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -3303,79 +3306,6 @@ namespace Accounts.Migrations
                         .IsUnique();
 
                     b.ToTable("PayRules");
-                });
-
-            modelBuilder.Entity("Accounts.Models.PayScaleAllowance", b =>
-                {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("int");
-
-                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
-
-                    b.Property<string>("AllowanceCategory")
-                        .IsRequired()
-                        .HasMaxLength(20)
-                        .HasColumnType("nvarchar(20)");
-
-                    b.Property<string>("AllowanceReference")
-                        .IsRequired()
-                        .HasMaxLength(30)
-                        .HasColumnType("nvarchar(30)");
-
-                    b.Property<int>("AllowanceTypeId")
-                        .HasColumnType("int");
-
-                    b.Property<decimal>("CalculatedValue")
-                        .HasColumnType("decimal(18,2)");
-
-                    b.Property<string>("ContractType")
-                        .HasMaxLength(50)
-                        .HasColumnType("nvarchar(50)");
-
-                    b.Property<DateTime>("CreatedOnUtc")
-                        .HasColumnType("datetime2");
-
-                    b.Property<string>("FrequencyType")
-                        .HasMaxLength(50)
-                        .HasColumnType("nvarchar(50)");
-
-                    b.Property<string>("Name")
-                        .IsRequired()
-                        .HasMaxLength(120)
-                        .HasColumnType("nvarchar(120)");
-
-                    b.Property<string>("PayType")
-                        .HasMaxLength(50)
-                        .HasColumnType("nvarchar(50)");
-
-                    b.Property<decimal>("PayValue")
-                        .HasColumnType("decimal(18,4)");
-
-                    b.Property<string>("RateType")
-                        .HasMaxLength(50)
-                        .HasColumnType("nvarchar(50)");
-
-                    b.Property<int>("SalaryScaleId")
-                        .HasColumnType("int");
-
-                    b.Property<int>("TenantId")
-                        .HasColumnType("int");
-
-                    b.Property<DateTime?>("UpdatedOnUtc")
-                        .HasColumnType("datetime2");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("AllowanceTypeId");
-
-                    b.HasIndex("SalaryScaleId");
-
-                    b.HasIndex("TenantId", "AllowanceReference");
-
-                    b.HasIndex("TenantId", "AllowanceCategory", "SalaryScaleId", "AllowanceTypeId");
-
-                    b.ToTable("PayScaleAllowances");
                 });
 
             modelBuilder.Entity("Accounts.Models.PayScaleRuleRegistration", b =>
@@ -6788,31 +6718,6 @@ namespace Accounts.Migrations
                         .HasForeignKey("TenantId")
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
-                });
-
-            modelBuilder.Entity("Accounts.Models.PayScaleAllowance", b =>
-                {
-                    b.HasOne("Accounts.Models.AllowanceType", "AllowanceType")
-                        .WithMany()
-                        .HasForeignKey("AllowanceTypeId")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
-
-                    b.HasOne("Accounts.Models.SalaryScale", "SalaryScale")
-                        .WithMany()
-                        .HasForeignKey("SalaryScaleId")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
-
-                    b.HasOne("Accounts.Models.Tenant", null)
-                        .WithMany()
-                        .HasForeignKey("TenantId")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
-
-                    b.Navigation("AllowanceType");
-
-                    b.Navigation("SalaryScale");
                 });
 
             modelBuilder.Entity("Accounts.Models.PayScaleRuleRegistration", b =>

@@ -18,6 +18,15 @@ public class SalaryScale : ITenantEntity
 
     public int DisplayOrder { get; set; }
 
+    public int? RuleRegistrationId { get; set; }
+
+    [MaxLength(50)]
+    public string? ApplicableType { get; set; }
+
+    public int? ApplyAfter { get; set; }
+
+    public int? IncrementMonth { get; set; }
+
     [MaxLength(50)]
     public string ScaleType { get; set; } = "Regular";
 
@@ -60,4 +69,6 @@ public class SalaryScale : ITenantEntity
     public bool IsActive { get; set; } = true;
     public DateTime CreatedDate { get; set; } = DateTime.UtcNow;
     public DateTime? ModifiedDate { get; set; }
+
+    public PayScaleRuleRegistration? RuleRegistration { get; set; }
 }
