@@ -24,6 +24,9 @@ public sealed class AttendanceDailyFinalization : ITenantEntity
     public int WorkedMinutes { get; set; }
     public int ShortMinutes { get; set; }
     public int OvertimeMinutes { get; set; }
+    public int LateMinutes { get; set; }
+    public int LateBandMinutes { get; set; }
+    public int LatePenaltyMinutes { get; set; }
     public DateTime? FinalizedDateUtc { get; set; }
     public DateTime LastEvaluatedDateUtc { get; set; }
 }

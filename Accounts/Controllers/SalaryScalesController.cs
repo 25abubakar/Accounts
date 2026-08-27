@@ -15,7 +15,7 @@ namespace Accounts.Controllers;
 [Produces("application/json")]
 public sealed class SalaryScalesController : ControllerBase
 {
-    private const string RoutePath = "/settings/scales";
+    private static readonly string[] RoutePaths = ["/pay-allowances/pay-scale", "/settings/scales"];
     private readonly ApplicationDbContext _db;
     private readonly ITenantService _tenantService;
     private readonly RbacService _rbac;
@@ -65,10 +65,14 @@ public sealed class SalaryScalesController : ControllerBase
             DisplayOrder = dto.DisplayOrder,
             ScaleType = NormalizeText(dto.ScaleType, "Regular", 50),
             PayMode = NormalizeText(dto.PayMode, "PM", 20),
+            FrequencyType = NormalizeText(dto.FrequencyType ?? dto.ScaleType, "Regular", 50),
+            ContractType = NormalizeText(dto.ContractType, "", 50),
+            RateType = NormalizeText(dto.RateType ?? dto.PayMode, "PM", 20),
             BasicSalary = dto.BasicSalary,
             MaximumSalary = dto.MaximumSalary,
             YearlyIncrement = dto.YearlyIncrement,
             GrossSalary = dto.GrossSalary,
+            CurrentPay = dto.CurrentPay ?? dto.GrossSalary,
             MedicalAllowance = dto.MedicalAllowance,
             TravellingAllowance = dto.TravellingAllowance,
             Other = dto.Other,
@@ -101,10 +105,14 @@ public sealed class SalaryScalesController : ControllerBase
         scale.DisplayOrder = dto.DisplayOrder;
         scale.ScaleType = NormalizeText(dto.ScaleType, "Regular", 50);
         scale.PayMode = NormalizeText(dto.PayMode, "PM", 20);
+        scale.FrequencyType = NormalizeText(dto.FrequencyType ?? dto.ScaleType, "Regular", 50);
+        scale.ContractType = NormalizeText(dto.ContractType, "", 50);
+        scale.RateType = NormalizeText(dto.RateType ?? dto.PayMode, "PM", 20);
         scale.BasicSalary = dto.BasicSalary;
         scale.MaximumSalary = dto.MaximumSalary;
         scale.YearlyIncrement = dto.YearlyIncrement;
         scale.GrossSalary = dto.GrossSalary;
+        scale.CurrentPay = dto.CurrentPay ?? dto.GrossSalary;
         scale.MedicalAllowance = dto.MedicalAllowance;
         scale.TravellingAllowance = dto.TravellingAllowance;
         scale.Other = dto.Other;
@@ -132,7 +140,7 @@ public sealed class SalaryScalesController : ControllerBase
     {
         if (TenantPermissionService.IsSuperAdmin(User)) return true;
         if (TenantPermissionService.IsTenantAdmin(User))
-            return await _tenantPermissions.HasMenuRouteAsync(User, [RoutePath], action, ct);
+            return await _tenantPermissions.HasMenuRouteAsync(User, RoutePaths, action, ct);
         if (!_tenantService.TenantId.HasValue) return false;
 
         var identityUserId = User.FindFirstValue(ClaimTypes.NameIdentifier);
@@ -144,16 +152,21 @@ public sealed class SalaryScalesController : ControllerBase
             .FirstOrDefaultAsync(ct);
         if (!staffId.HasValue) return false;
 
-        var menuId = await _db.Menus.AsNoTracking()
-            .Where(menu => menu.IsActive && menu.Route == RoutePath)
-            .Select(menu => (int?)menu.Id)
-            .FirstOrDefaultAsync(ct);
-        if (!menuId.HasValue) return false;
+        var menuIds = await _db.Menus.AsNoTracking()
+            .Where(menu => menu.IsActive && menu.Route != null && RoutePaths.Contains(menu.Route))
+            .Select(menu => menu.Id)
+            .ToListAsync(ct);
+        if (menuIds.Count == 0) return false;
 
         var normalizedAction = action.Trim().ToUpperInvariant();
-        if (normalizedAction == "VIEW" && await _rbac.HasAccessAsync(staffId.Value, $"MENU_{menuId.Value}"))
-            return true;
-        return await _rbac.HasAccessAsync(staffId.Value, $"MENU_{menuId.Value}_{normalizedAction}");
+        foreach (var menuId in menuIds)
+        {
+            if (normalizedAction == "VIEW" && await _rbac.HasAccessAsync(staffId.Value, $"MENU_{menuId}"))
+                return true;
+            if (await _rbac.HasAccessAsync(staffId.Value, $"MENU_{menuId}_{normalizedAction}"))
+                return true;
+        }
+        return false;
     }
 
     private static string? Validate(SaveSalaryScaleDto dto)
@@ -181,10 +194,14 @@ public sealed class SalaryScalesController : ControllerBase
         DisplayOrder = scale.DisplayOrder,
         ScaleType = scale.ScaleType,
         PayMode = scale.PayMode,
+        FrequencyType = scale.FrequencyType,
+        ContractType = scale.ContractType,
+        RateType = scale.RateType,
         BasicSalary = scale.BasicSalary,
         MaximumSalary = scale.MaximumSalary,
         YearlyIncrement = scale.YearlyIncrement,
         GrossSalary = scale.GrossSalary,
+        CurrentPay = scale.CurrentPay,
         MedicalAllowance = scale.MedicalAllowance,
         TravellingAllowance = scale.TravellingAllowance,
         Other = scale.Other,
@@ -199,10 +216,14 @@ public sealed class SalaryScaleDto
     public int DisplayOrder { get; set; }
     public string ScaleType { get; set; } = "Regular";
     public string PayMode { get; set; } = "PM";
+    public string FrequencyType { get; set; } = "Regular";
+    public string? ContractType { get; set; }
+    public string RateType { get; set; } = "PM";
     public decimal BasicSalary { get; set; }
     public decimal MaximumSalary { get; set; }
     public decimal YearlyIncrement { get; set; }
     public decimal GrossSalary { get; set; }
+    public decimal CurrentPay { get; set; }
     public decimal MedicalAllowance { get; set; }
     public decimal TravellingAllowance { get; set; }
     public decimal Other { get; set; }
@@ -215,10 +236,14 @@ public sealed class SaveSalaryScaleDto
     public int DisplayOrder { get; set; }
     public string? ScaleType { get; set; }
     public string? PayMode { get; set; }
+    public string? FrequencyType { get; set; }
+    public string? ContractType { get; set; }
+    public string? RateType { get; set; }
     public decimal BasicSalary { get; set; }
     public decimal MaximumSalary { get; set; }
     public decimal YearlyIncrement { get; set; }
     public decimal GrossSalary { get; set; }
+    public decimal? CurrentPay { get; set; }
     public decimal MedicalAllowance { get; set; }
     public decimal TravellingAllowance { get; set; }
     public decimal Other { get; set; }

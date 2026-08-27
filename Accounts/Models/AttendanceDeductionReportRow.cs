@@ -17,6 +17,8 @@ public sealed class AttendanceDeductionReportRow
     public int MonthWorkingMinutes { get; set; }
     public int MonthAttendanceMinutes { get; set; }
     public int NetShortMinutes { get; set; }
+    public int LatePenaltyMinutes { get; set; }
+    public int DeductibleMinutes { get; set; }
     public int NetOvertimeMinutes { get; set; }
     public decimal NetDeduction { get; set; }
     public decimal OvertimeBonusAmount { get; set; }

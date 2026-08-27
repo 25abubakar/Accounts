@@ -24,6 +24,15 @@ public class SalaryScale : ITenantEntity
     [MaxLength(20)]
     public string PayMode { get; set; } = "PM";
 
+    [MaxLength(50)]
+    public string FrequencyType { get; set; } = "Regular";
+
+    [MaxLength(50)]
+    public string? ContractType { get; set; }
+
+    [MaxLength(20)]
+    public string RateType { get; set; } = "PM";
+
     [Column(TypeName = "decimal(18,2)")]
     public decimal BasicSalary { get; set; }
 
@@ -35,6 +44,9 @@ public class SalaryScale : ITenantEntity
 
     [Column(TypeName = "decimal(18,2)")]
     public decimal GrossSalary { get; set; }
+
+    [Column(TypeName = "decimal(18,2)")]
+    public decimal CurrentPay { get; set; }
 
     [Column(TypeName = "decimal(18,2)")]
     public decimal MedicalAllowance { get; set; }

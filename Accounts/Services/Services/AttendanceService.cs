@@ -953,16 +953,22 @@ public sealed class AttendanceService : IAttendanceService
 
                 foreach (var finalization in ordered)
                 {
+                    var deductibleShortMinutes = 0;
                     var deductibleMinutes = 0;
                     if (finalization.IsFinalized)
                     {
-                        deductibleMinutes = Math.Max(0, finalization.ShortMinutes);
+                        deductibleShortMinutes = Math.Max(0, finalization.ShortMinutes);
                         if (finalization.IsFullDayAbsent && remainingAbsentWaiverMinutes > 0)
                         {
-                            var waivedMinutes = Math.Min(deductibleMinutes, remainingAbsentWaiverMinutes);
-                            deductibleMinutes -= waivedMinutes;
+                            var waivedMinutes = Math.Min(deductibleShortMinutes, remainingAbsentWaiverMinutes);
+                            deductibleShortMinutes -= waivedMinutes;
                             remainingAbsentWaiverMinutes -= waivedMinutes;
                         }
+                        // Late and short time overlap. Taking the larger amount prevents
+                        // the same missing hour from being deducted twice.
+                        deductibleMinutes = Math.Max(
+                            deductibleShortMinutes,
+                            Math.Max(0, finalization.LatePenaltyMinutes));
                         cumulativeDeductibleMinutes += deductibleMinutes;
                     }
 
@@ -974,6 +980,9 @@ public sealed class AttendanceService : IAttendanceService
                     reportRow.DeductionAmount = finalization.IsFinalized
                         ? CalculateDeductionAmount(deductibleMinutes, rate.PerHour)
                         : null;
+                    reportRow.LatePenaltyMinutes = finalization.IsFinalized
+                        ? Math.Max(0, finalization.LatePenaltyMinutes)
+                        : 0;
                     reportRow.TotalDeductionAmount = CalculateDeductionAmount(
                         cumulativeDeductibleMinutes,
                         rate.PerHour);
@@ -1291,6 +1300,8 @@ public sealed class AttendanceService : IAttendanceService
                     MonthWorkingMinutes = row.MonthWorkingMinutes,
                     MonthAttendanceMinutes = row.MonthAttendanceMinutes,
                     NetShortMinutes = row.NetShortMinutes,
+                    LatePenaltyMinutes = row.LatePenaltyMinutes,
+                    DeductibleMinutes = row.DeductibleMinutes,
                     NetOvertimeMinutes = row.NetOvertimeMinutes,
                     NetDeduction = row.NetDeduction,
                     OvertimeBonusAmount = row.OvertimeBonusAmount,

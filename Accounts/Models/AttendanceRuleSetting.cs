@@ -38,6 +38,10 @@ public sealed class AttendanceRuleSetting
     public bool IsApproved { get; set; }
     public bool IsActive { get; set; } = true;
     public bool IsOvertimeBonusActive { get; set; }
+    public bool IsCompletedLateDeductionActive { get; set; }
+
+    [Column(TypeName = "decimal(5,2)")]
+    public decimal CompletedLateDeductionPercentage { get; set; } = 50m;
 
     [MaxLength(500)]
     public string? Remarks { get; set; }

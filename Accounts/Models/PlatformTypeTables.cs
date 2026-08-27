@@ -47,7 +47,11 @@ public sealed class FrequencyType : PlatformTypeTableRow;
 public sealed class RateType : PlatformTypeTableRow;
 
 [Table("AllowanceTypes", Schema = "PlatformTypes")]
-public sealed class AllowanceType : PlatformTypeTableRow;
+public sealed class AllowanceType : PlatformTypeTableRow
+{
+    [Required, MaxLength(20)]
+    public string AllowanceCategory { get; set; } = "GENERAL";
+}
 
 [Table("TadaTypes", Schema = "PlatformTypes")]
 public sealed class TadaType : PlatformTypeTableRow;

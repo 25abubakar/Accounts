@@ -254,6 +254,7 @@ public sealed class DailyAttendanceRowDto
     public decimal? PerHour { get; set; }
     public decimal? DeductionAmount { get; set; }
     public decimal? TotalDeductionAmount { get; set; }
+    public int LatePenaltyMinutes { get; set; }
     public string? StatusChange { get; set; }
     public bool Present { get; set; }
     public bool Absent { get; set; }
@@ -366,6 +367,8 @@ public sealed class AttendanceDeductionRowDto
     public int MonthWorkingMinutes { get; set; }
     public int MonthAttendanceMinutes { get; set; }
     public int NetShortMinutes { get; set; }
+    public int LatePenaltyMinutes { get; set; }
+    public int DeductibleMinutes { get; set; }
     public int NetOvertimeMinutes { get; set; }
     public decimal NetDeduction { get; set; }
     public decimal OvertimeBonusAmount { get; set; }
@@ -558,6 +561,8 @@ public sealed class AttendanceRuleSettingDto
     public bool IsApproved { get; set; }
     public bool IsActive { get; set; }
     public bool IsOvertimeBonusActive { get; set; }
+    public bool IsCompletedLateDeductionActive { get; set; }
+    public decimal CompletedLateDeductionPercentage { get; set; }
     public string? Remarks { get; set; }
 }
 
@@ -587,5 +592,7 @@ public sealed class SaveAttendanceRuleSettingDto
     public bool IsApproved { get; set; }
     public bool IsActive { get; set; } = true;
     public bool IsOvertimeBonusActive { get; set; }
+    public bool IsCompletedLateDeductionActive { get; set; }
+    public decimal CompletedLateDeductionPercentage { get; set; } = 50m;
     public string? Remarks { get; set; }
 }

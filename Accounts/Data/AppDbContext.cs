@@ -45,6 +45,15 @@ namespace Accounts.Data
         public DbSet<LibraryTemplate>          LibraryTemplates         => Set<LibraryTemplate>();
         public DbSet<GeneratedInvoice>         GeneratedInvoices        => Set<GeneratedInvoice>();
         public DbSet<GeneratedInvoiceLine>     GeneratedInvoiceLines    => Set<GeneratedInvoiceLine>();
+        public DbSet<PayrollBenefitDefinition> PayrollBenefitDefinitions => Set<PayrollBenefitDefinition>();
+        public DbSet<PayrollBonusDefinition>   PayrollBonusDefinitions => Set<PayrollBonusDefinition>();
+        public DbSet<PayrollRun>               PayrollRuns             => Set<PayrollRun>();
+        public DbSet<EobiSetting>              EobiSettings            => Set<EobiSetting>();
+        public DbSet<PayrollTaxSlab>           PayrollTaxSlabs         => Set<PayrollTaxSlab>();
+        public DbSet<EobiEligibility>          EobiEligibilities       => Set<EobiEligibility>();
+        public DbSet<PayScaleRuleRegistration> PayScaleRuleRegistrations => Set<PayScaleRuleRegistration>();
+        public DbSet<PayRule>                  PayRules                => Set<PayRule>();
+        public DbSet<SalaryPackage>             SalaryPackages          => Set<SalaryPackage>();
         public DbSet<PlatformTypeCategory>     PlatformTypeCategories   => Set<PlatformTypeCategory>();
         public DbSet<PlatformTypeValue>        PlatformTypeValues       => Set<PlatformTypeValue>();
         public DbSet<ContractType>             ContractTypes            => Set<ContractType>();
@@ -231,6 +240,24 @@ namespace Accounts.Data
             builder.Entity<SalaryScale>().HasQueryFilter(row =>
                 _tenantService != null && !_tenantService.IsSuperAdmin &&
                 _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
+            builder.Entity<PayrollBenefitDefinition>().HasQueryFilter(row =>
+                _tenantService != null && !_tenantService.IsSuperAdmin && _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
+            builder.Entity<PayrollBonusDefinition>().HasQueryFilter(row =>
+                _tenantService != null && !_tenantService.IsSuperAdmin && _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
+            builder.Entity<PayrollRun>().HasQueryFilter(row =>
+                _tenantService != null && !_tenantService.IsSuperAdmin && _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
+            builder.Entity<EobiSetting>().HasQueryFilter(row =>
+                _tenantService != null && !_tenantService.IsSuperAdmin && _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
+            builder.Entity<PayrollTaxSlab>().HasQueryFilter(row =>
+                _tenantService != null && !_tenantService.IsSuperAdmin && _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
+            builder.Entity<EobiEligibility>().HasQueryFilter(row =>
+                _tenantService != null && !_tenantService.IsSuperAdmin && _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
+            builder.Entity<PayScaleRuleRegistration>().HasQueryFilter(row =>
+                _tenantService != null && !_tenantService.IsSuperAdmin && _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
+            builder.Entity<PayRule>().HasQueryFilter(row =>
+                _tenantService != null && !_tenantService.IsSuperAdmin && _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
+            builder.Entity<SalaryPackage>().HasQueryFilter(row =>
+                _tenantService != null && !_tenantService.IsSuperAdmin && _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
             builder.Entity<LibraryCategory>().HasQueryFilter(row =>
                 _tenantService != null && !_tenantService.IsSuperAdmin &&
                 _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
@@ -507,10 +534,14 @@ namespace Accounts.Data
                 e.Property(x => x.DisplayOrder).HasDefaultValue(0);
                 e.Property(x => x.ScaleType).HasMaxLength(50).HasDefaultValue("Regular");
                 e.Property(x => x.PayMode).HasMaxLength(20).HasDefaultValue("PM");
+                e.Property(x => x.FrequencyType).HasMaxLength(50).HasDefaultValue("Regular");
+                e.Property(x => x.ContractType).HasMaxLength(50);
+                e.Property(x => x.RateType).HasMaxLength(20).HasDefaultValue("PM");
                 e.Property(x => x.BasicSalary).HasColumnType("decimal(18,2)");
                 e.Property(x => x.MaximumSalary).HasColumnType("decimal(18,2)");
                 e.Property(x => x.YearlyIncrement).HasColumnType("decimal(18,2)");
                 e.Property(x => x.GrossSalary).HasColumnType("decimal(18,2)");
+                e.Property(x => x.CurrentPay).HasColumnType("decimal(18,2)");
                 e.Property(x => x.MedicalAllowance).HasColumnType("decimal(18,2)");
                 e.Property(x => x.TravellingAllowance).HasColumnType("decimal(18,2)");
                 e.Property(x => x.Other).HasColumnType("decimal(18,2)");
@@ -760,6 +791,11 @@ namespace Accounts.Data
             ConfigurePlatformTypeTable<FrequencyType>(builder, "FrequencyTypes");
             ConfigurePlatformTypeTable<RateType>(builder, "RateTypes");
             ConfigurePlatformTypeTable<AllowanceType>(builder, "AllowanceTypes");
+            builder.Entity<AllowanceType>(e =>
+            {
+                e.Property(x => x.AllowanceCategory).HasMaxLength(20).HasDefaultValue("GENERAL").IsRequired();
+                e.HasIndex(x => new { x.TenantId, x.AllowanceCategory, x.DisplayOrder });
+            });
             ConfigurePlatformTypeTable<TadaType>(builder, "TadaTypes");
             ConfigurePlatformTypeTable<LeaveType>(builder, "LeaveTypes");
             ConfigurePlatformTypeTable<AnnouncementType>(builder, "AnnouncementTypes");
@@ -911,6 +947,8 @@ namespace Accounts.Data
                 e.Property(x => x.WeekendChargeValue).HasColumnType("decimal(6,2)").HasDefaultValue(0m);
                 e.Property(x => x.AccountLockAbsentDays).HasDefaultValue(0);
                 e.Property(x => x.AdjustAbsentDays).HasDefaultValue(0);
+                e.Property(x => x.CompletedLateDeductionPercentage).HasColumnType("decimal(5,2)").HasDefaultValue(50m);
+                e.Property(x => x.IsCompletedLateDeductionActive).HasDefaultValue(false);
                 e.Property(x => x.IsActive).HasDefaultValue(true);
                 e.HasIndex(x => new { x.TenantId, x.AttendanceEntryTypeId }).IsUnique();
                 e.HasIndex(x => new { x.TenantId, x.IsActive, x.IsApproved });
@@ -1462,6 +1500,62 @@ namespace Accounts.Data
                 e.HasIndex(x => new { x.TenantId, x.Code }).IsUnique();
                 e.HasIndex(x => new { x.TenantId, x.Name }).IsUnique();
                 e.HasIndex(x => new { x.TenantId, x.IsActive, x.DisplayOrder });
+                e.HasOne<Tenant>().WithMany().HasForeignKey(x => x.TenantId).OnDelete(DeleteBehavior.Restrict);
+            });
+
+            builder.Entity<PayrollBenefitDefinition>(e =>
+            {
+                e.HasIndex(x => new { x.TenantId, x.Code }).IsUnique();
+                e.HasIndex(x => new { x.TenantId, x.Name }).IsUnique();
+                e.HasOne<Tenant>().WithMany().HasForeignKey(x => x.TenantId).OnDelete(DeleteBehavior.Restrict);
+            });
+            builder.Entity<PayrollBonusDefinition>(e =>
+            {
+                e.HasIndex(x => new { x.TenantId, x.Code }).IsUnique();
+                e.HasIndex(x => new { x.TenantId, x.Name }).IsUnique();
+                e.HasOne<Tenant>().WithMany().HasForeignKey(x => x.TenantId).OnDelete(DeleteBehavior.Restrict);
+            });
+            builder.Entity<PayrollRun>(e =>
+            {
+                e.HasIndex(x => new { x.TenantId, x.Year, x.Month }).IsUnique();
+                e.HasIndex(x => new { x.TenantId, x.RunNumber }).IsUnique();
+                e.HasOne<Tenant>().WithMany().HasForeignKey(x => x.TenantId).OnDelete(DeleteBehavior.Restrict);
+            });
+            builder.Entity<EobiSetting>(e =>
+            {
+                e.HasIndex(x => new { x.TenantId, x.EffectiveFrom });
+                e.HasOne<Tenant>().WithMany().HasForeignKey(x => x.TenantId).OnDelete(DeleteBehavior.Restrict);
+            });
+            builder.Entity<PayrollTaxSlab>(e =>
+            {
+                e.HasIndex(x => new { x.TenantId, x.TaxYear, x.FromAmount }).IsUnique();
+                e.HasOne<Tenant>().WithMany().HasForeignKey(x => x.TenantId).OnDelete(DeleteBehavior.Restrict);
+            });
+            builder.Entity<EobiEligibility>(e =>
+            {
+                e.HasIndex(x => new { x.TenantId, x.PersonId }).IsUnique();
+                e.HasOne(x => x.Person).WithMany().HasForeignKey(x => x.PersonId).OnDelete(DeleteBehavior.Restrict);
+                e.HasOne<Tenant>().WithMany().HasForeignKey(x => x.TenantId).OnDelete(DeleteBehavior.Restrict);
+            });
+            builder.Entity<PayScaleRuleRegistration>(e =>
+            {
+                e.HasIndex(x => new { x.TenantId, x.RuleType, x.Name }).IsUnique();
+                e.HasIndex(x => new { x.TenantId, x.DateFrom, x.DateTo });
+                e.HasOne<Tenant>().WithMany().HasForeignKey(x => x.TenantId).OnDelete(DeleteBehavior.Restrict);
+            });
+            builder.Entity<PayRule>(e =>
+            {
+                e.Property(x => x.RuleType).HasMaxLength(50).HasDefaultValue("Standard");
+                e.HasIndex(x => new { x.TenantId, x.Code }).IsUnique();
+                e.HasIndex(x => new { x.TenantId, x.Name }).IsUnique();
+                e.HasOne<Tenant>().WithMany().HasForeignKey(x => x.TenantId).OnDelete(DeleteBehavior.Restrict);
+            });
+            builder.Entity<SalaryPackage>(e =>
+            {
+                e.HasIndex(x => new { x.TenantId, x.Code }).IsUnique();
+                e.HasIndex(x => new { x.TenantId, x.Name }).IsUnique();
+                e.HasOne(x => x.SalaryScale).WithMany().HasForeignKey(x => x.SalaryScaleId).OnDelete(DeleteBehavior.Restrict);
+                e.HasOne(x => x.PayRule).WithMany().HasForeignKey(x => x.PayRuleId).OnDelete(DeleteBehavior.Restrict);
                 e.HasOne<Tenant>().WithMany().HasForeignKey(x => x.TenantId).OnDelete(DeleteBehavior.Restrict);
             });
 

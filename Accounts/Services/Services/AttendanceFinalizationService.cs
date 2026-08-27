@@ -185,7 +185,9 @@ public sealed class AttendanceFinalizationService(
                     Math.Max(0, rule?.MissingCheckoutAfterShiftEndMinutes ?? 120));
                 var effectiveCheckIn = attendance?.EffectiveCheckInUtc ?? attendance?.CheckInUtc;
                 var effectiveCheckOut = attendance?.EffectiveCheckOutUtc ?? attendance?.CheckOutUtc;
-                var isExcused = isNotRequired || IsExcusedAttendance(attendance, statuses);
+                var isExplicitAbsent = !isNotRequired && IsAbsentAttendance(attendance, statuses);
+                var isExcused = isNotRequired ||
+                    (!isExplicitAbsent && IsExcusedAttendance(attendance, statuses));
                 var calculation = AttendanceDailyFinalizationCalculator.Calculate(
                     new AttendanceDayCalculationInput(
                         isWorkingDay,
@@ -195,7 +197,13 @@ public sealed class AttendanceFinalizationService(
                         deadline,
                         effectiveCheckIn,
                         effectiveCheckOut,
-                        attendance?.TotalBreakMinutes ?? 0));
+                        attendance?.TotalBreakMinutes ?? 0,
+                        shiftWindow.Start,
+                        rule?.CheckInAdjustMinutes ?? 0,
+                        rule?.ExtremeLateAfterMinutes ?? 60,
+                        rule?.IsCompletedLateDeductionActive == true,
+                        rule?.CompletedLateDeductionPercentage ?? 50m,
+                        isExplicitAbsent));
 
                 if (!existingByDay.TryGetValue((employee.PersonId, date), out var row))
                 {
@@ -239,7 +247,10 @@ public sealed class AttendanceFinalizationService(
         row.RequiredMinutes != value.RequiredMinutes ||
         row.WorkedMinutes != value.WorkedMinutes ||
         row.ShortMinutes != value.ShortMinutes ||
-        row.OvertimeMinutes != value.OvertimeMinutes;
+        row.OvertimeMinutes != value.OvertimeMinutes ||
+        row.LateMinutes != value.LateMinutes ||
+        row.LateBandMinutes != value.LateBandMinutes ||
+        row.LatePenaltyMinutes != value.LatePenaltyMinutes;
 
     private static void Apply(
         AttendanceDailyFinalization row,
@@ -256,6 +267,9 @@ public sealed class AttendanceFinalizationService(
         row.WorkedMinutes = value.WorkedMinutes;
         row.ShortMinutes = value.ShortMinutes;
         row.OvertimeMinutes = value.OvertimeMinutes;
+        row.LateMinutes = value.LateMinutes;
+        row.LateBandMinutes = value.LateBandMinutes;
+        row.LatePenaltyMinutes = value.LatePenaltyMinutes;
         row.FinalizedDateUtc = value.IsFinalized ? row.FinalizedDateUtc ?? utcNow : null;
         row.LastEvaluatedDateUtc = utcNow;
     }
@@ -321,6 +335,19 @@ public sealed class AttendanceFinalizationService(
     {
         var normalized = Normalize(code);
         return normalized is "NONE" or "NOTREQUIRED" or "NOREQUIREDATTENDANCE";
+    }
+
+    private static bool IsAbsentAttendance(
+        AttendanceRecord? attendance,
+        IReadOnlyDictionary<int, StatusRow> statuses)
+    {
+        if (attendance?.AttendanceStatusId is not int statusId ||
+            !statuses.TryGetValue(statusId, out var status))
+            return false;
+
+        var absent = Normalize(nameof(AttendanceFinalizationStates.Absent));
+        return Normalize(status.Code) == absent ||
+               Normalize(status.Name).Contains(absent, StringComparison.Ordinal);
     }
 
     private static bool IsExcusedAttendance(

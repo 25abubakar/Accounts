@@ -238,6 +238,8 @@ public sealed class AttendanceController : ControllerBase
                 IsApproved = rule.IsApproved,
                 IsActive = rule.IsActive,
                 IsOvertimeBonusActive = rule.IsOvertimeBonusActive,
+                IsCompletedLateDeductionActive = rule.IsCompletedLateDeductionActive,
+                CompletedLateDeductionPercentage = rule.CompletedLateDeductionPercentage,
                 Remarks = rule.Remarks
             })
             .ToListAsync(ct);
@@ -987,6 +989,8 @@ public sealed class AttendanceController : ControllerBase
         if (dto.AccountLockAbsentDays is < 0 or > 31) return BadRequest(new { message = "Account lock absent days must be between 0 and 31." });
         if (dto.WeekendChargeValue is < 0 or > 31) return BadRequest(new { message = "Weekend charged value must be between 0 and 31." });
         if (dto.AdjustAbsentDays is < 0 or > 31) return BadRequest(new { message = "Adjust absent days must be between 0 and 31." });
+        if (dto.CompletedLateDeductionPercentage is < 0 or > 100)
+            return BadRequest(new { message = "Completed late deduction percentage must be between 0 and 100." });
 
         var attendanceType = await _db.AttendanceTypes
             .SingleOrDefaultAsync(type => type.Id == dto.AttendanceEntryTypeId && type.IsActive && type.TenantId == tenantId, ct);
@@ -1044,6 +1048,8 @@ public sealed class AttendanceController : ControllerBase
         rule.IsApproved = dto.IsApproved;
         rule.IsActive = dto.IsActive;
         rule.IsOvertimeBonusActive = dto.IsOvertimeBonusActive;
+        rule.IsCompletedLateDeductionActive = dto.IsCompletedLateDeductionActive;
+        rule.CompletedLateDeductionPercentage = dto.CompletedLateDeductionPercentage;
         rule.Remarks = string.IsNullOrWhiteSpace(dto.Remarks) ? null : dto.Remarks.Trim();
 
         await _db.SaveChangesAsync(ct);
@@ -1083,6 +1089,8 @@ public sealed class AttendanceController : ControllerBase
         IsApproved = rule.IsApproved,
         IsActive = rule.IsActive,
         IsOvertimeBonusActive = rule.IsOvertimeBonusActive,
+        IsCompletedLateDeductionActive = rule.IsCompletedLateDeductionActive,
+        CompletedLateDeductionPercentage = rule.CompletedLateDeductionPercentage,
         Remarks = rule.Remarks
     };
 

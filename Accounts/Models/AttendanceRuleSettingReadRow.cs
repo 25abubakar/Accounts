@@ -31,5 +31,7 @@ public sealed class AttendanceRuleSettingReadRow
     public bool IsApproved { get; set; }
     public bool IsActive { get; set; }
     public bool IsOvertimeBonusActive { get; set; }
+    public bool IsCompletedLateDeductionActive { get; set; }
+    public decimal CompletedLateDeductionPercentage { get; set; }
     public string? Remarks { get; set; }
 }
