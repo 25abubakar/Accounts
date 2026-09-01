@@ -25,10 +25,138 @@ public sealed class PayrollBenefitDefinition : PayDefinitionBase
     public bool IsEobiContributory { get; set; }
 }
 
+[Table("PayrollBenefitRules")]
+public sealed class PayrollBenefitRule : ITenantEntity
+{
+    [Key] public int Id { get; set; }
+    public int TenantId { get; set; }
+    [Required, MaxLength(30)] public string BenefitReference { get; set; } = string.Empty;
+    [Required, MaxLength(50)] public string BenefitsType { get; set; } = string.Empty;
+    [Required, MaxLength(120)] public string Name { get; set; } = string.Empty;
+    [MaxLength(120)] public string? Company { get; set; }
+    [MaxLength(120)] public string? Entitled { get; set; }
+    [MaxLength(50)] public string? Contract { get; set; }
+    [MaxLength(30)] public string? Frequency { get; set; }
+    public DateOnly? ValidFrom { get; set; }
+    public DateOnly? ValidTo { get; set; }
+    [Column(TypeName = "decimal(18,2)")] public decimal MaximumExpense { get; set; }
+    [MaxLength(30)] public string? ServiceStatus { get; set; }
+    [MaxLength(50)] public string? Scale { get; set; }
+    public DateOnly? Wef { get; set; }
+    [Column(TypeName = "decimal(9,2)")] public decimal MinimumService { get; set; }
+    [Column(TypeName = "decimal(18,2)")] public decimal MaximumPh { get; set; }
+    [Column(TypeName = "decimal(18,2)")] public decimal MinimumPh { get; set; }
+    public bool IsIneligible { get; set; }
+    [MaxLength(30)] public string? ShareType { get; set; }
+    [Column(TypeName = "decimal(18,2)")] public decimal CompanyShare { get; set; }
+    [Column(TypeName = "decimal(18,2)")] public decimal StaffShare { get; set; }
+    public int? OrganizationId { get; set; }
+    [MaxLength(120)] public string? CompanyName { get; set; }
+    public DateTime CreatedOnUtc { get; set; } = DateTime.UtcNow;
+    public DateTime? UpdatedOnUtc { get; set; }
+    public ICollection<PayrollBenefitParameter> Parameters { get; set; } = new List<PayrollBenefitParameter>();
+}
+
+[Table("PayrollBenefitParameters")]
+public sealed class PayrollBenefitParameter : ITenantEntity
+{
+    [Key] public int Id { get; set; }
+    public int TenantId { get; set; }
+    public int BenefitRuleId { get; set; }
+    [Required, MaxLength(30)] public string Reference { get; set; } = string.Empty;
+    [Required, MaxLength(120)] public string Name { get; set; } = string.Empty;
+    public DateOnly? PeriodFrom { get; set; }
+    public DateOnly? PeriodTo { get; set; }
+    [Column(TypeName = "decimal(9,2)")] public decimal MinimumService { get; set; }
+    [Required, MaxLength(30)] public string AmountType { get; set; } = "PH";
+    [Required, MaxLength(30)] public string PayType { get; set; } = "Basic";
+    [Column(TypeName = "decimal(18,2)")] public decimal CompanyShare { get; set; }
+    [Column(TypeName = "decimal(18,2)")] public decimal StaffShare { get; set; }
+    public DateTime CreatedOnUtc { get; set; } = DateTime.UtcNow;
+    public DateTime? UpdatedOnUtc { get; set; }
+    public PayrollBenefitRule? BenefitRule { get; set; }
+}
+
 [Table("PayrollBonusDefinitions")]
 public sealed class PayrollBonusDefinition : PayDefinitionBase
 {
     [Required, MaxLength(20)] public string Frequency { get; set; } = "Monthly";
+}
+
+[Table("PayrollBonusRuns")]
+public sealed class PayrollBonusRun : ITenantEntity
+{
+    [Key] public long Id { get; set; }
+    public int TenantId { get; set; }
+    public int BenefitRuleId { get; set; }
+    [Required, MaxLength(40)] public string RunNumber { get; set; } = string.Empty;
+    [Required, MaxLength(30)] public string BenefitReference { get; set; } = string.Empty;
+    [Required, MaxLength(120)] public string RuleName { get; set; } = string.Empty;
+    public int Year { get; set; }
+    public int Month { get; set; }
+    [Required, MaxLength(20)] public string Status { get; set; } = "Generated";
+    [MaxLength(450)] public string? CreatedByUserId { get; set; }
+    [MaxLength(150)] public string? CreatedByName { get; set; }
+    public DateTime CreatedOnUtc { get; set; } = DateTime.UtcNow;
+    [MaxLength(450)] public string? VerifiedByUserId { get; set; }
+    [MaxLength(150)] public string? VerifiedByName { get; set; }
+    public DateTime? VerifiedOnUtc { get; set; }
+    [MaxLength(450)] public string? ApprovedByUserId { get; set; }
+    [MaxLength(150)] public string? ApprovedByName { get; set; }
+    public DateTime? ApprovedOnUtc { get; set; }
+    public int TotalEmployees { get; set; }
+    public int TotalEligibleEmployees { get; set; }
+    [Column(TypeName = "decimal(18,2)")] public decimal TotalBonus { get; set; }
+    public bool IsInactive { get; set; }
+    public DateTime? UpdatedOnUtc { get; set; }
+    public PayrollBenefitRule? BenefitRule { get; set; }
+    public ICollection<PayrollBonusLine> Lines { get; set; } = new List<PayrollBonusLine>();
+}
+
+[Table("PayrollBonusLines")]
+public sealed class PayrollBonusLine : ITenantEntity
+{
+    [Key] public long Id { get; set; }
+    public int TenantId { get; set; }
+    public long BonusRunId { get; set; }
+    public Guid PersonId { get; set; }
+    public Guid? StaffId { get; set; }
+    [Required, MaxLength(50)] public string EmployeeNumber { get; set; } = string.Empty;
+    [Required, MaxLength(200)] public string FullName { get; set; } = string.Empty;
+    [MaxLength(150)] public string? Designation { get; set; }
+    [MaxLength(150)] public string? Department { get; set; }
+    public DateOnly? DateOfJoining { get; set; }
+    [MaxLength(80)] public string? Scale { get; set; }
+    public bool IsValid { get; set; }
+    [MaxLength(500)] public string? ValidationMessage { get; set; }
+    [Column(TypeName = "decimal(18,2)")] public decimal BaseSalary { get; set; }
+    [Column(TypeName = "decimal(18,2)")] public decimal BonusAmount { get; set; }
+    [Column(TypeName = "decimal(18,2)")] public decimal BasicBonus { get; set; }
+    [Column(TypeName = "decimal(18,2)")] public decimal AttendanceBonus { get; set; }
+    [Column(TypeName = "decimal(18,2)")] public decimal LeaveBonus { get; set; }
+    [Column(TypeName = "decimal(18,2)")] public decimal DisciplineBonus { get; set; }
+    [Column(TypeName = "decimal(18,2)")] public decimal AssessmentBonus { get; set; }
+    [Column(TypeName = "decimal(18,2)")] public decimal ServiceBonus { get; set; }
+    [Column(TypeName = "decimal(9,2)")] public decimal ServiceYears { get; set; }
+    public int Month { get; set; }
+    public int Year { get; set; }
+    [Column(TypeName = "decimal(18,2)")] public decimal TotalBonus { get; set; }
+    [Column(TypeName = "decimal(9,4)")] public decimal BasicPercent { get; set; }
+    [Column(TypeName = "decimal(9,4)")] public decimal ServicePercent { get; set; }
+    [Column(TypeName = "decimal(9,4)")] public decimal AttendancePercent { get; set; }
+    [Column(TypeName = "decimal(9,4)")] public decimal AssessmentPercent { get; set; }
+    [Column(TypeName = "decimal(9,4)")] public decimal LeavePercent { get; set; }
+    [Column(TypeName = "decimal(9,4)")] public decimal DisciplinePercent { get; set; }
+    [Column(TypeName = "decimal(18,2)")] public decimal InstallmentAmount { get; set; }
+    public int Installment { get; set; } = 1;
+    public bool IsApproved { get; set; }
+    public bool IsPaid { get; set; }
+    public DateTime? PaidOnUtc { get; set; }
+    public bool IsInactive { get; set; }
+    [MaxLength(500)] public string? Remarks { get; set; }
+    public DateTime CreatedOnUtc { get; set; } = DateTime.UtcNow;
+    public DateTime? UpdatedOnUtc { get; set; }
+    public PayrollBonusRun? BonusRun { get; set; }
 }
 
 [Table("PayrollRuns")]

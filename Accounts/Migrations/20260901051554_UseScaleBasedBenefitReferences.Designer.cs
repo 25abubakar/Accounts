@@ -4,6 +4,7 @@ using Accounts.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 #nullable disable
@@ -11,9 +12,11 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace Accounts.Migrations
 {
     [DbContext(typeof(ApplicationDbContext))]
-    partial class ApplicationDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260901051554_UseScaleBasedBenefitReferences")]
+    partial class UseScaleBasedBenefitReferences
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -3722,255 +3725,6 @@ namespace Accounts.Migrations
                     b.ToTable("PayrollBonusDefinitions");
                 });
 
-            modelBuilder.Entity("Accounts.Models.PayrollBonusLine", b =>
-                {
-                    b.Property<long>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("bigint");
-
-                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<long>("Id"));
-
-                    b.Property<decimal>("AssessmentBonus")
-                        .HasColumnType("decimal(18,2)");
-
-                    b.Property<decimal>("AssessmentPercent")
-                        .HasColumnType("decimal(9,4)");
-
-                    b.Property<decimal>("AttendanceBonus")
-                        .HasColumnType("decimal(18,2)");
-
-                    b.Property<decimal>("AttendancePercent")
-                        .HasColumnType("decimal(9,4)");
-
-                    b.Property<decimal>("BaseSalary")
-                        .HasColumnType("decimal(18,2)");
-
-                    b.Property<decimal>("BasicBonus")
-                        .HasColumnType("decimal(18,2)");
-
-                    b.Property<decimal>("BasicPercent")
-                        .HasColumnType("decimal(9,4)");
-
-                    b.Property<decimal>("BonusAmount")
-                        .HasColumnType("decimal(18,2)");
-
-                    b.Property<long>("BonusRunId")
-                        .HasColumnType("bigint");
-
-                    b.Property<DateTime>("CreatedOnUtc")
-                        .HasColumnType("datetime2");
-
-                    b.Property<DateOnly?>("DateOfJoining")
-                        .HasColumnType("date");
-
-                    b.Property<string>("Department")
-                        .HasMaxLength(150)
-                        .HasColumnType("nvarchar(150)");
-
-                    b.Property<string>("Designation")
-                        .HasMaxLength(150)
-                        .HasColumnType("nvarchar(150)");
-
-                    b.Property<decimal>("DisciplineBonus")
-                        .HasColumnType("decimal(18,2)");
-
-                    b.Property<decimal>("DisciplinePercent")
-                        .HasColumnType("decimal(9,4)");
-
-                    b.Property<string>("EmployeeNumber")
-                        .IsRequired()
-                        .HasMaxLength(50)
-                        .HasColumnType("nvarchar(50)");
-
-                    b.Property<string>("FullName")
-                        .IsRequired()
-                        .HasMaxLength(200)
-                        .HasColumnType("nvarchar(200)");
-
-                    b.Property<int>("Installment")
-                        .HasColumnType("int");
-
-                    b.Property<decimal>("InstallmentAmount")
-                        .HasColumnType("decimal(18,2)");
-
-                    b.Property<bool>("IsApproved")
-                        .HasColumnType("bit");
-
-                    b.Property<bool>("IsInactive")
-                        .HasColumnType("bit");
-
-                    b.Property<bool>("IsPaid")
-                        .HasColumnType("bit");
-
-                    b.Property<bool>("IsValid")
-                        .HasColumnType("bit");
-
-                    b.Property<decimal>("LeaveBonus")
-                        .HasColumnType("decimal(18,2)");
-
-                    b.Property<decimal>("LeavePercent")
-                        .HasColumnType("decimal(9,4)");
-
-                    b.Property<int>("Month")
-                        .HasColumnType("int");
-
-                    b.Property<DateTime?>("PaidOnUtc")
-                        .HasColumnType("datetime2");
-
-                    b.Property<Guid>("PersonId")
-                        .HasColumnType("uniqueidentifier");
-
-                    b.Property<string>("Remarks")
-                        .HasMaxLength(500)
-                        .HasColumnType("nvarchar(500)");
-
-                    b.Property<string>("Scale")
-                        .HasMaxLength(80)
-                        .HasColumnType("nvarchar(80)");
-
-                    b.Property<decimal>("ServiceBonus")
-                        .HasColumnType("decimal(18,2)");
-
-                    b.Property<decimal>("ServicePercent")
-                        .HasColumnType("decimal(9,4)");
-
-                    b.Property<decimal>("ServiceYears")
-                        .HasColumnType("decimal(9,2)");
-
-                    b.Property<Guid?>("StaffId")
-                        .HasColumnType("uniqueidentifier");
-
-                    b.Property<int>("TenantId")
-                        .HasColumnType("int");
-
-                    b.Property<decimal>("TotalBonus")
-                        .HasColumnType("decimal(18,2)");
-
-                    b.Property<DateTime?>("UpdatedOnUtc")
-                        .HasColumnType("datetime2");
-
-                    b.Property<string>("ValidationMessage")
-                        .HasMaxLength(500)
-                        .HasColumnType("nvarchar(500)");
-
-                    b.Property<int>("Year")
-                        .HasColumnType("int");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("BonusRunId");
-
-                    b.HasIndex("TenantId", "BonusRunId", "PersonId")
-                        .IsUnique();
-
-                    b.HasIndex("TenantId", "PersonId", "IsPaid");
-
-                    b.ToTable("PayrollBonusLines");
-                });
-
-            modelBuilder.Entity("Accounts.Models.PayrollBonusRun", b =>
-                {
-                    b.Property<long>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("bigint");
-
-                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<long>("Id"));
-
-                    b.Property<string>("ApprovedByName")
-                        .HasMaxLength(150)
-                        .HasColumnType("nvarchar(150)");
-
-                    b.Property<string>("ApprovedByUserId")
-                        .HasMaxLength(450)
-                        .HasColumnType("nvarchar(450)");
-
-                    b.Property<DateTime?>("ApprovedOnUtc")
-                        .HasColumnType("datetime2");
-
-                    b.Property<string>("BenefitReference")
-                        .IsRequired()
-                        .HasMaxLength(30)
-                        .HasColumnType("nvarchar(30)");
-
-                    b.Property<int>("BenefitRuleId")
-                        .HasColumnType("int");
-
-                    b.Property<string>("CreatedByName")
-                        .HasMaxLength(150)
-                        .HasColumnType("nvarchar(150)");
-
-                    b.Property<string>("CreatedByUserId")
-                        .HasMaxLength(450)
-                        .HasColumnType("nvarchar(450)");
-
-                    b.Property<DateTime>("CreatedOnUtc")
-                        .HasColumnType("datetime2");
-
-                    b.Property<bool>("IsInactive")
-                        .HasColumnType("bit");
-
-                    b.Property<int>("Month")
-                        .HasColumnType("int");
-
-                    b.Property<string>("RuleName")
-                        .IsRequired()
-                        .HasMaxLength(120)
-                        .HasColumnType("nvarchar(120)");
-
-                    b.Property<string>("RunNumber")
-                        .IsRequired()
-                        .HasMaxLength(40)
-                        .HasColumnType("nvarchar(40)");
-
-                    b.Property<string>("Status")
-                        .IsRequired()
-                        .HasMaxLength(20)
-                        .HasColumnType("nvarchar(20)");
-
-                    b.Property<int>("TenantId")
-                        .HasColumnType("int");
-
-                    b.Property<decimal>("TotalBonus")
-                        .HasColumnType("decimal(18,2)");
-
-                    b.Property<int>("TotalEligibleEmployees")
-                        .HasColumnType("int");
-
-                    b.Property<int>("TotalEmployees")
-                        .HasColumnType("int");
-
-                    b.Property<DateTime?>("UpdatedOnUtc")
-                        .HasColumnType("datetime2");
-
-                    b.Property<string>("VerifiedByName")
-                        .HasMaxLength(150)
-                        .HasColumnType("nvarchar(150)");
-
-                    b.Property<string>("VerifiedByUserId")
-                        .HasMaxLength(450)
-                        .HasColumnType("nvarchar(450)");
-
-                    b.Property<DateTime?>("VerifiedOnUtc")
-                        .HasColumnType("datetime2");
-
-                    b.Property<int>("Year")
-                        .HasColumnType("int");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("BenefitRuleId");
-
-                    b.HasIndex("TenantId", "RunNumber")
-                        .IsUnique();
-
-                    b.HasIndex("TenantId", "BenefitRuleId", "Year", "Month")
-                        .IsUnique();
-
-                    b.HasIndex("TenantId", "Status", "Year", "Month");
-
-                    b.ToTable("PayrollBonusRuns");
-                });
-
             modelBuilder.Entity("Accounts.Models.PayrollRun", b =>
                 {
                     b.Property<long>("Id")
@@ -7292,40 +7046,6 @@ namespace Accounts.Migrations
                         .IsRequired();
                 });
 
-            modelBuilder.Entity("Accounts.Models.PayrollBonusLine", b =>
-                {
-                    b.HasOne("Accounts.Models.PayrollBonusRun", "BonusRun")
-                        .WithMany("Lines")
-                        .HasForeignKey("BonusRunId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
-
-                    b.HasOne("Accounts.Models.Tenant", null)
-                        .WithMany()
-                        .HasForeignKey("TenantId")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
-
-                    b.Navigation("BonusRun");
-                });
-
-            modelBuilder.Entity("Accounts.Models.PayrollBonusRun", b =>
-                {
-                    b.HasOne("Accounts.Models.PayrollBenefitRule", "BenefitRule")
-                        .WithMany()
-                        .HasForeignKey("BenefitRuleId")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
-
-                    b.HasOne("Accounts.Models.Tenant", null)
-                        .WithMany()
-                        .HasForeignKey("TenantId")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
-
-                    b.Navigation("BenefitRule");
-                });
-
             modelBuilder.Entity("Accounts.Models.PayrollRun", b =>
                 {
                     b.HasOne("Accounts.Models.Tenant", null)
@@ -7928,11 +7648,6 @@ namespace Accounts.Migrations
             modelBuilder.Entity("Accounts.Models.PayrollBenefitRule", b =>
                 {
                     b.Navigation("Parameters");
-                });
-
-            modelBuilder.Entity("Accounts.Models.PayrollBonusRun", b =>
-                {
-                    b.Navigation("Lines");
                 });
 
             modelBuilder.Entity("Accounts.Models.Person", b =>

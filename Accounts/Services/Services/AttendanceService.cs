@@ -4,7 +4,10 @@ using Accounts.Models;
 using Accounts.Services.Interfaces;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Data.SqlClient;
+using Microsoft.Extensions.Caching.Memory;
 using System.Globalization;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 
 namespace Accounts.Services.Services;
@@ -19,12 +22,17 @@ public sealed class AttendanceService : IAttendanceService
     private const string HolidayCode = "HOLIDAY";
     private const string WorkingDayCode = "WORKING_DAY";
     private const string DayOffCode = "DAY_OFF";
+    private static readonly TimeSpan CurrentDayReadFreshnessWindow = TimeSpan.FromMinutes(2);
+    private static readonly TimeSpan CurrentPeriodRateCacheDuration = TimeSpan.FromSeconds(30);
+    private static readonly TimeSpan HistoricalPeriodRateCacheDuration = TimeSpan.FromMinutes(10);
     private readonly ApplicationDbContext _db;
     private readonly AttendanceFinalizationService _finalization;
-    public AttendanceService(ApplicationDbContext db, AttendanceFinalizationService finalization)
+    private readonly IMemoryCache _cache;
+    public AttendanceService(ApplicationDbContext db, AttendanceFinalizationService finalization, IMemoryCache cache)
     {
         _db = db;
         _finalization = finalization;
+        _cache = cache;
     }
 
     public async Task<MyAttendanceTodayDto> GetTodayAsync(string identityUserId, CancellationToken cancellationToken = default)
@@ -897,7 +905,16 @@ public sealed class AttendanceService : IAttendanceService
             var personIds = periodRows.Select(row => row.PersonId).Distinct().ToArray();
             if (personIds.Length == 0) continue;
 
-            await _finalization.RefreshPeriodAsync(tenantId, year, month, cancellationToken);
+            var materializedPeriodRows = periodRows.ToList();
+            var personIdsHash = BuildCacheHash(personIds.Select(personId => personId.ToString("N")));
+            await EnsureAttendancePayDetailsPreparedAsync(
+                tenantId,
+                year,
+                month,
+                materializedPeriodRows,
+                personIds,
+                personIdsHash,
+                cancellationToken);
 
             var monthStart = new DateOnly(year, month, 1);
             var monthEnd = monthStart.AddMonths(1).AddDays(-1);
@@ -913,15 +930,13 @@ public sealed class AttendanceService : IAttendanceService
                 .ThenBy(row => row.Id)
                 .ToListAsync(cancellationToken);
 
-            var rateRows = await _db.AttendanceDeductionReportRows
-                .FromSqlRaw(
-                    "EXEC dbo.usp_Attendance_DeductionReport @TenantId, @Year, @Month, @VisiblePersonIds",
-                    new SqlParameter("@TenantId", tenantId),
-                    new SqlParameter("@Year", year),
-                    new SqlParameter("@Month", month),
-                    new SqlParameter("@VisiblePersonIds", JsonSerializer.Serialize(personIds)))
-                .AsNoTracking()
-                .ToListAsync(cancellationToken);
+            var rateRows = await LoadDeductionRateRowsCachedAsync(
+                tenantId,
+                year,
+                month,
+                personIds,
+                personIdsHash,
+                cancellationToken);
             var ratesByPerson = rateRows
                 .GroupBy(row => row.PersonId)
                 .ToDictionary(group => group.Key, group => group.First());
@@ -991,6 +1006,144 @@ public sealed class AttendanceService : IAttendanceService
         }
     }
 
+
+    private async Task EnsureAttendancePayDetailsPreparedAsync(
+        int tenantId,
+        int year,
+        int month,
+        IReadOnlyList<DailyAttendanceRowDto> periodRows,
+        Guid[] personIds,
+        string personIdsHash,
+        CancellationToken cancellationToken)
+    {
+        if (periodRows.Count == 0 || personIds.Length == 0)
+            return;
+
+        var requestedDates = periodRows
+            .Select(row => row.Date)
+            .Distinct()
+            .OrderBy(date => date)
+            .ToArray();
+        if (requestedDates.Length == 0)
+            return;
+
+        var finalizationMarkerKey = BuildFinalizationMarkerCacheKey(tenantId, year, month, requestedDates, personIdsHash);
+        if (_cache.TryGetValue(finalizationMarkerKey, out _))
+            return;
+
+        if (await RequiresFinalizationRefreshAsync(tenantId, periodRows, personIds, requestedDates, cancellationToken))
+        {
+            await _finalization.RefreshPeriodAsync(tenantId, year, month, cancellationToken);
+            _cache.Remove(BuildDeductionRateCacheKey(tenantId, year, month, personIdsHash));
+        }
+
+        var includesToday = requestedDates.Contains(PakistanClock.Today());
+        _cache.Set(
+            finalizationMarkerKey,
+            true,
+            new MemoryCacheEntryOptions
+            {
+                AbsoluteExpirationRelativeToNow = includesToday ? CurrentDayReadFreshnessWindow : HistoricalPeriodRateCacheDuration,
+                Size = 1,
+            });
+    }
+
+    private async Task<bool> RequiresFinalizationRefreshAsync(
+        int tenantId,
+        IReadOnlyList<DailyAttendanceRowDto> periodRows,
+        Guid[] personIds,
+        DateOnly[] requestedDates,
+        CancellationToken cancellationToken)
+    {
+        var finalizations = await _db.AttendanceDailyFinalizations
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(row =>
+                row.TenantId == tenantId &&
+                personIds.Contains(row.PersonId) &&
+                requestedDates.Contains(row.AttendanceDate))
+            .Select(row => new FinalizationProbeRow(
+                row.PersonId,
+                row.AttendanceDate,
+                row.LastEvaluatedDateUtc))
+            .ToListAsync(cancellationToken);
+
+        var expectedKeys = periodRows
+            .Select(row => new FinalizationProbeKey(row.PersonId, row.Date))
+            .Distinct()
+            .ToHashSet();
+        var actualKeys = finalizations
+            .Select(row => new FinalizationProbeKey(row.PersonId, row.AttendanceDate))
+            .ToHashSet();
+
+        if (!expectedKeys.SetEquals(actualKeys))
+            return true;
+
+        var today = PakistanClock.Today();
+        if (!requestedDates.Contains(today))
+            return false;
+
+        var freshnessCutoff = PakistanClock.Now().Subtract(CurrentDayReadFreshnessWindow);
+        return finalizations.Any(row =>
+            row.AttendanceDate == today &&
+            row.LastEvaluatedDateUtc < freshnessCutoff);
+    }
+
+    private async Task<List<AttendanceDeductionReportRow>> LoadDeductionRateRowsCachedAsync(
+        int tenantId,
+        int year,
+        int month,
+        Guid[] personIds,
+        string personIdsHash,
+        CancellationToken cancellationToken)
+    {
+        if (personIds.Length == 0)
+            return [];
+
+        var cacheKey = BuildDeductionRateCacheKey(tenantId, year, month, personIdsHash);
+        if (_cache.TryGetValue(cacheKey, out List<AttendanceDeductionReportRow>? cachedRows) && cachedRows is not null)
+            return cachedRows;
+
+        var rows = await _db.AttendanceDeductionReportRows
+            .FromSqlRaw(
+                "EXEC dbo.usp_Attendance_DeductionReport @TenantId, @Year, @Month, @VisiblePersonIds",
+                new SqlParameter("@TenantId", tenantId),
+                new SqlParameter("@Year", year),
+                new SqlParameter("@Month", month),
+                new SqlParameter("@VisiblePersonIds", JsonSerializer.Serialize(personIds)))
+            .AsNoTracking()
+            .ToListAsync(cancellationToken);
+
+        var today = PakistanClock.Today();
+        var isCurrentPeriod = year == today.Year && month == today.Month;
+        _cache.Set(
+            cacheKey,
+            rows,
+            new MemoryCacheEntryOptions
+            {
+                AbsoluteExpirationRelativeToNow = isCurrentPeriod ? CurrentPeriodRateCacheDuration : HistoricalPeriodRateCacheDuration,
+                Size = Math.Max(1, rows.Count),
+            });
+
+        return rows;
+    }
+
+    private static string BuildFinalizationMarkerCacheKey(
+        int tenantId,
+        int year,
+        int month,
+        IEnumerable<DateOnly> requestedDates,
+        string personIdsHash) =>
+        $"attendance:daily:prepared:{tenantId}:{year}:{month}:{BuildCacheHash(requestedDates.Select(date => date.ToString("yyyyMMdd", CultureInfo.InvariantCulture)))}:{personIdsHash}";
+
+    private static string BuildDeductionRateCacheKey(int tenantId, int year, int month, string personIdsHash) =>
+        $"attendance:deduction-rates:{tenantId}:{year}:{month}:{personIdsHash}";
+
+    private static string BuildCacheHash(IEnumerable<string> values)
+    {
+        var normalized = string.Join("|", values.OrderBy(value => value, StringComparer.Ordinal));
+        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(normalized)));
+    }
     private static decimal CalculateDeductionAmount(int minutes, decimal perHour) =>
         decimal.Round(Math.Max(0, minutes) / 60m * Math.Max(0m, perHour), 2, MidpointRounding.AwayFromZero);
 
@@ -2717,4 +2870,14 @@ public sealed class AttendanceService : IAttendanceService
         try { return TimeZoneInfo.FindSystemTimeZoneById(id); }
         catch { return PakistanClock.TimeZone; }
     }
+
+    private readonly record struct FinalizationProbeKey(Guid PersonId, DateOnly AttendanceDate);
+    private readonly record struct FinalizationProbeRow(Guid PersonId, DateOnly AttendanceDate, DateTime LastEvaluatedDateUtc);
 }
+
+
+
+
+
+
+

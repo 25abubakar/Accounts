@@ -186,14 +186,26 @@ namespace Accounts.Controllers
             if (string.IsNullOrWhiteSpace(identityUserId))
                 return Unauthorized(new { success = false, message = "Not authenticated." });
 
-            var isFullAccess = TenantPermissionService.IsSuperAdmin(User);
-            var session = await _session.GetSessionAsync(
-                identityUserId,
-                isFullAccess,
-                false,
-                includeNavigation,
-                ct);
-            return Ok(new { success = true, data = session });
+            try
+            {
+                var isFullAccess = TenantPermissionService.IsSuperAdmin(User);
+                var session = await _session.GetSessionAsync(
+                    identityUserId,
+                    isFullAccess,
+                    false,
+                    includeNavigation,
+                    ct);
+                return Ok(new { success = true, data = session });
+            }
+            catch (OperationCanceledException) when (
+                ct.IsCancellationRequested ||
+                HttpContext.RequestAborted.IsCancellationRequested)
+            {
+                // Navigation, refresh, and browser shutdown routinely abandon this
+                // background bootstrap request. Treat that as a closed client request;
+                // non-client cancellations and genuine database errors still propagate.
+                return StatusCode(499);
+            }
         }
 
         /// <summary>Assign a role to an existing user</summary>

@@ -292,6 +292,17 @@ namespace Accounts.Controllers
                 new("Library",              "Files",              "/library",                 "Library",             2, new()),
                 new("File Converter",       "FileCog",            "/library/file-converter",  "Library",             3, new()),
                 new("Generate Invoice",     "ReceiptText",        "/library/generate-invoice", "Library",             4, new()),
+
+                // Accounts (parent group)
+                new("Accounts",             "ReceiptText",        null,                         null,                 81, new()),
+                new("Payment (ROZ)",        "DollarSign",         "/accounts/payment-roz",     "Accounts",            1, new()),
+                new("Receipt (ROZ)",        "ReceiptText",        "/accounts/receipt-roz",     "Accounts",            2, new()),
+                new("Roznamcha Update",     "FileCog",            "/accounts/roznamcha-update", "Accounts",            3, new()),
+                new("Reports",              "BarChart3",          "/accounts/reports",         "Accounts",            4, new()),
+                new("Report Filter",        "SlidersHorizontal",  "/accounts/report-filter",   "Accounts",            5, new()),
+                new("Daily Updates",        "CalendarRange",      "/accounts/daily-updates",   "Accounts",            6, new()),
+                new("Bank Account Report",  "Files",              "/accounts/bank-account-report", "Accounts",         7, new()),
+                new("Show record",          "LayoutGrid",         "/accounts/show-record",     "Accounts",            8, new()),
             };
 
             // Valid feature keys (only save permissions that exist in Features table)
@@ -517,3 +528,4 @@ namespace Accounts.Controllers
         int SortOrder,
         List<string> Permissions);
 }
+

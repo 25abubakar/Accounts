@@ -45,6 +45,158 @@ public sealed class PayAndAllowancesController(
     public async Task<IActionResult> DeleteBenefit(int id, CancellationToken ct) =>
         await Delete("/pay-allowances/benefits", db.PayrollBenefitDefinitions, id, ct);
 
+    [HttpGet("benefit-rules")]
+    public async Task<IActionResult> BenefitRules(CancellationToken ct)
+    {
+        var denied = await Guard("/pay-allowances/benefits", "VIEW", ct); if (denied != null) return denied;
+        var rows = await db.PayrollBenefitRules.AsNoTracking().OrderBy(x => x.Name)
+            .Select(x => new
+            {
+                x.Id,
+                BenRef = x.BenefitReference,
+                x.BenefitsType,
+                x.Name,
+                x.Company,
+                x.Entitled,
+                x.Contract,
+                x.Frequency,
+                x.ValidFrom,
+                x.ValidTo,
+                MaxExp = x.MaximumExpense,
+                SerStatus = x.ServiceStatus,
+                x.Scale,
+                x.Wef,
+                MinService = x.MinimumService,
+                MaxPh = x.MaximumPh,
+                MinPh = x.MinimumPh,
+                Ineligible = x.IsIneligible,
+                x.ShareType,
+                CovShare = x.CompanyShare,
+                x.StaffShare,
+                x.OrganizationId,
+                CompName = x.CompanyName
+            }).ToListAsync(ct);
+        return Ok(rows);
+    }
+
+    [HttpPost("benefit-rules")]
+    public async Task<IActionResult> CreateBenefitRule(BenefitRuleSave dto, CancellationToken ct)
+    {
+        var denied = await Guard("/pay-allowances/benefits", "ADD", ct); if (denied != null) return denied;
+        var error = ValidateBenefitRule(dto); if (error != null) return BadRequest(new { message = error });
+        if (await db.PayrollBenefitRules.AnyAsync(x => x.Name == dto.Name.Trim(), ct))
+            return Conflict(new { message = "A benefit rule with this name already exists." });
+
+        var row = new PayrollBenefitRule
+        {
+            TenantId = tenant.RequiredTenantId,
+            BenefitReference = BuildBenefitReference(dto.Scale),
+        };
+        ApplyBenefitRule(row, dto);
+        db.PayrollBenefitRules.Add(row);
+        await db.SaveChangesAsync(ct);
+        return Ok(new { row.Id });
+    }
+
+    [HttpPut("benefit-rules/{id:int}")]
+    public async Task<IActionResult> UpdateBenefitRule(int id, BenefitRuleSave dto, CancellationToken ct)
+    {
+        var denied = await Guard("/pay-allowances/benefits", "EDIT", ct); if (denied != null) return denied;
+        var row = await db.PayrollBenefitRules.SingleOrDefaultAsync(x => x.Id == id, ct); if (row == null) return NotFound();
+        var error = ValidateBenefitRule(dto); if (error != null) return BadRequest(new { message = error });
+        if (await db.PayrollBenefitRules.AnyAsync(x => x.Id != id && x.Name == dto.Name.Trim(), ct))
+            return Conflict(new { message = "A benefit rule with this name already exists." });
+        ApplyBenefitRule(row, dto);
+        row.UpdatedOnUtc = DateTime.UtcNow;
+        await db.SaveChangesAsync(ct);
+        return Ok(new { row.Id });
+    }
+
+    [HttpDelete("benefit-rules/{id:int}")]
+    public async Task<IActionResult> DeleteBenefitRule(int id, CancellationToken ct)
+    {
+        var denied = await Guard("/pay-allowances/benefits", "DELETE", ct); if (denied != null) return denied;
+        var row = await db.PayrollBenefitRules.SingleOrDefaultAsync(x => x.Id == id, ct); if (row == null) return NotFound();
+        if (await db.PayrollBenefitParameters.AnyAsync(x => x.BenefitRuleId == id, ct))
+            return Conflict(new { message = "Delete the linked benefit parameters before deleting this rule." });
+        db.PayrollBenefitRules.Remove(row);
+        await db.SaveChangesAsync(ct);
+        return Ok(new { message = "Benefit rule deleted successfully." });
+    }
+
+    [HttpGet("benefit-parameters")]
+    public async Task<IActionResult> BenefitParameters(CancellationToken ct)
+    {
+        var denied = await Guard("/pay-allowances/benefits", "VIEW", ct); if (denied != null) return denied;
+        var rows = await db.PayrollBenefitParameters.AsNoTracking().OrderBy(x => x.Name)
+            .Select(x => new
+            {
+                x.Id,
+                RuleName = x.BenefitRule!.Name,
+                x.Name,
+                Ref = x.Reference,
+                Entitled = x.BenefitRule.Entitled ?? x.BenefitRule.CompanyName,
+                PdFrom = x.PeriodFrom,
+                PdTo = x.PeriodTo,
+                BenefitId = x.BenefitRuleId,
+                FreqId = x.BenefitRule.Frequency,
+                MinSer = x.MinimumService,
+                AmtType = x.AmountType,
+                PayTypeId = x.PayType,
+                MaxPh = x.BenefitRule.MaximumPh,
+                MinPh = x.BenefitRule.MinimumPh,
+                CoyShare = x.CompanyShare,
+                x.StaffShare,
+                x.BenefitRule.BenefitsType
+            }).ToListAsync(ct);
+        return Ok(rows);
+    }
+
+    [HttpPost("benefit-parameters")]
+    public async Task<IActionResult> CreateBenefitParameter(BenefitParameterSave dto, CancellationToken ct)
+    {
+        var denied = await Guard("/pay-allowances/benefits", "ADD", ct); if (denied != null) return denied;
+        var error = ValidateBenefitParameter(dto); if (error != null) return BadRequest(new { message = error });
+        if (!await db.PayrollBenefitRules.AnyAsync(x => x.Id == dto.BenefitRuleId, ct))
+            return BadRequest(new { message = "Selected benefit rule was not found." });
+        if (await db.PayrollBenefitParameters.AnyAsync(x => x.BenefitRuleId == dto.BenefitRuleId && x.Name == dto.Name.Trim(), ct))
+            return Conflict(new { message = "This parameter already exists for the selected benefit rule." });
+
+        var row = new PayrollBenefitParameter
+        {
+            TenantId = tenant.RequiredTenantId,
+            BenefitRuleId = dto.BenefitRuleId,
+            Reference = $"TMP-{Guid.NewGuid():N}"[..30],
+        };
+        ApplyBenefitParameter(row, dto);
+        db.PayrollBenefitParameters.Add(row);
+        await db.SaveChangesAsync(ct);
+        row.Reference = BuildReference("P", "BEN", row.Id);
+        await db.SaveChangesAsync(ct);
+        return Ok(new { row.Id });
+    }
+
+    [HttpPut("benefit-parameters/{id:int}")]
+    public async Task<IActionResult> UpdateBenefitParameter(int id, BenefitParameterSave dto, CancellationToken ct)
+    {
+        var denied = await Guard("/pay-allowances/benefits", "EDIT", ct); if (denied != null) return denied;
+        var row = await db.PayrollBenefitParameters.SingleOrDefaultAsync(x => x.Id == id, ct); if (row == null) return NotFound();
+        var error = ValidateBenefitParameter(dto); if (error != null) return BadRequest(new { message = error });
+        if (!await db.PayrollBenefitRules.AnyAsync(x => x.Id == dto.BenefitRuleId, ct))
+            return BadRequest(new { message = "Selected benefit rule was not found." });
+        if (await db.PayrollBenefitParameters.AnyAsync(x => x.Id != id && x.BenefitRuleId == dto.BenefitRuleId && x.Name == dto.Name.Trim(), ct))
+            return Conflict(new { message = "This parameter already exists for the selected benefit rule." });
+        row.BenefitRuleId = dto.BenefitRuleId;
+        ApplyBenefitParameter(row, dto);
+        row.UpdatedOnUtc = DateTime.UtcNow;
+        await db.SaveChangesAsync(ct);
+        return Ok(new { row.Id });
+    }
+
+    [HttpDelete("benefit-parameters/{id:int}")]
+    public async Task<IActionResult> DeleteBenefitParameter(int id, CancellationToken ct) =>
+        await Delete("/pay-allowances/benefits", db.PayrollBenefitParameters, id, ct);
+
     [HttpGet("bonuses")]
     public async Task<IActionResult> Bonuses(CancellationToken ct) =>
         await Read("/pay-allowances/bonus", db.PayrollBonusDefinitions.OrderBy(x => x.Name), ct);
@@ -248,6 +400,72 @@ public sealed class PayAndAllowancesController(
     private static string? ValidateEobi(EobiSettingSave x) => x.EmployeeRatePercentage is < 0 or > 100 || x.EmployerRatePercentage is < 0 or > 100 || x.MinimumWage < 0 || x.MaximumContributionBase < 0 ? "Enter valid EOBI rates and amounts." : x.EffectiveTo < x.EffectiveFrom ? "Effective To cannot be before Effective From." : null;
     private static string? ValidateTax(TaxSlabSave x) => string.IsNullOrWhiteSpace(x.TaxYear) ? "Tax year is required." : x.FromAmount < 0 || x.ToAmount < x.FromAmount || x.FixedTaxAmount < 0 || x.RatePercentage is < 0 or > 100 ? "Enter a valid tax range and rate." : null;
     private static string? ValidateEligibility(EobiEligibilitySave x) => x.PersonId == Guid.Empty ? "Employee is required." : x.EffectiveTo < x.EffectiveFrom ? "Effective To cannot be before Effective From." : null;
+    private static string? ValidateBenefitRule(BenefitRuleSave x)
+    {
+        if (string.IsNullOrWhiteSpace(x.BenefitsType) || string.IsNullOrWhiteSpace(x.Name)) return "Benefits Type and Name are required.";
+        if (x.ValidTo < x.ValidFrom) return "Valid To cannot be before Valid From.";
+        if (x.MaximumExpense < 0 || x.MinimumService < 0 || x.MaximumPh < 0 || x.MinimumPh < 0 || x.CompanyShare < 0 || x.StaffShare < 0)
+            return "Benefit amounts and service values cannot be negative.";
+        return null;
+    }
+    private static string? ValidateBenefitParameter(BenefitParameterSave x)
+    {
+        if (x.BenefitRuleId <= 0 || string.IsNullOrWhiteSpace(x.Name)) return "Benefits Rule and Name are required.";
+        if (x.PeriodTo < x.PeriodFrom) return "Pd_To cannot be before Pd_From.";
+        if (x.MinimumService < 0 || x.CompanyShare < 0 || x.StaffShare < 0) return "Parameter values cannot be negative.";
+        return null;
+    }
+    private static void ApplyBenefitRule(PayrollBenefitRule row, BenefitRuleSave x)
+    {
+        row.BenefitReference = BuildBenefitReference(x.Scale);
+        row.BenefitsType = x.BenefitsType.Trim();
+        row.Name = x.Name.Trim();
+        row.Company = Clean(x.Company);
+        row.Entitled = Clean(x.Entitled);
+        row.Contract = Clean(x.Contract);
+        row.Frequency = Clean(x.Frequency);
+        row.ValidFrom = x.ValidFrom;
+        row.ValidTo = x.ValidTo;
+        row.MaximumExpense = x.MaximumExpense;
+        row.ServiceStatus = Clean(x.ServiceStatus);
+        row.Scale = Clean(x.Scale);
+        row.Wef = x.Wef;
+        row.MinimumService = x.MinimumService;
+        row.MaximumPh = x.MaximumPh;
+        row.MinimumPh = x.MinimumPh;
+        row.IsIneligible = x.IsIneligible;
+        row.ShareType = Clean(x.ShareType);
+        row.CompanyShare = x.CompanyShare;
+        row.StaffShare = x.StaffShare;
+        row.OrganizationId = x.OrganizationId;
+        row.CompanyName = Clean(x.CompanyName);
+    }
+    private static void ApplyBenefitParameter(PayrollBenefitParameter row, BenefitParameterSave x)
+    {
+        row.Name = x.Name.Trim();
+        row.PeriodFrom = x.PeriodFrom;
+        row.PeriodTo = x.PeriodTo;
+        row.MinimumService = x.MinimumService;
+        row.AmountType = string.IsNullOrWhiteSpace(x.AmountType) ? "PH" : x.AmountType.Trim();
+        row.PayType = string.IsNullOrWhiteSpace(x.PayType) ? "Basic" : x.PayType.Trim();
+        row.CompanyShare = x.CompanyShare;
+        row.StaffShare = x.StaffShare;
+    }
+    private static string BuildReference(string prefix, string value, int id)
+    {
+        var letters = new string(value.Where(char.IsLetterOrDigit).Take(3).ToArray()).ToUpperInvariant();
+        return $"{prefix}-{(letters.Length == 0 ? "BEN" : letters)}-{id}";
+    }
+    private static string BuildBenefitReference(string? scale)
+    {
+        var normalizedScale = new string((scale ?? string.Empty)
+            .Trim()
+            .Where(character => char.IsLetterOrDigit(character) || character is '-' or '_')
+            .ToArray())
+            .ToUpperInvariant();
+        var reference = $"B-{(normalizedScale.Length == 0 ? "UNASSIGNED" : normalizedScale)}";
+        return reference[..Math.Min(reference.Length, 30)];
+    }
     private static string NormalizeCalculation(string? x) => x?.Trim().Equals("Percentage", StringComparison.OrdinalIgnoreCase) == true ? "Percentage" : "Fixed";
     private static string NormalizeFrequency(string? x) => new[] { "Monthly", "Quarterly", "Annual", "OneTime" }.FirstOrDefault(v => v.Equals(x?.Trim(), StringComparison.OrdinalIgnoreCase)) ?? "Monthly";
     private static string NormalizeStatus(string? x) => new[] { "Draft", "In Review", "Approved", "Finalized" }.FirstOrDefault(v => v.Equals(x?.Trim(), StringComparison.OrdinalIgnoreCase)) ?? "Draft";
@@ -260,3 +478,5 @@ public sealed record PayrollRunSave(int Year, int Month, string? RunNumber, Date
 public sealed record EobiSettingSave(decimal EmployeeRatePercentage, decimal EmployerRatePercentage, decimal MinimumWage, decimal MaximumContributionBase, DateOnly EffectiveFrom, DateOnly? EffectiveTo, bool IsActive);
 public sealed record TaxSlabSave(string TaxYear, decimal FromAmount, decimal? ToAmount, decimal FixedTaxAmount, decimal RatePercentage, bool IsActive);
 public sealed record EobiEligibilitySave(Guid PersonId, string? EobiNumber, DateOnly EffectiveFrom, DateOnly? EffectiveTo, bool IsEligible, string? Remarks);
+public sealed record BenefitRuleSave(string BenefitsType, string Name, string? Company, string? Entitled, string? Contract, string? Frequency, DateOnly? ValidFrom, DateOnly? ValidTo, decimal MaximumExpense, string? ServiceStatus, string? Scale, DateOnly? Wef, decimal MinimumService, decimal MaximumPh, decimal MinimumPh, bool IsIneligible, string? ShareType, decimal CompanyShare, decimal StaffShare, int? OrganizationId, string? CompanyName);
+public sealed record BenefitParameterSave(int BenefitRuleId, string Name, DateOnly? PeriodFrom, DateOnly? PeriodTo, decimal MinimumService, string? AmountType, string? PayType, decimal CompanyShare, decimal StaffShare);
