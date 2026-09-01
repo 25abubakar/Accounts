@@ -169,10 +169,6 @@ public sealed partial class PlatformTypesController : ControllerBase
         if (menuIds.Count == 0) return false;
         var normalized = action.Trim().ToUpperInvariant();
 
-        // A tier-1 menu grant is sufficient to read the screen. Some existing
-        // users were granted the menu before explicit VIEW feature rows were
-        // introduced, so requiring only a feature key leaves the menu visible
-        // while its API incorrectly returns 403.
         if (normalized == "VIEW" && await _db.StaffMenuAccesses.AsNoTracking()
                 .AnyAsync(x => x.StaffId == staffId.Value && menuIds.Contains(x.MenuId) && x.IsAllow, ct))
             return true;

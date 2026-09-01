@@ -165,12 +165,6 @@ public sealed class AttendanceController : ControllerBase
     {
         if (!_tenant.TenantId.HasValue) return Ok(Array.Empty<AttendanceHolidayColorMapDto>());
 
-        // Map AppLookupValues -> PlatformSettings.StatusCrDbValues
-        // We know that Holiday types (AppLookupValues TIMING_HOLIDAY_TYPE) are:
-        // DAY_OFF, HOLIDAY, ANNUAL_HOLIDAY, WORKING_DAY
-        // And StatusCrDbValues for ActionId=1 (Attendance) are: DO, HO, H, WD (or whatever user set)
-        // Since the user might have named their statuses exactly as the Lookup Display Texts,
-        // we can join on the Status Name = Lookup Display Text!
         
         var maps = await (from lookup in _db.AppLookupValues
                           join type in _db.AppLookupTypes on lookup.LookupTypeId equals type.LookupTypeId
@@ -414,7 +408,6 @@ public sealed class AttendanceController : ControllerBase
     {
         if (!await HasAttendanceMenuActionAsync("VIEW", ct, "/attendance/deduction"))
             return Forbid();
-        // As per requirements: Deduction page always shows overall staff (not hierarchy wise) for anyone with access.
         return await Execute(() => _service.GetDeductionReportAsync(UserId(), organizationWide: true, year, month, ct));
     }
 
@@ -701,8 +694,6 @@ public sealed class AttendanceController : ControllerBase
             record.AttendanceEntryTypeId = checkEntryType.Id;
         }
         record.AttendanceWorkModeId ??= workMode?.Id;
-        // The form is the only source of camera evidence. A blank camera time must
-        // remain NULL; never infer it from the portal punch or the scheduled shift.
         record.CameraCheckInUtc = checkInUtc;
         record.CameraCheckOutUtc = checkOutUtc;
         record.CameraRemarks = string.IsNullOrWhiteSpace(dto.Remarks) ? null : dto.Remarks.Trim();

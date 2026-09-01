@@ -8,10 +8,7 @@ using System.Security.Claims;
 
 namespace Accounts.Controllers
 {
-    /// <summary>
-    /// Optimized menu and permission API endpoints.
-    /// NO N+1 queries - loads all data in 2-3 queries, resolves in-memory.
-    /// </summary>
+
     [ApiController]
     [Route("api/v2/menu")]
     [Authorize]
@@ -28,11 +25,6 @@ namespace Accounts.Controllers
             _db = db;
         }
 
-        /// <summary>
-        /// GET /api/v2/menu/session
-        /// Returns sidebar menu tree + allowed permission IDs for the current user.
-        /// SuperAdmin/Admin users see all menus without permission filtering.
-        /// </summary>
         [HttpGet("session")]
         public async Task<IActionResult> GetMenuSession(
             [FromQuery] bool includeDetailedPermissions = false,
@@ -42,12 +34,10 @@ namespace Accounts.Controllers
             if (string.IsNullOrEmpty(identityUserId))
                 return Unauthorized(new { message = "User not authenticated" });
 
-            // Check if user is SuperAdmin or Admin (full access)
             var isFullAccess = User.IsInRole("SuperAdmin") || User.IsInRole("Admin");
 
             if (isFullAccess)
             {
-                // SuperAdmin gets all menus
                 var session = await _menuService.GetUserMenuSessionAsync(
                     Guid.Empty, 
                     includeDetailedPermissions, 
@@ -56,7 +46,6 @@ namespace Accounts.Controllers
                 return Ok(session);
             }
 
-            // Regular user - look up their Staff record
             var person = await _db.Persons
                 .AsNoTracking()
                 .Include(p => p.Staff)
@@ -83,10 +72,6 @@ namespace Accounts.Controllers
             return Ok(userSession);
         }
 
-        /// <summary>
-        /// GET /api/v2/menu/check-access/{permissionId}
-        /// Check if current user has access to a specific permission.
-        /// </summary>
         [HttpGet("check-access/{permissionId:int}")]
         public async Task<IActionResult> CheckAccess(
             int permissionId,
@@ -104,10 +89,6 @@ namespace Accounts.Controllers
             return Ok(new { hasAccess });
         }
 
-        /// <summary>
-        /// GET /api/v2/menu/check-access-by-key/{featureKey}
-        /// Check access by FeatureKey (backward compatibility).
-        /// </summary>
         [HttpGet("check-access-by-key/{featureKey}")]
         public async Task<IActionResult> CheckAccessByKey(
             string featureKey,
@@ -125,10 +106,6 @@ namespace Accounts.Controllers
             return Ok(new { hasAccess, featureKey });
         }
 
-        /// <summary>
-        /// GET /api/v2/menu/my-permissions
-        /// Get all allowed permission IDs and FeatureKeys for current user.
-        /// </summary>
         [HttpGet("my-permissions")]
         public async Task<IActionResult> GetMyPermissions(
             CancellationToken cancellationToken = default)
@@ -160,9 +137,6 @@ namespace Accounts.Controllers
             });
         }
 
-        /// <summary>
-        /// Helper: Get current user's StaffId from Person record.
-        /// </summary>
         private async Task<Guid?> GetCurrentStaffIdAsync(CancellationToken cancellationToken)
         {
             var identityUserId = User.FindFirstValue(ClaimTypes.NameIdentifier);

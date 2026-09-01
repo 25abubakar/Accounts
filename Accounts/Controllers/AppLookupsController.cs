@@ -13,7 +13,6 @@ namespace Accounts.Controllers
 
         public AppLookupsController(ApplicationDbContext db) => _db = db;
 
-        // GET /api/app-lookups/all
         [HttpGet("all")]
         public async Task<IActionResult> GetAll(CancellationToken ct)
         {
@@ -37,7 +36,6 @@ namespace Accounts.Controllers
             return Ok(CommApiResponse<List<AppLookupDto>>.Ok(values));
         }
 
-        // GET /api/app-lookups/{lookupTypeCode}
         [HttpGet("{lookupTypeCode}")]
         public async Task<IActionResult> GetByType(string lookupTypeCode, CancellationToken ct)
         {

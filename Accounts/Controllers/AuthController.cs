@@ -34,7 +34,6 @@ namespace Accounts.Controllers
             _db            = db;
         }
 
-        /// <summary>Register a new user with a role (Manager / Developer / AssistantManager)</summary>
         [HttpPost("register")]
         [Authorize(Roles = "SuperAdmin,Admin")]
         public async Task<IActionResult> Register([FromBody] RegisterDto dto)
@@ -49,7 +48,6 @@ namespace Accounts.Controllers
             return Ok(response);
         }
 
-        /// <summary>Login with email and password</summary>
         [HttpPost("login")]
         [AllowAnonymous]
         public async Task<IActionResult> Login([FromBody] LoginDto dto)
@@ -59,13 +57,9 @@ namespace Accounts.Controllers
             if (!success)
                 return StatusCode(statusCode, response);
 
-            // The shell performs one bootstrap after the cookie is created.
-            // Returning another full RBAC/session graph here duplicated the
-            // heaviest login queries and the client discarded that payload.
             return Ok(response);
         }
 
-        /// <summary>Logout the current user</summary>
         [HttpPost("logout")]
         [Authorize]
         public async Task<IActionResult> Logout()
@@ -172,10 +166,6 @@ namespace Accounts.Controllers
             return Ok(new { success = true });
         }
 
-        /// <summary>
-        /// Post-login bootstrap: filtered sidebar, permissions, and admin instructions.
-        /// Call immediately after successful login.
-        /// </summary>
         [HttpGet("session")]
         [Authorize]
         public async Task<IActionResult> GetSession(
@@ -201,14 +191,10 @@ namespace Accounts.Controllers
                 ct.IsCancellationRequested ||
                 HttpContext.RequestAborted.IsCancellationRequested)
             {
-                // Navigation, refresh, and browser shutdown routinely abandon this
-                // background bootstrap request. Treat that as a closed client request;
-                // non-client cancellations and genuine database errors still propagate.
                 return StatusCode(499);
             }
         }
 
-        /// <summary>Assign a role to an existing user</summary>
         [HttpPost("assign-role")]
         [Authorize(Roles = "SuperAdmin")]
         public async Task<IActionResult> AssignRole([FromBody] AssignRoleDto dto)
@@ -223,30 +209,11 @@ namespace Accounts.Controllers
             return Ok(response);
         }
 
-        /// <summary>Get all system users with their roles</summary>
         [HttpGet("users")]
         [Authorize(Roles = "SuperAdmin,Admin")]
         public async Task<IActionResult> GetUsers() =>
             Ok(await _service.GetUsersAsync());
 
-        // ── /api/auth/my-menus ────────────────────────────────────────────────
-
-        /// <summary>
-        /// Returns the filtered sidebar menu tree and allowed feature keys
-        /// for the currently authenticated user — optimized for sub-0.5s response.
-        ///
-        /// How it works (fixed number of queries, no loops):
-        ///   1. Resolve Person → StaffId (1 query)
-        ///   2. Bulk-load user overrides, role permissions, matrix rows,
-        ///      group features all at once (4–5 queries)
-        ///   3. Resolve permissions 100% in-memory via HashSet lookups
-        ///   4. Filter the Menus tree in-memory, return only visible items
-        ///
-        /// SuperAdmin / Admin bypass: see every menu, every feature key.
-        /// Regular user: sees only what the admin has granted them.
-        ///
-        /// GET /api/auth/my-menus
-        /// </summary>
         [HttpGet("my-menus")]
         [Authorize]
         public async Task<IActionResult> GetMyMenus(CancellationToken ct)
@@ -255,7 +222,6 @@ namespace Accounts.Controllers
             if (string.IsNullOrWhiteSpace(identityUserId))
                 return Unauthorized(new { status = false, message = "Invalid token" });
 
-            // ── SuperAdmin / Admin gets everything without any permission checks ──
             bool isFullAccess = TenantPermissionService.IsSuperAdmin(User);
             _ = int.TryParse(User.FindFirstValue(ITenantService.ClaimTenantId), out var claimedTenantId);
             var appUser = new
@@ -271,15 +237,6 @@ namespace Accounts.Controllers
 
             if (appUser?.IsSuperAdmin == true)
             {
-                // Super Admin sees the FULL menu catalog.
-                // They need to see every menu so they can:
-                //   (a) know what features exist in the system
-                //   (b) delegate any of them to Tenant Admins via TenantMenuPermissions
-                //
-                // Data privacy is enforced at the API layer (StaffController,
-                // PersonsController, VacanciesController all return 403 for Super Admin),
-                // NOT by hiding sidebar entries.  The sidebar shows the routes; the
-                // controllers decide what data comes back when those routes call the API.
                 var allMenus = await _db.Menus.AsNoTracking()
                     .Where(m => m.IsActive)
                     .OrderBy(m => m.SortOrder)
@@ -327,10 +284,6 @@ namespace Accounts.Controllers
                 });
             }
 
-            // ── Tenant Admin path — check BEFORE requiring a Person record ──
-            // Tenant Admins are Identity users created by TenantController.Create.
-            // They may NOT have a Person record in the Persons table.
-            // They must still see the menus granted to their tenant.
             if (appUser?.IsTenantAdmin == true && appUser.TenantId.HasValue)
             {
                 var taPersonId = (Guid?)null;
@@ -390,7 +343,6 @@ namespace Accounts.Controllers
 
                 var tenantSidebar = BuildFullTreeStatic(null, filteredLookup);
 
-                // Grant only the CRUD capabilities selected by Super Admin.
                 var autoKeys = new HashSet<string>();
                 foreach (var grant in tenantGrants)
                 {
@@ -403,8 +355,6 @@ namespace Accounts.Controllers
                     if (grant.CanEdit) autoKeys.Add($"MENU_{grant.MenuId}_EDIT");
                     if (grant.CanDelete) autoKeys.Add($"MENU_{grant.MenuId}_DELETE");
                 }
-                // Also pull any explicitly defined Feature rows linked to these menus
-                // — fetch all Features first, then filter in memory
                 var allGrantedKeys = autoKeys.ToList();
 
                 return Ok(new
@@ -423,13 +373,11 @@ namespace Accounts.Controllers
                 });
             }
 
-            // ── Regular user — look up their Staff record ─────────────────────
             var person = await _db.Persons
                 .AsNoTracking()
                 .Include(p => p.Staff)
                 .FirstOrDefaultAsync(p => p.IdentityUserId == identityUserId, ct);
 
-            // Not registered as a person at all (edge case)
             if (person == null)
                 return Ok(new
                 {
@@ -444,17 +392,6 @@ namespace Accounts.Controllers
                     permissionDetails = new List<object>()
                 });
 
-            // Removed: Do not automatically grant chat access. Chat should follow standard RBAC.
-            // try
-            // {
-            //     await EnsureStaffChatMenuGrantAsync(person, ct);
-            // }
-            // catch (DbUpdateException)
-            // {
-            //     _db.ChangeTracker.Clear();
-            // }
-
-            // Direct admin grants (PersonMenus + PersonFeatures) — primary model
             if (await _personAccess.HasPersonGrantsAsync(person.PersonId, ct))
             {
                 var sidebar = await _personAccess.GetGrantedSidebarAsync(person.PersonId, ct);
@@ -524,9 +461,6 @@ namespace Accounts.Controllers
             });
         }
 
-        /// <summary>
-        /// Recursively builds sidebar tree, keeping only menus the user can see.
-        /// </summary>
         private static List<object> BuildFilteredMenuTree(
             int? parentId,
             ILookup<int?, Accounts.Models.Menu> lookup,

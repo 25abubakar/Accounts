@@ -10,11 +10,6 @@ using System.Security.Claims;
 
 namespace Accounts.Controllers
 {
-    /// <summary>
-    /// Staff/Employees API — accessible to Tenant Admins and Staff.
-    /// Super Admin sees only Tenant Admin accounts (no company employee data).
-    /// Data is automatically scoped per tenant via EF Core Global Query Filters.
-    /// </summary>
     [ApiController]
     [Route("api/employees")]
     [Authorize]

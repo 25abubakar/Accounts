@@ -5,15 +5,6 @@ using System.Security.Claims;
 
 namespace Accounts.Controllers
 {
-    /// <summary>
-    /// 2-Tier RBAC endpoints.
-    ///
-    /// Tier 1 — StaffMenuAccess: which menus a staff member can open
-    /// Tier 2 — AccessFeatures:  which CRUD operations are allowed per menu
-    ///
-    /// The primary GET endpoint returns a nested tree consumed at login.
-    /// All write endpoints are Admin-only.
-    /// </summary>
     [ApiController]
     [Route("api/staff-menu-access")]
     [Authorize]
@@ -26,41 +17,10 @@ namespace Accounts.Controllers
 
         private string? CurrentUserId => User.FindFirstValue(ClaimTypes.NameIdentifier);
 
-        // ─── READ ──────────────────────────────────────────────────────────────
-
-        /// <summary>
-        /// Returns the full nested permission tree for a staff member.
-        /// One optimized joined query — no N+1.
-        ///
-        /// Response:
-        /// {
-        ///   staffId, menus: [ { menuId, menuTitle, route, isAllow,
-        ///     features: [{ permissionId, featureKey, featureName, isAllow }]
-        ///   }],
-        ///   allowedFeatureKeys: ["MENU_8_VIEW", "MENU_8_ADD", ...]
-        /// }
-        ///
-        /// GET /api/staff-menu-access/{staffId}
-        /// </summary>
         [HttpGet("{staffId:guid}")]
         public async Task<IActionResult> GetAccessTree(Guid staffId) =>
             Ok(await _service.GetStaffAccessTreeAsync(staffId));
 
-        // ─── GRANT ─────────────────────────────────────────────────────────────
-
-        /// <summary>
-        /// Grant a staff member access to a single menu and all its feature keys.
-        ///
-        /// Body (optional — omit to grant all features as ALLOW):
-        /// {
-        ///   "isAllow": true,
-        ///   "featureOverrides": [
-        ///     { "permissionId": 42, "isAllow": false }   ← deny EDIT only
-        ///   ]
-        /// }
-        ///
-        /// POST /api/staff-menu-access/{staffId}/grant/{menuId}
-        /// </summary>
         [HttpPost("{staffId:guid}/grant/{menuId:int}")]
         [Authorize(Roles = "SuperAdmin,Admin")]
         public async Task<IActionResult> GrantMenu(
@@ -83,14 +43,6 @@ namespace Accounts.Controllers
                 : BadRequest(new { message = msg });
         }
 
-        /// <summary>
-        /// Bulk-grant multiple menus at once (admin access wizard).
-        ///
-        /// Body: { "menuId": true/false }
-        /// Example: { "8": true, "11": true, "17": false }
-        ///
-        /// POST /api/staff-menu-access/{staffId}/bulk-grant
-        /// </summary>
         [HttpPost("{staffId:guid}/bulk-grant")]
         [Authorize(Roles = "SuperAdmin,Admin")]
         public async Task<IActionResult> BulkGrantMenus(
@@ -106,12 +58,6 @@ namespace Accounts.Controllers
             return Ok(new { message, saved, skipped, staffId });
         }
 
-        // ─── REVOKE ────────────────────────────────────────────────────────────
-
-        /// <summary>
-        /// Revoke a staff member's access to a menu (and all child features).
-        /// DELETE /api/staff-menu-access/{staffId}/revoke/{menuId}
-        /// </summary>
         [HttpDelete("{staffId:guid}/revoke/{menuId:int}")]
         [Authorize(Roles = "SuperAdmin,Admin")]
         public async Task<IActionResult> RevokeMenu(Guid staffId, int menuId)
@@ -122,10 +68,6 @@ namespace Accounts.Controllers
                 : NotFound(new { message = msg });
         }
 
-        /// <summary>
-        /// Remove ALL menu access grants for a staff member.
-        /// DELETE /api/staff-menu-access/{staffId}/clear
-        /// </summary>
         [HttpDelete("{staffId:guid}/clear")]
         [Authorize(Roles = "SuperAdmin,Admin")]
         public async Task<IActionResult> ClearAll(Guid staffId)
@@ -134,15 +76,6 @@ namespace Accounts.Controllers
             return Ok(new { message = $"Cleared {count} menu access grant(s) for staff {staffId}.", count });
         }
 
-        // ─── FEATURE TOGGLE ────────────────────────────────────────────────────
-
-        /// <summary>
-        /// Toggle a single feature flag inside an existing menu access grant.
-        ///
-        /// Body: { "isAllow": false }
-        ///
-        /// PATCH /api/staff-menu-access/{staffId}/menus/{menuId}/features/{permissionId}
-        /// </summary>
         [HttpPatch("{staffId:guid}/menus/{menuId:int}/features/{permissionId:int}")]
         [Authorize(Roles = "SuperAdmin,Admin")]
         public async Task<IActionResult> SetFeature(

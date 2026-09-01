@@ -7,20 +7,7 @@ using System.Globalization;
 
 namespace Accounts.Controllers
 {
-    /// <summary>
-    /// Cascading location API — all data fetched live from external APIs.
-    /// No database storage. No hardcoded data.
-    ///
-    /// Data sources:
-    ///   Countries  → restcountries.com  (already used in project)
-    ///   Provinces  → countriesnow.space (POST, no auth)
-    ///   Cities     → countriesnow.space (POST, no auth)
-    ///
-    /// Cascade flow:
-    ///   GET /api/locations/countries
-    ///   GET /api/locations/provinces?country=Pakistan
-    ///   GET /api/locations/cities?country=Pakistan&state=Khyber+Pakhtunkhwa
-    /// </summary>
+
     [ApiController]
     [Route("api/locations")]
     [Produces("application/json")]
@@ -52,12 +39,6 @@ namespace Accounts.Controllers
                 })
                 .ToList();
 
-        // ── STEP 1 — Countries ────────────────────────────────────────
-
-        /// <summary>
-        /// Get all countries with name, ISO code and flag.
-        /// Source: restcountries.com
-        /// </summary>
         [HttpGet("countries")]
         public async Task<IActionResult> GetCountries()
         {
@@ -71,7 +52,6 @@ namespace Accounts.Controllers
 
                 var json = await resp.Content.ReadAsStringAsync();
 
-                // 🌟 SAFE PARSER: Parses both array [] and object {} safely
                 using var document = JsonDocument.Parse(json);
                 var root = document.RootElement;
 
@@ -83,7 +63,6 @@ namespace Accounts.Controllers
                 }
                 else if (root.ValueKind == JsonValueKind.Object)
                 {
-                    // Agar tiar ho kar Object aata hai, toh usay force karke Array bana dein
                     rawArray.Add(root);
                 }
 
@@ -110,13 +89,6 @@ namespace Accounts.Controllers
             }
         }
 
-        // ── STEP 2 — Provinces / States ───────────────────────────────
-
-        /// <summary>
-        /// Get provinces/states for a country.
-        /// Source: countriesnow.space
-        /// Example: GET /api/locations/provinces?country=Pakistan
-        /// </summary>
         [HttpGet("provinces")]
         public async Task<IActionResult> GetProvinces([FromQuery] string country)
         {
@@ -161,13 +133,6 @@ namespace Accounts.Controllers
             }
         }
 
-        // ── STEP 3 — Cities ───────────────────────────────────────────
-
-        /// <summary>
-        /// Get cities for a country + state/province.
-        /// Source: countriesnow.space
-        /// Example: GET /api/locations/cities?country=Pakistan&state=Khyber+Pakhtunkhwa
-        /// </summary>
         [HttpGet("cities")]
         public async Task<IActionResult> GetCities([FromQuery] string country, [FromQuery] string state)
         {
@@ -209,15 +174,6 @@ namespace Accounts.Controllers
                 return StatusCode(500, new { message = "Error fetching cities.", error = ex.Message });
             }
         }
-
-        // ── BONUS — All provinces+cities for a country in one call ────
-
-        /// <summary>
-        /// Get all states with their cities for a country in one response.
-        /// Useful for pre-loading the entire country structure at once.
-        /// Source: countriesnow.space
-        /// Example: GET /api/locations/full?country=Pakistan
-        /// </summary>
         [HttpGet("full")]
         public async Task<IActionResult> GetFull([FromQuery] string country)
         {
@@ -232,8 +188,6 @@ namespace Accounts.Controllers
 
                 var resp = await client.PostAsync("countries/state/cities", content);
 
-                // This endpoint returns all states+cities for a country
-                // Try the states-with-cities endpoint
                 var resp2 = await client.PostAsync("countries/states", new StringContent(payload, Encoding.UTF8, "application/json"));
                 var json2 = await resp2.Content.ReadAsStringAsync();
 
@@ -266,12 +220,6 @@ namespace Accounts.Controllers
             }
         }
 
-        // ── BONUS — Country search ────────────────────────────────────
-
-        /// <summary>
-        /// Search countries by name (for autocomplete).
-        /// Example: GET /api/locations/countries/search?q=pak
-        /// </summary>
         [HttpGet("countries/search")]
         public async Task<IActionResult> SearchCountries([FromQuery] string q)
         {
@@ -288,7 +236,6 @@ namespace Accounts.Controllers
 
                 var json = await resp.Content.ReadAsStringAsync();
 
-                // Applying safe parser here as well just in case!
                 using var document = JsonDocument.Parse(json);
                 var root = document.RootElement;
 

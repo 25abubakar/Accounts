@@ -13,14 +13,12 @@ using System.Text.Json;
 
 namespace Accounts.Controllers
 {
-    /// <summary>
     /// Super Admin only — manages SaaS Tenants.
     ///
     /// POST /api/tenants        → Create a new tenant (atomic transaction)
     /// GET  /api/tenants        → List all tenants
     /// GET  /api/tenants/{id}   → Single tenant detail
     /// PUT  /api/tenants/{id}/toggle → Enable / disable a tenant
-    /// </summary>
     [ApiController]
     [Route("api/tenants")]
     [Authorize(Roles = "SuperAdmin")]
@@ -49,7 +47,6 @@ namespace Accounts.Controllers
 
         // ── GET /api/tenants ──────────────────────────────────────────────────
 
-        /// <summary>List all tenants with their org node info.</summary>
         [HttpGet]
         public async Task<IActionResult> GetAll()
         {
@@ -107,11 +104,6 @@ namespace Accounts.Controllers
             return Ok(response);
         }
 
-        // ── GET /api/tenants/{id} ─────────────────────────────────────────────
-
-        // Tenant Admin accounts are Identity users rather than StaffVacancy rows.
-        // This directory lets the Super Admin manage tenant menu scope without
-        // requiring a Tenant Admin to have an operational staff profile.
         [HttpGet("admins")]
         public async Task<IActionResult> GetAdmins()
         {
@@ -155,8 +147,7 @@ namespace Accounts.Controllers
 
                     return new
                     {
-                        // Access-control pages use staffId as their stable selection key.
-                        // A Tenant Admin's equivalent stable key is its Identity user ID.
+
                         staffId = user.Id,
                         identityUserId = user.Id,
                         fullName = user.UserName ?? user.Email ?? "Tenant Admin",
@@ -181,7 +172,6 @@ namespace Accounts.Controllers
             return Ok(response);
         }
 
-        /// <summary>Single tenant with granted menus and staff count.</summary>
         [HttpGet("{id:int}")]
         public async Task<IActionResult> GetById(int id)
         {
@@ -231,20 +221,6 @@ namespace Accounts.Controllers
             });
         }
 
-        // ── POST /api/tenants ─────────────────────────────────────────────────
-
-        /// <summary>
-        /// Create a new Tenant atomically.
-        ///
-        /// Transaction steps (all-or-nothing):
-        ///   1. Create a Company node in OrganizationTree (under the specified parent).
-        ///   2. Insert a Tenants row pointing at that org node.
-        ///   3. Create an ApplicationUser as the Tenant Admin with auto-generated credentials.
-        ///   4. Assign the TenantAdmin role to the new user.
-        ///   5. Write initial TenantMenuPermissions (if grantedMenuIds provided).
-        ///
-        /// Returns the new tenant, generated admin credentials, and org node.
-        /// </summary>
         [HttpPost]
         [HttpPost("create")]
         public async Task<IActionResult> Create([FromBody] CreateTenantDto dto)
@@ -253,7 +229,6 @@ namespace Accounts.Controllers
 
             var creatorId = User.FindFirstValue(ClaimTypes.NameIdentifier);
 
-            // ── Validate parent org node ──────────────────────────────────────
             if (dto.ParentOrgNodeId.HasValue)
             {
                 var parent = await _db.OrganizationTree.FindAsync(dto.ParentOrgNodeId.Value);
@@ -261,7 +236,6 @@ namespace Accounts.Controllers
                     return BadRequest(new { message = $"Parent org node {dto.ParentOrgNodeId} not found." });
             }
 
-            // ── Check TenantCode uniqueness ───────────────────────────────────
             var code = dto.TenantCode.Trim().ToUpper();
             if (await _db.Tenants.AnyAsync(t => t.TenantCode == code))
                 return Conflict(new { message = $"TenantCode '{code}' is already in use." });
@@ -271,17 +245,12 @@ namespace Accounts.Controllers
                 && !orgLabel.Equals("Group", StringComparison.OrdinalIgnoreCase))
                 return BadRequest(new { message = "OrgLabel must be 'Company' or 'Group'." });
 
-            // ── Use the retry execution strategy required by SqlServerRetryingExecutionStrategy ──
-            // EnableRetryOnFailure prevents direct BeginTransaction; we must wrap all
-            // database work in strategy.ExecuteAsync so the engine can retry on transient faults.
             var strategy = _db.Database.CreateExecutionStrategy();
 
-            // Capture return value from inside the strategy lambda
             IActionResult? result = null;
 
             await strategy.ExecuteAsync(async () =>
             {
-                // Each invocation of ExecuteAsync starts fresh — track what we create
                 int? createdOrgNodeId  = null;
                 int? createdTenantId   = null;
                 string? createdUserId  = null;
@@ -412,7 +381,6 @@ namespace Accounts.Controllers
                 {
                     try { await tx.RollbackAsync(); } catch { /* ignore */ }
 
-                    // Clean up Identity user if it was created before the failure
                     if (createdUserId != null)
                     {
                         var u = await _userManager.FindByIdAsync(createdUserId);
@@ -426,7 +394,6 @@ namespace Accounts.Controllers
             return result ?? StatusCode(500, new { message = "Tenant creation failed unexpectedly." });
         }
 
-        /// <summary>Enable or disable a tenant and its mapped Group/Company node.</summary>
         [HttpPut("{id:int}/status")]
         public async Task<IActionResult> SetStatus(int id, [FromBody] SetTenantStatusDto dto)
         {
@@ -484,7 +451,6 @@ namespace Accounts.Controllers
             });
         }
 
-        /// <summary>Compatibility endpoint for older clients.</summary>
         [HttpPut("{id:int}/toggle")]
         public async Task<IActionResult> Toggle(int id)
         {
@@ -494,11 +460,6 @@ namespace Accounts.Controllers
         }
 
         // ── PUT /api/tenants/{id}/menus ───────────────────────────────────────
-
-        /// <summary>
-        /// Replace the full set of menus granted to a tenant.
-        /// Send an array of menuIds to grant — all others will be revoked.
-        /// </summary>
         [HttpPut("{id:int}/menus")]
         public async Task<IActionResult> SetMenus(int id, [FromBody] List<int> menuIds)
         {
@@ -510,9 +471,6 @@ namespace Accounts.Controllers
 
             var creatorId = User.FindFirstValue(ClaimTypes.NameIdentifier);
 
-            // Validate requested IDs and automatically include every active ancestor.
-            // This keeps the tenant sidebar hierarchy intact even when the Super Admin
-            // selects only a nested menu.
             var activeMenus = await _db.Menus
                 .AsNoTracking()
                 .Where(m => m.IsActive)
@@ -559,8 +517,6 @@ namespace Accounts.Controllers
                     }),
                     creatorId);
 
-                // Keep the compatibility route subject to the same authoritative
-                // tenant ceiling as the richer CRUD-aware endpoint.
                 await PruneRevokedStaffMenusAsync(id, validMenuIds);
                 await transaction.CommitAsync();
             });
@@ -589,7 +545,6 @@ namespace Accounts.Controllers
                 .Select(g => NormalizeMenuAccess(g.Last()))
                 .ToDictionary(a => a.MenuId);
 
-            // Parents are structural grants with View permission only.
             foreach (var item in requested.Values.ToList())
             {
                 var currentId = item.MenuId;
@@ -627,12 +582,10 @@ namespace Accounts.Controllers
 
                 await InsertTenantMenuGrantsAsync(id, requested.Values, creatorId);
 
-                // One set-based prune for menus removed from the tenant ceiling.
                 await _db.StaffMenuAccesses
                     .Where(grant => grant.Staff != null && grant.Staff.TenantId == id && !viewMenuIds.Contains(grant.MenuId))
                     .ExecuteDeleteAsync();
 
-                // Prune staff CRUD bits that exceed the new ceiling in one SQL pass.
                 await _db.Database.ExecuteSqlRawAsync("""
                     DELETE af
                     FROM dbo.AccessFeatures af
@@ -681,8 +634,6 @@ namespace Accounts.Controllers
             });
         }
 
-        // ── Private helpers ───────────────────────────────────────────────────
-
         private async Task InsertTenantMenuGrantsAsync(
             int tenantId,
             IEnumerable<TenantMenuAccessDto> grants,
@@ -729,8 +680,6 @@ namespace Accounts.Controllers
 
         private async Task PruneRevokedStaffMenusAsync(int tenantId, IReadOnlySet<int> allowedMenuIds)
         {
-            // One server-side delete covers every staff member in the tenant;
-            // no per-user lookups or N+1 query pattern is introduced.
             await _db.StaffMenuAccesses
                 .Where(grant => grant.Staff != null &&
                     grant.Staff.TenantId == tenantId &&
@@ -765,11 +714,6 @@ namespace Accounts.Controllers
             }
             return false;
         }
-
-        /// <summary>
-        /// Enforces the DB rule that Add/Edit/Delete require View, and drops
-        /// impossible combinations before they hit the ceiling table.
-        /// </summary>
         private static TenantMenuAccessDto NormalizeMenuAccess(TenantMenuAccessDto dto)
         {
             var canView = dto.CanView || dto.CanAdd || dto.CanEdit || dto.CanDelete;
@@ -803,42 +747,22 @@ namespace Accounts.Controllers
 
     public class CreateTenantDto
     {
-        /// <summary>Display name for the new company / tenant.</summary>
         [Required, MaxLength(150)]
         public string CompanyName { get; set; } = string.Empty;
 
-        /// <summary>
-        /// Short unique code used for login ID prefix (e.g. "LT" → LT10001).
-        /// Must be 2-6 uppercase letters.
-        /// </summary>
         [Required, MaxLength(20), MinLength(2)]
         public string TenantCode { get; set; } = string.Empty;
 
-        /// <summary>Optional parent org node ID (e.g. a Country or Group).</summary>
         public int? ParentOrgNodeId { get; set; }
-
-        /// <summary>Organization node label — Company or Group. Defaults to Company.</summary>
         [MaxLength(50)]
         public string? OrgLabel { get; set; }
 
-        /// <summary>
-        /// Optional custom email for the Tenant Admin account.
-        /// Auto-generated as admin@{tenantcode}.com if omitted.
-        /// </summary>
         [MaxLength(150), EmailAddress]
         public string? AdminEmail { get; set; }
 
-        /// <summary>
-        /// Optional custom password for the Tenant Admin account.
-        /// Auto-generated as {loginId}@ if omitted.
-        /// </summary>
         [MinLength(6)]
         public string? AdminPassword { get; set; }
 
-        /// <summary>
-        /// Optional list of Menu IDs to grant to this tenant immediately.
-        /// Leave empty to grant no menus initially (add later via PUT /api/tenants/{id}/menus).
-        /// </summary>
         public List<int>? GrantedMenuIds { get; set; }
     }
 }

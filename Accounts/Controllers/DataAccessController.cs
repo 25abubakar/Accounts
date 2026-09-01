@@ -10,10 +10,6 @@ using System.Collections.Generic;
 
 namespace Accounts.Controllers
 {
-    /// <summary>
-    /// Controller for accessing data based on user permissions.
-    /// Only returns data the logged-in user has permission to view.
-    /// </summary>
     [ApiController]
     [Route("api/data")]
     [Authorize]
@@ -66,10 +62,6 @@ namespace Accounts.Controllers
             return (true, person.Staff.StaffId, "Success");
         }
 
-        /// <summary>
-        /// Get all data the current user has permission to access.
-        /// Returns filtered departments, staff, persons, vacancies, and groups.
-        /// </summary>
         [HttpGet("accessible")]
         public async Task<IActionResult> GetAccessibleData()
         {
@@ -83,9 +75,6 @@ namespace Accounts.Controllers
             return Ok(data);
         }
 
-        /// <summary>
-        /// Get all features/permissions the current user has access to.
-        /// </summary>
         [HttpGet("my-permissions")]
         public async Task<IActionResult> GetMyPermissions()
         {
@@ -104,9 +93,6 @@ namespace Accounts.Controllers
             });
         }
 
-        /// <summary>
-        /// Check if current user has access to a specific feature.
-        /// </summary>
         [HttpGet("can-access/{*featureKey}")]
         public async Task<IActionResult> CanAccessFeature(string featureKey)
         {
@@ -126,9 +112,6 @@ namespace Accounts.Controllers
             });
         }
 
-        /// <summary>
-        /// Get departments the current user can view.
-        /// </summary>
         [HttpGet("departments")]
         public async Task<IActionResult> GetAccessibleDepartments()
         {
@@ -142,9 +125,6 @@ namespace Accounts.Controllers
             return Ok(departments);
         }
 
-        /// <summary>
-        /// Get staff members the current user can view.
-        /// </summary>
         [HttpGet("staff")]
         public async Task<IActionResult> GetAccessibleStaff()
         {
@@ -158,9 +138,6 @@ namespace Accounts.Controllers
             return Ok(staff);
         }
 
-        /// <summary>
-        /// Get persons the current user can view.
-        /// </summary>
         [HttpGet("persons")]
         public async Task<IActionResult> GetAccessiblePersons()
         {
@@ -174,10 +151,6 @@ namespace Accounts.Controllers
             return Ok(persons);
         }
 
-        /// <summary>
-        /// Recursive org query (Country/Company/Branch/Dept subtree) with full detail.
-        /// Calls dbo.usp_GetEmployeesByOrgNode.
-        /// </summary>
         [HttpGet("org/{orgNodeId:int}/employees")]
         public async Task<IActionResult> GetEmployeesByOrgNode(int orgNodeId)
         {
@@ -210,9 +183,6 @@ namespace Accounts.Controllers
             return Ok(rows);
         }
 
-        /// <summary>
-        /// Clean vacancy/person rows for org subtree. Optional jobTitle or role filter (filled only when filtered).
-        /// </summary>
         [HttpGet("org/{orgNodeId:int}/vacancy-persons")]
         public async Task<IActionResult> GetVacancyPersonsByOrgNode(
             int orgNodeId,

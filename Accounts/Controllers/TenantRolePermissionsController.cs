@@ -9,18 +9,12 @@ using System.Security.Claims;
 
 namespace Accounts.Controllers
 {
-    /// <summary>
-    /// Tenant Admin only — manages role-based permissions within a tenant.
-    ///
-    /// Tenant Admin owns the full tenant/company scope and may delegate menus/features
-    /// to staff inside that tenant.
-    ///
     /// GET    /api/tenant-roles                        → list all job titles in this tenant
     /// GET    /api/tenant-roles/{jobTitle}/permissions → get permissions for a job title
     /// PUT    /api/tenant-roles/{jobTitle}/permissions → overwrite permissions for a job title
     /// DELETE /api/tenant-roles/{jobTitle}             → remove all permissions for a job title
     /// GET    /api/tenant-roles/allowed-menus          → menus Tenant Admin may delegate
-    /// </summary>
+
     [ApiController]
     [Route("api/tenant-roles")]
     [Authorize]
@@ -38,7 +32,6 @@ namespace Accounts.Controllers
             _userManager = userManager;
         }
 
-        // ── Helpers ────────────────────────────────────────────────────────
 
         private async Task<(ApplicationUser? user, int? tenantId, bool isTenantAdmin)> GetCallerAsync()
         {
@@ -50,10 +43,6 @@ namespace Accounts.Controllers
 
         // ── GET /api/tenant-roles ──────────────────────────────────────────
 
-        /// <summary>
-        /// Returns all distinct job titles that have at least one permission entry
-        /// for the caller's tenant, with a summary of granted permission count.
-        /// </summary>
         [HttpGet]
         public async Task<IActionResult> GetRoles()
         {
@@ -78,10 +67,6 @@ namespace Accounts.Controllers
 
         // ── GET /api/tenant-roles/{jobTitle}/permissions ──────────────────
 
-        /// <summary>
-        /// Returns the full set of permissions granted to a specific job title
-        /// within the caller's tenant, including feature key details.
-        /// </summary>
         [HttpGet("{jobTitle}/permissions")]
         public async Task<IActionResult> GetPermissions(string jobTitle)
         {
@@ -111,13 +96,6 @@ namespace Accounts.Controllers
 
         // ── PUT /api/tenant-roles/{jobTitle}/permissions ──────────────────
 
-        /// <summary>
-        /// Overwrites the complete permission set for a job title within this tenant.
-        ///
-        /// Body: array of permissionId (int) values.
-        ///
-        /// Validation: each permissionId must be a valid menu permission.
-        /// </summary>
         [HttpPut("{jobTitle}/permissions")]
         public async Task<IActionResult> SetPermissions(string jobTitle, [FromBody] List<int> permissionIds)
         {
@@ -128,16 +106,11 @@ namespace Accounts.Controllers
             if (string.IsNullOrWhiteSpace(jobTitle))
                 return BadRequest(new { message = "jobTitle is required." });
 
-            // ── Pool check: what menu IDs does this tenant own? ────────────
-            // Resolve allowed permissionIds: any Feature whose FeatureKey
-            // contains a reference to one of the tenant's menu IDs,
-            // OR any Feature linked to a menu the tenant owns via MenuPermissions.
             var allowedPermissionIds = await _db.MenuPermissions
                 .AsNoTracking()
                 .Select(mp => mp.PermissionId)
                 .ToHashSetAsync();
 
-            // Validate incoming list — reject anything outside the tenant's pool
             var invalid = permissionIds.Except(allowedPermissionIds).ToList();
             if (invalid.Any())
             {
@@ -183,7 +156,6 @@ namespace Accounts.Controllers
 
         // ── DELETE /api/tenant-roles/{jobTitle} ───────────────────────────
 
-        /// <summary>Removes all permissions for the specified job title in this tenant.</summary>
         [HttpDelete("{jobTitle}")]
         public async Task<IActionResult> DeleteRole(string jobTitle)
         {
@@ -206,11 +178,6 @@ namespace Accounts.Controllers
 
         // ── GET /api/tenant-roles/allowed-menus ───────────────────────────
 
-        /// <summary>
-        /// Returns all menus + their feature keys that this Tenant Admin may delegate.
-        ///
-        /// Used by the frontend to populate the Roles & Permissions checklist.
-        /// </summary>
         [HttpGet("allowed-menus")]
         public async Task<IActionResult> GetAllowedMenus()
         {

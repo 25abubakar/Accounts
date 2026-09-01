@@ -9,11 +9,6 @@ using System.Security.Claims;
 
 namespace Accounts.Controllers
 {
-    /// <summary>
-    /// Positions/Vacancies API — accessible to Tenant Admins and Staff.
-    /// Super Admin is blocked (no operational data access).
-    /// Data is automatically scoped per tenant via EF Core Global Query Filters.
-    /// </summary>
     [ApiController]
     [Route("api/positions")]
     [Authorize]

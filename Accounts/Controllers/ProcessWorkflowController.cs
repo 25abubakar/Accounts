@@ -91,9 +91,6 @@ public sealed class ProcessWorkflowController : ControllerBase
         if (normalizedMode is not ("INBOX" or "MINE" or "COMPLETED"))
             return BadRequest(new { message = "Unsupported task-list mode." });
 
-        // Tenant administrators are valid tenant accounts but are not required to
-        // occupy a staff vacancy. A personal workflow inbox therefore has no rows
-        // for them; avoid invoking the staff-only procedure, which raises 51210.
         if (!await HasActiveStaffProfileAsync(ct))
             return Ok(Array.Empty<ProcessReportListDto>());
 
@@ -339,8 +336,7 @@ public sealed class ProcessWorkflowController : ControllerBase
         }
         catch (SqlException ex) when (ex.Number is >= 51200 and <= 51299)
         {
-            // Business validation is an expected API outcome. Returning it avoids
-            // surfacing a user-unhandled exception in Visual Studio.
+
             return new ProcessWorkflowFailure(ex.Message, ex.Number);
         }
         finally

@@ -12,11 +12,6 @@ using System.Security.Claims;
 
 namespace Accounts.Controllers
 {
-    /// <summary>
-    /// Persons API — accessible to Tenant Admins and Staff.
-    /// Super Admin sees only Tenant Admin accounts (no company employee data).
-    /// Data is automatically scoped per tenant via EF Core Global Query Filters.
-    /// </summary>
     [ApiController]
     [Route("api/[controller]")]
     [Authorize]
@@ -172,8 +167,6 @@ namespace Accounts.Controllers
             return Ok(profile);
         }
 
-        // ── Public helpers — needed by registration form ──────────────────────
-
         [HttpGet("org-tree")]
         public async Task<IActionResult> GetOrgTree() =>
             Ok(await _service.GetOrgTreeAsync());
@@ -194,8 +187,6 @@ namespace Accounts.Controllers
             var result = await _service.PreviewEmailAsync(branchId, fullName);
             return result == null ? NotFound(new { message = $"Branch {branchId} not found." }) : Ok(result);
         }
-
-        // ── Protected endpoints ───────────────────────────────────────────────
 
         [HttpGet]
         public async Task<IActionResult> GetAll()

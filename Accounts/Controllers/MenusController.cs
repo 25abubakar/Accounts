@@ -30,8 +30,6 @@ namespace Accounts.Controllers
             _rbac = rbac;
         }
 
-        // ── Create ────────────────────────────────────────────────────────────
-
         [HasPermission("ACCESS_GROUP_EDIT")]
         [HttpPost]
         public async Task<IActionResult> CreateMenu([FromBody] CreateMenuDto dto)
@@ -41,12 +39,6 @@ namespace Accounts.Controllers
             return CreatedAtAction(nameof(GetSidebarTree), new { }, menu);
         }
 
-        // ── Read ──────────────────────────────────────────────────────────────
-
-        /// <summary>
-        /// Sidebar tree filtered by effective feature permissions.
-        /// Prefer GET /api/rbac/sidebar or GET /api/auth/session for new frontend code.
-        /// </summary>
         [HttpGet("sidebar-tree")]
         public async Task<IActionResult> GetSidebarTree()
         {
@@ -68,7 +60,6 @@ namespace Accounts.Controllers
             return Ok(await _rbac.GetFilteredSidebarAsync(person.Staff.StaffId));
         }
 
-        /// <summary>Flat list of all menus for admin management.</summary>
         [HasPermission("ACCESS_GROUP_VIEW")]
         [HttpGet]
         public async Task<IActionResult> GetAll()
@@ -77,7 +68,6 @@ namespace Accounts.Controllers
             return Ok(menus);
         }
 
-        /// <summary>All menus with their assigned permission keys.</summary>
         [HasPermission("ACCESS_GROUP_VIEW")]
         [HttpGet("with-permissions")]
         public async Task<IActionResult> GetMenusWithPermissions()
@@ -104,8 +94,6 @@ namespace Accounts.Controllers
 
             return Ok(menus);
         }
-
-        // ── Delete ────────────────────────────────────────────────────────────
 
         [HasPermission("ACCESS_GROUP_EDIT")]
         [HttpPut("{id:int}")]
@@ -136,12 +124,6 @@ namespace Accounts.Controllers
             return NoContent();
         }
 
-        // ── Permission assignment ─────────────────────────────────────────────
-
-        /// <summary>
-        /// Assign required permission keys to a menu item.
-        /// Send empty array [] to make it public (visible to all authenticated users).
-        /// </summary>
         [HasPermission("ACCESS_GROUP_ASSIGN")]
         [HttpPut("{id:int}/permissions")]
         public async Task<IActionResult> SetMenuPermissions(int id, [FromBody] List<string> permissionKeys)
@@ -149,7 +131,6 @@ namespace Accounts.Controllers
             var menu = await _db.Menus.Include(m => m.MenuPermissions).FirstOrDefaultAsync(m => m.Id == id);
             if (menu == null) return NotFound(new { message = $"Menu {id} not found." });
 
-            // Map FeatureKey strings to PermissionId integers
             var featureMap = await _db.Features
                 .Where(f => permissionKeys.Contains(f.FeatureKey))
                 .ToDictionaryAsync(f => f.FeatureKey, f => f.PermissionId);
@@ -167,7 +148,6 @@ namespace Accounts.Controllers
             _db.MenuPermissions.AddRange(toAdd);
             await _db.SaveChangesAsync();
 
-            // Re-query to get feature keys for response
             var addedKeys = await _db.MenuPermissions
                 .AsNoTracking()
                 .Include(mp => mp.Feature)
@@ -194,7 +174,6 @@ namespace Accounts.Controllers
             if (items == null || !items.Any())
                 return BadRequest(new { message = "No items provided." });
 
-            // Get all unique feature keys from all items
             var allKeys = items.SelectMany(i => i.PermissionKeys).Distinct().ToList();
             var featureMap = await _db.Features
                 .Where(f => allKeys.Contains(f.FeatureKey))
@@ -221,31 +200,11 @@ namespace Accounts.Controllers
             return Ok(new { message = $"{updated} menus updated.", errors = errors.Any() ? errors : null });
         }
 
-        // ── Seed sidebar menu structure ───────────────────────────────────────
-
-        /// <summary>
-        /// Seeds the full sidebar menu structure into the Menus table.
-        /// Replaces the hardcoded STATIC_NAV fallback in the frontend Sidebar.tsx.
-        ///
-        /// Idempotent — skips menus that already exist (matched by Title for groups,
-        /// by Route for leaf items).
-        ///
-        /// After seeding, the frontend should call GET /api/rbac/sidebar which
-        /// returns only the menus the current user has permission to see.
-        ///
-        /// SuperAdmin → sees all menus.
-        /// Other users → see only menus whose RequiredPermissions they hold.
-        ///
-        /// POST /api/menus/seed
-        /// </summary>
         [HttpPost("seed")]
         [Authorize(Roles = "SuperAdmin,Admin")]
         public async Task<IActionResult> SeedMenus()
         {
-            // ── Menu tree definition ──────────────────────────────────────────
-            // Mirrors STATIC_NAV from Sidebar.tsx exactly.
-            // Permission keys: empty list = public (all authenticated users can see it)
-            //                  non-empty  = user must hold at least one of these keys
+
             var definitions = new List<SeedMenuItem>
             {
                 // Root items (no parent)
@@ -305,7 +264,6 @@ namespace Accounts.Controllers
                 new("Show record",          "LayoutGrid",         "/accounts/show-record",     "Accounts",            8, new()),
             };
 
-            // Valid feature keys (only save permissions that exist in Features table)
             var validKeys = await _db.Features.Select(f => f.FeatureKey).ToHashSetAsync();
             var featureMap = await _db.Features
                 .Where(f => validKeys.Contains(f.FeatureKey))
@@ -347,8 +305,6 @@ namespace Accounts.Controllers
                     await _db.SaveChangesAsync();
                 }
             }
-
-            // Existing menus — for idempotency checks (Protected against DB duplicates)
             async Task<int?> ResolveParentIdAsync(string? parentTitle)
             {
                 if (string.IsNullOrWhiteSpace(parentTitle)) return null;
@@ -362,7 +318,6 @@ namespace Accounts.Controllers
             }
 
             int added = 0, skipped = 0;
-            // Pass 1: parent groups (no route). This also supports nested groups such as HR Management > Process.
             foreach (var item in definitions.Where(d => d.Route == null))
             {
                 var parentId = await ResolveParentIdAsync(item.ParentTitle);
@@ -397,7 +352,6 @@ namespace Accounts.Controllers
                 await _db.SaveChangesAsync();
             }
 
-            // Pass 2: leaf items (have a route)
             foreach (var item in definitions.Where(d => d.Route != null))
             {
                 var parentId = await ResolveParentIdAsync(item.ParentTitle);
@@ -437,7 +391,6 @@ namespace Accounts.Controllers
                     IsActive = true
                 };
 
-                // Only attach permissions that exist in Features table
                 foreach (var key in item.Permissions.Where(k => featureMap.ContainsKey(k)))
                     menu.MenuPermissions.Add(new MenuPermission { PermissionId = featureMap[key] });
 
@@ -457,10 +410,6 @@ namespace Accounts.Controllers
             });
         }
 
-        /// <summary>
-        /// Normalizes menu routes to lowercase paths expected by the React frontend.
-        /// Safe to run multiple times.
-        /// </summary>
         [HttpPost("sync-routes")]
         [Authorize(Roles = "SuperAdmin,Admin")]
         public async Task<IActionResult> SyncMenuRoutes()
@@ -511,15 +460,11 @@ namespace Accounts.Controllers
         }
     }
 
-    // ── DTOs ─────────────────────────────────────────────────────────────────
-
     public class MenuPermissionDto
     {
         public int MenuId { get; set; }
         public List<string> PermissionKeys { get; set; } = new();
     }
-
-    /// <summary>Internal helper — not exposed via API.</summary>
     internal sealed record SeedMenuItem(
         string Title,
         string Icon,

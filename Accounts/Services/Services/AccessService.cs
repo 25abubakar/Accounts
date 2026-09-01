@@ -5,10 +5,7 @@ using Microsoft.EntityFrameworkCore;
 
 namespace Accounts.Services.Services
 {
-    /// <summary>
-    /// Feature catalog and staff permission helpers.
-    /// Access groups and department matrix writes are deprecated — use RbacService / UserPermissionOverrides.
-    /// </summary>
+
     public class AccessService : IAccessService
     {
         private readonly ApplicationDbContext _db;
@@ -30,7 +27,6 @@ namespace Accounts.Services.Services
 
         public async Task<IEnumerable<string>> GetStaffPermissionsAsync(Guid staffId)
         {
-            // DEPRECATED: This method is stubbed. Use RbacService.GetEffectivePermissionsAsync() instead.
             await Task.CompletedTask;
             return Array.Empty<string>();
         }
@@ -38,7 +34,6 @@ namespace Accounts.Services.Services
         public async Task<(bool Success, string Message)> TogglePermissionAsync(
             Guid staffId, string featureKey, bool hasAccess, string? grantedBy)
         {
-            // DEPRECATED: This method is stubbed. Use RbacService.SetUserOverrideAsync() or StaffMenuAccessService instead.
             await Task.CompletedTask;
             return (false, "This method is deprecated. Use RbacService.SetUserOverrideAsync() or StaffMenuAccessService.");
         }
@@ -46,14 +41,12 @@ namespace Accounts.Services.Services
         public async Task<(int Count, string Message)> GrantAllAsync(
             Guid staffId, int deptId, string? grantedBy)
         {
-            // DEPRECATED: This method is stubbed. Use RbacService or StaffMenuAccessService instead.
             await Task.CompletedTask;
             return (0, "This method is deprecated. Use RbacService or StaffMenuAccessService.");
         }
 
         public async Task<(int Count, string Message)> RevokeAllAsync(Guid staffId, string? grantedBy)
         {
-            // DEPRECATED: This method is stubbed. Use RbacService.ClearStaffOverridesAsync() instead.
             await Task.CompletedTask;
             return (0, "This method is deprecated. Use RbacService.ClearStaffOverridesAsync().");
         }

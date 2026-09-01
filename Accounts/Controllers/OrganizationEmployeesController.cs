@@ -4,9 +4,7 @@ using Microsoft.AspNetCore.Mvc;
 
 namespace Accounts.Controllers
 {
-    /// <summary>
-    /// Hierarchical employee / vacancy data for the HR org tree (stored procedures).
-    /// </summary>
+
     [ApiController]
     [Route("api/organization")]
     [Authorize]
@@ -18,10 +16,6 @@ namespace Accounts.Controllers
         public OrganizationEmployeesController(IOrganizationEmployeeQueryService query) =>
             _query = query;
 
-        /// <summary>
-        /// Org subtree with vacancies and assigned persons (includes unfilled seats).
-        /// Calls dbo.usp_GetPersonsByOrgNode_Clean.
-        /// </summary>
         [HttpGet("{orgId:int}/vacancy-persons")]
         public async Task<IActionResult> GetVacancyPersons(int orgId, CancellationToken cancellationToken)
         {
@@ -32,10 +26,6 @@ namespace Accounts.Controllers
             return Ok(rows);
         }
 
-        /// <summary>
-        /// Filled positions in org subtree. Optional jobTitle or role query filter (exact match).
-        /// Calls dbo.usp_GetEmployeesByOrgAndRole.
-        /// </summary>
         [HttpGet("{orgId:int}/employees-by-role")]
         public async Task<IActionResult> GetEmployeesByRole(
             int orgId,

@@ -36,14 +36,6 @@ namespace Accounts.Controllers
             _tenantPermissions = tenantPermissions;
         }
 
-        // ── Caller context helper ─────────────────────────────────────────────
-
-        /// <summary>
-        /// Resolves the calling user's role and their root org node:
-        ///   Super Admin  → tree pruned to Country / Group / Company level only
-        ///   Tenant Admin → subtree starting from their company root node
-        ///   Staff Member → subtree starting from their company root node (via Vacancy)
-        /// </summary>
         private async Task<(bool isSuperAdmin, bool isTenantAdmin, int? tenantRootNodeId)>
             ResolveCallerContextAsync()
         {
@@ -107,8 +99,6 @@ namespace Accounts.Controllers
             return false;
         }
 
-        // ── Country Lookup — available to all authenticated users ─────────────
-
         [HttpGet("country-lookup")]
         public async Task<IActionResult> CountryLookup([FromQuery] string name)
         {
@@ -128,8 +118,6 @@ namespace Accounts.Controllers
             return Ok(await _service.CountrySearchAsync(q));
         }
 
-        // ── READ ──────────────────────────────────────────────────────────────
-
         [HttpGet("tree")]
         public async Task<IActionResult> GetTree()
         {
@@ -139,7 +127,6 @@ namespace Accounts.Controllers
             if (isSuperAdmin)
                 return Ok(PruneTreeToCompanyLevel(tree));
 
-            // Both Tenant Admin and regular Staff see their company subtree only
             if (tenantRootId.HasValue)
             {
                 var subtree = await _service.GetSubTreeAsync(tenantRootId.Value);
@@ -171,11 +158,9 @@ namespace Accounts.Controllers
                     topLabels.Contains(n.Label, StringComparer.OrdinalIgnoreCase)));
             }
 
-            // Both Tenant Admin and regular Staff are scoped to their company subtree
             if (tenantRootId.HasValue)
             {
                 var subtreeIds = CollectSubtreeIds(flat, tenantRootId.Value);
-                // Include ancestor chain so breadcrumbs and country/group context is visible
                 var nodeMap = flat.ToDictionary(n => n.Id);
                 var extendedIds = new HashSet<int>(subtreeIds);
                 foreach (var id in subtreeIds.ToList())
@@ -200,7 +185,6 @@ namespace Accounts.Controllers
 
             if (isTenantAdmin && tenantRootId.HasValue || (!isSuperAdmin && tenantRootId.HasValue))
             {
-                // Tenant Admin and regular Staff: return their subtree + ancestors
                 var flat = (await _service.GetFlatTreeAsync()).ToList();
                 var subtreeIds = CollectSubtreeIds(flat, tenantRootId!.Value);
                 var nodeMap = flat.ToDictionary(n => n.Id);
@@ -251,15 +235,6 @@ namespace Accounts.Controllers
             return Ok(await _service.SearchAsync(q));
         }
 
-        // ── WRITE ─────────────────────────────────────────────────────────────
-        //
-        // Business rules:
-        //   Super Admin  → may create Country / Group / Company at any tree level.
-        //                  Company/Group may also be provisioned via POST /api/tenants.
-        //   Tenant Admin → Branch / Department / Team anywhere inside their tenant subtree.
-        //                  Country / Group / Company labels are forbidden.
-        //   Staff        → same operational scope as tenant admin when RBAC allows ADD.
-
         [HttpPost]
         public async Task<IActionResult> Create([FromBody] CreateOrgNodeDto dto)
         {
@@ -268,13 +243,11 @@ namespace Accounts.Controllers
 
             var (isSuperAdmin, isTenantAdmin, tenantRootId) = await ResolveCallerContextAsync();
 
-            // Tenant Admin and staff cannot create infrastructure nodes.
             if (!isSuperAdmin)
             {
                 if (IsInfrastructureLabel(dto.Label))
                     return BadRequest(new { message = "Only Super Admin can create Country, Group, or Company nodes." });
 
-                // Operational nodes must stay inside the caller's tenant subtree.
                 if (dto.ParentId.HasValue && tenantRootId.HasValue)
                 {
                     var flat = (await _service.GetFlatTreeAsync()).ToList();
@@ -359,9 +332,6 @@ namespace Accounts.Controllers
             return Ok(new { message });
         }
 
-        // ── Private helpers ───────────────────────────────────────────────────
-
-        /// <summary>Recursively prune tree nodes deeper than Company level.</summary>
         private static IEnumerable<OrgTreeNodeDto> PruneTreeToCompanyLevel(
             IEnumerable<OrgTreeNodeDto> nodes)
         {
@@ -391,7 +361,7 @@ namespace Accounts.Controllers
             return result;
         }
 
-        /// <summary>Collect IDs of all nodes in the subtree rooted at <paramref name="rootId"/>.</summary>
+        ///Collect IDs of all nodes in the subtree rooted at <paramref name="rootId"/>.
         private static HashSet<int> CollectSubtreeIds(
             IEnumerable<OrgFlatTreeDto> flat, int rootId)
         {

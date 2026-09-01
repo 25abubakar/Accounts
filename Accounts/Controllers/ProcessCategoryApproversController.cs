@@ -24,9 +24,6 @@ public sealed class ProcessCategoryApproversController : ControllerBase
         _tenant = tenant;
     }
 
-    // GET /api/process-category-approvers
-    // Returns all category approver assignments for the current tenant,
-    // together with category list so the UI can group them.
     [HttpGet]
     public async Task<IActionResult> GetAll(CancellationToken ct)
     {
@@ -92,8 +89,6 @@ public sealed class ProcessCategoryApproversController : ControllerBase
         return Ok(new { categories, assignments });
     }
 
-    // GET /api/process-category-approvers/staff
-    // Returns all active staff for the approver picker dropdown.
     [HttpGet("staff")]
     public async Task<IActionResult> GetStaff(CancellationToken ct)
     {
@@ -133,8 +128,6 @@ public sealed class ProcessCategoryApproversController : ControllerBase
         return Ok(rows);
     }
 
-    // POST /api/process-category-approvers
-    // Assign a staff member as an approver for a category.
     [HttpPost]
     public async Task<IActionResult> Assign([FromBody] AssignApproverDto dto, CancellationToken ct)
     {
@@ -146,14 +139,12 @@ public sealed class ProcessCategoryApproversController : ControllerBase
         if (string.IsNullOrWhiteSpace(userId))
             return Unauthorized();
 
-        // Validate category exists
         var categoryExists = await ExistsAsync(
             "SELECT 1 FROM dbo.ProcessWorkflowCategories WHERE Id = @categoryId AND IsActive = 1",
             command => AddParameter(command, "@categoryId", dto.CategoryId), ct);
         if (!categoryExists)
             return BadRequest(new { message = "Category not found." });
 
-        // Validate staff belongs to tenant
         var staffExists = await ExistsAsync(
             "SELECT 1 FROM dbo.StaffVacancy WHERE StaffId = @staffId AND TenantId = @tenantId",
             command =>
@@ -164,7 +155,6 @@ public sealed class ProcessCategoryApproversController : ControllerBase
         if (!staffExists)
             return BadRequest(new { message = "Staff member not found in this tenant." });
 
-        // Upsert — ignore duplicate
         try
         {
             await _db.Database.ExecuteSqlRawAsync(
@@ -186,8 +176,6 @@ public sealed class ProcessCategoryApproversController : ControllerBase
         return Ok(new { message = "Approver assigned successfully." });
     }
 
-    // DELETE /api/process-category-approvers/{id}
-    // Remove a category approver assignment.
     [HttpDelete("{id:int}")]
     public async Task<IActionResult> Remove(int id, CancellationToken ct)
     {
@@ -268,8 +256,6 @@ public sealed class ProcessCategoryApproversController : ControllerBase
         return reader.IsDBNull(ordinal) ? null : reader.GetString(ordinal);
     }
 }
-
-// ── Projection types (raw SQL → anonymous results) ──────────────────────────
 
 file sealed class CategoryRow
 {

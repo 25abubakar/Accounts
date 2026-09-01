@@ -83,8 +83,6 @@ namespace Accounts.Controllers
                 .Select(menu => menu.Id)
                 .ToListAsync();
 
-            // Tenant Admin authority is the ceiling assigned by Super Admin.
-            // It is not an unconditional bypass and does not require a Staff row.
             if (IsTenantAdminUser || User.IsInRole("Admin"))
             {
                 var tenantId = await CurrentTenantIdAsync();
@@ -127,23 +125,6 @@ namespace Accounts.Controllers
             return false;
         }
 
-        // ── Admin: list all users with StaffId (for permission assignment UI) ─
-
-        /// <summary>
-        /// Returns registered persons with their StaffId.
-        ///
-        /// Business rule:
-        ///   - Super Admin → returns ONLY Tenant Admin accounts (IsTenantAdmin=true)
-        ///   - Admin / Tenant Admin → returns persons within their tenant scope
-        ///   - Regular staff → forbidden (handled by [Authorize(Roles)])
-        ///
-        /// GET /api/rbac/users
-        /// </summary>
-        /// <summary>
-        /// Returns the menu catalogue the current administrator is allowed to
-        /// delegate. Tenant administrators receive only the menus granted to
-        /// their tenant, including the CRUD ceiling from TenantMenuPermissions.
-        /// </summary>
         [HttpGet("delegable-menus")]
         public async Task<IActionResult> GetDelegableMenus()
         {
@@ -212,15 +193,6 @@ namespace Accounts.Controllers
             return Ok(menus);
         }
 
-        /// <summary>
-        /// Returns the users that the current administrator can manage in the
-        /// access-control screen.
-        /// </summary>
-        /// <summary>
-        /// Returns the active tenant staff that can receive access grants. This
-        /// catalogue is intentionally owned by RBAC so access administration is
-        /// not coupled to the richer HR staff-directory query.
-        /// </summary>
         [HttpGet("staff-catalog")]
         public async Task<IActionResult> GetStaffCatalog()
         {
@@ -230,11 +202,6 @@ namespace Accounts.Controllers
             if (IsSuperAdminUser)
                 return BadRequest(new { message = "Super administrators delegate tenant access through tenant administrators." });
 
-            // Resolve the scope from the authenticated account instead of
-            // relying solely on the ambient tenant query filter. This keeps
-            // the access catalogue fail-closed while also supporting tenant
-            // admin accounts whose older authentication cookie does not yet
-            // contain the tenant_id claim.
             var identityUserId = CurrentUserId;
             if (string.IsNullOrWhiteSpace(identityUserId))
                 return Unauthorized();
@@ -250,9 +217,6 @@ namespace Accounts.Controllers
                 return Forbid();
 
             var staff = await _db.StaffVacancies
-                // RBAC applies its own mandatory tenant predicate below. This
-                // avoids an empty catalogue when a legacy session lacks the
-                // newer tenant claim, without allowing cross-tenant rows.
                 .IgnoreQueryFilters()
                 .AsNoTracking()
                 .Where(row =>
@@ -275,11 +239,6 @@ namespace Accounts.Controllers
                     row.VacancyId,
                     VacancyCode = row.Vacancy != null ? row.Vacancy.VacancyCode : null,
                     JobTitleId = row.Vacancy != null ? row.Vacancy.JobTitleId : null,
-                    // Use the stable vacancy value in this small catalogue.
-                    // The richer HR endpoint can hydrate normalized
-                    // designation navigation; RBAC must remain independent of
-                    // that optional join so one malformed title cannot hide
-                    // every staff member from access administration.
                     JobTitle = row.Vacancy != null ? row.Vacancy.JobTitle : null,
                     Department = row.Vacancy != null ? row.Vacancy.Department : null,
                     OrganizationId = row.Vacancy != null ? (int?)row.Vacancy.OrganizationId : null
@@ -354,7 +313,6 @@ namespace Accounts.Controllers
                 .OfType<ApplicationUser>()
                 .FirstOrDefaultAsync(u => u.Id == identityUserId);
 
-            // ── Super Admin: return only Tenant Admin accounts ────────────────
             if (appUser?.IsSuperAdmin == true)
             {
                 var tenantAdmins = await _db.Users
@@ -380,7 +338,6 @@ namespace Accounts.Controllers
                 return Ok(tenantAdmins);
             }
 
-            // ── Admin / Tenant Admin: return persons in their tenant scope ─────
             var persons = await _db.Persons
                 .AsNoTracking()
                 .Include(p => p.Staff).ThenInclude(s => s!.Vacancy)
@@ -455,11 +412,6 @@ namespace Accounts.Controllers
             return Ok(overview.Select(item => new { staffId = item.Key, allowedFeatureKeys = item.Value }));
         }
 
-        /// <summary>
-        /// Get all current permissions for a staff member, with feature details.
-        /// Reads from the new 2-tier RBAC (StaffMenuAccess + AccessFeatures).
-        /// GET /api/rbac/staff/{staffId}/permissions-summary
-        /// </summary>
         [HttpGet("staff/{staffId:guid}/permissions-summary")]
         public async Task<IActionResult> GetPermissionsSummary(Guid staffId)
         {
@@ -473,7 +425,6 @@ namespace Accounts.Controllers
                 .OrderBy(f => f.Module).ThenBy(f => f.FeatureKey)
                 .ToListAsync();
 
-            // Load menu grants and their feature overrides
             var menuGrants = await _db.StaffMenuAccesses
                 .AsNoTracking()
                 .Include(ma => ma.AccessFeatures)
@@ -481,7 +432,6 @@ namespace Accounts.Controllers
                 .Where(ma => ma.StaffId == staffId)
                 .ToListAsync();
 
-            // Build permission status map
             var allowSet = new HashSet<int>();
             var denySet  = new HashSet<int>();
 
@@ -489,7 +439,6 @@ namespace Accounts.Controllers
             {
                 if (!grant.AccessFeatures.Any())
                 {
-                    // No feature rows means menu visibility only; CRUD/action features must be explicit.
                     var menuFeature = allFeatures.FirstOrDefault(f =>
                         string.Equals(f.FeatureKey, $"MENU_{grant.MenuId}", StringComparison.OrdinalIgnoreCase));
                     if (menuFeature != null) allowSet.Add(menuFeature.PermissionId);
@@ -522,11 +471,6 @@ namespace Accounts.Controllers
             return Ok(new { staffId, permissions = result });
         }
 
-        /// <summary>
-        /// Bulk-save permissions for a user from the admin UI.
-        /// Send { "featureKey": "ALLOW"|"DENY"|"INHERIT" } for each feature to update.
-        /// POST /api/rbac/staff/{staffId}/bulk-overrides
-        /// </summary>
         [HttpPost("staff/{staffId:guid}/bulk-overrides")]
         public async Task<IActionResult> BulkSetOverrides(
             Guid staffId,
@@ -562,10 +506,6 @@ namespace Accounts.Controllers
             return Ok(new { message = result.Message, usersUpdated = result.UsersUpdated, saved = result.Saved, skipped = result.Skipped });
         }
 
-        /// <summary>
-        /// Wipe all UserPermissionOverrides for a staff member (Revoke All — one fast DB trip).
-        /// POST /api/rbac/staff/{staffId}/clear-overrides
-        /// </summary>
         [HttpPost("staff/{staffId:guid}/clear-overrides")]
         public async Task<IActionResult> ClearStaffOverrides(Guid staffId)
         {
@@ -579,12 +519,6 @@ namespace Accounts.Controllers
             return Ok(new { message = $"Cleared {cleared} override(s).", cleared });
         }
 
-        // ── HasAccess check ───────────────────────────────────────────────────
-
-        /// <summary>
-        /// Check if a staff member has access to a specific feature.
-        /// Resolution: UserOverride → RoleDefault → Matrix → false
-        /// </summary>
         [HttpGet("staff/{staffId:guid}/has-access/{*featureKey}")]
         public async Task<IActionResult> HasAccess(Guid staffId, string featureKey)
         {
@@ -597,19 +531,12 @@ namespace Accounts.Controllers
             });
         }
 
-        /// <summary>
-        /// Get all effective permissions for a staff member.
-        /// Returns both a flat list of allowed featureKeys (for UI checkbox hydration)
-        /// and a detailed breakdown per feature (for admin/debug view).
-        /// GET /api/rbac/staff/{staffId}/effective-permissions
-        /// </summary>
         [HttpGet("staff/{staffId:guid}/effective-permissions")]
         public async Task<IActionResult> GetEffectivePermissions(Guid staffId)
         {
             var centrallyResolvedKeys = (await _rbac.GetEffectivePermissionsAsync(staffId))
                 .Distinct(StringComparer.OrdinalIgnoreCase).ToList();
             var centrallyResolvedSet = centrallyResolvedKeys.ToHashSet(StringComparer.OrdinalIgnoreCase);
-            // Load all menu grants with their feature-level flags
             var menuGrants = await _db.StaffMenuAccesses
                 .AsNoTracking()
                 .Include(ma => ma.AccessFeatures)
@@ -617,7 +544,6 @@ namespace Accounts.Controllers
                 .Where(ma => ma.StaffId == staffId && ma.IsAllow)
                 .ToListAsync();
 
-            // Compute the allowed PermissionId set in-memory (same logic as RbacService)
             var allowedPermIds = new HashSet<int>();
             var grantedMenuIds = menuGrants.Select(ma => ma.MenuId).ToHashSet();
             var grantedMenuFeatureKeys = grantedMenuIds.Select(menuId => $"MENU_{menuId}").ToArray();
@@ -630,7 +556,6 @@ namespace Accounts.Controllers
             {
                 if (!grant.AccessFeatures.Any())
                 {
-                    // No feature-level rows means menu visibility only; CRUD/action features must be explicit.
                     var feature = menuFeatureIds.FirstOrDefault(item =>
                         string.Equals(item.FeatureKey, $"MENU_{grant.MenuId}", StringComparison.OrdinalIgnoreCase));
                     if (feature != null) allowedPermIds.Add(feature.PermissionId);
@@ -639,11 +564,8 @@ namespace Accounts.Controllers
                 {
                     foreach (var af in grant.AccessFeatures.Where(af => af.IsAllow))
                         allowedPermIds.Add(af.PermissionId);
-                    // IsAllow=false rows are explicit denies — do not add
                 }
             }
-
-            // Map PermissionIds back to FeatureKeys for the UI
             var allowedFeatureKeys = allowedPermIds.Count == 0
                 ? new List<string>()
                 : await _db.Features.AsNoTracking()
@@ -652,7 +574,6 @@ namespace Accounts.Controllers
                     .ToListAsync();
             allowedFeatureKeys = centrallyResolvedKeys;
 
-            // Build detailed view for admin display
             var allFeatures = await _db.Features.AsNoTracking()
                 .OrderBy(f => f.Module).ThenBy(f => f.FeatureKey)
                 .ToListAsync();
@@ -683,24 +604,14 @@ namespace Accounts.Controllers
             return Ok(new
             {
                 staffId,
-                // Flat list → used by the frontend to hydrate checkboxes
                 allowedFeatureKeys,
-                // Detailed list → used by admin UI to show per-feature status
                 detailed,
-                // Summary counts
                 totalAllowed = allowedFeatureKeys.Count,
                 totalDenied  = denySet.Count,
                 hasAnyGrant  = menuGrants.Count > 0
             });
         }
 
-        // ── Department Matrix ─────────────────────────────────────────────────
-
-        /// <summary>
-        /// Get the full permission matrix for a department.
-        /// Each cell shows: effectiveAccess, source (UserOverride/RoleDefault/Matrix/Denied), hasUserOverride.
-        /// Optimized — no N+1 queries.
-        /// </summary>
         [HttpGet("matrix/{deptId:int}")]
         public async Task<IActionResult> GetMatrix(int deptId)
         {
@@ -710,12 +621,6 @@ namespace Accounts.Controllers
             return Ok(await _rbac.GetDepartmentMatrixAsync(deptId));
         }
 
-        // ── Role Permissions ──────────────────────────────────────────────────
-
-        /// <summary>
-        /// Get default permissions for a job title.
-        /// Example: GET /api/rbac/roles/Agent/permissions?deptId=4
-        /// </summary>
         [HttpGet("roles/{jobTitle}/permissions")]
         public async Task<IActionResult> GetRolePermissions(
             string jobTitle, [FromQuery] int? deptId)
@@ -726,11 +631,6 @@ namespace Accounts.Controllers
             return Ok(await _rbac.GetRolePermissionsAsync(jobTitle, deptId));
         }
 
-        /// <summary>
-        /// Set default permissions for a job title in a department.
-        /// Send a dictionary of featureKey → isAllowed.
-        /// Example body: { "ATTENDANCE_VIEW": true, "EMPLOYEE_EDIT": false }
-        /// </summary>
         [HttpPut("roles/{jobTitle}/permissions")]
         public async Task<IActionResult> SetRolePermissions(
             string jobTitle,
@@ -743,7 +643,6 @@ namespace Accounts.Controllers
             if (permissions == null || !permissions.Any())
                 return BadRequest(new { message = "No permissions provided." });
 
-            // Check Features table is not empty first
             var featuresExist = await _db.Features.AnyAsync();
             if (!featuresExist)
                 return BadRequest(new
@@ -773,12 +672,6 @@ namespace Accounts.Controllers
             });
         }
 
-        // ── User Overrides ────────────────────────────────────────────────────
-
-        /// <summary>
-        /// Get all menu grants and feature overrides for a staff member.
-        /// Reads from StaffMenuAccess + AccessFeatures (2-tier RBAC).
-        /// </summary>
         [HttpGet("staff/{staffId:guid}/overrides")]
         public async Task<IActionResult> GetOverrides(Guid staffId)
         {
@@ -810,10 +703,6 @@ namespace Accounts.Controllers
             return Ok(grants);
         }
 
-        /// <summary>
-        /// Get the sidebar menu filtered by the logged-in user's permissions.
-        /// Menu items the user can't access are removed. Empty groups are removed.
-        /// </summary>
         [HttpGet("sidebar")]
         public async Task<IActionResult> GetFilteredSidebar()
         {
@@ -852,10 +741,6 @@ namespace Accounts.Controllers
             return Ok(sidebar);
         }
 
-        /// <summary>
-        /// Set a user-specific permission override with ALLOW / DENY / INHERIT.
-        /// featureKey in URL path (URL-encoded) or query ?featureKey=DEPT_VIEW
-        /// </summary>
         [HttpPut("staff/{staffId:guid}/overrides/{*featureKey}")]
         [HttpPut("staff/{staffId:guid}/overrides")]
         public async Task<IActionResult> SetOverride(
@@ -884,9 +769,6 @@ namespace Accounts.Controllers
             return Ok(new { message = msg, staffId, featureKey = resolvedKey, status = status.ToString() });
         }
 
-        /// <summary>
-        /// Remove a user-specific override — reverts to role default.
-        /// </summary>
         [HttpDelete("staff/{staffId:guid}/overrides/{*featureKey}")]
         [HttpDelete("staff/{staffId:guid}/overrides")]
         public async Task<IActionResult> RemoveOverride(
@@ -913,11 +795,6 @@ namespace Accounts.Controllers
             return Uri.UnescapeDataString(raw.Trim()).Trim('/');
         }
 
-        // ── Menu bundle access (admin grants sidebar section + child features) ─
-
-        /// <summary>
-        /// Menu tree with all permission keys per item (for admin access UI).
-        /// </summary>
         [HttpGet("menu-permissions")]
         public async Task<IActionResult> GetMenuPermissionTree()
         {
@@ -950,7 +827,6 @@ namespace Accounts.Controllers
                 : BadRequest(new { message = msg });
         }
 
-        /// <summary>Grant menu + features by PersonId (preferred — saves PersonMenus + PersonFeatures).</summary>
         [HttpPost("persons/{personId:guid}/grant-menu/{menuId:int}")]
         public async Task<IActionResult> GrantMenuToPerson(
             Guid personId, int menuId, [FromBody] GrantMenuAccessDto? dto)
@@ -966,7 +842,6 @@ namespace Accounts.Controllers
                 : BadRequest(new { message = msg });
         }
 
-        /// <summary>View menus and features granted to a person.</summary>
         [HttpGet("persons/{personId:guid}/access")]
         public async Task<IActionResult> GetPersonAccess(Guid personId)
         {
@@ -976,9 +851,6 @@ namespace Accounts.Controllers
             return Ok(await _personAccess.GetPersonAccessSummaryAsync(personId));
         }
 
-        /// <summary>
-        /// Revoke menu-bundle (PersonMenus + PersonFeatures).
-        /// </summary>
         [HttpPost("staff/{staffId:guid}/revoke-menu/{menuId:int}")]
         public async Task<IActionResult> RevokeMenuAccess(Guid staffId, int menuId)
         {
@@ -1009,9 +881,6 @@ namespace Accounts.Controllers
             return ok ? Ok(new { message = msg, personId, menuId }) : BadRequest(new { message = msg });
         }
 
-        /// <summary>
-        /// Preview feature keys that would be granted for a menu subtree.
-        /// </summary>
         [HttpGet("menus/{menuId:int}/feature-keys")]
         public async Task<IActionResult> GetMenuFeatureKeys(int menuId)
         {
@@ -1021,22 +890,12 @@ namespace Accounts.Controllers
             return Ok(new { menuId, featureKeys = await _rbac.GetMenuFeatureKeysAsync(menuId) });
         }
 
-        // ── Seed Features ─────────────────────────────────────────────────────
-
-        /// <summary>
-        /// Seed MENU_{id}, MENU_{id}_VIEW/ADD/EDIT/DELETE into Features for every active menu.
-        /// Also seeds static system feature keys (DEPT_VIEW, EMPLOYEE_VIEW, etc.).
-        /// Safe to call multiple times — idempotent.
-        /// POST /api/rbac/seed-features
-        /// </summary>
         [HttpPost("seed-features")]
         [Authorize(Roles = "SuperAdmin,Admin")]
         public async Task<IActionResult> SeedFeatures()
         {
-            // ── 1. Seed MENU_{id} keys from the Menus table ───────────────────
             var (menuAdded, menuSkipped) = await _rbac.SeedMenuFeaturesAsync();
 
-            // ── 2. Seed static system feature keys ────────────────────────────
             var staticFeatures = new List<Feature>
             {
                 // Organization
@@ -1084,7 +943,6 @@ namespace Accounts.Controllers
                 await _db.SaveChangesAsync();
             }
 
-            // ── 3. Link menus to their MENU_{id} features ─────────────────────
             var linkCount = await LinkMenusToFeaturesAsync();
 
             return Ok(new
@@ -1100,11 +958,6 @@ namespace Accounts.Controllers
             });
         }
 
-        /// <summary>
-        /// Links active menus to their corresponding MENU_{id} features in MenuPermissions table.
-        /// This is required for menus to show up in the sidebar after permissions are granted.
-        /// POST /api/rbac/link-menus-to-features
-        /// </summary>
         [HttpPost("link-menus-to-features")]
         [Authorize(Roles = "SuperAdmin,Admin")]
         public async Task<IActionResult> LinkMenusToFeatures()
@@ -1119,11 +972,6 @@ namespace Accounts.Controllers
                     : "All menus are already linked. If users still don't see menus, check UserPermissionOverrides table."
             });
         }
-
-        /// <summary>
-        /// Helper method to link menus to features via MenuPermissions table.
-        /// Ensures that when admin grants MENU_{id} permission, the menu actually appears.
-        /// </summary>
         private async Task<int> LinkMenusToFeaturesAsync()
         {
             // Get all active menus
@@ -1174,7 +1022,6 @@ namespace Accounts.Controllers
 
     public class SetOverrideDto
     {
-        /// <summary>ALLOW, DENY, or INHERIT</summary>
         public string  Status { get; set; } = "INHERIT";
         public string? Reason { get; set; }
     }
