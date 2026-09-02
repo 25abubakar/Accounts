@@ -4,6 +4,7 @@ using Accounts.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 #nullable disable
@@ -11,9 +12,11 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace Accounts.Migrations
 {
     [DbContext(typeof(ApplicationDbContext))]
-    partial class ApplicationDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260902045048_ConnectPayrollCalculation")]
+    partial class ConnectPayrollCalculation
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -3336,9 +3339,6 @@ namespace Accounts.Migrations
                     b.Property<DateTime>("CreatedOnUtc")
                         .HasColumnType("datetime2");
 
-                    b.Property<int?>("DesignationId")
-                        .HasColumnType("int");
-
                     b.Property<string>("FrequencyType")
                         .HasMaxLength(50)
                         .HasColumnType("nvarchar(50)");
@@ -3359,10 +3359,7 @@ namespace Accounts.Migrations
                         .HasMaxLength(50)
                         .HasColumnType("nvarchar(50)");
 
-                    b.Property<int?>("SalaryScaleId")
-                        .HasColumnType("int");
-
-                    b.Property<int?>("ShiftLookupValueId")
+                    b.Property<int>("SalaryScaleId")
                         .HasColumnType("int");
 
                     b.Property<int>("TenantId")
@@ -3375,17 +3372,9 @@ namespace Accounts.Migrations
 
                     b.HasIndex("AllowanceTypeId");
 
-                    b.HasIndex("DesignationId");
-
                     b.HasIndex("SalaryScaleId");
 
-                    b.HasIndex("ShiftLookupValueId");
-
                     b.HasIndex("TenantId", "AllowanceReference");
-
-                    b.HasIndex("TenantId", "DesignationId");
-
-                    b.HasIndex("TenantId", "ShiftLookupValueId");
 
                     b.HasIndex("TenantId", "AllowanceCategory", "SalaryScaleId", "AllowanceTypeId");
 
@@ -7387,20 +7376,11 @@ namespace Accounts.Migrations
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
 
-                    b.HasOne("Accounts.Models.Designation", "Designation")
-                        .WithMany()
-                        .HasForeignKey("DesignationId")
-                        .OnDelete(DeleteBehavior.Restrict);
-
                     b.HasOne("Accounts.Models.SalaryScale", "SalaryScale")
                         .WithMany()
                         .HasForeignKey("SalaryScaleId")
-                        .OnDelete(DeleteBehavior.Restrict);
-
-                    b.HasOne("Accounts.Models.AppLookupValue", "ShiftLookupValue")
-                        .WithMany()
-                        .HasForeignKey("ShiftLookupValueId")
-                        .OnDelete(DeleteBehavior.Restrict);
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
 
                     b.HasOne("Accounts.Models.Tenant", null)
                         .WithMany()
@@ -7410,11 +7390,7 @@ namespace Accounts.Migrations
 
                     b.Navigation("AllowanceType");
 
-                    b.Navigation("Designation");
-
                     b.Navigation("SalaryScale");
-
-                    b.Navigation("ShiftLookupValue");
                 });
 
             modelBuilder.Entity("Accounts.Models.PayScaleRuleRegistration", b =>

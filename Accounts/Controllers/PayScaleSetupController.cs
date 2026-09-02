@@ -69,9 +69,12 @@ public sealed class PayScaleSetupController(
             .Where(x => x.AllowanceCategory == category)
             .OrderBy(x => x.Id)
             .Select(x => new AllowanceRowDto(
-                x.Id, x.AllowanceReference, x.Name, x.SalaryScaleId, x.SalaryScale!.ScaleName,
+                x.Id, x.AllowanceReference, x.Name, x.SalaryScaleId, x.SalaryScale != null ? x.SalaryScale.ScaleName : null,
                 x.AllowanceTypeId, x.AllowanceType!.Name, x.ContractType, x.FrequencyType,
-                x.RateType, x.PayType, x.PayValue, x.CalculatedValue, x.AllowanceCategory))
+                x.RateType, x.PayType, x.PayValue, x.CalculatedValue, x.AllowanceCategory,
+                x.DesignationId, x.Designation != null ? x.Designation.Name : null,
+                x.ShiftLookupValueId, x.ShiftLookupValue != null ? x.ShiftLookupValue.ValueCode : null,
+                x.ShiftLookupValue != null ? x.ShiftLookupValue.DisplayText : null))
             .ToListAsync(ct));
     }
 
@@ -84,8 +87,21 @@ public sealed class PayScaleSetupController(
         {
             scales = await db.SalaryScales.AsNoTracking().Where(x => x.IsActive).OrderBy(x => x.ScaleName)
                 .Select(x => new { x.Id, Name = x.ScaleName }).ToListAsync(ct),
-            allowanceTypes = await db.AllowanceTypes.AsNoTracking().Where(x => x.IsActive && x.AllowanceCategory == category)
+            allowanceTypes = await db.AllowanceTypes.AsNoTracking().Where(x => x.IsActive &&
+                    (x.AllowanceCategory == category || (category != "GENERAL" && x.AllowanceCategory == "GENERAL")))
                 .OrderBy(x => x.DisplayOrder).ThenBy(x => x.Name).Select(x => new { x.Id, x.Name }).ToListAsync(ct),
+            designations = category == "APPT"
+                ? await db.Designations.AsNoTracking().OrderBy(x => x.Name)
+                    .Select(x => new { x.Id, x.Name }).ToListAsync(ct)
+                : [],
+            shifts = category == "SHIFT"
+                ? await db.AppLookupValues.AsNoTracking()
+                    .Where(x => x.IsActive && x.LookupType != null && x.LookupType.IsActive &&
+                        x.LookupType.LookupTypeCode == "ATTENDANCE_SHIFT")
+                    .OrderBy(x => x.SortOrder).ThenBy(x => x.DisplayText)
+                    .Select(x => new { Id = x.LookupValueId, Code = x.ValueCode, Name = x.DisplayText })
+                    .ToListAsync(ct)
+                : [],
             contracts = await db.ContractTypes.AsNoTracking().Where(x => x.IsActive).OrderBy(x => x.DisplayOrder).ThenBy(x => x.Name).Select(x => x.Name).ToListAsync(ct),
             frequencies = await db.FrequencyTypes.AsNoTracking().Where(x => x.IsActive).OrderBy(x => x.DisplayOrder).ThenBy(x => x.Name).Select(x => x.Name).ToListAsync(ct),
             rates = await db.RateTypes.AsNoTracking().Where(x => x.IsActive).OrderBy(x => x.DisplayOrder).ThenBy(x => x.Name).Select(x => x.Name).ToListAsync(ct),
@@ -98,9 +114,12 @@ public sealed class PayScaleSetupController(
     {
         var denied = await Guard("ADD", ct); if (denied != null) return denied;
         var error = await ValidateAllowance(dto, null, ct); if (error != null) return BadRequest(new { message = error });
-        var scale = await db.SalaryScales.SingleAsync(x => x.Id == dto.SalaryScaleId, ct);
+        var scale = dto.SalaryScaleId.HasValue
+            ? await db.SalaryScales.SingleAsync(x => x.Id == dto.SalaryScaleId.Value, ct)
+            : null;
+        var targetName = await ResolveAllowanceTargetName(dto, ct);
         var row = new PayScaleAllowance { TenantId = tenant.RequiredTenantId };
-        Apply(row, dto, scale);
+        Apply(row, dto, scale, targetName);
         db.Add(row); await db.SaveChangesAsync(ct);
         return Ok(await AllowanceRow(row.Id, ct));
     }
@@ -111,8 +130,11 @@ public sealed class PayScaleSetupController(
         var denied = await Guard("EDIT", ct); if (denied != null) return denied;
         var row = await db.PayScaleAllowances.SingleOrDefaultAsync(x => x.Id == id, ct); if (row == null) return NotFound();
         var error = await ValidateAllowance(dto, id, ct); if (error != null) return BadRequest(new { message = error });
-        var scale = await db.SalaryScales.SingleAsync(x => x.Id == dto.SalaryScaleId, ct);
-        Apply(row, dto, scale); row.UpdatedOnUtc = DateTime.UtcNow;
+        var scale = dto.SalaryScaleId.HasValue
+            ? await db.SalaryScales.SingleAsync(x => x.Id == dto.SalaryScaleId.Value, ct)
+            : null;
+        var targetName = await ResolveAllowanceTargetName(dto, ct);
+        Apply(row, dto, scale, targetName); row.UpdatedOnUtc = DateTime.UtcNow;
         await db.SaveChangesAsync(ct);
         return Ok(await AllowanceRow(row.Id, ct));
     }
@@ -261,12 +283,25 @@ public sealed class PayScaleSetupController(
     }
     private async Task<string?> ValidateAllowance(AllowanceSave x, int? id, CancellationToken ct)
     {
-        if (string.IsNullOrWhiteSpace(x.Name)) return "Allowance name is required.";
-        if (x.PayValue < 0) return "Pay value cannot be negative.";
-        if (!await db.SalaryScales.AnyAsync(p => p.Id == x.SalaryScaleId && p.IsActive, ct)) return "Select an active Pay Scale.";
         var category = NormalizeAllowanceCategory(x.AllowanceCategory);
-        if (!await db.AllowanceTypes.AnyAsync(p => p.Id == x.AllowanceTypeId && p.IsActive && p.AllowanceCategory == category, ct)) return "Select a valid Allowance Type.";
-        if (await db.PayScaleAllowances.AnyAsync(p => p.Id != id && p.SalaryScaleId == x.SalaryScaleId && p.AllowanceTypeId == x.AllowanceTypeId && p.Name == x.Name.Trim() && p.AllowanceCategory == category, ct))
+        if (category == "GENERAL" && string.IsNullOrWhiteSpace(x.Name)) return "Allowance name is required.";
+        if (x.PayValue < 0) return "Pay value cannot be negative.";
+        if (category != "SHIFT" && (!x.SalaryScaleId.HasValue ||
+                !await db.SalaryScales.AnyAsync(p => p.Id == x.SalaryScaleId.Value && p.IsActive, ct)))
+            return "Select an active Pay Scale.";
+        if (!await db.AllowanceTypes.AnyAsync(p => p.Id == x.AllowanceTypeId && p.IsActive &&
+                (p.AllowanceCategory == category || (category != "GENERAL" && p.AllowanceCategory == "GENERAL")), ct))
+            return "Select a valid Allowance Type.";
+        if (category == "APPT" && (!x.DesignationId.HasValue ||
+                !await db.Designations.AnyAsync(p => p.Id == x.DesignationId.Value, ct)))
+            return "Select a valid Designation.";
+        if (category == "SHIFT" && (!x.ShiftLookupValueId.HasValue ||
+                !await db.AppLookupValues.AnyAsync(p => p.LookupValueId == x.ShiftLookupValueId.Value && p.IsActive &&
+                    p.LookupType != null && p.LookupType.IsActive && p.LookupType.LookupTypeCode == "ATTENDANCE_SHIFT", ct)))
+            return "Select a valid Shift.";
+        var targetName = await ResolveAllowanceTargetName(x, ct);
+        if (await db.PayScaleAllowances.AnyAsync(p => p.Id != id && p.SalaryScaleId == x.SalaryScaleId &&
+                p.AllowanceTypeId == x.AllowanceTypeId && p.Name == targetName && p.AllowanceCategory == category, ct))
             return "This allowance already exists for the selected scale and allowance type.";
         return null;
     }
@@ -284,24 +319,27 @@ public sealed class PayScaleSetupController(
     private static string NormalizeAllowanceCategory(string? value)
     {
         var normalized = value?.Trim().ToUpperInvariant();
-        return normalized is "APPT" or "NIGHT" ? normalized : "GENERAL";
+        return normalized switch { "APPT" => "APPT", "SHIFT" or "NIGHT" => "SHIFT", _ => "GENERAL" };
     }
     private static void Apply(PayRule x, PayRuleSave d) { x.Code=d.Code.Trim(); x.Name=d.Name.Trim(); x.RuleType=string.IsNullOrWhiteSpace(d.RuleType) ? "Standard" : d.RuleType.Trim(); x.DateFrom=d.DateFrom; x.DateTo=d.DateTo; x.WorkingDaysBasis=d.WorkingDaysBasis.Trim(); x.FixedWorkingDays=d.FixedWorkingDays; x.WorkingHoursPerDay=d.WorkingHoursPerDay; x.OvertimeMultiplier=d.OvertimeMultiplier; x.RoundingMode=d.RoundingMode.Trim(); x.IsActive=d.IsActive; x.Description=Clean(d.Description); }
-    private static void Apply(PayScaleAllowance x, AllowanceSave d, SalaryScale scale)
+    private static void Apply(PayScaleAllowance x, AllowanceSave d, SalaryScale? scale, string targetName)
     {
-        x.AllowanceReference = $"A-{scale.ScaleName}";
-        x.Name = d.Name.Trim();
-        x.SalaryScaleId = d.SalaryScaleId;
+        var category = NormalizeAllowanceCategory(d.AllowanceCategory);
+        x.AllowanceReference = BuildAllowanceReference(category, scale?.ScaleName, targetName);
+        x.Name = targetName;
+        x.SalaryScaleId = category == "SHIFT" ? null : d.SalaryScaleId;
         x.AllowanceTypeId = d.AllowanceTypeId;
+        x.DesignationId = category == "APPT" ? d.DesignationId : null;
+        x.ShiftLookupValueId = category == "SHIFT" ? d.ShiftLookupValueId : null;
         x.ContractType = Clean(d.ContractType);
         x.FrequencyType = Clean(d.FrequencyType);
         x.RateType = Clean(d.RateType);
         x.PayType = Clean(d.PayType);
         x.PayValue = d.PayValue;
-        x.AllowanceCategory = NormalizeAllowanceCategory(d.AllowanceCategory);
-        var basis = string.Equals(x.PayType, "Basic", StringComparison.OrdinalIgnoreCase) ? scale.BasicSalary
-            : string.Equals(x.PayType, "Gross", StringComparison.OrdinalIgnoreCase) ? scale.GrossSalary
-            : string.Equals(x.PayType, "CurrentPay", StringComparison.OrdinalIgnoreCase) ? scale.CurrentPay : 0m;
+        x.AllowanceCategory = category;
+        var basis = string.Equals(x.PayType, "Basic", StringComparison.OrdinalIgnoreCase) ? scale?.BasicSalary ?? 0m
+            : string.Equals(x.PayType, "Gross", StringComparison.OrdinalIgnoreCase) ? scale?.GrossSalary ?? 0m
+            : string.Equals(x.PayType, "CurrentPay", StringComparison.OrdinalIgnoreCase) ? scale?.CurrentPay ?? 0m : 0m;
         x.CalculatedValue = x.RateType?.Contains("Percentage", StringComparison.OrdinalIgnoreCase) == true
             ? Math.Round(basis * x.PayValue / 100m, 2, MidpointRounding.AwayFromZero)
             : Math.Round(x.PayValue, 2, MidpointRounding.AwayFromZero);
@@ -309,12 +347,35 @@ public sealed class PayScaleSetupController(
     private static void Apply(PlatformTypeTableRow x, PlatformMasterSave d) { x.Code=d.Code.Trim().ToUpperInvariant(); x.Name=d.Name.Trim(); x.DisplayOrder=d.DisplayOrder; x.IsActive=d.IsActive; }
     private static void Apply(SalaryPackage x, SalaryPackageSave d) { x.Code=d.Code.Trim(); x.Name=d.Name.Trim(); x.SalaryScaleId=d.SalaryScaleId; x.PayRuleId=d.PayRuleId; x.IsActive=d.IsActive; x.Description=Clean(d.Description); }
     private static string? Clean(string? x) => string.IsNullOrWhiteSpace(x) ? null : x.Trim();
+    private static string BuildAllowanceReference(string category, string? scaleName, string targetName)
+    {
+        if (category == "SHIFT")
+            return targetName.Equals("Night", StringComparison.OrdinalIgnoreCase)
+                ? "A-RLTN-"
+                : $"A-SHIFT-{targetName.Trim().ToUpperInvariant().Replace(' ', '-')}";
+        var normalizedScale = scaleName?.Trim() ?? string.Empty;
+        if (category == "APPT" && normalizedScale.StartsWith("RLT-", StringComparison.OrdinalIgnoreCase))
+            return $"A-RLTA-{normalizedScale[4..]}";
+        return $"A-{normalizedScale}";
+    }
+    private async Task<string> ResolveAllowanceTargetName(AllowanceSave dto, CancellationToken ct)
+    {
+        var category = NormalizeAllowanceCategory(dto.AllowanceCategory);
+        if (category == "APPT" && dto.DesignationId.HasValue)
+            return await db.Designations.Where(x => x.Id == dto.DesignationId.Value).Select(x => x.Name).SingleAsync(ct);
+        if (category == "SHIFT" && dto.ShiftLookupValueId.HasValue)
+            return await db.AppLookupValues.Where(x => x.LookupValueId == dto.ShiftLookupValueId.Value).Select(x => x.DisplayText).SingleAsync(ct);
+        return dto.Name.Trim();
+    }
     private Task<AllowanceRowDto?> AllowanceRow(int id, CancellationToken ct) => db.PayScaleAllowances.AsNoTracking()
         .Where(x => x.Id == id)
         .Select(x => new AllowanceRowDto(
-            x.Id, x.AllowanceReference, x.Name, x.SalaryScaleId, x.SalaryScale!.ScaleName,
+            x.Id, x.AllowanceReference, x.Name, x.SalaryScaleId, x.SalaryScale != null ? x.SalaryScale.ScaleName : null,
             x.AllowanceTypeId, x.AllowanceType!.Name, x.ContractType, x.FrequencyType,
-            x.RateType, x.PayType, x.PayValue, x.CalculatedValue, x.AllowanceCategory))
+            x.RateType, x.PayType, x.PayValue, x.CalculatedValue, x.AllowanceCategory,
+            x.DesignationId, x.Designation != null ? x.Designation.Name : null,
+            x.ShiftLookupValueId, x.ShiftLookupValue != null ? x.ShiftLookupValue.ValueCode : null,
+            x.ShiftLookupValue != null ? x.ShiftLookupValue.DisplayText : null))
         .SingleOrDefaultAsync(ct);
 }
 
@@ -322,5 +383,5 @@ public sealed record RuleRegistrationSave(string RuleType, string Name, DateTime
 public sealed record PayRuleSave(string Code, string Name, string WorkingDaysBasis, int FixedWorkingDays, decimal WorkingHoursPerDay, decimal OvertimeMultiplier, string RoundingMode, bool IsActive, string? Description, string? RuleType = null, DateTime? DateFrom = null, DateTime? DateTo = null);
 public sealed record PlatformMasterSave(string Code, string Name, int DisplayOrder, bool IsActive, string? AllowanceCategory = null);
 public sealed record SalaryPackageSave(string Code, string Name, int SalaryScaleId, int PayRuleId, bool IsActive, string? Description);
-public sealed record AllowanceSave(string Name, int SalaryScaleId, int AllowanceTypeId, string? ContractType, string? FrequencyType, string? RateType, string? PayType, decimal PayValue, string? AllowanceCategory = "GENERAL");
-public sealed record AllowanceRowDto(int Id, string AllowanceRef, string AllowName, int SalaryScaleId, string Scale, int AllowanceTypeId, string AllowanceType, string? ContractType, string? FrequencyType, string? RateType, string? PayType, decimal PayValue, decimal CalculatedValue, string AllowanceCategory);
+public sealed record AllowanceSave(string Name, int? SalaryScaleId, int AllowanceTypeId, string? ContractType, string? FrequencyType, string? RateType, string? PayType, decimal PayValue, string? AllowanceCategory = "GENERAL", int? DesignationId = null, int? ShiftLookupValueId = null);
+public sealed record AllowanceRowDto(int Id, string AllowanceRef, string AllowName, int? SalaryScaleId, string? Scale, int AllowanceTypeId, string AllowanceType, string? ContractType, string? FrequencyType, string? RateType, string? PayType, decimal PayValue, decimal CalculatedValue, string AllowanceCategory, int? DesignationId, string? DesignationName, int? ShiftLookupValueId, string? ShiftCode, string? ShiftName);

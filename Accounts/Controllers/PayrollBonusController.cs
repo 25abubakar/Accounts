@@ -194,8 +194,10 @@ public sealed class PayrollBonusController(
         {
             var eligible = line.IsValid && !line.IsInactive;
             line.IsApproved = eligible;
-            line.IsPaid = eligible;
-            line.PaidOnUtc = eligible ? now : null;
+            // Approval makes the installment eligible for payroll. Payment is
+            // recorded only when the linked monthly payroll is finalized.
+            line.IsPaid = false;
+            line.PaidOnUtc = null;
         }
         RefreshTotals(run);
         await db.SaveChangesAsync(ct);

@@ -1210,7 +1210,7 @@ namespace Accounts.Services.Services
                 Phone = p.Phone, UserName = p.Email, PhotoUrl = p.ProfilePhotoUrl, RegisteredAt = p.CreatedDate,
                 BranchId = branch?.Id, BranchName = branch?.Name, CompanyName = company?.Name,
                 CountryName = country?.Name, CountryFlag = country?.FlagUrl,
-                IsHired = p.Staff != null, StaffId = p.Staff?.StaffId, JoiningDate = null,
+                IsHired = p.Staff != null, IsActive = p.IsActive, StaffId = p.Staff?.StaffId, JoiningDate = null,
                 VacancyId = p.Staff?.VacancyId, VacancyCode = p.Staff?.Vacancy?.VacancyCode,
                 JobTitle = p.Staff?.Vacancy?.ResolvedJobTitle, Department = p.Staff?.Vacancy?.Department ?? department?.Name,
                 ShiftStartTime = p.ShiftStartTime, ShiftEndTime = p.ShiftEndTime, TimeZoneId = p.TimeZoneId,

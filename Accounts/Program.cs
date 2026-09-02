@@ -206,6 +206,7 @@ builder.Services.AddScoped<IAttendanceStatusRepository, AttendanceStatusReposito
 builder.Services.AddScoped<IAttendanceStatusService, AttendanceStatusService>();
 builder.Services.AddScoped<IAttendanceService, AttendanceService>();
 builder.Services.AddScoped<AttendanceFinalizationService>();
+builder.Services.AddScoped<PayrollCalculationService>();
 builder.Services.AddHostedService<AttendanceFinalizationScheduler>();
 builder.Services.AddAutoMapper(_ => { }, typeof(Program).Assembly);
 

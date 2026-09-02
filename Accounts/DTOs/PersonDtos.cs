@@ -217,6 +217,7 @@ namespace Accounts.DTOs
         public string?   CountryName   { get; set; }
         public string?   CountryFlag   { get; set; }
         public bool      IsHired       { get; set; }
+        public bool      IsActive      { get; set; }
         public Guid?     StaffId       { get; set; }
         public DateTime? JoiningDate   { get; set; }
         public Guid?     VacancyId     { get; set; }

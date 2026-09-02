@@ -170,8 +170,55 @@ public sealed class PayrollRun : ITenantEntity
     public DateOnly PayDate { get; set; }
     [Required, MaxLength(20)] public string Status { get; set; } = "Draft";
     [MaxLength(1000)] public string? Notes { get; set; }
+    [MaxLength(450)] public string? CreatedByUserId { get; set; }
+    [MaxLength(150)] public string? CreatedByName { get; set; }
+    [MaxLength(450)] public string? VerifiedByUserId { get; set; }
+    [MaxLength(150)] public string? VerifiedByName { get; set; }
+    public DateTime? VerifiedOnUtc { get; set; }
+    [MaxLength(450)] public string? ApprovedByUserId { get; set; }
+    [MaxLength(150)] public string? ApprovedByName { get; set; }
+    public DateTime? ApprovedOnUtc { get; set; }
     public DateTime CreatedOnUtc { get; set; } = DateTime.UtcNow;
     public DateTime? UpdatedOnUtc { get; set; }
+    public ICollection<PayrollLine> Lines { get; set; } = new List<PayrollLine>();
+}
+
+[Table("PayrollLines")]
+public sealed class PayrollLine : ITenantEntity
+{
+    [Key] public long Id { get; set; }
+    public int TenantId { get; set; }
+    public long PayrollRunId { get; set; }
+    public Guid PersonId { get; set; }
+    public Guid? StaffId { get; set; }
+    [Required, MaxLength(50)] public string EmployeeNumber { get; set; } = string.Empty;
+    [Required, MaxLength(200)] public string FullName { get; set; } = string.Empty;
+    [MaxLength(150)] public string? Designation { get; set; }
+    [MaxLength(150)] public string? Department { get; set; }
+    public DateOnly? DateOfJoining { get; set; }
+    [MaxLength(80)] public string? Scale { get; set; }
+    [Column(TypeName = "decimal(18,2)")] public decimal BasicSalary { get; set; }
+    [Column(TypeName = "decimal(18,2)")] public decimal AllowanceAmount { get; set; }
+    [Column(TypeName = "decimal(18,2)")] public decimal EmployerBenefitAmount { get; set; }
+    [Column(TypeName = "decimal(18,2)")] public decimal StaffBenefitDeduction { get; set; }
+    [Column(TypeName = "decimal(18,2)")] public decimal BonusAmount { get; set; }
+    [Column(TypeName = "decimal(18,2)")] public decimal OvertimeAmount { get; set; }
+    [Column(TypeName = "decimal(18,2)")] public decimal AttendanceDeduction { get; set; }
+    [Column(TypeName = "decimal(18,2)")] public decimal AttendanceAdjustment { get; set; }
+    [Column(TypeName = "decimal(18,2)")] public decimal TaxAmount { get; set; }
+    [Column(TypeName = "decimal(18,2)")] public decimal EmployeeEobiAmount { get; set; }
+    [Column(TypeName = "decimal(18,2)")] public decimal EmployerEobiAmount { get; set; }
+    [Column(TypeName = "decimal(18,2)")] public decimal OtherDeduction { get; set; }
+    [Column(TypeName = "decimal(18,2)")] public decimal GrossPay { get; set; }
+    [Column(TypeName = "decimal(18,2)")] public decimal TotalDeduction { get; set; }
+    [Column(TypeName = "decimal(18,2)")] public decimal NetPay { get; set; }
+    public bool IsApproved { get; set; }
+    public bool IsPaid { get; set; }
+    public DateTime? PaidOnUtc { get; set; }
+    [MaxLength(500)] public string? Remarks { get; set; }
+    public DateTime CreatedOnUtc { get; set; } = DateTime.UtcNow;
+    public DateTime? UpdatedOnUtc { get; set; }
+    public PayrollRun? PayrollRun { get; set; }
 }
 
 [Table("EobiSettings")]
@@ -241,8 +288,10 @@ public sealed class PayScaleAllowance : ITenantEntity
     public int TenantId { get; set; }
     [Required, MaxLength(30)] public string AllowanceReference { get; set; } = string.Empty;
     [Required, MaxLength(120)] public string Name { get; set; } = string.Empty;
-    public int SalaryScaleId { get; set; }
+    public int? SalaryScaleId { get; set; }
     public int AllowanceTypeId { get; set; }
+    public int? DesignationId { get; set; }
+    public int? ShiftLookupValueId { get; set; }
     [MaxLength(50)] public string? ContractType { get; set; }
     [MaxLength(50)] public string? FrequencyType { get; set; }
     [MaxLength(50)] public string? RateType { get; set; }
@@ -254,6 +303,8 @@ public sealed class PayScaleAllowance : ITenantEntity
     public DateTime? UpdatedOnUtc { get; set; }
     public SalaryScale? SalaryScale { get; set; }
     public AllowanceType? AllowanceType { get; set; }
+    public Designation? Designation { get; set; }
+    public AppLookupValue? ShiftLookupValue { get; set; }
 }
 
 [Table("PayRules")]

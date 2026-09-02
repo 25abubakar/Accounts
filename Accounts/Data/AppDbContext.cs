@@ -52,6 +52,7 @@ namespace Accounts.Data
         public DbSet<PayrollBonusRun>          PayrollBonusRuns        => Set<PayrollBonusRun>();
         public DbSet<PayrollBonusLine>         PayrollBonusLines       => Set<PayrollBonusLine>();
         public DbSet<PayrollRun>               PayrollRuns             => Set<PayrollRun>();
+        public DbSet<PayrollLine>              PayrollLines            => Set<PayrollLine>();
         public DbSet<EobiSetting>              EobiSettings            => Set<EobiSetting>();
         public DbSet<PayrollTaxSlab>           PayrollTaxSlabs         => Set<PayrollTaxSlab>();
         public DbSet<EobiEligibility>          EobiEligibilities       => Set<EobiEligibility>();
@@ -258,6 +259,8 @@ namespace Accounts.Data
             builder.Entity<PayrollBonusLine>().HasQueryFilter(row =>
                 _tenantService != null && !_tenantService.IsSuperAdmin && _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
             builder.Entity<PayrollRun>().HasQueryFilter(row =>
+                _tenantService != null && !_tenantService.IsSuperAdmin && _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
+            builder.Entity<PayrollLine>().HasQueryFilter(row =>
                 _tenantService != null && !_tenantService.IsSuperAdmin && _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
             builder.Entity<EobiSetting>().HasQueryFilter(row =>
                 _tenantService != null && !_tenantService.IsSuperAdmin && _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
@@ -1566,6 +1569,13 @@ namespace Accounts.Data
                 e.HasIndex(x => new { x.TenantId, x.RunNumber }).IsUnique();
                 e.HasOne<Tenant>().WithMany().HasForeignKey(x => x.TenantId).OnDelete(DeleteBehavior.Restrict);
             });
+            builder.Entity<PayrollLine>(e =>
+            {
+                e.HasIndex(x => new { x.TenantId, x.PayrollRunId, x.PersonId }).IsUnique();
+                e.HasIndex(x => new { x.TenantId, x.PersonId, x.IsPaid });
+                e.HasOne(x => x.PayrollRun).WithMany(x => x.Lines).HasForeignKey(x => x.PayrollRunId).OnDelete(DeleteBehavior.Cascade);
+                e.HasOne<Tenant>().WithMany().HasForeignKey(x => x.TenantId).OnDelete(DeleteBehavior.Restrict);
+            });
             builder.Entity<EobiSetting>(e =>
             {
                 e.HasIndex(x => new { x.TenantId, x.EffectiveFrom });
@@ -1591,9 +1601,13 @@ namespace Accounts.Data
             builder.Entity<PayScaleAllowance>(e =>
             {
                 e.HasIndex(x => new { x.TenantId, x.AllowanceCategory, x.SalaryScaleId, x.AllowanceTypeId });
+                e.HasIndex(x => new { x.TenantId, x.DesignationId });
+                e.HasIndex(x => new { x.TenantId, x.ShiftLookupValueId });
                 e.HasIndex(x => new { x.TenantId, x.AllowanceReference });
                 e.HasOne(x => x.SalaryScale).WithMany().HasForeignKey(x => x.SalaryScaleId).OnDelete(DeleteBehavior.Restrict);
                 e.HasOne(x => x.AllowanceType).WithMany().HasForeignKey(x => x.AllowanceTypeId).OnDelete(DeleteBehavior.Restrict);
+                e.HasOne(x => x.Designation).WithMany().HasForeignKey(x => x.DesignationId).OnDelete(DeleteBehavior.Restrict);
+                e.HasOne(x => x.ShiftLookupValue).WithMany().HasForeignKey(x => x.ShiftLookupValueId).OnDelete(DeleteBehavior.Restrict);
                 e.HasOne<Tenant>().WithMany().HasForeignKey(x => x.TenantId).OnDelete(DeleteBehavior.Restrict);
             });
             builder.Entity<PayRule>(e =>
