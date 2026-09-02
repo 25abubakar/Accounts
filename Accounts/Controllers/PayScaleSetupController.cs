@@ -90,6 +90,9 @@ public sealed class PayScaleSetupController(
             allowanceTypes = await db.AllowanceTypes.AsNoTracking().Where(x => x.IsActive &&
                     (x.AllowanceCategory == category || (category != "GENERAL" && x.AllowanceCategory == "GENERAL")))
                 .OrderBy(x => x.DisplayOrder).ThenBy(x => x.Name).Select(x => new { x.Id, x.Name }).ToListAsync(ct),
+            leaveTypes = await db.LeaveTypes.AsNoTracking().Where(x => x.IsActive)
+                .OrderBy(x => x.DisplayOrder).ThenBy(x => x.Name)
+                .Select(x => new { x.Id, x.Name }).ToListAsync(ct),
             designations = category == "APPT"
                 ? await db.Designations.AsNoTracking().OrderBy(x => x.Name)
                     .Select(x => new { x.Id, x.Name }).ToListAsync(ct)

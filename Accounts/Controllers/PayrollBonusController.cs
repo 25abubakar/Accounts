@@ -48,7 +48,7 @@ public sealed class PayrollBonusController(
             x.BenefitRuleId == request.BenefitRuleId && x.Year == request.Year && x.Month == request.Month, ct);
         if (existing) return await RunResponse(request.BenefitRuleId, request.Year, request.Month, ct);
 
-        var rule = await db.PayrollBenefitRules.Include(x => x.Parameters)
+        var rule = await db.PayrollBenefitRules.Include(x => x.Parameters).ThenInclude(x => x.BonusDistribution)
             .SingleOrDefaultAsync(x => x.Id == request.BenefitRuleId && x.BenefitsType == "Bonus", ct);
         if (rule == null) return NotFound(new { message = "Selected bonus benefit rule was not found." });
 
@@ -61,6 +61,7 @@ public sealed class PayrollBonusController(
         var personIds = staff.Select(x => x.PersonId).Distinct().ToArray();
         var profiles = await db.PersonHrProfiles.AsNoTracking().Where(x => personIds.Contains(x.PersonId)).ToDictionaryAsync(x => x.PersonId, ct);
         var defaultPercent = ResolveDefaultPercent(rule);
+        var organizationNodes = await db.OrganizationTree.AsNoTracking().ToDictionaryAsync(x => x.Id, ct);
         var now = DateTime.UtcNow;
         var run = new PayrollBonusRun
         {
@@ -87,13 +88,14 @@ public sealed class PayrollBonusController(
             if (profile == null) reasons.Add("HR profile is missing");
             if (salary <= 0) reasons.Add("Salary is missing");
             if (!string.IsNullOrWhiteSpace(rule.Scale) && !string.Equals(rule.Scale.Trim(), profile?.Scale?.Trim(), StringComparison.OrdinalIgnoreCase)) reasons.Add($"Requires scale {rule.Scale}");
-            if (rule.OrganizationId.HasValue && employee.OrganizationId != rule.OrganizationId) reasons.Add("Organization does not match");
+            if (rule.OrganizationId.HasValue && (!employee.OrganizationId.HasValue || !IsOrganizationDescendant(employee.OrganizationId.Value, rule.OrganizationId.Value, organizationNodes))) reasons.Add("Organization does not match");
             if (joining.HasValue && joining.Value.Date > periodEnd.ToDateTime(TimeOnly.MinValue)) reasons.Add("Joined after this bonus period");
             if (serviceYears < rule.MinimumService) reasons.Add($"Minimum service is {rule.MinimumService:0.##} year(s)");
             if (rule.IsIneligible) reasons.Add("Rule is marked ineligible");
 
             var valid = reasons.Count == 0;
             var bonusAmount = rule.MaximumExpense > 0 ? Math.Min(salary, rule.MaximumExpense) : salary;
+            var distribution = ResolveBonusDistribution(rule, request.Month, periodStart, periodEnd, serviceYears);
             var line = new PayrollBonusLine
             {
                 TenantId = tenant.RequiredTenantId,
@@ -109,11 +111,16 @@ public sealed class PayrollBonusController(
                 ValidationMessage = valid ? "Eligible" : string.Join("; ", reasons),
                 BaseSalary = salary,
                 BonusAmount = bonusAmount,
-                BasicPercent = defaultPercent,
+                BasicPercent = distribution?.BasicPercentage ?? defaultPercent,
+                ServicePercent = distribution != null && serviceYears >= distribution.ServiceYears ? distribution.ServicePercentage : 0,
+                AttendancePercent = distribution?.AttendancePercentage ?? 0,
+                AssessmentPercent = distribution?.AssessmentPercentage ?? 0,
+                LeavePercent = distribution?.LeavePercentage ?? 0,
+                DisciplinePercent = distribution?.DisciplinePercentage ?? 0,
                 ServiceYears = Math.Round(serviceYears, 2),
                 Month = request.Month,
                 Year = request.Year,
-                Installment = 1,
+                Installment = distribution?.Installments ?? 1,
                 CreatedOnUtc = now
             };
             ApplyLineRule(line, null);
@@ -284,6 +291,34 @@ public sealed class PayrollBonusController(
         var value = rule.Parameters.Where(x => x.CompanyShare > 0 && x.CompanyShare <= 100).Select(x => x.CompanyShare).FirstOrDefault();
         if (value <= 0 && rule.CompanyShare is > 0 and <= 100) value = rule.CompanyShare;
         return value > 0 ? value : 100m;
+    }
+
+    private static PayrollBonusDistribution? ResolveBonusDistribution(
+        PayrollBenefitRule rule,
+        int month,
+        DateOnly periodStart,
+        DateOnly periodEnd,
+        decimal serviceYears) =>
+        rule.Parameters
+            .Where(parameter => parameter.BonusDistribution != null
+                && (!parameter.PeriodFrom.HasValue || parameter.PeriodFrom <= periodEnd)
+                && (!parameter.PeriodTo.HasValue || parameter.PeriodTo >= periodStart)
+                && serviceYears >= parameter.MinimumService
+                && (!parameter.BonusDistribution!.Month.HasValue || parameter.BonusDistribution.Month == month))
+            .OrderByDescending(parameter => parameter.MinimumService)
+            .Select(parameter => parameter.BonusDistribution)
+            .FirstOrDefault();
+
+    private static bool IsOrganizationDescendant(int candidateId, int ancestorId, IReadOnlyDictionary<int, OrganizationTree> nodes)
+    {
+        var currentId = (int?)candidateId;
+        var visited = new HashSet<int>();
+        while (currentId.HasValue && visited.Add(currentId.Value) && nodes.TryGetValue(currentId.Value, out var node))
+        {
+            if (node.Id == ancestorId) return true;
+            currentId = node.ParentId;
+        }
+        return false;
     }
 
     private string ActorName() => User.FindFirstValue(ClaimTypes.Name) ?? User.FindFirstValue(ClaimTypes.Email) ?? User.Identity?.Name ?? "User";

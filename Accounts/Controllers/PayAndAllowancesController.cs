@@ -80,11 +80,43 @@ public sealed class PayAndAllowancesController(
         return Ok(rows);
     }
 
+    [HttpGet("benefit-lookups")]
+    public async Task<IActionResult> BenefitLookups(CancellationToken ct)
+    {
+        var denied = await Guard("/pay-allowances/benefits", "VIEW", ct); if (denied != null) return denied;
+        var tenantRow = await db.Tenants.IgnoreQueryFilters().AsNoTracking()
+            .Where(x => x.Id == tenant.RequiredTenantId)
+            .Select(x => new { x.OrganizationTreeId, x.TenantName })
+            .SingleAsync(ct);
+        var allNodes = await db.OrganizationTree.AsNoTracking().Where(x => x.IsActive).ToListAsync(ct);
+        var allowedIds = CollectOrganizationDescendants(tenantRow.OrganizationTreeId, allNodes);
+        var allowedNodes = allNodes.Where(x => allowedIds.Contains(x.Id)).ToList();
+
+        return Ok(new
+        {
+            benefitTypes = await db.BenefitTypes.AsNoTracking().Where(x => x.IsActive)
+                .OrderBy(x => x.DisplayOrder).ThenBy(x => x.Name)
+                .Select(x => new { x.Id, x.Name }).ToListAsync(ct),
+            scales = await db.SalaryScales.AsNoTracking().Where(x => x.IsActive)
+                .OrderBy(x => x.ScaleName).Select(x => new { x.Id, Name = x.ScaleName }).ToListAsync(ct),
+            contracts = await db.ContractTypes.AsNoTracking().Where(x => x.IsActive)
+                .OrderBy(x => x.DisplayOrder).ThenBy(x => x.Name).Select(x => x.Name).ToListAsync(ct),
+            frequencies = await db.FrequencyTypes.AsNoTracking().Where(x => x.IsActive)
+                .OrderBy(x => x.DisplayOrder).ThenBy(x => x.Name).Select(x => x.Name).ToListAsync(ct),
+            companies = allowedNodes.Where(x => x.Label.Equals("Company", StringComparison.OrdinalIgnoreCase) || x.Id == tenantRow.OrganizationTreeId)
+                .OrderBy(x => x.Name).Select(x => new { x.Id, x.Name, x.Label }).ToList(),
+            entitlements = allowedNodes.OrderBy(x => x.Name)
+                .Select(x => new { x.Id, x.ParentId, x.Name, x.Label }).ToList(),
+            tenantCompany = new { Id = tenantRow.OrganizationTreeId, Name = tenantRow.TenantName }
+        });
+    }
+
     [HttpPost("benefit-rules")]
     public async Task<IActionResult> CreateBenefitRule(BenefitRuleSave dto, CancellationToken ct)
     {
         var denied = await Guard("/pay-allowances/benefits", "ADD", ct); if (denied != null) return denied;
         var error = ValidateBenefitRule(dto); if (error != null) return BadRequest(new { message = error });
+        var referenceError = await ValidateBenefitRuleReferences(dto, ct); if (referenceError != null) return BadRequest(new { message = referenceError });
         if (await db.PayrollBenefitRules.AnyAsync(x => x.Name == dto.Name.Trim(), ct))
             return Conflict(new { message = "A benefit rule with this name already exists." });
 
@@ -105,6 +137,7 @@ public sealed class PayAndAllowancesController(
         var denied = await Guard("/pay-allowances/benefits", "EDIT", ct); if (denied != null) return denied;
         var row = await db.PayrollBenefitRules.SingleOrDefaultAsync(x => x.Id == id, ct); if (row == null) return NotFound();
         var error = ValidateBenefitRule(dto); if (error != null) return BadRequest(new { message = error });
+        var referenceError = await ValidateBenefitRuleReferences(dto, ct); if (referenceError != null) return BadRequest(new { message = referenceError });
         if (await db.PayrollBenefitRules.AnyAsync(x => x.Id != id && x.Name == dto.Name.Trim(), ct))
             return Conflict(new { message = "A benefit rule with this name already exists." });
         ApplyBenefitRule(row, dto);
@@ -148,7 +181,16 @@ public sealed class PayAndAllowancesController(
                 MinPh = x.BenefitRule.MinimumPh,
                 CoyShare = x.CompanyShare,
                 x.StaffShare,
-                x.BenefitRule.BenefitsType
+                x.BenefitRule.BenefitsType,
+                BonusMonth = x.BonusDistribution == null ? null : x.BonusDistribution.Month,
+                BasicPercentage = x.BonusDistribution == null ? 0 : x.BonusDistribution.BasicPercentage,
+                ServicePercentage = x.BonusDistribution == null ? 0 : x.BonusDistribution.ServicePercentage,
+                ServiceYears = x.BonusDistribution == null ? 0 : x.BonusDistribution.ServiceYears,
+                AssessmentPercentage = x.BonusDistribution == null ? 0 : x.BonusDistribution.AssessmentPercentage,
+                AttendancePercentage = x.BonusDistribution == null ? 0 : x.BonusDistribution.AttendancePercentage,
+                LeavePercentage = x.BonusDistribution == null ? 0 : x.BonusDistribution.LeavePercentage,
+                DisciplinePercentage = x.BonusDistribution == null ? 0 : x.BonusDistribution.DisciplinePercentage,
+                Installments = x.BonusDistribution == null ? 1 : x.BonusDistribution.Installments
             }).ToListAsync(ct);
         return Ok(rows);
     }
@@ -158,8 +200,10 @@ public sealed class PayAndAllowancesController(
     {
         var denied = await Guard("/pay-allowances/benefits", "ADD", ct); if (denied != null) return denied;
         var error = ValidateBenefitParameter(dto); if (error != null) return BadRequest(new { message = error });
-        if (!await db.PayrollBenefitRules.AnyAsync(x => x.Id == dto.BenefitRuleId, ct))
+        var benefitRule = await db.PayrollBenefitRules.AsNoTracking().SingleOrDefaultAsync(x => x.Id == dto.BenefitRuleId, ct);
+        if (benefitRule == null)
             return BadRequest(new { message = "Selected benefit rule was not found." });
+        var distributionError = ValidateBonusDistribution(benefitRule.BenefitsType, dto.BonusDistribution); if (distributionError != null) return BadRequest(new { message = distributionError });
         if (await db.PayrollBenefitParameters.AnyAsync(x => x.BenefitRuleId == dto.BenefitRuleId && x.Name == dto.Name.Trim(), ct))
             return Conflict(new { message = "This parameter already exists for the selected benefit rule." });
 
@@ -173,6 +217,8 @@ public sealed class PayAndAllowancesController(
         db.PayrollBenefitParameters.Add(row);
         await db.SaveChangesAsync(ct);
         row.Reference = BuildReference("P", "BEN", row.Id);
+        if (benefitRule.BenefitsType.Equals("Bonus", StringComparison.OrdinalIgnoreCase) && dto.BonusDistribution != null)
+            db.PayrollBonusDistributions.Add(CreateBonusDistribution(row.Id, dto.BonusDistribution));
         await db.SaveChangesAsync(ct);
         return Ok(new { row.Id });
     }
@@ -181,14 +227,26 @@ public sealed class PayAndAllowancesController(
     public async Task<IActionResult> UpdateBenefitParameter(int id, BenefitParameterSave dto, CancellationToken ct)
     {
         var denied = await Guard("/pay-allowances/benefits", "EDIT", ct); if (denied != null) return denied;
-        var row = await db.PayrollBenefitParameters.SingleOrDefaultAsync(x => x.Id == id, ct); if (row == null) return NotFound();
+        var row = await db.PayrollBenefitParameters.Include(x => x.BonusDistribution).SingleOrDefaultAsync(x => x.Id == id, ct); if (row == null) return NotFound();
         var error = ValidateBenefitParameter(dto); if (error != null) return BadRequest(new { message = error });
-        if (!await db.PayrollBenefitRules.AnyAsync(x => x.Id == dto.BenefitRuleId, ct))
+        var benefitRule = await db.PayrollBenefitRules.AsNoTracking().SingleOrDefaultAsync(x => x.Id == dto.BenefitRuleId, ct);
+        if (benefitRule == null)
             return BadRequest(new { message = "Selected benefit rule was not found." });
+        var distributionError = ValidateBonusDistribution(benefitRule.BenefitsType, dto.BonusDistribution); if (distributionError != null) return BadRequest(new { message = distributionError });
         if (await db.PayrollBenefitParameters.AnyAsync(x => x.Id != id && x.BenefitRuleId == dto.BenefitRuleId && x.Name == dto.Name.Trim(), ct))
             return Conflict(new { message = "This parameter already exists for the selected benefit rule." });
         row.BenefitRuleId = dto.BenefitRuleId;
         ApplyBenefitParameter(row, dto);
+        if (benefitRule.BenefitsType.Equals("Bonus", StringComparison.OrdinalIgnoreCase) && dto.BonusDistribution != null)
+        {
+            row.BonusDistribution ??= CreateBonusDistribution(row.Id, dto.BonusDistribution);
+            ApplyBonusDistribution(row.BonusDistribution, dto.BonusDistribution);
+        }
+        else if (row.BonusDistribution != null)
+        {
+            db.PayrollBonusDistributions.Remove(row.BonusDistribution);
+            row.BonusDistribution = null;
+        }
         row.UpdatedOnUtc = DateTime.UtcNow;
         await db.SaveChangesAsync(ct);
         return Ok(new { row.Id });
@@ -559,6 +617,35 @@ public sealed class PayAndAllowancesController(
         if (x.MinimumService < 0 || x.CompanyShare < 0 || x.StaffShare < 0) return "Parameter values cannot be negative.";
         return null;
     }
+    private static string? ValidateBonusDistribution(string benefitType, BonusDistributionSave? x)
+    {
+        if (!benefitType.Equals("Bonus", StringComparison.OrdinalIgnoreCase))
+            return x == null ? null : "Bonus Distribution can only be saved against a Bonus benefit rule.";
+        if (x == null) return null;
+        if (x.Month is < 1 or > 12) return "Bonus month must be between 1 and 12.";
+        if (x.ServiceYears < 0) return "Service years cannot be negative.";
+        if (x.Installments is < 1 or > 120) return "Installments must be between 1 and 120.";
+        var percentages = new[] { x.BasicPercentage, x.ServicePercentage, x.AssessmentPercentage, x.AttendancePercentage, x.LeavePercentage, x.DisciplinePercentage };
+        return percentages.Any(value => value is < 0 or > 100) ? "Bonus distribution percentages must be between 0 and 100." : null;
+    }
+    private async Task<string?> ValidateBenefitRuleReferences(BenefitRuleSave x, CancellationToken ct)
+    {
+        if (!await db.BenefitTypes.AsNoTracking().AnyAsync(type => type.IsActive && type.Name == x.BenefitsType.Trim(), ct))
+            return "Selected benefit type was not found.";
+        if (!string.IsNullOrWhiteSpace(x.Scale) && !await db.SalaryScales.AsNoTracking().AnyAsync(scale => scale.IsActive && scale.ScaleName == x.Scale.Trim(), ct))
+            return "Selected salary scale was not found.";
+        if (!string.IsNullOrWhiteSpace(x.Contract) && !await db.ContractTypes.AsNoTracking().AnyAsync(type => type.IsActive && type.Name == x.Contract.Trim(), ct))
+            return "Selected contract type was not found.";
+        if (!string.IsNullOrWhiteSpace(x.Frequency) && !await db.FrequencyTypes.AsNoTracking().AnyAsync(type => type.IsActive && type.Name == x.Frequency.Trim(), ct))
+            return "Selected frequency was not found.";
+        if (!x.OrganizationId.HasValue) return null;
+        var tenantRootId = await db.Tenants.IgnoreQueryFilters().AsNoTracking().Where(row => row.Id == tenant.RequiredTenantId)
+            .Select(row => row.OrganizationTreeId).SingleAsync(ct);
+        var nodes = await db.OrganizationTree.AsNoTracking().Where(row => row.IsActive).ToListAsync(ct);
+        return CollectOrganizationDescendants(tenantRootId, nodes).Contains(x.OrganizationId.Value)
+            ? null
+            : "Selected entitlement is outside the current company.";
+    }
     private static void ApplyBenefitRule(PayrollBenefitRule row, BenefitRuleSave x)
     {
         row.BenefitReference = BuildBenefitReference(x.Scale);
@@ -594,6 +681,44 @@ public sealed class PayAndAllowancesController(
         row.PayType = string.IsNullOrWhiteSpace(x.PayType) ? "Basic" : x.PayType.Trim();
         row.CompanyShare = x.CompanyShare;
         row.StaffShare = x.StaffShare;
+    }
+    private PayrollBonusDistribution CreateBonusDistribution(int benefitParameterId, BonusDistributionSave source)
+    {
+        var row = new PayrollBonusDistribution
+        {
+            TenantId = tenant.RequiredTenantId,
+            BenefitParameterId = benefitParameterId
+        };
+        ApplyBonusDistribution(row, source);
+        return row;
+    }
+    private static void ApplyBonusDistribution(PayrollBonusDistribution row, BonusDistributionSave source)
+    {
+        row.Month = source.Month;
+        row.BasicPercentage = source.BasicPercentage;
+        row.ServicePercentage = source.ServicePercentage;
+        row.ServiceYears = source.ServiceYears;
+        row.AssessmentPercentage = source.AssessmentPercentage;
+        row.AttendancePercentage = source.AttendancePercentage;
+        row.LeavePercentage = source.LeavePercentage;
+        row.DisciplinePercentage = source.DisciplinePercentage;
+        row.Installments = source.Installments;
+        row.UpdatedOnUtc = DateTime.UtcNow;
+    }
+    private static HashSet<int> CollectOrganizationDescendants(int rootId, IReadOnlyCollection<OrganizationTree> nodes)
+    {
+        var children = nodes.Where(x => x.ParentId.HasValue).GroupBy(x => x.ParentId!.Value)
+            .ToDictionary(x => x.Key, x => x.Select(node => node.Id).ToArray());
+        var result = new HashSet<int> { rootId };
+        var pending = new Stack<int>();
+        pending.Push(rootId);
+        while (pending.TryPop(out var parentId))
+        {
+            if (!children.TryGetValue(parentId, out var childIds)) continue;
+            foreach (var childId in childIds)
+                if (result.Add(childId)) pending.Push(childId);
+        }
+        return result;
     }
     private static string BuildReference(string prefix, string value, int id)
     {
@@ -679,4 +804,5 @@ public sealed record EobiSettingSave(decimal EmployeeRatePercentage, decimal Emp
 public sealed record TaxSlabSave(string TaxYear, decimal FromAmount, decimal? ToAmount, decimal FixedTaxAmount, decimal RatePercentage, bool IsActive);
 public sealed record EobiEligibilitySave(Guid PersonId, string? EobiNumber, DateOnly EffectiveFrom, DateOnly? EffectiveTo, bool IsEligible, string? Remarks);
 public sealed record BenefitRuleSave(string BenefitsType, string Name, string? Company, string? Entitled, string? Contract, string? Frequency, DateOnly? ValidFrom, DateOnly? ValidTo, decimal MaximumExpense, string? ServiceStatus, string? Scale, DateOnly? Wef, decimal MinimumService, decimal MaximumPh, decimal MinimumPh, bool IsIneligible, string? ShareType, decimal CompanyShare, decimal StaffShare, int? OrganizationId, string? CompanyName);
-public sealed record BenefitParameterSave(int BenefitRuleId, string Name, DateOnly? PeriodFrom, DateOnly? PeriodTo, decimal MinimumService, string? AmountType, string? PayType, decimal CompanyShare, decimal StaffShare);
+public sealed record BenefitParameterSave(int BenefitRuleId, string Name, DateOnly? PeriodFrom, DateOnly? PeriodTo, decimal MinimumService, string? AmountType, string? PayType, decimal CompanyShare, decimal StaffShare, BonusDistributionSave? BonusDistribution);
+public sealed record BonusDistributionSave(int? Month, decimal BasicPercentage, decimal ServicePercentage, decimal ServiceYears, decimal AssessmentPercentage, decimal AttendancePercentage, decimal LeavePercentage, decimal DisciplinePercentage, int Installments);

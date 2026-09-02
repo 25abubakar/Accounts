@@ -48,6 +48,7 @@ namespace Accounts.Data
         public DbSet<PayrollBenefitDefinition> PayrollBenefitDefinitions => Set<PayrollBenefitDefinition>();
         public DbSet<PayrollBenefitRule>       PayrollBenefitRules      => Set<PayrollBenefitRule>();
         public DbSet<PayrollBenefitParameter>  PayrollBenefitParameters => Set<PayrollBenefitParameter>();
+        public DbSet<PayrollBonusDistribution> PayrollBonusDistributions => Set<PayrollBonusDistribution>();
         public DbSet<PayrollBonusDefinition>   PayrollBonusDefinitions => Set<PayrollBonusDefinition>();
         public DbSet<PayrollBonusRun>          PayrollBonusRuns        => Set<PayrollBonusRun>();
         public DbSet<PayrollBonusLine>         PayrollBonusLines       => Set<PayrollBonusLine>();
@@ -1540,6 +1541,14 @@ namespace Accounts.Data
                 e.HasIndex(x => new { x.TenantId, x.Reference }).IsUnique();
                 e.HasIndex(x => new { x.TenantId, x.BenefitRuleId, x.Name }).IsUnique();
                 e.HasOne(x => x.BenefitRule).WithMany(x => x.Parameters).HasForeignKey(x => x.BenefitRuleId).OnDelete(DeleteBehavior.Restrict);
+                e.HasOne<Tenant>().WithMany().HasForeignKey(x => x.TenantId).OnDelete(DeleteBehavior.Restrict);
+            });
+            builder.Entity<PayrollBonusDistribution>(e =>
+            {
+                e.HasIndex(x => new { x.TenantId, x.BenefitParameterId }).IsUnique();
+                e.HasOne(x => x.BenefitParameter).WithOne(x => x.BonusDistribution)
+                    .HasForeignKey<PayrollBonusDistribution>(x => x.BenefitParameterId)
+                    .OnDelete(DeleteBehavior.Cascade);
                 e.HasOne<Tenant>().WithMany().HasForeignKey(x => x.TenantId).OnDelete(DeleteBehavior.Restrict);
             });
             builder.Entity<PayrollBonusDefinition>(e =>

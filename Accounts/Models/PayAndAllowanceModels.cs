@@ -75,6 +75,27 @@ public sealed class PayrollBenefitParameter : ITenantEntity
     public DateTime CreatedOnUtc { get; set; } = DateTime.UtcNow;
     public DateTime? UpdatedOnUtc { get; set; }
     public PayrollBenefitRule? BenefitRule { get; set; }
+    public PayrollBonusDistribution? BonusDistribution { get; set; }
+}
+
+[Table("PayrollBonusDistributions")]
+public sealed class PayrollBonusDistribution : ITenantEntity
+{
+    [Key] public int Id { get; set; }
+    public int TenantId { get; set; }
+    public int BenefitParameterId { get; set; }
+    public int? Month { get; set; }
+    [Column(TypeName = "decimal(9,4)")] public decimal BasicPercentage { get; set; }
+    [Column(TypeName = "decimal(9,4)")] public decimal ServicePercentage { get; set; }
+    [Column(TypeName = "decimal(9,2)")] public decimal ServiceYears { get; set; }
+    [Column(TypeName = "decimal(9,4)")] public decimal AssessmentPercentage { get; set; }
+    [Column(TypeName = "decimal(9,4)")] public decimal AttendancePercentage { get; set; }
+    [Column(TypeName = "decimal(9,4)")] public decimal LeavePercentage { get; set; }
+    [Column(TypeName = "decimal(9,4)")] public decimal DisciplinePercentage { get; set; }
+    public int Installments { get; set; } = 1;
+    public DateTime CreatedOnUtc { get; set; } = DateTime.UtcNow;
+    public DateTime? UpdatedOnUtc { get; set; }
+    public PayrollBenefitParameter? BenefitParameter { get; set; }
 }
 
 [Table("PayrollBonusDefinitions")]

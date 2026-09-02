@@ -154,6 +154,7 @@ public sealed class PayrollCalculationService(
         var benefitRules = await db.PayrollBenefitRules.AsNoTracking().Include(x => x.Parameters)
             .Where(x => x.BenefitsType != "Bonus" && !x.IsIneligible)
             .ToListAsync(cancellationToken);
+        var organizationNodes = await db.OrganizationTree.AsNoTracking().ToDictionaryAsync(x => x.Id, cancellationToken);
         var bonusLines = await db.PayrollBonusLines.AsNoTracking().Include(x => x.BonusRun)
             .Where(x => x.IsApproved && !x.IsInactive && x.BonusRun != null && x.BonusRun.Status == "Approved")
             .ToListAsync(cancellationToken);
@@ -198,7 +199,7 @@ public sealed class PayrollCalculationService(
             var serviceYears = profile?.JoiningDate is DateTime joining
                 ? Math.Max(0, (decimal)(periodEnd.ToDateTime(TimeOnly.MinValue) - joining.Date).TotalDays / 365.2425m)
                 : 0;
-            var applicableBenefits = benefitRules.Where(rule => IsBenefitApplicable(rule, profile, employee.OrganizationId, serviceYears, periodStart, periodEnd));
+            var applicableBenefits = benefitRules.Where(rule => IsBenefitApplicable(rule, profile, employee.OrganizationId, organizationNodes, serviceYears, periodStart, periodEnd));
             decimal employerBenefits = 0;
             decimal staffBenefits = 0;
             foreach (var rule in applicableBenefits)
@@ -300,6 +301,7 @@ public sealed class PayrollCalculationService(
         PayrollBenefitRule rule,
         PersonHrProfile? profile,
         int? organizationId,
+        IReadOnlyDictionary<int, OrganizationTree> organizationNodes,
         decimal serviceYears,
         DateOnly periodStart,
         DateOnly periodEnd)
@@ -307,7 +309,7 @@ public sealed class PayrollCalculationService(
         if (rule.ValidFrom.HasValue && rule.ValidFrom > periodEnd || rule.ValidTo.HasValue && rule.ValidTo < periodStart) return false;
         if (rule.Wef.HasValue && rule.Wef > periodEnd) return false;
         if (!string.IsNullOrWhiteSpace(rule.Scale) && !string.Equals(rule.Scale.Trim(), profile?.Scale?.Trim(), StringComparison.OrdinalIgnoreCase)) return false;
-        if (rule.OrganizationId.HasValue && rule.OrganizationId != organizationId) return false;
+        if (rule.OrganizationId.HasValue && (!organizationId.HasValue || !IsOrganizationDescendant(organizationId.Value, rule.OrganizationId.Value, organizationNodes))) return false;
         if (serviceYears < rule.MinimumService) return false;
         var anchor = rule.Wef ?? rule.ValidFrom ?? periodStart;
         var elapsedMonths = (periodStart.Year - anchor.Year) * 12 + periodStart.Month - anchor.Month;
@@ -319,6 +321,18 @@ public sealed class PayrollCalculationService(
             "onetime" or "one time" => elapsedMonths == 0,
             _ => true
         };
+    }
+
+    private static bool IsOrganizationDescendant(int candidateId, int ancestorId, IReadOnlyDictionary<int, OrganizationTree> nodes)
+    {
+        var currentId = (int?)candidateId;
+        var visited = new HashSet<int>();
+        while (currentId.HasValue && visited.Add(currentId.Value) && nodes.TryGetValue(currentId.Value, out var node))
+        {
+            if (node.Id == ancestorId) return true;
+            currentId = node.ParentId;
+        }
+        return false;
     }
 
     private static bool IsBonusInstallmentDue(PayrollBonusLine line, int year, int month)
