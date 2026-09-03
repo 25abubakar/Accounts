@@ -86,11 +86,16 @@ public sealed class PayAndAllowancesController(
         var denied = await Guard("/pay-allowances/benefits", "VIEW", ct); if (denied != null) return denied;
         var tenantRow = await db.Tenants.IgnoreQueryFilters().AsNoTracking()
             .Where(x => x.Id == tenant.RequiredTenantId)
-            .Select(x => new { x.OrganizationTreeId, x.TenantName })
+            .Select(x => new { x.OrganizationTreeId })
             .SingleAsync(ct);
-        var allNodes = await db.OrganizationTree.AsNoTracking().Where(x => x.IsActive).ToListAsync(ct);
-        var allowedIds = CollectOrganizationDescendants(tenantRow.OrganizationTreeId, allNodes);
-        var allowedNodes = allNodes.Where(x => allowedIds.Contains(x.Id)).ToList();
+        // Org tree is flexible: Group/Company/Country/Branch/SubBranch/Department
+        // may appear in any order. Company options = Label "Company" only (any name).
+        var allNodes = await db.OrganizationTree.AsNoTracking().ToListAsync(ct);
+        var companyNodes = ResolveBenefitCompanyNodes(allNodes, tenantRow.OrganizationTreeId);
+        var scopeIds = CollectBenefitOrganizationScope(tenantRow.OrganizationTreeId, allNodes, companyNodes);
+        var scopedNodes = allNodes.Where(x => scopeIds.Contains(x.Id)).ToList();
+        var departmentNodes = ResolveBenefitDepartmentNodes(scopedNodes, companyNodes);
+        var defaultCompany = ResolveDefaultBenefitCompany(companyNodes, allNodes, tenantRow.OrganizationTreeId);
 
         return Ok(new
         {
@@ -103,13 +108,180 @@ public sealed class PayAndAllowancesController(
                 .OrderBy(x => x.DisplayOrder).ThenBy(x => x.Name).Select(x => x.Name).ToListAsync(ct),
             frequencies = await db.FrequencyTypes.AsNoTracking().Where(x => x.IsActive)
                 .OrderBy(x => x.DisplayOrder).ThenBy(x => x.Name).Select(x => x.Name).ToListAsync(ct),
-            companies = allowedNodes.Where(x => x.Label.Equals("Company", StringComparison.OrdinalIgnoreCase) || x.Id == tenantRow.OrganizationTreeId)
-                .OrderBy(x => x.Name).Select(x => new { x.Id, x.Name, x.Label }).ToList(),
-            entitlements = allowedNodes.OrderBy(x => x.Name)
+            serviceStatuses = await LookupNamesAsync("BENEFIT_SERVICE_STATUS", ct),
+            amountTypes = await LookupNamesAsync("BENEFIT_AMOUNT_TYPE", ct),
+            payTypes = await LookupNamesAsync("BENEFIT_PAY_TYPE", ct),
+            shareTypes = await LookupNamesAsync("BENEFIT_SHARE_TYPE", ct),
+            companies = companyNodes.Select(x => new { x.Id, x.Name, x.Label }).ToList(),
+            departments = departmentNodes.Select(x => new { x.Id, x.ParentId, x.Name, x.Label }).ToList(),
+            entitlements = scopedNodes.OrderBy(x => x.Name)
                 .Select(x => new { x.Id, x.ParentId, x.Name, x.Label }).ToList(),
-            tenantCompany = new { Id = tenantRow.OrganizationTreeId, Name = tenantRow.TenantName }
+            tenantCompany = defaultCompany == null ? null : new { defaultCompany.Id, defaultCompany.Name }
         });
     }
+
+    private static string NormalizeOrgLabel(string? label) =>
+        (label ?? string.Empty).Trim().Replace("-", " ").Replace("_", " ");
+
+    private static bool IsCompanyLabel(string? label) =>
+        NormalizeOrgLabel(label).Equals("Company", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsGroupLabel(string? label) =>
+        NormalizeOrgLabel(label).Equals("Group", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>Branch / Sub Branch — never a Benefits Company option.</summary>
+    private static bool IsBranchLikeLabel(string? label)
+    {
+        var normalized = NormalizeOrgLabel(label);
+        if (string.IsNullOrWhiteSpace(normalized)) return false;
+        return normalized.Equals("Branch", StringComparison.OrdinalIgnoreCase)
+            || normalized.Equals("Sub Branch", StringComparison.OrdinalIgnoreCase)
+            || normalized.Equals("SubBranch", StringComparison.OrdinalIgnoreCase)
+            || normalized.Equals("Office", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsDepartmentLikeLabel(string? label)
+    {
+        var normalized = NormalizeOrgLabel(label);
+        if (string.IsNullOrWhiteSpace(normalized)) return false;
+        return normalized.Equals("Department", StringComparison.OrdinalIgnoreCase)
+            || normalized.Equals("Sub Department", StringComparison.OrdinalIgnoreCase)
+            || normalized.Equals("SubDepartment", StringComparison.OrdinalIgnoreCase)
+            || normalized.Equals("Unit", StringComparison.OrdinalIgnoreCase)
+            || normalized.Equals("Team", StringComparison.OrdinalIgnoreCase)
+            || normalized.Equals("Section", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsLocationOnlyLabel(string? label)
+    {
+        var normalized = NormalizeOrgLabel(label);
+        if (string.IsNullOrWhiteSpace(normalized)) return false;
+        return normalized.Equals("Country", StringComparison.OrdinalIgnoreCase)
+            || normalized.Equals("Region", StringComparison.OrdinalIgnoreCase)
+            || normalized.Equals("State", StringComparison.OrdinalIgnoreCase)
+            || normalized.Equals("City", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static List<OrganizationTree> PreferActiveOrgNodes(IEnumerable<OrganizationTree> source) =>
+        source.Where(x => x.IsActive).OrderBy(x => x.Name).ToList() is { Count: > 0 } active
+            ? active
+            : source.OrderBy(x => x.Name).ToList();
+
+    /// <summary>
+    /// Company dropdown = every in-scope org node whose Label is "Company".
+    /// Names are never hardcoded. Tree position is free-form, e.g.:
+    /// Group→Company→Country→Branch, or Group→Country→Company→Branch,
+    /// or Company at the root — all valid.
+    /// Never treats Branch / Sub Branch / Country / Department as Company.
+    /// </summary>
+    private static List<OrganizationTree> ResolveBenefitCompanyNodes(
+        IReadOnlyList<OrganizationTree> allNodes,
+        int tenantRootId)
+    {
+        var byId = allNodes.ToDictionary(x => x.Id);
+        var companyIds = new HashSet<int>();
+        int? groupAncestorId = null;
+
+        // Walk UP: Company may sit above Country/Branch/SubBranch (any depth).
+        var currentId = tenantRootId;
+        var visited = new HashSet<int>();
+        while (byId.TryGetValue(currentId, out var node) && visited.Add(currentId))
+        {
+            if (IsCompanyLabel(node.Label)) companyIds.Add(node.Id);
+            if (IsGroupLabel(node.Label)) groupAncestorId ??= node.Id;
+            if (!node.ParentId.HasValue) break;
+            currentId = node.ParentId.Value;
+        }
+
+        // Walk DOWN from tenant root: Company may sit below Country/Group.
+        foreach (var id in CollectOrganizationDescendants(tenantRootId, allNodes))
+        {
+            if (byId.TryGetValue(id, out var node) && IsCompanyLabel(node.Label))
+                companyIds.Add(node.Id);
+        }
+
+        // Still none, but a Group is on the chain: collect every Company under that Group
+        // (covers Country→Company siblings / nested company under country).
+        if (companyIds.Count == 0 && groupAncestorId.HasValue)
+        {
+            foreach (var id in CollectOrganizationDescendants(groupAncestorId.Value, allNodes))
+            {
+                if (byId.TryGetValue(id, out var node) && IsCompanyLabel(node.Label))
+                    companyIds.Add(node.Id);
+            }
+        }
+
+        return PreferActiveOrgNodes(allNodes.Where(x => companyIds.Contains(x.Id)));
+    }
+
+    /// <summary>
+    /// Default company = tenant org node if it is a Company, else nearest Company ancestor.
+    /// Does not match on a fixed display name.
+    /// </summary>
+    private static OrganizationTree? ResolveDefaultBenefitCompany(
+        IReadOnlyList<OrganizationTree> companyNodes,
+        IReadOnlyList<OrganizationTree> allNodes,
+        int tenantRootId)
+    {
+        if (companyNodes.Count == 0) return null;
+        var companyById = companyNodes.ToDictionary(x => x.Id);
+        if (companyById.TryGetValue(tenantRootId, out var atRoot)) return atRoot;
+
+        var byId = allNodes.ToDictionary(x => x.Id);
+        var currentId = tenantRootId;
+        var visited = new HashSet<int>();
+        while (byId.TryGetValue(currentId, out var node) && visited.Add(currentId))
+        {
+            if (companyById.TryGetValue(node.Id, out var company)) return company;
+            if (!node.ParentId.HasValue) break;
+            currentId = node.ParentId.Value;
+        }
+
+        return companyNodes[0];
+    }
+
+    /// <summary>
+    /// Scope for entitled/departments: union of each resolved Company subtree.
+    /// Falls back to tenant-root descendants when no Company label exists yet.
+    /// </summary>
+    private static HashSet<int> CollectBenefitOrganizationScope(
+        int tenantRootId,
+        IReadOnlyList<OrganizationTree> allNodes,
+        IReadOnlyList<OrganizationTree> companyNodes)
+    {
+        if (companyNodes.Count == 0)
+            return CollectOrganizationDescendants(tenantRootId, allNodes);
+
+        var scope = new HashSet<int>();
+        foreach (var company in companyNodes)
+        {
+            foreach (var id in CollectOrganizationDescendants(company.Id, allNodes))
+                scope.Add(id);
+        }
+        return scope;
+    }
+
+    private static List<OrganizationTree> ResolveBenefitDepartmentNodes(
+        IReadOnlyList<OrganizationTree> scopedNodes,
+        IReadOnlyList<OrganizationTree> companyNodes)
+    {
+        var companyIds = companyNodes.Select(x => x.Id).ToHashSet();
+        // Entitled options = Department (and similar) only — not Branch / Sub Branch / Country / Shift.
+        return PreferActiveOrgNodes(scopedNodes
+            .Where(x => IsDepartmentLikeLabel(x.Label) && !companyIds.Contains(x.Id)
+                        && !IsBranchLikeLabel(x.Label)
+                        && !IsLocationOnlyLabel(x.Label)
+                        && !IsGroupLabel(x.Label)
+                        && !IsCompanyLabel(x.Label)));
+    }
+
+    private Task<List<string>> LookupNamesAsync(string lookupTypeCode, CancellationToken ct) =>
+        db.AppLookupValues.AsNoTracking()
+            .Where(x => x.IsActive && x.LookupType != null && x.LookupType.IsActive &&
+                        x.LookupType.LookupTypeCode == lookupTypeCode)
+            .OrderBy(x => x.SortOrder).ThenBy(x => x.DisplayText)
+            .Select(x => x.DisplayText)
+            .ToListAsync(ct);
 
     [HttpPost("benefit-rules")]
     public async Task<IActionResult> CreateBenefitRule(BenefitRuleSave dto, CancellationToken ct)
@@ -621,8 +793,8 @@ public sealed class PayAndAllowancesController(
     {
         if (!benefitType.Equals("Bonus", StringComparison.OrdinalIgnoreCase))
             return x == null ? null : "Bonus Distribution can only be saved against a Bonus benefit rule.";
-        if (x == null) return null;
-        if (x.Month is < 1 or > 12) return "Bonus month must be between 1 and 12.";
+        if (x == null) return "Bonus Distribution is required when Benefits Type is Bonus.";
+        if (x.Month is null or < 1 or > 12) return "Bonus month must be between 1 and 12.";
         if (x.ServiceYears < 0) return "Service years cannot be negative.";
         if (x.Installments is < 1 or > 120) return "Installments must be between 1 and 120.";
         var percentages = new[] { x.BasicPercentage, x.ServicePercentage, x.AssessmentPercentage, x.AttendancePercentage, x.LeavePercentage, x.DisciplinePercentage };
@@ -641,8 +813,10 @@ public sealed class PayAndAllowancesController(
         if (!x.OrganizationId.HasValue) return null;
         var tenantRootId = await db.Tenants.IgnoreQueryFilters().AsNoTracking().Where(row => row.Id == tenant.RequiredTenantId)
             .Select(row => row.OrganizationTreeId).SingleAsync(ct);
-        var nodes = await db.OrganizationTree.AsNoTracking().Where(row => row.IsActive).ToListAsync(ct);
-        return CollectOrganizationDescendants(tenantRootId, nodes).Contains(x.OrganizationId.Value)
+        var nodes = await db.OrganizationTree.AsNoTracking().ToListAsync(ct);
+        var companies = ResolveBenefitCompanyNodes(nodes, tenantRootId);
+        var scope = CollectBenefitOrganizationScope(tenantRootId, nodes, companies);
+        return scope.Contains(x.OrganizationId.Value)
             ? null
             : "Selected entitlement is outside the current company.";
     }

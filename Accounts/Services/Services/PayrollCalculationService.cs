@@ -136,6 +136,7 @@ public sealed class PayrollCalculationService(
         var allowances = await db.PayScaleAllowances.AsNoTracking()
             .Include(x => x.ShiftLookupValue)
             .ToListAsync(cancellationToken);
+        var tadas = await db.PayScaleTadas.AsNoTracking().ToListAsync(cancellationToken);
         var designationByStaff = await db.StaffVacancies.AsNoTracking()
             .Where(x => staffIds.Contains(x.StaffId) && x.Vacancy != null)
             .Select(x => new { x.StaffId, x.Vacancy!.DesignationId })
@@ -196,6 +197,9 @@ public sealed class PayrollCalculationService(
             var allowanceAmount = scaleAllowances.Sum(x => x.CalculatedValue);
             if (!hasScaleAllowanceConfiguration)
                 allowanceAmount += (scale?.MedicalAllowance ?? 0) + (scale?.TravellingAllowance ?? 0) + (scale?.Other ?? 0);
+            // Phase 3: scale TADA is cash and joins Gross via AllowanceAmount; Leave days stay non-cash.
+            if (scale != null)
+                allowanceAmount += tadas.Where(x => x.SalaryScaleId == scale.Id).Sum(x => x.CalculatedValue);
             var serviceYears = profile?.JoiningDate is DateTime joining
                 ? Math.Max(0, (decimal)(periodEnd.ToDateTime(TimeOnly.MinValue) - joining.Date).TotalDays / 365.2425m)
                 : 0;

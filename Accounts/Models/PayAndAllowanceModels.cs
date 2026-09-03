@@ -328,6 +328,50 @@ public sealed class PayScaleAllowance : ITenantEntity
     public AppLookupValue? ShiftLookupValue { get; set; }
 }
 
+[Table("PayScaleTadas")]
+public sealed class PayScaleTada : ITenantEntity
+{
+    [Key] public int Id { get; set; }
+    public int TenantId { get; set; }
+    [Required, MaxLength(100)] public string TadaReference { get; set; } = string.Empty;
+    [Required, MaxLength(120)] public string Name { get; set; } = string.Empty;
+    public int SalaryScaleId { get; set; }
+    public int TadaTypeId { get; set; }
+    [MaxLength(50)] public string? ContractType { get; set; }
+    [MaxLength(50)] public string? FrequencyType { get; set; }
+    [MaxLength(50)] public string? RateType { get; set; }
+    [Column(TypeName = "decimal(18,4)")] public decimal PayValue { get; set; }
+    [Column(TypeName = "decimal(18,2)")] public decimal CalculatedValue { get; set; }
+    public DateTime CreatedOnUtc { get; set; } = DateTime.UtcNow;
+    public DateTime? UpdatedOnUtc { get; set; }
+    public SalaryScale? SalaryScale { get; set; }
+    public TadaType? TadaType { get; set; }
+}
+
+[Table("PayScaleLeaves")]
+public sealed class PayScaleLeave : ITenantEntity
+{
+    [Key] public int Id { get; set; }
+    public int TenantId { get; set; }
+    [Required, MaxLength(100)] public string LeaveReference { get; set; } = string.Empty;
+    [Required, MaxLength(120)] public string Name { get; set; } = string.Empty;
+    public int SalaryScaleId { get; set; }
+    public int LeaveTypeId { get; set; }
+    [MaxLength(50)] public string? ContractType { get; set; }
+    [MaxLength(50)] public string? FrequencyType { get; set; }
+    [MaxLength(50)] public string? RateType { get; set; }
+    [Column(TypeName = "decimal(18,4)")] public decimal TotalLeave { get; set; }
+    [MaxLength(50)] public string? ApplicableType { get; set; }
+    [Column(TypeName = "decimal(18,4)")] public decimal ApplicableAfter { get; set; }
+    [MaxLength(50)] public string? ValueType { get; set; }
+    [MaxLength(50)] public string? Type { get; set; }
+    [Column(TypeName = "decimal(18,4)")] public decimal ApplicableValue { get; set; }
+    public DateTime CreatedOnUtc { get; set; } = DateTime.UtcNow;
+    public DateTime? UpdatedOnUtc { get; set; }
+    public SalaryScale? SalaryScale { get; set; }
+    public LeaveType? LeaveType { get; set; }
+}
+
 [Table("PayRules")]
 public sealed class PayRule : ITenantEntity
 {
@@ -358,6 +402,9 @@ public sealed class SalaryPackage : ITenantEntity
     [Required, MaxLength(120)] public string Name { get; set; } = string.Empty;
     public int SalaryScaleId { get; set; }
     public int PayRuleId { get; set; }
+    [MaxLength(100)] public string? AllowanceReference { get; set; }
+    [MaxLength(100)] public string? TadaReference { get; set; }
+    [MaxLength(100)] public string? LeaveReference { get; set; }
     public bool IsActive { get; set; } = true;
     [MaxLength(500)] public string? Description { get; set; }
     public DateTime CreatedOnUtc { get; set; } = DateTime.UtcNow;

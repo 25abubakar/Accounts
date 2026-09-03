@@ -93,6 +93,9 @@ public sealed class PayScaleSetupController(
             leaveTypes = await db.LeaveTypes.AsNoTracking().Where(x => x.IsActive)
                 .OrderBy(x => x.DisplayOrder).ThenBy(x => x.Name)
                 .Select(x => new { x.Id, x.Name }).ToListAsync(ct),
+            tadaTypes = await db.TadaTypes.AsNoTracking().Where(x => x.IsActive)
+                .OrderBy(x => x.DisplayOrder).ThenBy(x => x.Name)
+                .Select(x => new { x.Id, x.Name }).ToListAsync(ct),
             designations = category == "APPT"
                 ? await db.Designations.AsNoTracking().OrderBy(x => x.Name)
                     .Select(x => new { x.Id, x.Name }).ToListAsync(ct)
@@ -162,6 +165,82 @@ public sealed class PayScaleSetupController(
         Apply(row, dto); row.UpdatedOnUtc = DateTime.UtcNow; await db.SaveChangesAsync(ct); return Ok(row);
     }
 
+    [HttpGet("tadas")]
+    public async Task<IActionResult> Tadas(CancellationToken ct)
+    {
+        var denied = await Guard("VIEW", ct); if (denied != null) return denied;
+        return Ok(await db.PayScaleTadas.AsNoTracking().OrderBy(x => x.Id)
+            .Select(x => new TadaRowDto(
+                x.Id, x.TadaReference, x.Name, x.SalaryScaleId, x.SalaryScale!.ScaleName,
+                x.TadaTypeId, x.TadaType!.Name, x.ContractType, x.FrequencyType,
+                x.RateType, x.PayValue, x.CalculatedValue))
+            .ToListAsync(ct));
+    }
+
+    [HttpPost("tadas")]
+    public async Task<IActionResult> CreateTada(TadaSave dto, CancellationToken ct)
+    {
+        var denied = await Guard("ADD", ct); if (denied != null) return denied;
+        var error = await ValidateTada(dto, null, ct); if (error != null) return BadRequest(new { message = error });
+        var scale = await db.SalaryScales.SingleAsync(x => x.Id == dto.SalaryScaleId, ct);
+        var tadaTypeName = await db.TadaTypes.Where(x => x.Id == dto.TadaTypeId).Select(x => x.Name).SingleAsync(ct);
+        var row = new PayScaleTada { TenantId = tenant.RequiredTenantId };
+        Apply(row, dto, scale, tadaTypeName);
+        db.Add(row); await db.SaveChangesAsync(ct);
+        return Ok(await TadaRow(row.Id, ct));
+    }
+
+    [HttpPut("tadas/{id:int}")]
+    public async Task<IActionResult> UpdateTada(int id, TadaSave dto, CancellationToken ct)
+    {
+        var denied = await Guard("EDIT", ct); if (denied != null) return denied;
+        var row = await db.PayScaleTadas.SingleOrDefaultAsync(x => x.Id == id, ct); if (row == null) return NotFound();
+        var error = await ValidateTada(dto, id, ct); if (error != null) return BadRequest(new { message = error });
+        var scale = await db.SalaryScales.SingleAsync(x => x.Id == dto.SalaryScaleId, ct);
+        var tadaTypeName = await db.TadaTypes.Where(x => x.Id == dto.TadaTypeId).Select(x => x.Name).SingleAsync(ct);
+        Apply(row, dto, scale, tadaTypeName); row.UpdatedOnUtc = DateTime.UtcNow;
+        await db.SaveChangesAsync(ct);
+        return Ok(await TadaRow(row.Id, ct));
+    }
+
+    [HttpGet("leaves")]
+    public async Task<IActionResult> Leaves(CancellationToken ct)
+    {
+        var denied = await Guard("VIEW", ct); if (denied != null) return denied;
+        return Ok(await db.PayScaleLeaves.AsNoTracking().OrderBy(x => x.Id)
+            .Select(x => new LeaveRowDto(
+                x.Id, x.LeaveReference, x.Name, x.SalaryScaleId, x.SalaryScale!.ScaleName,
+                x.LeaveTypeId, x.LeaveType!.Name, x.ContractType, x.FrequencyType, x.RateType,
+                x.TotalLeave, x.ApplicableType, x.ApplicableAfter, x.ValueType, x.Type, x.ApplicableValue))
+            .ToListAsync(ct));
+    }
+
+    [HttpPost("leaves")]
+    public async Task<IActionResult> CreateLeave(LeaveSave dto, CancellationToken ct)
+    {
+        var denied = await Guard("ADD", ct); if (denied != null) return denied;
+        var error = await ValidateLeave(dto, null, ct); if (error != null) return BadRequest(new { message = error });
+        var scale = await db.SalaryScales.SingleAsync(x => x.Id == dto.SalaryScaleId, ct);
+        var leaveTypeName = await db.LeaveTypes.Where(x => x.Id == dto.LeaveTypeId).Select(x => x.Name).SingleAsync(ct);
+        var row = new PayScaleLeave { TenantId = tenant.RequiredTenantId };
+        Apply(row, dto, scale, leaveTypeName);
+        db.Add(row); await db.SaveChangesAsync(ct);
+        return Ok(await LeaveRow(row.Id, ct));
+    }
+
+    [HttpPut("leaves/{id:int}")]
+    public async Task<IActionResult> UpdateLeave(int id, LeaveSave dto, CancellationToken ct)
+    {
+        var denied = await Guard("EDIT", ct); if (denied != null) return denied;
+        var row = await db.PayScaleLeaves.SingleOrDefaultAsync(x => x.Id == id, ct); if (row == null) return NotFound();
+        var error = await ValidateLeave(dto, id, ct); if (error != null) return BadRequest(new { message = error });
+        var scale = await db.SalaryScales.SingleAsync(x => x.Id == dto.SalaryScaleId, ct);
+        var leaveTypeName = await db.LeaveTypes.Where(x => x.Id == dto.LeaveTypeId).Select(x => x.Name).SingleAsync(ct);
+        Apply(row, dto, scale, leaveTypeName); row.UpdatedOnUtc = DateTime.UtcNow;
+        await db.SaveChangesAsync(ct);
+        return Ok(await LeaveRow(row.Id, ct));
+    }
+
     [HttpGet("masters/{kind}")]
     public async Task<IActionResult> Masters(string kind, [FromQuery] string? allowanceCategory, CancellationToken ct)
     {
@@ -218,7 +297,8 @@ public sealed class PayScaleSetupController(
         return Ok(await db.SalaryPackages.AsNoTracking().OrderBy(x => x.Name).Select(x => new
         {
             x.Id, x.Code, x.Name, x.SalaryScaleId, SalaryScaleName = x.SalaryScale!.ScaleName,
-            x.PayRuleId, PayRuleName = x.PayRule!.Name, x.IsActive, x.Description
+            x.PayRuleId, PayRuleName = x.PayRule!.Name, x.IsActive, x.Description,
+            AllowanceRef = x.AllowanceReference, TadaRef = x.TadaReference, LeaveRef = x.LeaveReference
         }).ToListAsync(ct));
     }
 
@@ -238,8 +318,9 @@ public sealed class PayScaleSetupController(
     {
         var denied = await Guard("ADD", ct); if (denied != null) return denied;
         var error = await ValidatePackage(dto, null, ct); if (error != null) return BadRequest(new { message = error });
-        var row = new SalaryPackage { TenantId = tenant.RequiredTenantId }; Apply(row, dto);
-        db.Add(row); await db.SaveChangesAsync(ct); return Ok(row);
+        var row = new SalaryPackage { TenantId = tenant.RequiredTenantId };
+        await ApplyPackage(row, dto, ct);
+        db.Add(row); await db.SaveChangesAsync(ct); return Ok(await PackageRow(row.Id, ct));
     }
 
     [HttpPut("packages/{id:int}")]
@@ -248,7 +329,8 @@ public sealed class PayScaleSetupController(
         var denied = await Guard("EDIT", ct); if (denied != null) return denied;
         var row = await db.SalaryPackages.SingleOrDefaultAsync(x => x.Id == id, ct); if (row == null) return NotFound();
         var error = await ValidatePackage(dto, id, ct); if (error != null) return BadRequest(new { message = error });
-        Apply(row, dto); row.UpdatedOnUtc = DateTime.UtcNow; await db.SaveChangesAsync(ct); return Ok(row);
+        await ApplyPackage(row, dto, ct); row.UpdatedOnUtc = DateTime.UtcNow; await db.SaveChangesAsync(ct);
+        return Ok(await PackageRow(row.Id, ct));
     }
 
     private async Task<IActionResult?> Guard(string action, CancellationToken ct)
@@ -281,7 +363,39 @@ public sealed class PayScaleSetupController(
         if (string.IsNullOrWhiteSpace(x.Code) || string.IsNullOrWhiteSpace(x.Name)) return "Package code and name are required.";
         if (await db.SalaryPackages.AnyAsync(p => p.Id != id && (p.Code == x.Code.Trim() || p.Name == x.Name.Trim()), ct)) return "Package code or name already exists.";
         if (!await db.SalaryScales.AnyAsync(p => p.Id == x.SalaryScaleId && p.IsActive, ct)) return "Select an active Pay Scale.";
-        if (!await db.PayRules.AnyAsync(p => p.Id == x.PayRuleId && p.IsActive, ct)) return "Select an active Pay Rule.";
+        var payRuleId = await ResolvePayRuleId(x.PayRuleId, ct);
+        if (!payRuleId.HasValue) return "No active Pay Rule is available. Create a Pay Rule first.";
+        var allowanceRef = Clean(x.AllowanceReference ?? x.AllowanceRef);
+        var tadaRef = Clean(x.TadaReference ?? x.TadaRef);
+        var leaveRef = Clean(x.LeaveReference ?? x.LeaveRef);
+        if (allowanceRef != null && !await db.PayScaleAllowances.AnyAsync(p => p.AllowanceReference == allowanceRef, ct))
+            return "Select a valid Allowance reference.";
+        if (tadaRef != null && !await db.PayScaleTadas.AnyAsync(p => p.TadaReference == tadaRef, ct))
+            return "Select a valid TADA reference.";
+        if (leaveRef != null && !await db.PayScaleLeaves.AnyAsync(p => p.LeaveReference == leaveRef, ct))
+            return "Select a valid Leave reference.";
+        return null;
+    }
+    private async Task<string?> ValidateTada(TadaSave x, int? id, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(x.Name)) return "TADA name is required.";
+        if (x.PayValue < 0) return "Pay value cannot be negative.";
+        if (!await db.SalaryScales.AnyAsync(p => p.Id == x.SalaryScaleId && p.IsActive, ct)) return "Select an active Pay Scale.";
+        if (!await db.TadaTypes.AnyAsync(p => p.Id == x.TadaTypeId && p.IsActive, ct)) return "Select a valid TADA Type.";
+        if (await db.PayScaleTadas.AnyAsync(p => p.Id != id && p.SalaryScaleId == x.SalaryScaleId &&
+                p.TadaTypeId == x.TadaTypeId && p.Name == x.Name.Trim(), ct))
+            return "This TADA already exists for the selected scale and type.";
+        return null;
+    }
+    private async Task<string?> ValidateLeave(LeaveSave x, int? id, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(x.Name)) return "Leave name is required.";
+        if (x.TotalLeave < 0) return "Leave days cannot be negative.";
+        if (!await db.SalaryScales.AnyAsync(p => p.Id == x.SalaryScaleId && p.IsActive, ct)) return "Select an active Pay Scale.";
+        if (!await db.LeaveTypes.AnyAsync(p => p.Id == x.LeaveTypeId && p.IsActive, ct)) return "Select a valid Leave Type.";
+        if (await db.PayScaleLeaves.AnyAsync(p => p.Id != id && p.SalaryScaleId == x.SalaryScaleId &&
+                p.LeaveTypeId == x.LeaveTypeId && p.Name == x.Name.Trim(), ct))
+            return "This Leave already exists for the selected scale and type.";
         return null;
     }
     private async Task<string?> ValidateAllowance(AllowanceSave x, int? id, CancellationToken ct)
@@ -347,8 +461,55 @@ public sealed class PayScaleSetupController(
             ? Math.Round(basis * x.PayValue / 100m, 2, MidpointRounding.AwayFromZero)
             : Math.Round(x.PayValue, 2, MidpointRounding.AwayFromZero);
     }
+    private static void Apply(PayScaleTada x, TadaSave d, SalaryScale scale, string tadaTypeName)
+    {
+        x.Name = d.Name.Trim();
+        x.TadaReference = BuildTadaReference(scale.ScaleName, tadaTypeName, x.Name);
+        x.SalaryScaleId = d.SalaryScaleId;
+        x.TadaTypeId = d.TadaTypeId;
+        x.ContractType = Clean(d.ContractType);
+        x.FrequencyType = Clean(d.FrequencyType);
+        x.RateType = Clean(d.RateType);
+        x.PayValue = d.PayValue;
+        x.CalculatedValue = x.RateType?.Contains("Percentage", StringComparison.OrdinalIgnoreCase) == true
+            ? Math.Round(scale.BasicSalary * x.PayValue / 100m, 2, MidpointRounding.AwayFromZero)
+            : Math.Round(x.PayValue, 2, MidpointRounding.AwayFromZero);
+    }
+    private static void Apply(PayScaleLeave x, LeaveSave d, SalaryScale scale, string leaveTypeName)
+    {
+        x.Name = d.Name.Trim();
+        x.LeaveReference = BuildLeaveReference(scale.ScaleName, leaveTypeName, x.Name);
+        x.SalaryScaleId = d.SalaryScaleId;
+        x.LeaveTypeId = d.LeaveTypeId;
+        x.ContractType = Clean(d.ContractType);
+        x.FrequencyType = Clean(d.FrequencyType);
+        x.RateType = Clean(d.RateType);
+        x.TotalLeave = d.TotalLeave;
+        x.ApplicableType = Clean(d.ApplicableType);
+        x.ApplicableAfter = d.ApplicableAfter;
+        x.ValueType = Clean(d.ValueType);
+        x.Type = Clean(d.Type);
+        x.ApplicableValue = d.ApplicableValue;
+    }
+    private async Task ApplyPackage(SalaryPackage x, SalaryPackageSave d, CancellationToken ct)
+    {
+        x.Code = d.Code.Trim();
+        x.Name = d.Name.Trim();
+        x.SalaryScaleId = d.SalaryScaleId;
+        x.PayRuleId = (await ResolvePayRuleId(d.PayRuleId, ct))!.Value;
+        x.AllowanceReference = Clean(d.AllowanceReference ?? d.AllowanceRef);
+        x.TadaReference = Clean(d.TadaReference ?? d.TadaRef);
+        x.LeaveReference = Clean(d.LeaveReference ?? d.LeaveRef);
+        x.IsActive = d.IsActive;
+        x.Description = Clean(d.Description);
+    }
+    private async Task<int?> ResolvePayRuleId(int? requestedId, CancellationToken ct)
+    {
+        if (requestedId is > 0 && await db.PayRules.AnyAsync(p => p.Id == requestedId.Value && p.IsActive, ct))
+            return requestedId.Value;
+        return await db.PayRules.AsNoTracking().Where(p => p.IsActive).OrderBy(p => p.Id).Select(p => (int?)p.Id).FirstOrDefaultAsync(ct);
+    }
     private static void Apply(PlatformTypeTableRow x, PlatformMasterSave d) { x.Code=d.Code.Trim().ToUpperInvariant(); x.Name=d.Name.Trim(); x.DisplayOrder=d.DisplayOrder; x.IsActive=d.IsActive; }
-    private static void Apply(SalaryPackage x, SalaryPackageSave d) { x.Code=d.Code.Trim(); x.Name=d.Name.Trim(); x.SalaryScaleId=d.SalaryScaleId; x.PayRuleId=d.PayRuleId; x.IsActive=d.IsActive; x.Description=Clean(d.Description); }
     private static string? Clean(string? x) => string.IsNullOrWhiteSpace(x) ? null : x.Trim();
     private static string BuildAllowanceReference(string category, string? scaleName, string targetName)
     {
@@ -361,6 +522,21 @@ public sealed class PayScaleSetupController(
             return $"A-RLTA-{normalizedScale[4..]}";
         return $"A-{normalizedScale}";
     }
+    private static string BuildTadaReference(string? scaleName, string tadaTypeName, string name)
+    {
+        var scale = scaleName?.Trim() ?? string.Empty;
+        var type = SanitizeRefToken(tadaTypeName);
+        var label = SanitizeRefToken(name);
+        return $"T-{scale}-{type}-{label}";
+    }
+    private static string BuildLeaveReference(string? scaleName, string leaveTypeName, string name)
+    {
+        var scale = scaleName?.Trim() ?? string.Empty;
+        var type = SanitizeRefToken(leaveTypeName);
+        var label = SanitizeRefToken(name);
+        return $"L-{scale}-{type}-{label}";
+    }
+    private static string SanitizeRefToken(string value) => value.Trim().ToUpperInvariant().Replace(' ', '-');
     private async Task<string> ResolveAllowanceTargetName(AllowanceSave dto, CancellationToken ct)
     {
         var category = NormalizeAllowanceCategory(dto.AllowanceCategory);
@@ -380,11 +556,62 @@ public sealed class PayScaleSetupController(
             x.ShiftLookupValueId, x.ShiftLookupValue != null ? x.ShiftLookupValue.ValueCode : null,
             x.ShiftLookupValue != null ? x.ShiftLookupValue.DisplayText : null))
         .SingleOrDefaultAsync(ct);
+    private Task<TadaRowDto?> TadaRow(int id, CancellationToken ct) => db.PayScaleTadas.AsNoTracking()
+        .Where(x => x.Id == id)
+        .Select(x => new TadaRowDto(
+            x.Id, x.TadaReference, x.Name, x.SalaryScaleId, x.SalaryScale!.ScaleName,
+            x.TadaTypeId, x.TadaType!.Name, x.ContractType, x.FrequencyType,
+            x.RateType, x.PayValue, x.CalculatedValue))
+        .SingleOrDefaultAsync(ct);
+    private Task<LeaveRowDto?> LeaveRow(int id, CancellationToken ct) => db.PayScaleLeaves.AsNoTracking()
+        .Where(x => x.Id == id)
+        .Select(x => new LeaveRowDto(
+            x.Id, x.LeaveReference, x.Name, x.SalaryScaleId, x.SalaryScale!.ScaleName,
+            x.LeaveTypeId, x.LeaveType!.Name, x.ContractType, x.FrequencyType, x.RateType,
+            x.TotalLeave, x.ApplicableType, x.ApplicableAfter, x.ValueType, x.Type, x.ApplicableValue))
+        .SingleOrDefaultAsync(ct);
+    private Task<object?> PackageRow(int id, CancellationToken ct) => db.SalaryPackages.AsNoTracking()
+        .Where(x => x.Id == id)
+        .Select(x => (object)new
+        {
+            x.Id, x.Code, x.Name, x.SalaryScaleId, SalaryScaleName = x.SalaryScale!.ScaleName,
+            x.PayRuleId, PayRuleName = x.PayRule!.Name, x.IsActive, x.Description,
+            AllowanceRef = x.AllowanceReference, TadaRef = x.TadaReference, LeaveRef = x.LeaveReference
+        })
+        .SingleOrDefaultAsync(ct);
 }
 
 public sealed record RuleRegistrationSave(string RuleType, string Name, DateTime DateFrom, DateTime DateTo);
 public sealed record PayRuleSave(string Code, string Name, string WorkingDaysBasis, int FixedWorkingDays, decimal WorkingHoursPerDay, decimal OvertimeMultiplier, string RoundingMode, bool IsActive, string? Description, string? RuleType = null, DateTime? DateFrom = null, DateTime? DateTo = null);
 public sealed record PlatformMasterSave(string Code, string Name, int DisplayOrder, bool IsActive, string? AllowanceCategory = null);
-public sealed record SalaryPackageSave(string Code, string Name, int SalaryScaleId, int PayRuleId, bool IsActive, string? Description);
+public sealed record SalaryPackageSave(
+    string Code,
+    string Name,
+    int SalaryScaleId,
+    int? PayRuleId,
+    bool IsActive,
+    string? Description,
+    string? AllowanceReference = null,
+    string? TadaReference = null,
+    string? LeaveReference = null,
+    string? AllowanceRef = null,
+    string? TadaRef = null,
+    string? LeaveRef = null);
 public sealed record AllowanceSave(string Name, int? SalaryScaleId, int AllowanceTypeId, string? ContractType, string? FrequencyType, string? RateType, string? PayType, decimal PayValue, string? AllowanceCategory = "GENERAL", int? DesignationId = null, int? ShiftLookupValueId = null);
+public sealed record TadaSave(string Name, int SalaryScaleId, int TadaTypeId, string? ContractType, string? FrequencyType, string? RateType, decimal PayValue);
+public sealed record LeaveSave(
+    string Name,
+    int SalaryScaleId,
+    int LeaveTypeId,
+    string? ContractType,
+    string? FrequencyType,
+    string? RateType,
+    decimal TotalLeave,
+    string? ApplicableType = null,
+    decimal ApplicableAfter = 0,
+    string? ValueType = null,
+    string? Type = null,
+    decimal ApplicableValue = 0);
 public sealed record AllowanceRowDto(int Id, string AllowanceRef, string AllowName, int? SalaryScaleId, string? Scale, int AllowanceTypeId, string AllowanceType, string? ContractType, string? FrequencyType, string? RateType, string? PayType, decimal PayValue, decimal CalculatedValue, string AllowanceCategory, int? DesignationId, string? DesignationName, int? ShiftLookupValueId, string? ShiftCode, string? ShiftName);
+public sealed record TadaRowDto(int Id, string TadaRef, string Name, int SalaryScaleId, string SalaryScaleName, int TadaTypeId, string TadaType, string? ContractType, string? FrequencyType, string? RateType, decimal PayValue, decimal CalculatedValue);
+public sealed record LeaveRowDto(int Id, string LeaveRef, string Name, int SalaryScaleId, string SalaryScaleName, int LeaveTypeId, string LeaveType, string? ContractType, string? FrequencyType, string? RateType, decimal TotalLeave, string? ApplicableType, decimal ApplicableAfter, string? ValueType, string? Type, decimal ApplicableValue);

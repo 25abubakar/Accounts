@@ -59,6 +59,8 @@ namespace Accounts.Data
         public DbSet<EobiEligibility>          EobiEligibilities       => Set<EobiEligibility>();
         public DbSet<PayScaleRuleRegistration> PayScaleRuleRegistrations => Set<PayScaleRuleRegistration>();
         public DbSet<PayScaleAllowance>        PayScaleAllowances      => Set<PayScaleAllowance>();
+        public DbSet<PayScaleTada>             PayScaleTadas           => Set<PayScaleTada>();
+        public DbSet<PayScaleLeave>            PayScaleLeaves          => Set<PayScaleLeave>();
         public DbSet<PayRule>                  PayRules                => Set<PayRule>();
         public DbSet<SalaryPackage>             SalaryPackages          => Set<SalaryPackage>();
         public DbSet<PlatformTypeCategory>     PlatformTypeCategories   => Set<PlatformTypeCategory>();
@@ -272,6 +274,10 @@ namespace Accounts.Data
             builder.Entity<PayScaleRuleRegistration>().HasQueryFilter(row =>
                 _tenantService != null && !_tenantService.IsSuperAdmin && _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
             builder.Entity<PayScaleAllowance>().HasQueryFilter(row =>
+                _tenantService != null && !_tenantService.IsSuperAdmin && _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
+            builder.Entity<PayScaleTada>().HasQueryFilter(row =>
+                _tenantService != null && !_tenantService.IsSuperAdmin && _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
+            builder.Entity<PayScaleLeave>().HasQueryFilter(row =>
                 _tenantService != null && !_tenantService.IsSuperAdmin && _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
             builder.Entity<PayRule>().HasQueryFilter(row =>
                 _tenantService != null && !_tenantService.IsSuperAdmin && _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
@@ -1617,6 +1623,22 @@ namespace Accounts.Data
                 e.HasOne(x => x.AllowanceType).WithMany().HasForeignKey(x => x.AllowanceTypeId).OnDelete(DeleteBehavior.Restrict);
                 e.HasOne(x => x.Designation).WithMany().HasForeignKey(x => x.DesignationId).OnDelete(DeleteBehavior.Restrict);
                 e.HasOne(x => x.ShiftLookupValue).WithMany().HasForeignKey(x => x.ShiftLookupValueId).OnDelete(DeleteBehavior.Restrict);
+                e.HasOne<Tenant>().WithMany().HasForeignKey(x => x.TenantId).OnDelete(DeleteBehavior.Restrict);
+            });
+            builder.Entity<PayScaleTada>(e =>
+            {
+                e.HasIndex(x => new { x.TenantId, x.TadaReference }).IsUnique();
+                e.HasIndex(x => new { x.TenantId, x.SalaryScaleId, x.TadaTypeId, x.Name }).IsUnique();
+                e.HasOne(x => x.SalaryScale).WithMany().HasForeignKey(x => x.SalaryScaleId).OnDelete(DeleteBehavior.Restrict);
+                e.HasOne(x => x.TadaType).WithMany().HasForeignKey(x => x.TadaTypeId).OnDelete(DeleteBehavior.Restrict);
+                e.HasOne<Tenant>().WithMany().HasForeignKey(x => x.TenantId).OnDelete(DeleteBehavior.Restrict);
+            });
+            builder.Entity<PayScaleLeave>(e =>
+            {
+                e.HasIndex(x => new { x.TenantId, x.LeaveReference }).IsUnique();
+                e.HasIndex(x => new { x.TenantId, x.SalaryScaleId, x.LeaveTypeId, x.Name }).IsUnique();
+                e.HasOne(x => x.SalaryScale).WithMany().HasForeignKey(x => x.SalaryScaleId).OnDelete(DeleteBehavior.Restrict);
+                e.HasOne(x => x.LeaveType).WithMany().HasForeignKey(x => x.LeaveTypeId).OnDelete(DeleteBehavior.Restrict);
                 e.HasOne<Tenant>().WithMany().HasForeignKey(x => x.TenantId).OnDelete(DeleteBehavior.Restrict);
             });
             builder.Entity<PayRule>(e =>
