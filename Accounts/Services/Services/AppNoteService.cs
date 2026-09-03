@@ -147,9 +147,6 @@ namespace Accounts.Services.Services
                 // ── ADMIN notes — filter by VisibilityTypeCode + Targets ──────
                 if (n.SourceTypeCode == "ADMIN")
                 {
-                    if (string.Equals(n.CreatedBy, identityUserId, StringComparison.OrdinalIgnoreCase))
-                        return true;
-
                     var audienceTargets = n.Targets.Where(t =>
                         t.TargetTypeCode.Equals("ALL", StringComparison.OrdinalIgnoreCase) ||
                         t.TargetTypeCode.Equals("STAFF", StringComparison.OrdinalIgnoreCase)).ToList();
@@ -224,13 +221,67 @@ namespace Accounts.Services.Services
                 .GroupBy(s => s.NoteId)
                 .ToDictionary(g => g.Key, g => g.First());
 
+            // ── Resolve Creator Profiles ──
+            var creatorIds = notes
+                .Where(n => !string.IsNullOrWhiteSpace(n.CreatedBy))
+                .Select(n => n.CreatedBy!)
+                .Distinct()
+                .ToList();
+
+            var creatorMap = new Dictionary<string, (string Name, string Photo)>();
+            if (creatorIds.Any())
+            {
+                var creators = await _db.Persons
+                    .AsNoTracking()
+                    .Where(p => creatorIds.Contains(p.IdentityUserId))
+                    .Select(p => new { p.IdentityUserId, p.FirstName, p.MiddleName, p.LastName, p.ProfilePhotoUrl })
+                    .ToListAsync(ct);
+
+                foreach (var c in creators)
+                {
+                    var fullName = string.Join(" ", new[] { c.FirstName, c.MiddleName, c.LastName }.Where(s => !string.IsNullOrWhiteSpace(s)));
+                    creatorMap[c.IdentityUserId] = (fullName, c.ProfilePhotoUrl ?? "");
+                }
+
+                // ── Fallback for Admins not in Persons table ──
+                var missingIds = creatorIds.Except(creatorMap.Keys).ToList();
+                if (missingIds.Any())
+                {
+                    var fallbackUsers = await _db.Users
+                        .AsNoTracking()
+                        .Where(u => missingIds.Contains(u.Id))
+                        .Select(u => new { u.Id, u.UserName, u.Email })
+                        .ToListAsync(ct);
+
+                    foreach (var u in fallbackUsers)
+                    {
+                        var displayName = !string.IsNullOrWhiteSpace(u.UserName) ? u.UserName : u.Email;
+                        if (!string.IsNullOrWhiteSpace(displayName) && displayName.Contains("@")) 
+                        {
+                            displayName = displayName.Split('@')[0];
+                            // Optional: capitalize first letter of email prefix
+                            if (displayName.Length > 0)
+                                displayName = char.ToUpper(displayName[0]) + displayName.Substring(1);
+                        }
+                        creatorMap[u.Id] = (displayName ?? "Administration", "");
+                    }
+                }
+            }
+
             // Step 4: exclude dismissed, map to DTOs
             return notes
                 .Where(n => !stateMap.TryGetValue(n.NoteId, out var st) || !st.IsDismissed)
                 .Select(n =>
                 {
                     stateMap.TryGetValue(n.NoteId, out var state);
-                    return ToDto(n, state);
+                    string? creatorName = null;
+                    string? creatorPhoto = null;
+                    if (n.CreatedBy != null && creatorMap.TryGetValue(n.CreatedBy, out var info))
+                    {
+                        creatorName = info.Name;
+                        creatorPhoto = info.Photo;
+                    }
+                    return ToDto(n, state, creatorName, creatorPhoto);
                 })
                 .ToList();
             }
@@ -800,7 +851,7 @@ namespace Accounts.Services.Services
             return state;
         }
 
-        private static AppNoteDto ToDto(AppNote note, AppNoteUserState? state)
+        private static AppNoteDto ToDto(AppNote note, AppNoteUserState? state, string? creatorName = null, string? creatorPhotoUrl = null)
         {
             return new AppNoteDto
             {
@@ -827,6 +878,8 @@ namespace Accounts.Services.Services
                 IsDismissed = state?.IsDismissed ?? false,
                 IsReadOnly = note.SourceTypeCode == "ADMIN",
                 CreatedBy = note.CreatedBy,
+                CreatorName = creatorName,
+                CreatorPhotoUrl = creatorPhotoUrl,
                 CreatedOnUtc = note.CreatedOnUtc,
                 StartDateUtc = note.StartDateUtc,
                 EndDateUtc = note.EndDateUtc

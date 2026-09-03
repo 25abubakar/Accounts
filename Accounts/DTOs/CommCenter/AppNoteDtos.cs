@@ -26,6 +26,8 @@ namespace Accounts.DTOs.CommCenter
         public bool    IsDismissed          { get; set; }
         public bool    IsReadOnly           { get; set; }
         public string? CreatedBy            { get; set; }
+        public string? CreatorName          { get; set; }
+        public string? CreatorPhotoUrl      { get; set; }
         public DateTime CreatedOnUtc        { get; set; }
         public DateTime? StartDateUtc       { get; set; }
         public DateTime? EndDateUtc         { get; set; }
