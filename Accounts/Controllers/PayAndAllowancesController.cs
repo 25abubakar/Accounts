@@ -1,5 +1,6 @@
 using System.Security.Claims;
 using Accounts.Data;
+using Accounts.Idempotency;
 using Accounts.Models;
 using Accounts.Services.Interfaces;
 using Accounts.Services.Services;
@@ -467,13 +468,14 @@ public sealed class PayAndAllowancesController(
         var denied = await Guard("/pay-allowances/payroll", "VIEW", ct); if (denied != null) return denied;
         if (year is < 2000 or > 2200 || month is < 1 or > 12)
             return BadRequest(new { message = "Enter a valid payroll month and year." });
-         var run = await db.PayrollRuns.AsNoTracking().Include(x => x.Lines)
+        var run = await db.PayrollRuns.AsNoTracking().Include(x => x.Lines)
             .SingleOrDefaultAsync(x => x.Year == year && x.Month == month, ct);
-        // Older/draft runs can exist without detail lines. Do not leave the grid
-        // empty in that case: show the live calculated staff preview and let the
-        // user persist it with Generate/Recalculate.
+        // Saved lines are authoritative. Live preview only when there is no run,
+        // or a Draft run still has no lines (userculate pending).
         if (run != null && run.Lines.Count > 0)
             return Ok(PayrollResponse(run, run.Lines));
+        if (run != null && !run.Status.Equals("Draft", StringComparison.OrdinalIgnoreCase))
+            return Ok(PayrollResponse(run, Array.Empty<PayrollLine>()));
         var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
         if (string.IsNullOrWhiteSpace(userId)) return Forbid();
         var preview = await payroll.PreviewAsync(userId, year, month, ct);
@@ -481,6 +483,7 @@ public sealed class PayAndAllowancesController(
     }
 
     [HttpPost("payroll-runs")]
+    [Idempotent]
     public async Task<IActionResult> CreatePayrollRun(PayrollRunSave dto, CancellationToken ct)
     {
         var denied = await Guard("/pay-allowances/payroll", "ADD", ct); if (denied != null) return denied;
@@ -495,6 +498,7 @@ public sealed class PayAndAllowancesController(
     }
 
     [HttpPut("payroll-runs/{id:long}")]
+    [Idempotent]
     public async Task<IActionResult> UpdatePayrollRun(long id, PayrollRunSave dto, CancellationToken ct)
     {
         var denied = await Guard("/pay-allowances/payroll", "EDIT", ct); if (denied != null) return denied;
@@ -522,6 +526,9 @@ public sealed class PayAndAllowancesController(
         if (new[] { dto.AllowanceAmount, dto.EmployerBenefitAmount, dto.StaffBenefitDeduction, dto.BonusAmount, dto.OvertimeAmount, dto.AttendanceDeduction, dto.TaxAmount, dto.EmployeeEobiAmount, dto.EmployerEobiAmount, dto.OtherDeduction }.Any(x => x < 0))
             return BadRequest(new { message = "Payroll amounts other than the attendance adjustment cannot be negative." });
         line.AllowanceAmount = dto.AllowanceAmount;
+        line.GeneralAllowanceAmount = dto.AllowanceAmount;
+        line.ApptAllowanceAmount = 0;
+        line.ShiftAllowanceAmount = 0;
         line.EmployerBenefitAmount = dto.EmployerBenefitAmount;
         line.StaffBenefitDeduction = dto.StaffBenefitDeduction;
         line.BonusAmount = dto.BonusAmount;
@@ -546,8 +553,19 @@ public sealed class PayAndAllowancesController(
             line.Designation,
             line.Department,
             line.DateOfJoining,
+            line.ScaleDate,
             line.Scale,
+            line.ContractType,
+            line.Month,
+            line.Year,
+            line.ScaleBasicSalary,
+            line.IncrementSalary,
+            line.MaxSalary,
+            line.CurrentPay,
             line.BasicSalary,
+            line.GeneralAllowanceAmount,
+            line.ApptAllowanceAmount,
+            line.ShiftAllowanceAmount,
             line.AllowanceAmount,
             line.EmployerBenefitAmount,
             line.StaffBenefitDeduction,
@@ -555,6 +573,7 @@ public sealed class PayAndAllowancesController(
             line.OvertimeAmount,
             line.AttendanceDeduction,
             line.AttendanceAdjustment,
+            line.TaxableIncome,
             line.TaxAmount,
             line.EmployeeEobiAmount,
             line.EmployerEobiAmount,
@@ -562,6 +581,8 @@ public sealed class PayAndAllowancesController(
             line.GrossPay,
             line.TotalDeduction,
             line.NetPay,
+            line.IsPending,
+            line.PendingReviewDays,
             line.IsApproved,
             line.IsPaid,
             line.PaidOnUtc,
@@ -570,6 +591,7 @@ public sealed class PayAndAllowancesController(
     }
 
     [HttpPost("payroll-runs/{id:long}/process")]
+    [Idempotent]
     public async Task<IActionResult> ProcessPayroll(long id, CancellationToken ct)
     {
         var denied = await Guard("/pay-allowances/payroll", "EDIT", ct); if (denied != null) return denied;
@@ -578,6 +600,11 @@ public sealed class PayAndAllowancesController(
         if (!run.Status.Equals("Draft", StringComparison.OrdinalIgnoreCase))
             return Conflict(new { message = "Only a Draft payroll can be processed." });
         if (run.Lines.Count == 0) return BadRequest(new { message = "Generate payroll lines before processing." });
+        var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+        if (string.IsNullOrWhiteSpace(userId)) return Forbid();
+        var pending = await payroll.CountPendingReviewEmployeesAsync(userId, run.Year, run.Month, ct);
+        if (pending > 0)
+            return Conflict(new { message = $"Payroll cannot be processed: {pending} employee(s) still have Pending Review attendance for this month." });
         run.Status = "In Review";
         run.VerifiedByUserId = User.FindFirstValue(ClaimTypes.NameIdentifier);
         run.VerifiedByName = ActorName();
@@ -588,6 +615,7 @@ public sealed class PayAndAllowancesController(
     }
 
     [HttpPost("payroll-runs/{id:long}/pay")]
+    [Idempotent]
     public async Task<IActionResult> PayPayroll(long id, CancellationToken ct)
     {
         var denied = await Guard("/pay-allowances/payroll", "EDIT", ct); if (denied != null) return denied;
@@ -595,6 +623,11 @@ public sealed class PayAndAllowancesController(
         if (run == null) return NotFound();
         if (!run.Status.Equals("In Review", StringComparison.OrdinalIgnoreCase) && !run.Status.Equals("Approved", StringComparison.OrdinalIgnoreCase))
             return Conflict(new { message = "Process payroll before payment." });
+        var payUserId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+        if (string.IsNullOrWhiteSpace(payUserId)) return Forbid();
+        var pendingPay = await payroll.CountPendingReviewEmployeesAsync(payUserId, run.Year, run.Month, ct);
+        if (pendingPay > 0)
+            return Conflict(new { message = $"Payroll cannot be paid: {pendingPay} employee(s) still have Pending Review attendance for this month." });
         var now = DateTime.UtcNow;
         run.Status = "Finalized";
         run.ApprovedByUserId = User.FindFirstValue(ClaimTypes.NameIdentifier);
@@ -610,16 +643,22 @@ public sealed class PayAndAllowancesController(
         }
         var paidPeople = run.Lines.Select(x => x.PersonId).ToArray();
         var approvedBonuses = await db.PayrollBonusLines.Include(x => x.BonusRun)
-            .Where(x => paidPeople.Contains(x.PersonId) && x.IsApproved && !x.IsInactive && x.BonusRun != null && x.BonusRun.Status == "Approved")
+            .Where(x => paidPeople.Contains(x.PersonId) && x.IsApproved && !x.IsInactive && !x.IsPaid
+                && x.BonusRun != null && x.BonusRun.Status == "Approved")
             .ToListAsync(ct);
         foreach (var bonus in approvedBonuses)
         {
+            var installments = Math.Max(1, bonus.Installment);
             var elapsed = (run.Year - bonus.Year) * 12 + run.Month - bonus.Month;
-            if (elapsed == Math.Max(1, bonus.Installment) - 1)
+            if (elapsed < 0 || elapsed >= installments || elapsed != Math.Max(0, bonus.PaidInstallmentCount))
+                continue;
+
+            bonus.PaidInstallmentCount = Math.Min(installments, bonus.PaidInstallmentCount + 1);
+            bonus.UpdatedOnUtc = now;
+            if (bonus.PaidInstallmentCount >= installments)
             {
                 bonus.IsPaid = true;
                 bonus.PaidOnUtc = now;
-                bonus.UpdatedOnUtc = now;
             }
         }
         await db.SaveChangesAsync(ct);
@@ -627,12 +666,18 @@ public sealed class PayAndAllowancesController(
     }
 
     [HttpDelete("payroll-runs/{id:long}")]
+    [Idempotent]
     public async Task<IActionResult> DeletePayrollRun(long id, CancellationToken ct)
     {
-        var denied = await Guard("/pay-allowances/payroll", "DELETE", ct); if (denied != null) return denied;
-        var row = await db.PayrollRuns.SingleOrDefaultAsync(x => x.Id == id, ct); if (row == null) return NotFound();
-        if (!row.Status.Equals("Draft", StringComparison.OrdinalIgnoreCase)) return Conflict(new { message = "Only a Draft payroll run can be deleted." });
-        db.Remove(row); await db.SaveChangesAsync(ct); return Ok(new { message = "Payroll run deleted." });
+        var deleteDenied = await Guard("/pay-allowances/payroll", "DELETE", ct);
+        var editDenied = await Guard("/pay-allowances/payroll", "EDIT", ct);
+        if (deleteDenied != null && editDenied != null) return deleteDenied;
+        var row = await db.PayrollRuns.Include(x => x.Lines).SingleOrDefaultAsync(x => x.Id == id, ct); if (row == null) return NotFound();
+        if (!row.Status.Equals("Draft", StringComparison.OrdinalIgnoreCase)) return Conflict(new { message = "Only a Draft payroll run can be cleared." });
+        db.PayrollLines.RemoveRange(row.Lines);
+        db.Remove(row);
+        await db.SaveChangesAsync(ct);
+        return Ok(new { message = "Draft payroll cleared." });
     }
 
     [HttpGet("eobi-settings")]
@@ -946,8 +991,20 @@ public sealed class PayAndAllowancesController(
             x.Designation,
             x.Department,
             x.DateOfJoining,
+            x.ScaleDate,
             x.Scale,
+            x.ContractType,
+            Month = x.Month > 0 ? x.Month : run?.Month ?? 0,
+            Year = x.Year > 0 ? x.Year : run?.Year ?? 0,
+            Ref = run?.RunNumber,
+            x.ScaleBasicSalary,
+            x.IncrementSalary,
+            x.MaxSalary,
+            x.CurrentPay,
             x.BasicSalary,
+            x.GeneralAllowanceAmount,
+            x.ApptAllowanceAmount,
+            x.ShiftAllowanceAmount,
             x.AllowanceAmount,
             x.EmployerBenefitAmount,
             x.StaffBenefitDeduction,
@@ -955,6 +1012,7 @@ public sealed class PayAndAllowancesController(
             x.OvertimeAmount,
             x.AttendanceDeduction,
             x.AttendanceAdjustment,
+            x.TaxableIncome,
             x.TaxAmount,
             x.EmployeeEobiAmount,
             x.EmployerEobiAmount,
@@ -962,6 +1020,8 @@ public sealed class PayAndAllowancesController(
             x.GrossPay,
             x.TotalDeduction,
             x.NetPay,
+            x.IsPending,
+            x.PendingReviewDays,
             x.IsApproved,
             x.IsPaid,
             x.PaidOnUtc,

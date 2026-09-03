@@ -4036,6 +4036,9 @@ namespace Accounts.Migrations
                     b.Property<DateTime?>("PaidOnUtc")
                         .HasColumnType("datetime2");
 
+                    b.Property<int>("PaidInstallmentCount")
+                        .HasColumnType("int");
+
                     b.Property<Guid>("PersonId")
                         .HasColumnType("uniqueidentifier");
 
@@ -4201,6 +4204,9 @@ namespace Accounts.Migrations
                     b.Property<decimal>("AllowanceAmount")
                         .HasColumnType("decimal(18,2)");
 
+                    b.Property<decimal>("ApptAllowanceAmount")
+                        .HasColumnType("decimal(18,2)");
+
                     b.Property<decimal>("AttendanceAdjustment")
                         .HasColumnType("decimal(18,2)");
 
@@ -4213,8 +4219,15 @@ namespace Accounts.Migrations
                     b.Property<decimal>("BonusAmount")
                         .HasColumnType("decimal(18,2)");
 
+                    b.Property<string>("ContractType")
+                        .HasMaxLength(50)
+                        .HasColumnType("nvarchar(50)");
+
                     b.Property<DateTime>("CreatedOnUtc")
                         .HasColumnType("datetime2");
+
+                    b.Property<decimal>("CurrentPay")
+                        .HasColumnType("decimal(18,2)");
 
                     b.Property<DateOnly?>("DateOfJoining")
                         .HasColumnType("date");
@@ -4246,7 +4259,13 @@ namespace Accounts.Migrations
                         .HasMaxLength(200)
                         .HasColumnType("nvarchar(200)");
 
+                    b.Property<decimal>("GeneralAllowanceAmount")
+                        .HasColumnType("decimal(18,2)");
+
                     b.Property<decimal>("GrossPay")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<decimal>("IncrementSalary")
                         .HasColumnType("decimal(18,2)");
 
                     b.Property<bool>("IsApproved")
@@ -4254,6 +4273,15 @@ namespace Accounts.Migrations
 
                     b.Property<bool>("IsPaid")
                         .HasColumnType("bit");
+
+                    b.Property<bool>("IsPending")
+                        .HasColumnType("bit");
+
+                    b.Property<decimal>("MaxSalary")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<int>("Month")
+                        .HasColumnType("int");
 
                     b.Property<decimal>("NetPay")
                         .HasColumnType("decimal(18,2)");
@@ -4270,6 +4298,9 @@ namespace Accounts.Migrations
                     b.Property<long>("PayrollRunId")
                         .HasColumnType("bigint");
 
+                    b.Property<int>("PendingReviewDays")
+                        .HasColumnType("int");
+
                     b.Property<Guid>("PersonId")
                         .HasColumnType("uniqueidentifier");
 
@@ -4281,6 +4312,15 @@ namespace Accounts.Migrations
                         .HasMaxLength(80)
                         .HasColumnType("nvarchar(80)");
 
+                    b.Property<decimal>("ScaleBasicSalary")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<DateOnly?>("ScaleDate")
+                        .HasColumnType("date");
+
+                    b.Property<decimal>("ShiftAllowanceAmount")
+                        .HasColumnType("decimal(18,2)");
+
                     b.Property<decimal>("StaffBenefitDeduction")
                         .HasColumnType("decimal(18,2)");
 
@@ -4288,6 +4328,9 @@ namespace Accounts.Migrations
                         .HasColumnType("uniqueidentifier");
 
                     b.Property<decimal>("TaxAmount")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<decimal>("TaxableIncome")
                         .HasColumnType("decimal(18,2)");
 
                     b.Property<int>("TenantId")
@@ -4298,6 +4341,9 @@ namespace Accounts.Migrations
 
                     b.Property<DateTime?>("UpdatedOnUtc")
                         .HasColumnType("datetime2");
+
+                    b.Property<int>("Year")
+                        .HasColumnType("int");
 
                     b.HasKey("Id");
 

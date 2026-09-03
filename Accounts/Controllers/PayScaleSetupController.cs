@@ -111,9 +111,20 @@ public sealed class PayScaleSetupController(
             contracts = await db.ContractTypes.AsNoTracking().Where(x => x.IsActive).OrderBy(x => x.DisplayOrder).ThenBy(x => x.Name).Select(x => x.Name).ToListAsync(ct),
             frequencies = await db.FrequencyTypes.AsNoTracking().Where(x => x.IsActive).OrderBy(x => x.DisplayOrder).ThenBy(x => x.Name).Select(x => x.Name).ToListAsync(ct),
             rates = await db.RateTypes.AsNoTracking().Where(x => x.IsActive).OrderBy(x => x.DisplayOrder).ThenBy(x => x.Name).Select(x => x.Name).ToListAsync(ct),
-            payTypes = new[] { "Basic" }
+            payTypes = new[] { "Basic" },
+            applicableTypes = await LookupNamesAsync("LEAVE_APPLICABLE_TYPE", ct),
+            valueTypes = await LookupNamesAsync("LEAVE_VALUE_TYPE", ct),
+            calcTypes = await LookupNamesAsync("LEAVE_CALC_TYPE", ct)
         });
     }
+
+    private Task<List<string>> LookupNamesAsync(string lookupTypeCode, CancellationToken ct) =>
+        db.AppLookupValues.AsNoTracking()
+            .Where(x => x.IsActive && x.LookupType != null && x.LookupType.IsActive &&
+                        x.LookupType.LookupTypeCode == lookupTypeCode)
+            .OrderBy(x => x.SortOrder).ThenBy(x => x.DisplayText)
+            .Select(x => x.DisplayText)
+            .ToListAsync(ct);
 
     [HttpPost("allowances")]
     public async Task<IActionResult> CreateAllowance(AllowanceSave dto, CancellationToken ct)
@@ -364,7 +375,7 @@ public sealed class PayScaleSetupController(
         if (await db.SalaryPackages.AnyAsync(p => p.Id != id && (p.Code == x.Code.Trim() || p.Name == x.Name.Trim()), ct)) return "Package code or name already exists.";
         if (!await db.SalaryScales.AnyAsync(p => p.Id == x.SalaryScaleId && p.IsActive, ct)) return "Select an active Pay Scale.";
         var payRuleId = await ResolvePayRuleId(x.PayRuleId, ct);
-        if (!payRuleId.HasValue) return "No active Pay Rule is available. Create a Pay Rule first.";
+        if (!payRuleId.HasValue) return "Unable to resolve a Pay Rule for this package.";
         var allowanceRef = Clean(x.AllowanceReference ?? x.AllowanceRef);
         var tadaRef = Clean(x.TadaReference ?? x.TadaRef);
         var leaveRef = Clean(x.LeaveReference ?? x.LeaveRef);
@@ -507,7 +518,48 @@ public sealed class PayScaleSetupController(
     {
         if (requestedId is > 0 && await db.PayRules.AnyAsync(p => p.Id == requestedId.Value && p.IsActive, ct))
             return requestedId.Value;
-        return await db.PayRules.AsNoTracking().Where(p => p.IsActive).OrderBy(p => p.Id).Select(p => (int?)p.Id).FirstOrDefaultAsync(ct);
+        var existing = await db.PayRules.AsNoTracking().Where(p => p.IsActive).OrderBy(p => p.Id).Select(p => (int?)p.Id).FirstOrDefaultAsync(ct);
+        if (existing.HasValue) return existing;
+        return await EnsureDefaultPayRuleAsync(ct);
+    }
+
+    /// <summary>
+    /// Create Package needs an active PayRule FK; AGENTS Create Package UI has no Pay Rule field.
+    /// Auto-create a tenant default when the table is empty.
+    /// </summary>
+    private async Task<int> EnsureDefaultPayRuleAsync(CancellationToken ct)
+    {
+        var tenantId = tenant.RequiredTenantId;
+        var existing = await db.PayRules.FirstOrDefaultAsync(x => x.Code == "DEFAULT", ct);
+        if (existing != null)
+        {
+            if (!existing.IsActive)
+            {
+                existing.IsActive = true;
+                existing.UpdatedOnUtc = DateTime.UtcNow;
+                await db.SaveChangesAsync(ct);
+            }
+            return existing.Id;
+        }
+
+        var row = new PayRule
+        {
+            TenantId = tenantId,
+            Code = "DEFAULT",
+            Name = "Default Pay Rule",
+            RuleType = "Standard",
+            WorkingDaysBasis = "Scheduled",
+            FixedWorkingDays = 26,
+            WorkingHoursPerDay = 9,
+            OvertimeMultiplier = 1.5m,
+            RoundingMode = "Nearest",
+            IsActive = true,
+            Description = "Auto-seeded default rule for salary packages.",
+            CreatedOnUtc = DateTime.UtcNow
+        };
+        db.PayRules.Add(row);
+        await db.SaveChangesAsync(ct);
+        return row.Id;
     }
     private static void Apply(PlatformTypeTableRow x, PlatformMasterSave d) { x.Code=d.Code.Trim().ToUpperInvariant(); x.Name=d.Name.Trim(); x.DisplayOrder=d.DisplayOrder; x.IsActive=d.IsActive; }
     private static string? Clean(string? x) => string.IsNullOrWhiteSpace(x) ? null : x.Trim();

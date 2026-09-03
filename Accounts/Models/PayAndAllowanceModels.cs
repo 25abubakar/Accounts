@@ -170,6 +170,8 @@ public sealed class PayrollBonusLine : ITenantEntity
     [Column(TypeName = "decimal(9,4)")] public decimal DisciplinePercent { get; set; }
     [Column(TypeName = "decimal(18,2)")] public decimal InstallmentAmount { get; set; }
     public int Installment { get; set; } = 1;
+    /// <summary>How many installments have already been paid via finalized payroll.</summary>
+    public int PaidInstallmentCount { get; set; }
     public bool IsApproved { get; set; }
     public bool IsPaid { get; set; }
     public DateTime? PaidOnUtc { get; set; }
@@ -217,8 +219,21 @@ public sealed class PayrollLine : ITenantEntity
     [MaxLength(150)] public string? Designation { get; set; }
     [MaxLength(150)] public string? Department { get; set; }
     public DateOnly? DateOfJoining { get; set; }
+    public DateOnly? ScaleDate { get; set; }
     [MaxLength(80)] public string? Scale { get; set; }
+    [MaxLength(50)] public string? ContractType { get; set; }
+    public int Month { get; set; }
+    public int Year { get; set; }
+    /// <summary>Scale / HR basic (display). Pay basis uses CurrentPay priority into BasicSalary.</summary>
+    [Column(TypeName = "decimal(18,2)")] public decimal ScaleBasicSalary { get; set; }
+    [Column(TypeName = "decimal(18,2)")] public decimal IncrementSalary { get; set; }
+    [Column(TypeName = "decimal(18,2)")] public decimal MaxSalary { get; set; }
+    [Column(TypeName = "decimal(18,2)")] public decimal CurrentPay { get; set; }
+    /// <summary>Payroll pay basis (CurrentPay → Basic → Scale Current → Scale Basic).</summary>
     [Column(TypeName = "decimal(18,2)")] public decimal BasicSalary { get; set; }
+    [Column(TypeName = "decimal(18,2)")] public decimal GeneralAllowanceAmount { get; set; }
+    [Column(TypeName = "decimal(18,2)")] public decimal ApptAllowanceAmount { get; set; }
+    [Column(TypeName = "decimal(18,2)")] public decimal ShiftAllowanceAmount { get; set; }
     [Column(TypeName = "decimal(18,2)")] public decimal AllowanceAmount { get; set; }
     [Column(TypeName = "decimal(18,2)")] public decimal EmployerBenefitAmount { get; set; }
     [Column(TypeName = "decimal(18,2)")] public decimal StaffBenefitDeduction { get; set; }
@@ -226,6 +241,7 @@ public sealed class PayrollLine : ITenantEntity
     [Column(TypeName = "decimal(18,2)")] public decimal OvertimeAmount { get; set; }
     [Column(TypeName = "decimal(18,2)")] public decimal AttendanceDeduction { get; set; }
     [Column(TypeName = "decimal(18,2)")] public decimal AttendanceAdjustment { get; set; }
+    [Column(TypeName = "decimal(18,2)")] public decimal TaxableIncome { get; set; }
     [Column(TypeName = "decimal(18,2)")] public decimal TaxAmount { get; set; }
     [Column(TypeName = "decimal(18,2)")] public decimal EmployeeEobiAmount { get; set; }
     [Column(TypeName = "decimal(18,2)")] public decimal EmployerEobiAmount { get; set; }
@@ -233,6 +249,8 @@ public sealed class PayrollLine : ITenantEntity
     [Column(TypeName = "decimal(18,2)")] public decimal GrossPay { get; set; }
     [Column(TypeName = "decimal(18,2)")] public decimal TotalDeduction { get; set; }
     [Column(TypeName = "decimal(18,2)")] public decimal NetPay { get; set; }
+    public bool IsPending { get; set; }
+    public int PendingReviewDays { get; set; }
     public bool IsApproved { get; set; }
     public bool IsPaid { get; set; }
     public DateTime? PaidOnUtc { get; set; }
