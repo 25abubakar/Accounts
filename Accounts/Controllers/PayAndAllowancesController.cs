@@ -488,7 +488,7 @@ public sealed class PayAndAllowancesController(
     public async Task<IActionResult> CreatePayrollRun(PayrollRunSave dto, CancellationToken ct)
     {
         var denied = await Guard("/pay-allowances/payroll", "ADD", ct); if (denied != null) return denied;
-        var error = ValidatePayroll(dto); if (error != null) return BadRequest(new { message = error });
+        var error = await ValidatePayrollAsync(dto, ct); if (error != null) return BadRequest(new { message = error });
         var userId = User.FindFirstValue(ClaimTypes.NameIdentifier); if (string.IsNullOrWhiteSpace(userId)) return Forbid();
         try
         {
@@ -505,7 +505,7 @@ public sealed class PayAndAllowancesController(
         var denied = await Guard("/pay-allowances/payroll", "EDIT", ct); if (denied != null) return denied;
         var row = await db.PayrollRuns.SingleOrDefaultAsync(x => x.Id == id, ct); if (row == null) return NotFound();
         if (!row.Status.Equals("Draft", StringComparison.OrdinalIgnoreCase)) return Conflict(new { message = "Only a Draft payroll run can be edited." });
-        var error = ValidatePayroll(dto); if (error != null) return BadRequest(new { message = error });
+        var error = await ValidatePayrollAsync(dto, ct); if (error != null) return BadRequest(new { message = error });
         if (await db.PayrollRuns.AnyAsync(x => x.Id != id && x.Year == dto.Year && x.Month == dto.Month, ct)) return Conflict(new { message = "A payroll run already exists for this month." });
         var userId = User.FindFirstValue(ClaimTypes.NameIdentifier); if (string.IsNullOrWhiteSpace(userId)) return Forbid();
         try
@@ -818,6 +818,15 @@ public sealed class PayAndAllowancesController(
         return null;
     }
     private static string? ValidatePayroll(PayrollRunSave x) => x.Year is < 2000 or > 2200 || x.Month is < 1 or > 12 ? "Enter a valid payroll month and year." : null;
+
+    private async Task<string?> ValidatePayrollAsync(PayrollRunSave x, CancellationToken ct)
+    {
+        var basic = ValidatePayroll(x);
+        if (basic != null) return basic;
+        if (string.IsNullOrWhiteSpace(x.Status)) return null;
+        var normalized = await NormalizeStatusAsync(x.Status, ct);
+        return normalized == null ? "Select a valid payroll status." : null;
+    }
     private static string? ValidateEobi(EobiSettingSave x) => x.EmployeeRatePercentage is < 0 or > 100 || x.EmployerRatePercentage is < 0 or > 100 || x.MinimumWage < 0 || x.MaximumContributionBase < 0 ? "Enter valid EOBI rates and amounts." : x.EffectiveTo < x.EffectiveFrom ? "Effective To cannot be before Effective From." : null;
     private static string? ValidateTax(TaxSlabSave x) => string.IsNullOrWhiteSpace(x.TaxYear) ? "Tax year is required." : x.FromAmount < 0 || x.ToAmount < x.FromAmount || x.FixedTaxAmount < 0 || x.RatePercentage is < 0 or > 100 ? "Enter a valid tax range and rate." : null;
     private static string? ValidateEligibility(EobiEligibilitySave x) => x.PersonId == Guid.Empty ? "Employee is required." : x.EffectiveTo < x.EffectiveFrom ? "Effective To cannot be before Effective From." : null;
@@ -974,12 +983,12 @@ public sealed class PayAndAllowancesController(
         return codes.FirstOrDefault(c => c.Equals(value, StringComparison.OrdinalIgnoreCase)) ?? codes[0];
     }
 
-    private async Task<string> NormalizeStatusAsync(string? x, CancellationToken ct)
+    private async Task<string?> NormalizeStatusAsync(string? x, CancellationToken ct)
     {
         var value = x?.Trim() ?? "";
         var codes = await LookupCodesAsync("PAYROLL_RUN_STATUS", ct);
         if (codes.Count == 0) codes = ["Draft", "In Review", "Approved", "Finalized"];
-        return codes.FirstOrDefault(c => c.Equals(value, StringComparison.OrdinalIgnoreCase)) ?? "Draft";
+        return codes.FirstOrDefault(c => c.Equals(value, StringComparison.OrdinalIgnoreCase));
     }
 
     private Task<List<string>> LookupCodesAsync(string lookupTypeCode, CancellationToken ct) =>
