@@ -68,11 +68,15 @@ namespace Accounts.DTOs.CommCenter
     // ── Lookup DTO ────────────────────────────────────────────────────────────
     public class AppLookupDto
     {
+        public int     LookupValueId  { get; set; }
+        public int     LookupTypeId   { get; set; }
         public string  LookupTypeCode { get; set; } = string.Empty;
+        public string  LookupTypeName { get; set; } = string.Empty;
         public string  ValueCode      { get; set; } = string.Empty;
         public string  DisplayText    { get; set; } = string.Empty;
         public int     SortOrder      { get; set; }
         public bool    IsDefault      { get; set; }
+        public bool    IsActive       { get; set; } = true;
         public string? MetadataJson   { get; set; }
     }
 

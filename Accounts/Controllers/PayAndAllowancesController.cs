@@ -26,9 +26,10 @@ public sealed class PayAndAllowancesController(
     public async Task<IActionResult> CreateBenefit(PayBenefitSave dto, CancellationToken ct)
     {
         var denied = await Guard("/pay-allowances/benefits", "ADD", ct); if (denied != null) return denied;
-        var error = ValidateDefinition(dto.Code, dto.Name, dto.CalculationType, dto.Amount, dto.Percentage); if (error != null) return BadRequest(new { message = error });
+        var error = await ValidateDefinition(dto.Code, dto.Name, dto.CalculationType, dto.Amount, dto.Percentage, ct); if (error != null) return BadRequest(new { message = error });
         if (await db.PayrollBenefitDefinitions.AnyAsync(x => x.Code == dto.Code.Trim() || x.Name == dto.Name.Trim(), ct)) return Conflict(new { message = "Benefit code or name already exists." });
-        var row = new PayrollBenefitDefinition { TenantId = tenant.RequiredTenantId, Code = dto.Code.Trim(), Name = dto.Name.Trim(), CalculationType = NormalizeCalculation(dto.CalculationType), Amount = dto.Amount, Percentage = dto.Percentage, IsTaxable = dto.IsTaxable, IsEobiContributory = dto.IsEobiContributory, IsActive = dto.IsActive, Description = Clean(dto.Description) };
+        var calc = await NormalizeCalculationAsync(dto.CalculationType, ct) ?? "Fixed";
+        var row = new PayrollBenefitDefinition { TenantId = tenant.RequiredTenantId, Code = dto.Code.Trim(), Name = dto.Name.Trim(), CalculationType = calc, Amount = dto.Amount, Percentage = dto.Percentage, IsTaxable = dto.IsTaxable, IsEobiContributory = dto.IsEobiContributory, IsActive = dto.IsActive, Description = Clean(dto.Description) };
         db.Add(row); await db.SaveChangesAsync(ct); return Ok(row);
     }
 
@@ -37,9 +38,9 @@ public sealed class PayAndAllowancesController(
     {
         var denied = await Guard("/pay-allowances/benefits", "EDIT", ct); if (denied != null) return denied;
         var row = await db.PayrollBenefitDefinitions.SingleOrDefaultAsync(x => x.Id == id, ct); if (row == null) return NotFound();
-        var error = ValidateDefinition(dto.Code, dto.Name, dto.CalculationType, dto.Amount, dto.Percentage); if (error != null) return BadRequest(new { message = error });
+        var error = await ValidateDefinition(dto.Code, dto.Name, dto.CalculationType, dto.Amount, dto.Percentage, ct); if (error != null) return BadRequest(new { message = error });
         if (await db.PayrollBenefitDefinitions.AnyAsync(x => x.Id != id && (x.Code == dto.Code.Trim() || x.Name == dto.Name.Trim()), ct)) return Conflict(new { message = "Benefit code or name already exists." });
-        row.Code = dto.Code.Trim(); row.Name = dto.Name.Trim(); row.CalculationType = NormalizeCalculation(dto.CalculationType); row.Amount = dto.Amount; row.Percentage = dto.Percentage; row.IsTaxable = dto.IsTaxable; row.IsEobiContributory = dto.IsEobiContributory; row.IsActive = dto.IsActive; row.Description = Clean(dto.Description); row.UpdatedOnUtc = DateTime.UtcNow;
+        row.Code = dto.Code.Trim(); row.Name = dto.Name.Trim(); row.CalculationType = await NormalizeCalculationAsync(dto.CalculationType, ct) ?? "Fixed"; row.Amount = dto.Amount; row.Percentage = dto.Percentage; row.IsTaxable = dto.IsTaxable; row.IsEobiContributory = dto.IsEobiContributory; row.IsActive = dto.IsActive; row.Description = Clean(dto.Description); row.UpdatedOnUtc = DateTime.UtcNow;
         await db.SaveChangesAsync(ct); return Ok(row);
     }
 
@@ -437,9 +438,9 @@ public sealed class PayAndAllowancesController(
     public async Task<IActionResult> CreateBonus(PayBonusSave dto, CancellationToken ct)
     {
         var denied = await Guard("/pay-allowances/bonus", "ADD", ct); if (denied != null) return denied;
-        var error = ValidateDefinition(dto.Code, dto.Name, dto.CalculationType, dto.Amount, dto.Percentage); if (error != null) return BadRequest(new { message = error });
+        var error = await ValidateDefinition(dto.Code, dto.Name, dto.CalculationType, dto.Amount, dto.Percentage, ct); if (error != null) return BadRequest(new { message = error });
         if (await db.PayrollBonusDefinitions.AnyAsync(x => x.Code == dto.Code.Trim() || x.Name == dto.Name.Trim(), ct)) return Conflict(new { message = "Bonus code or name already exists." });
-        var row = new PayrollBonusDefinition { TenantId = tenant.RequiredTenantId, Code = dto.Code.Trim(), Name = dto.Name.Trim(), CalculationType = NormalizeCalculation(dto.CalculationType), Amount = dto.Amount, Percentage = dto.Percentage, Frequency = NormalizeFrequency(dto.Frequency), IsTaxable = dto.IsTaxable, IsActive = dto.IsActive, Description = Clean(dto.Description) };
+        var row = new PayrollBonusDefinition { TenantId = tenant.RequiredTenantId, Code = dto.Code.Trim(), Name = dto.Name.Trim(), CalculationType = await NormalizeCalculationAsync(dto.CalculationType, ct) ?? "Fixed", Amount = dto.Amount, Percentage = dto.Percentage, Frequency = await NormalizeFrequencyAsync(dto.Frequency, ct), IsTaxable = dto.IsTaxable, IsActive = dto.IsActive, Description = Clean(dto.Description) };
         db.Add(row); await db.SaveChangesAsync(ct); return Ok(row);
     }
 
@@ -448,9 +449,9 @@ public sealed class PayAndAllowancesController(
     {
         var denied = await Guard("/pay-allowances/bonus", "EDIT", ct); if (denied != null) return denied;
         var row = await db.PayrollBonusDefinitions.SingleOrDefaultAsync(x => x.Id == id, ct); if (row == null) return NotFound();
-        var error = ValidateDefinition(dto.Code, dto.Name, dto.CalculationType, dto.Amount, dto.Percentage); if (error != null) return BadRequest(new { message = error });
+        var error = await ValidateDefinition(dto.Code, dto.Name, dto.CalculationType, dto.Amount, dto.Percentage, ct); if (error != null) return BadRequest(new { message = error });
         if (await db.PayrollBonusDefinitions.AnyAsync(x => x.Id != id && (x.Code == dto.Code.Trim() || x.Name == dto.Name.Trim()), ct)) return Conflict(new { message = "Bonus code or name already exists." });
-        row.Code = dto.Code.Trim(); row.Name = dto.Name.Trim(); row.CalculationType = NormalizeCalculation(dto.CalculationType); row.Amount = dto.Amount; row.Percentage = dto.Percentage; row.Frequency = NormalizeFrequency(dto.Frequency); row.IsTaxable = dto.IsTaxable; row.IsActive = dto.IsActive; row.Description = Clean(dto.Description); row.UpdatedOnUtc = DateTime.UtcNow;
+        row.Code = dto.Code.Trim(); row.Name = dto.Name.Trim(); row.CalculationType = await NormalizeCalculationAsync(dto.CalculationType, ct) ?? "Fixed"; row.Amount = dto.Amount; row.Percentage = dto.Percentage; row.Frequency = await NormalizeFrequencyAsync(dto.Frequency, ct); row.IsTaxable = dto.IsTaxable; row.IsActive = dto.IsActive; row.Description = Clean(dto.Description); row.UpdatedOnUtc = DateTime.UtcNow;
         await db.SaveChangesAsync(ct); return Ok(row);
     }
 
@@ -805,14 +806,15 @@ public sealed class PayAndAllowancesController(
         return await db.PayrollTaxSlabs.AnyAsync(x => x.Id != id && x.IsActive && x.TaxYear == dto.TaxYear.Trim() && x.FromAmount <= upper && (x.ToAmount == null || x.ToAmount >= dto.FromAmount), ct);
     }
 
-    private static string? ValidateDefinition(string code, string name, string calculation, decimal amount, decimal percentage)
+    private async Task<string?> ValidateDefinition(string code, string name, string calculation, decimal amount, decimal percentage, CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(code) || string.IsNullOrWhiteSpace(name)) return "Code and name are required.";
         if (code.Trim().Length > 30 || name.Trim().Length > 120) return "Code or name is too long.";
-        if (!new[] { "Fixed", "Percentage" }.Contains(NormalizeCalculation(calculation))) return "Calculation type must be Fixed or Percentage.";
+        var normalized = await NormalizeCalculationAsync(calculation, ct);
+        if (normalized == null) return "Calculation type must be a valid lookup value.";
         if (amount < 0 || percentage < 0 || percentage > 100) return "Amount must be positive and percentage must be between 0 and 100.";
-        if (NormalizeCalculation(calculation) == "Fixed" && amount <= 0) return "Enter a fixed amount.";
-        if (NormalizeCalculation(calculation) == "Percentage" && percentage <= 0) return "Enter a percentage.";
+        if (normalized == "Fixed" && amount <= 0) return "Enter a fixed amount.";
+        if (normalized == "Percentage" && percentage <= 0) return "Enter a percentage.";
         return null;
     }
     private static string? ValidatePayroll(PayrollRunSave x) => x.Year is < 2000 or > 2200 || x.Month is < 1 or > 12 ? "Enter a valid payroll month and year." : null;
@@ -954,9 +956,39 @@ public sealed class PayAndAllowancesController(
         var reference = $"B-{(normalizedScale.Length == 0 ? "UNASSIGNED" : normalizedScale)}";
         return reference[..Math.Min(reference.Length, 30)];
     }
-    private static string NormalizeCalculation(string? x) => x?.Trim().Equals("Percentage", StringComparison.OrdinalIgnoreCase) == true ? "Percentage" : "Fixed";
-    private static string NormalizeFrequency(string? x) => new[] { "Monthly", "Quarterly", "Annual", "OneTime" }.FirstOrDefault(v => v.Equals(x?.Trim(), StringComparison.OrdinalIgnoreCase)) ?? "Monthly";
-    private static string NormalizeStatus(string? x) => new[] { "Draft", "In Review", "Approved", "Finalized" }.FirstOrDefault(v => v.Equals(x?.Trim(), StringComparison.OrdinalIgnoreCase)) ?? "Draft";
+    private async Task<string?> NormalizeCalculationAsync(string? x, CancellationToken ct)
+    {
+        var value = x?.Trim() ?? "";
+        var codes = await LookupCodesAsync("CALCULATION_TYPE", ct);
+        if (codes.Count == 0) codes = ["Fixed", "Percentage"];
+        return codes.FirstOrDefault(c => c.Equals(value, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private async Task<string> NormalizeFrequencyAsync(string? x, CancellationToken ct)
+    {
+        var value = x?.Trim() ?? "";
+        var fromLookup = await LookupCodesAsync("PAY_FREQUENCY", ct);
+        var fromPlatform = await db.FrequencyTypes.AsNoTracking().Where(f => f.IsActive).Select(f => f.Name).ToListAsync(ct);
+        var codes = fromLookup.Concat(fromPlatform).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        if (codes.Count == 0) codes = ["Monthly", "Quarterly", "Annual", "OneTime"];
+        return codes.FirstOrDefault(c => c.Equals(value, StringComparison.OrdinalIgnoreCase)) ?? codes[0];
+    }
+
+    private async Task<string> NormalizeStatusAsync(string? x, CancellationToken ct)
+    {
+        var value = x?.Trim() ?? "";
+        var codes = await LookupCodesAsync("PAYROLL_RUN_STATUS", ct);
+        if (codes.Count == 0) codes = ["Draft", "In Review", "Approved", "Finalized"];
+        return codes.FirstOrDefault(c => c.Equals(value, StringComparison.OrdinalIgnoreCase)) ?? "Draft";
+    }
+
+    private Task<List<string>> LookupCodesAsync(string lookupTypeCode, CancellationToken ct) =>
+        db.AppLookupValues.AsNoTracking()
+            .Where(v => v.IsActive && v.LookupType != null && v.LookupType.IsActive &&
+                        v.LookupType.LookupTypeCode == lookupTypeCode)
+            .OrderBy(v => v.SortOrder)
+            .Select(v => v.ValueCode)
+            .ToListAsync(ct);
     private static string? Clean(string? x) => string.IsNullOrWhiteSpace(x) ? null : x.Trim();
     private string ActorName() => User.FindFirstValue(ClaimTypes.Name) ?? User.FindFirstValue(ClaimTypes.Email) ?? User.Identity?.Name ?? "User";
     private static object PayrollResponse(PayrollRun? run, IEnumerable<PayrollLine> lines) => new

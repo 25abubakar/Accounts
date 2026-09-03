@@ -30,7 +30,7 @@ public sealed class PayScaleSetupController(
     public async Task<IActionResult> CreateRuleRegistration(RuleRegistrationSave dto, CancellationToken ct)
     {
         var denied = await Guard("ADD", ct); if (denied != null) return denied;
-        var error = ValidateRuleRegistration(dto); if (error != null) return BadRequest(new { message = error });
+        var error = await ValidateRuleRegistration(dto, ct); if (error != null) return BadRequest(new { message = error });
         var type = dto.RuleType.Trim(); var name = dto.Name.Trim();
         if (await db.PayScaleRuleRegistrations.AnyAsync(x => x.RuleType == type && x.Name == name, ct))
             return Conflict(new { message = "A rule with the same type and name already exists." });
@@ -44,7 +44,7 @@ public sealed class PayScaleSetupController(
     {
         var denied = await Guard("EDIT", ct); if (denied != null) return denied;
         var row = await db.PayScaleRuleRegistrations.SingleOrDefaultAsync(x => x.Id == id, ct); if (row == null) return NotFound();
-        var error = ValidateRuleRegistration(dto); if (error != null) return BadRequest(new { message = error });
+        var error = await ValidateRuleRegistration(dto, ct); if (error != null) return BadRequest(new { message = error });
         var type = dto.RuleType.Trim(); var name = dto.Name.Trim();
         if (await db.PayScaleRuleRegistrations.AnyAsync(x => x.Id != id && x.RuleType == type && x.Name == name, ct))
             return Conflict(new { message = "A rule with the same type and name already exists." });
@@ -111,7 +111,8 @@ public sealed class PayScaleSetupController(
             contracts = await db.ContractTypes.AsNoTracking().Where(x => x.IsActive).OrderBy(x => x.DisplayOrder).ThenBy(x => x.Name).Select(x => x.Name).ToListAsync(ct),
             frequencies = await db.FrequencyTypes.AsNoTracking().Where(x => x.IsActive).OrderBy(x => x.DisplayOrder).ThenBy(x => x.Name).Select(x => x.Name).ToListAsync(ct),
             rates = await db.RateTypes.AsNoTracking().Where(x => x.IsActive).OrderBy(x => x.DisplayOrder).ThenBy(x => x.Name).Select(x => x.Name).ToListAsync(ct),
-            payTypes = new[] { "Basic" },
+            payTypes = await LookupNamesAsync("PAY_TYPE", ct),
+            payRuleTypes = await LookupNamesAsync("PAY_RULE_TYPE", ct),
             applicableTypes = await LookupNamesAsync("LEAVE_APPLICABLE_TYPE", ct),
             valueTypes = await LookupNamesAsync("LEAVE_VALUE_TYPE", ct),
             calcTypes = await LookupNamesAsync("LEAVE_CALC_TYPE", ct)
@@ -268,7 +269,13 @@ public sealed class PayScaleSetupController(
         }
         IQueryable<PlatformTypeTableRow>? query = normalized switch
         {
-            "tada" => db.TadaTypes, "leave" => db.LeaveTypes, _ => null
+            "tada" => db.TadaTypes,
+            "leave" => db.LeaveTypes,
+            "contract" => db.ContractTypes,
+            "frequency" => db.FrequencyTypes,
+            "rate" => db.RateTypes,
+            "benefit" => db.BenefitTypes,
+            _ => null
         };
         if (query == null) return NotFound(new { message = "Master type not found." });
         return Ok(await query.AsNoTracking().OrderBy(x => x.DisplayOrder == 0 ? int.MaxValue : x.DisplayOrder).ThenBy(x => x.Name)
@@ -282,7 +289,17 @@ public sealed class PayScaleSetupController(
         var error = ValidateMaster(dto); if (error != null) return BadRequest(new { message = error });
         var normalized = Kind(kind);
         if (await MasterExists(normalized, dto.Code.Trim(), dto.Name.Trim(), null, ct)) return Conflict(new { message = "Code or name already exists in this master." });
-        PlatformTypeTableRow? row = normalized switch { "allowances" => new AllowanceType(), "tada" => new TadaType(), "leave" => new LeaveType(), _ => null };
+        PlatformTypeTableRow? row = normalized switch
+        {
+            "allowances" => new AllowanceType(),
+            "tada" => new TadaType(),
+            "leave" => new LeaveType(),
+            "contract" => new ContractType(),
+            "frequency" => new FrequencyType(),
+            "rate" => new RateType(),
+            "benefit" => new BenefitType(),
+            _ => null
+        };
         if (row == null) return NotFound(new { message = "Master type not found." });
         row.TenantId = tenant.RequiredTenantId; Apply(row, dto); row.CreatedByUserId = User.FindFirstValue(ClaimTypes.NameIdentifier);
         if (row is AllowanceType allowance) allowance.AllowanceCategory = NormalizeAllowanceCategory(dto.AllowanceCategory);
@@ -361,13 +378,23 @@ public sealed class PayScaleSetupController(
     {
         "allowances" => await db.AllowanceTypes.SingleOrDefaultAsync(x => x.Id == id, ct),
         "tada" => await db.TadaTypes.SingleOrDefaultAsync(x => x.Id == id, ct),
-        "leave" => await db.LeaveTypes.SingleOrDefaultAsync(x => x.Id == id, ct), _ => null
+        "leave" => await db.LeaveTypes.SingleOrDefaultAsync(x => x.Id == id, ct),
+        "contract" => await db.ContractTypes.SingleOrDefaultAsync(x => x.Id == id, ct),
+        "frequency" => await db.FrequencyTypes.SingleOrDefaultAsync(x => x.Id == id, ct),
+        "rate" => await db.RateTypes.SingleOrDefaultAsync(x => x.Id == id, ct),
+        "benefit" => await db.BenefitTypes.SingleOrDefaultAsync(x => x.Id == id, ct),
+        _ => null
     };
     private Task<bool> MasterExists(string kind, string code, string name, int? id, CancellationToken ct) => kind switch
     {
         "allowances" => db.AllowanceTypes.AnyAsync(x => x.Id != id && (x.Code == code || x.Name == name), ct),
         "tada" => db.TadaTypes.AnyAsync(x => x.Id != id && (x.Code == code || x.Name == name), ct),
-        "leave" => db.LeaveTypes.AnyAsync(x => x.Id != id && (x.Code == code || x.Name == name), ct), _ => Task.FromResult(false)
+        "leave" => db.LeaveTypes.AnyAsync(x => x.Id != id && (x.Code == code || x.Name == name), ct),
+        "contract" => db.ContractTypes.AnyAsync(x => x.Id != id && (x.Code == code || x.Name == name), ct),
+        "frequency" => db.FrequencyTypes.AnyAsync(x => x.Id != id && (x.Code == code || x.Name == name), ct),
+        "rate" => db.RateTypes.AnyAsync(x => x.Id != id && (x.Code == code || x.Name == name), ct),
+        "benefit" => db.BenefitTypes.AnyAsync(x => x.Id != id && (x.Code == code || x.Name == name), ct),
+        _ => Task.FromResult(false)
     };
     private async Task<string?> ValidatePackage(SalaryPackageSave x, int? id, CancellationToken ct)
     {
@@ -433,17 +460,37 @@ public sealed class PayScaleSetupController(
             return "This allowance already exists for the selected scale and allowance type.";
         return null;
     }
-    private static string? ValidateRuleRegistration(RuleRegistrationSave x)
+    private async Task<string?> ValidateRuleRegistration(RuleRegistrationSave x, CancellationToken ct)
     {
-        var allowedTypes = new[] { "PayScale", "Allowances", "TADA", "Leave" };
-        if (!allowedTypes.Contains(x.RuleType?.Trim(), StringComparer.OrdinalIgnoreCase)) return "Select a valid rule type.";
         if (string.IsNullOrWhiteSpace(x.Name)) return "Rule name is required.";
+        var ruleType = x.RuleType?.Trim() ?? "";
+        var allowed = await db.AppLookupValues.AsNoTracking()
+            .Where(v => v.IsActive && v.LookupType != null && v.LookupType.IsActive &&
+                        v.LookupType.LookupTypeCode == "PAY_RULE_TYPE")
+            .Select(v => v.ValueCode)
+            .ToListAsync(ct);
+        if (allowed.Count == 0)
+            allowed = ["PayScale", "Allowances", "TADA", "Leave"];
+        if (!allowed.Any(v => v.Equals(ruleType, StringComparison.OrdinalIgnoreCase)))
+            return "Select a valid rule type.";
         if (x.DateTo.Date < x.DateFrom.Date) return "DateTo must be on or after DateFrom.";
         return null;
     }
     private static string? ValidateRule(PayRuleSave x) => string.IsNullOrWhiteSpace(x.Code) || string.IsNullOrWhiteSpace(x.Name) ? "Rule code and name are required." : x.FixedWorkingDays is < 0 or > 31 || x.WorkingHoursPerDay is <= 0 or > 24 || x.OvertimeMultiplier is < 0 or > 10 ? "Enter valid working days, hours and overtime multiplier." : null;
     private static string? ValidateMaster(PlatformMasterSave x) => string.IsNullOrWhiteSpace(x.Code) || string.IsNullOrWhiteSpace(x.Name) ? "Code and name are required." : x.DisplayOrder < 0 ? "Display order cannot be negative." : null;
-    private static string Kind(string x) => x.Trim().ToLowerInvariant();
+    private static string Kind(string x)
+    {
+        var key = x.Trim().ToLowerInvariant();
+        return key switch
+        {
+            "contracts" or "contracttypes" => "contract",
+            "frequencies" or "frequencytypes" => "frequency",
+            "rates" or "ratetypes" => "rate",
+            "benefits" or "benefittypes" => "benefit",
+            "allowance" => "allowances",
+            _ => key
+        };
+    }
     private static string NormalizeAllowanceCategory(string? value)
     {
         var normalized = value?.Trim().ToUpperInvariant();
