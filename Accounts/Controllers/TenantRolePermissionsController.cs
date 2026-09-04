@@ -1,6 +1,7 @@
 using Accounts.Data;
 using Accounts.Models;
 using Accounts.Services.Interfaces;
+using Accounts.Services.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc;
@@ -106,10 +107,44 @@ namespace Accounts.Controllers
             if (string.IsNullOrWhiteSpace(jobTitle))
                 return BadRequest(new { message = "jobTitle is required." });
 
-            var allowedPermissionIds = await _db.MenuPermissions
+            var allowedPermissionIds = await _db.TenantMenuPermissions
                 .AsNoTracking()
-                .Select(mp => mp.PermissionId)
+                .Where(p => p.TenantId == tenantId.Value && p.IsAllow)
+                .Join(_db.MenuPermissions.AsNoTracking(),
+                    ceiling => ceiling.MenuId,
+                    mapping => mapping.MenuId,
+                    (ceiling, mapping) => new { ceiling, mapping.PermissionId })
+                .Where(row =>
+                    // Only VIEW-linked features unless ceiling allows the matching CRUD bit.
+                    // Keep all MenuPermissions for menus with CanView; finer filter below via feature key.
+                    row.ceiling.CanView)
+                .Select(row => row.PermissionId)
                 .ToHashSetAsync();
+
+            // Tighten CRUD bits: drop ADD/EDIT/DELETE feature keys when ceiling bit is off.
+            var featureRows = await _db.Features.AsNoTracking()
+                .Where(f => allowedPermissionIds.Contains(f.PermissionId))
+                .Select(f => new { f.PermissionId, f.FeatureKey })
+                .ToListAsync();
+            var ceilingByMenu = await _db.TenantMenuPermissions.AsNoTracking()
+                .Where(p => p.TenantId == tenantId.Value && p.IsAllow)
+                .ToDictionaryAsync(p => p.MenuId, p => p);
+            allowedPermissionIds = featureRows
+                .Where(f =>
+                {
+                    if (!TenantPermissionService.TryParseMenuFeature(f.FeatureKey, out var menuId, out var capability))
+                        return true; // semantic keys linked to a can-view menu stay; MenuPermissions join already scoped
+                    if (!ceilingByMenu.TryGetValue(menuId, out var grant)) return false;
+                    return capability switch
+                    {
+                        TenantPermissionService.TenantCapability.Add => grant.CanAdd,
+                        TenantPermissionService.TenantCapability.Edit => grant.CanEdit,
+                        TenantPermissionService.TenantCapability.Delete => grant.CanDelete,
+                        _ => grant.CanView
+                    };
+                })
+                .Select(f => f.PermissionId)
+                .ToHashSet();
 
             var invalid = permissionIds.Except(allowedPermissionIds).ToList();
             if (invalid.Any())
@@ -185,11 +220,17 @@ namespace Accounts.Controllers
             if (!isTenantAdmin || !tenantId.HasValue)
                 return Forbid();
 
-            // Fetch active menus with their linked feature keys.
+            var ceilingMenuIds = await _db.TenantMenuPermissions
+                .AsNoTracking()
+                .Where(p => p.TenantId == tenantId.Value && p.IsAllow && p.CanView)
+                .Select(p => p.MenuId)
+                .ToHashSetAsync();
+
+            // Fetch active menus within Super Admin ceiling, with their linked feature keys.
             var menus = await _db.Menus
                 .AsNoTracking()
                 .Include(m => m.MenuPermissions).ThenInclude(mp => mp.Feature)
-                .Where(m => m.IsActive)
+                .Where(m => m.IsActive && ceilingMenuIds.Contains(m.Id))
                 .OrderBy(m => m.SortOrder)
                 .Select(m => new
                 {

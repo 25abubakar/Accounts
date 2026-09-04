@@ -12,9 +12,11 @@ namespace Accounts.Services.Services
     ///
     /// Authority chain:
     ///   Super Admin → TenantMenuPermissions (ceiling)
-    ///   Tenant Admin → StaffMenuAccess + AccessFeatures (subset of ceiling)
+    ///   Tenant Admin → /roles TenantRolePermissions (job-title defaults)
+    ///                → Access Control StaffMenuAccess + AccessFeatures (person extras)
     ///
-    /// Staff effective access is always staff grants ∩ tenant ceiling.
+    /// Staff effective access = (role defaults ∪ person extras) ∩ tenant ceiling.
+    /// Extras are additive. Nothing may exceed the Super Admin ceiling.
     /// When Super Admin revokes a menu/CRUD bit, runtime resolution fails closed
     /// even before cascade prune removes stale rows.
     /// </summary>
@@ -30,6 +32,7 @@ namespace Accounts.Services.Services
         }
 
         private sealed record TenantCeiling(bool View, bool Add, bool Edit, bool Delete);
+        private sealed record StaffAccessContext(int TenantId, string? JobTitle, int? DeptId);
 
         private async Task<(int TenantId, Dictionary<int, TenantCeiling> Ceiling)?> LoadTenantCeilingAsync(Guid staffId)
         {
@@ -45,6 +48,85 @@ namespace Accounts.Services.Services
                 .ToDictionaryAsync(p => p.MenuId,
                     p => new TenantCeiling(p.CanView, p.CanAdd, p.CanEdit, p.CanDelete));
             return (tenantId.Value, ceiling);
+        }
+
+        private async Task<StaffAccessContext?> LoadStaffAccessContextAsync(Guid staffId)
+        {
+            var row = await _db.StaffVacancies.IgnoreQueryFilters().AsNoTracking()
+                .Where(s => s.StaffId == staffId)
+                .Select(s => new
+                {
+                    s.TenantId,
+                    JobTitle = s.Vacancy != null
+                        ? (s.Vacancy.DesignationNav != null ? s.Vacancy.DesignationNav.Name : s.Vacancy.JobTitle)
+                        : null,
+                    DeptId = s.Vacancy != null ? (int?)s.Vacancy.OrganizationId : null
+                })
+                .FirstOrDefaultAsync();
+            return row == null ? null : new StaffAccessContext(row.TenantId, row.JobTitle, row.DeptId);
+        }
+
+        /// <summary>
+        /// Job-title defaults from TenantRolePermissions. Dept-specific rows win over tenant-wide (DeptId null).
+        /// </summary>
+        private async Task<HashSet<int>> LoadTenantRolePermissionIdsAsync(int tenantId, string? jobTitle, int? deptId)
+        {
+            if (string.IsNullOrWhiteSpace(jobTitle)) return new HashSet<int>();
+
+            var title = jobTitle.Trim();
+            var rows = await _db.TenantRolePermissions.IgnoreQueryFilters().AsNoTracking()
+                .Where(r => r.TenantId == tenantId && r.IsAllowed
+                            && (r.DeptId == null || r.DeptId == deptId))
+                .Select(r => new { r.PermissionId, r.DeptId, r.IsAllowed, r.JobTitle })
+                .ToListAsync();
+
+            return rows
+                .Where(r => string.Equals(r.JobTitle, title, StringComparison.OrdinalIgnoreCase))
+                .GroupBy(r => r.PermissionId)
+                .Select(g => g.OrderByDescending(r => r.DeptId.HasValue).First())
+                .Where(r => r.IsAllowed)
+                .Select(r => r.PermissionId)
+                .ToHashSet();
+        }
+
+        private async Task<HashSet<int>> ResolveGrantedMenuIdsAsync(
+            Guid staffId,
+            int tenantId,
+            string? jobTitle,
+            int? deptId,
+            IReadOnlyDictionary<int, TenantCeiling> ceiling,
+            IReadOnlyCollection<int> effectivePermissionIds,
+            IReadOnlyDictionary<int, string> featureKeys)
+        {
+            var menus = await _db.StaffMenuAccesses.IgnoreQueryFilters().AsNoTracking()
+                .Where(g => g.StaffId == staffId && g.IsAllow)
+                .Select(g => g.MenuId)
+                .ToHashSetAsync();
+
+            var roleIds = await LoadTenantRolePermissionIdsAsync(tenantId, jobTitle, deptId);
+            var seedPermissionIds = effectivePermissionIds.Count > 0
+                ? effectivePermissionIds.Concat(roleIds).Distinct().ToList()
+                : roleIds.ToList();
+
+            foreach (var permissionId in seedPermissionIds)
+            {
+                if (!featureKeys.TryGetValue(permissionId, out var key)) continue;
+                if (TenantPermissionService.TryParseMenuFeature(key, out var menuId, out _))
+                    menus.Add(menuId);
+            }
+
+            if (seedPermissionIds.Count > 0)
+            {
+                var linked = await _db.MenuPermissions.AsNoTracking()
+                    .Where(mp => seedPermissionIds.Contains(mp.PermissionId))
+                    .Select(mp => mp.MenuId)
+                    .Distinct()
+                    .ToListAsync();
+                foreach (var menuId in linked) menus.Add(menuId);
+            }
+
+            menus.RemoveWhere(id => !ceiling.TryGetValue(id, out var bits) || !bits.View);
+            return menus;
         }
 
         /// <summary>
@@ -141,23 +223,28 @@ namespace Accounts.Services.Services
             var tenantAccess = await LoadTenantCeilingAsync(staffId);
             if (tenantAccess == null) return Array.Empty<string>();
             var ceiling = tenantAccess.Value.Ceiling;
+            var staffContext = await LoadStaffAccessContextAsync(staffId);
+
+            var featureKeyRows = await _db.Features.AsNoTracking()
+                .Select(f => new { f.PermissionId, f.FeatureKey })
+                .ToListAsync();
+            var featureKeys = featureKeyRows.ToDictionary(f => f.PermissionId, f => f.FeatureKey);
 
             var keys = allowedIds.Count == 0
                 ? new List<string>()
-                : await _db.Features.AsNoTracking()
-                    .Where(f => allowedIds.Contains(f.PermissionId))
-                    .Select(f => f.FeatureKey)
-                    .ToListAsync();
+                : featureKeyRows.Where(f => allowedIds.Contains(f.PermissionId)).Select(f => f.FeatureKey).ToList();
 
-            var menuIds = await _db.StaffMenuAccesses.IgnoreQueryFilters().AsNoTracking()
-                .Where(g => g.StaffId == staffId && g.IsAllow)
-                .Select(g => g.MenuId)
-                .Distinct()
-                .ToListAsync();
+            var menuIds = await ResolveGrantedMenuIdsAsync(
+                staffId,
+                tenantAccess.Value.TenantId,
+                staffContext?.JobTitle,
+                staffContext?.DeptId,
+                ceiling,
+                allowedIds,
+                featureKeys);
 
             foreach (var id in menuIds)
             {
-                if (!ceiling.TryGetValue(id, out var permission) || !permission.View) continue;
                 keys.Add($"MENU_{id}");
                 keys.Add($"MENU_{id}_VIEW");
             }
@@ -208,8 +295,26 @@ namespace Accounts.Services.Services
                 group => group.Key,
                 group => (IReadOnlyDictionary<int, TenantCeiling>)group.ToDictionary(
                     p => p.MenuId, p => new TenantCeiling(p.CanView, p.CanAdd, p.CanEdit, p.CanDelete)));
-            var staffWithGrants = grants.Select(g => g.StaffId).ToHashSet();
-            var legacyStaff = staff.Where(s => !staffWithGrants.Contains(s.StaffId)).ToList();
+
+            var jobTitles = staff.Select(s => s.JobTitle).Where(t => !string.IsNullOrWhiteSpace(t)).Distinct().ToArray();
+            var tenantRoleRows = await _db.TenantRolePermissions.AsNoTracking()
+                .Where(r => tenantIds.Contains(r.TenantId) && r.IsAllowed)
+                .Select(r => new { r.TenantId, r.JobTitle, r.DeptId, r.PermissionId, r.IsAllowed })
+                .ToListAsync();
+            tenantRoleRows = tenantRoleRows
+                .Where(r => jobTitles.Any(t => string.Equals(t, r.JobTitle, StringComparison.OrdinalIgnoreCase)))
+                .ToList();
+
+            var staffWithPersonOrRole = grants.Select(g => g.StaffId).ToHashSet();
+            foreach (var employee in staff)
+            {
+                if (string.IsNullOrWhiteSpace(employee.JobTitle)) continue;
+                if (tenantRoleRows.Any(r => r.TenantId == employee.TenantId &&
+                    string.Equals(r.JobTitle, employee.JobTitle, StringComparison.OrdinalIgnoreCase)))
+                    staffWithPersonOrRole.Add(employee.StaffId);
+            }
+
+            var legacyStaff = staff.Where(s => !staffWithPersonOrRole.Contains(s.StaffId)).ToList();
             var legacyTitles = legacyStaff.Select(s => s.JobTitle).Where(t => !string.IsNullOrWhiteSpace(t)).Distinct().ToArray();
             var roleRows = await _db.RolePermissions.AsNoTracking()
                 .Where(r => legacyTitles.Contains(r.JobTitle))
@@ -221,6 +326,7 @@ namespace Accounts.Services.Services
 
             var grantFeatures = accessFeatures.ToLookup(f => f.StaffMenuAccessId);
             var grantsByStaff = grants.ToLookup(g => g.StaffId);
+            var tenantRolesByTenant = tenantRoleRows.ToLookup(r => r.TenantId);
             var roleByTitle = roleRows.ToLookup(r => r.JobTitle, StringComparer.OrdinalIgnoreCase);
             var matrixByStaff = matrixRows.ToLookup(m => m.StaffId);
             var result = new Dictionary<Guid, IReadOnlyCollection<string>>(staff.Count);
@@ -233,18 +339,31 @@ namespace Accounts.Services.Services
                     result[employee.StaffId] = keys;
                     continue;
                 }
-                var employeeGrants = grantsByStaff[employee.StaffId].ToList();
-                if (employeeGrants.Count > 0)
+
+                foreach (var role in tenantRolesByTenant[employee.TenantId]
+                    .Where(r => string.Equals(r.JobTitle, employee.JobTitle, StringComparison.OrdinalIgnoreCase)
+                                && (r.DeptId == null || r.DeptId == employee.DepartmentId))
+                    .GroupBy(r => r.PermissionId)
+                    .Select(g => g.OrderByDescending(r => r.DeptId.HasValue).First())
+                    .Where(r => r.IsAllowed))
                 {
-                    foreach (var grant in employeeGrants)
-                    {
-                        if (employeeCeiling.TryGetValue(grant.MenuId, out var menuCeiling) && menuCeiling.View)
-                            keys.Add($"MENU_{grant.MenuId}");
-                        foreach (var feature in grantFeatures[grant.Id].Where(f => f.IsAllow))
-                            if (features.TryGetValue(feature.PermissionId, out var key) && IsAllowedByCeiling(key, employeeCeiling, semanticMenus)) keys.Add(key);
-                    }
+                    if (features.TryGetValue(role.PermissionId, out var key) && IsAllowedByCeiling(key, employeeCeiling, semanticMenus))
+                        keys.Add(key);
                 }
-                else
+
+                var employeeGrants = grantsByStaff[employee.StaffId].ToList();
+                foreach (var grant in employeeGrants)
+                {
+                    if (employeeCeiling.TryGetValue(grant.MenuId, out var menuCeiling) && menuCeiling.View)
+                    {
+                        keys.Add($"MENU_{grant.MenuId}");
+                        keys.Add($"MENU_{grant.MenuId}_VIEW");
+                    }
+                    foreach (var feature in grantFeatures[grant.Id].Where(f => f.IsAllow))
+                        if (features.TryGetValue(feature.PermissionId, out var key) && IsAllowedByCeiling(key, employeeCeiling, semanticMenus)) keys.Add(key);
+                }
+
+                if (keys.Count == 0 && employeeGrants.Count == 0)
                 {
                     var effectiveRoles = roleByTitle[employee.JobTitle ?? string.Empty]
                         .Where(r => r.DeptId == null || r.DeptId == employee.DepartmentId)
@@ -255,6 +374,18 @@ namespace Accounts.Services.Services
                     foreach (var matrix in matrixByStaff[employee.StaffId])
                         if (features.TryGetValue(matrix.PermissionId, out var key) && IsAllowedByCeiling(key, employeeCeiling, semanticMenus)) keys.Add(key);
                 }
+
+                // Inject MENU_ visibility for role-granted MENU_* keys
+                foreach (var key in keys.ToList())
+                {
+                    if (TenantPermissionService.TryParseMenuFeature(key, out var menuId, out _) &&
+                        employeeCeiling.TryGetValue(menuId, out var bits) && bits.View)
+                    {
+                        keys.Add($"MENU_{menuId}");
+                        keys.Add($"MENU_{menuId}_VIEW");
+                    }
+                }
+
                 result[employee.StaffId] = keys;
             }
             return result;
@@ -263,16 +394,17 @@ namespace Accounts.Services.Services
         /// <summary>
         /// Returns the HashSet of int PermissionIds the user is allowed to access.
         ///
-        /// 2-tier RBAC resolution (StaffMenuAccess + AccessFeatures):
-        ///   Grant with NO AccessFeature rows  → user can open that menu, but no
-        ///     specific feature PermissionIds are granted via that path.  The menu
-        ///     will still be visible because GetFilteredSidebarAsync checks grantedMenuIds
-        ///     directly (not via PermissionIds).
-        ///   Grant WITH AccessFeature rows    → only the explicitly-allowed PermissionIds
-        ///     are added to the result set.
+        /// Resolution (owner-confirmed):
+        ///   1. TenantRolePermissions for the staff job title (role defaults)
+        ///   2. ∪ StaffMenuAccess AccessFeatures (person extras) — additive
+        ///   3. ∩ TenantMenuPermissions ceiling (fail closed)
         ///
-        /// Falls back to legacy RolePermissions + DepartmentAccessMatrix when no
-        /// StaffMenuAccess rows exist.
+        /// Empty AccessFeature rows on a person menu grant still allow menu visibility
+        /// via ResolveGrantedMenuIdsAsync / GetEffectivePermissionsAsync, without unlocking
+        /// every feature PermissionId.
+        ///
+        /// Legacy RolePermissions + DepartmentAccessMatrix only when the staff has
+        /// neither tenant role defaults nor person menu grants (old tenants).
         /// </summary>
         public async Task<HashSet<int>> GetEffectivePermissionIdsAsync(Guid staffId)
         {
@@ -281,12 +413,25 @@ namespace Accounts.Services.Services
                 return new HashSet<int>();
 
             var ceiling = tenantAccess.Value.Ceiling;
+            var tenantId = tenantAccess.Value.TenantId;
             var featureKeys = await _db.Features.AsNoTracking()
                 .Select(f => new { f.PermissionId, f.FeatureKey })
                 .ToDictionaryAsync(f => f.PermissionId, f => f.FeatureKey);
             var semanticMenus = await LoadSemanticFeatureMenusAsync();
+            var staffContext = await LoadStaffAccessContextAsync(staffId);
+            var jobTitle = staffContext?.JobTitle;
+            var deptId = staffContext?.DeptId;
 
-            // ── 1. New 2-tier RBAC (StaffMenuAccess + AccessFeatures) ─────────
+            var result = new HashSet<int>();
+
+            var roleIds = await LoadTenantRolePermissionIdsAsync(tenantId, jobTitle, deptId);
+            foreach (var permissionId in roleIds)
+            {
+                if (featureKeys.TryGetValue(permissionId, out var key) &&
+                    IsAllowedByCeiling(key, ceiling, semanticMenus))
+                    result.Add(permissionId);
+            }
+
             var menuGrants = await _db.StaffMenuAccesses
                 .IgnoreQueryFilters()
                 .AsNoTracking()
@@ -301,24 +446,20 @@ namespace Accounts.Services.Services
                 })
                 .ToListAsync();
 
-            if (menuGrants.Count > 0)
+            foreach (var grant in menuGrants)
             {
-                var result2Tier = new HashSet<int>();
-
-                foreach (var grant in menuGrants)
+                foreach (var permissionId in grant.Features)
                 {
-                    // Explicit AccessFeature rows only. Empty grants give menu
-                    // visibility via GetEffectivePermissionsAsync (MENU_{id}/_VIEW).
-                    foreach (var permissionId in grant.Features)
-                        if (featureKeys.TryGetValue(permissionId, out var key) &&
-                            IsAllowedByCeiling(key, ceiling, semanticMenus))
-                            result2Tier.Add(permissionId);
+                    if (featureKeys.TryGetValue(permissionId, out var key) &&
+                        IsAllowedByCeiling(key, ceiling, semanticMenus))
+                        result.Add(permissionId);
                 }
-
-                return result2Tier;
             }
 
-            // ── 2. Legacy fallback: RolePermissions + DepartmentAccessMatrix ──
+            if (roleIds.Count > 0 || menuGrants.Count > 0)
+                return result;
+
+            // ── Legacy fallback: RolePermissions + DepartmentAccessMatrix ──
             var staff = await _db.StaffVacancies
                 .IgnoreQueryFilters()
                 .AsNoTracking()
@@ -327,8 +468,8 @@ namespace Accounts.Services.Services
 
             if (staff == null) return new HashSet<int>();
 
-            var jobTitle = staff.Vacancy?.ResolvedJobTitle;
-            var deptId   = staff.Vacancy?.OrganizationId;
+            jobTitle = staff.Vacancy?.ResolvedJobTitle;
+            deptId   = staff.Vacancy?.OrganizationId;
 
             var rolePermissions = string.IsNullOrWhiteSpace(jobTitle)
                 ? new List<RolePermission>()
@@ -498,14 +639,16 @@ namespace Accounts.Services.Services
         ///
         /// Pass Guid.Empty for SuperAdmin — they see every menu.
         ///
-        /// For regular users the method works directly from StaffMenuAccess:
-        ///   1. Load the MenuIds the user was explicitly granted (IsAllow = true).
+        /// For regular users the method resolves menus from:
+        ///   role defaults (TenantRolePermissions) ∪ person extras (StaffMenuAccess),
+        ///   always intersected with TenantMenuPermissions ceiling.
+        ///   1. Load the MenuIds the user was granted.
         ///   2. Walk up the tree to include all ancestor (parent/grandparent) menus
         ///      so the tree structure is never broken.
         ///   3. Build a tree containing only those visible MenuIds.
         ///
-        /// This approach is immune to the "no AccessFeature rows → unlock everything"
-        /// bug because it never touches MenuPermissions or PermissionIds.
+        /// Empty AccessFeature rows do not unlock every feature; menu visibility
+        /// still comes from ResolveGrantedMenuIdsAsync.
         /// </summary>
         public async Task<List<object>> GetFilteredSidebarAsync(Guid staffId)
         {
@@ -523,14 +666,23 @@ namespace Accounts.Services.Services
             if (staffId == Guid.Empty)
                 return BuildFullTree(null, lookup);
 
-            // ── Load explicitly granted menu IDs from StaffMenuAccess ─────────
+            // ── Menus from person extras ∪ role defaults (ceiling already applied) ─
             var tenantAccess = await LoadTenantCeilingAsync(staffId);
             if (tenantAccess == null) return new List<object>();
             var ceiling = tenantAccess.Value.Ceiling;
-            var grantedMenuIds = await _db.StaffMenuAccesses.AsNoTracking()
-                .Where(ma => ma.StaffId == staffId && ma.IsAllow)
-                .Select(ma => ma.MenuId).ToHashSetAsync();
-            grantedMenuIds.RemoveWhere(id => !ceiling.TryGetValue(id, out var permission) || !permission.View);
+            var staffContext = await LoadStaffAccessContextAsync(staffId);
+            var featureKeys = await _db.Features.AsNoTracking()
+                .Select(f => new { f.PermissionId, f.FeatureKey })
+                .ToDictionaryAsync(f => f.PermissionId, f => f.FeatureKey);
+            var allowedIds = await GetEffectivePermissionIdsAsync(staffId);
+            var grantedMenuIds = await ResolveGrantedMenuIdsAsync(
+                staffId,
+                tenantAccess.Value.TenantId,
+                staffContext?.JobTitle,
+                staffContext?.DeptId,
+                ceiling,
+                allowedIds,
+                featureKeys);
 
             // No grants at all — return empty sidebar
             if (grantedMenuIds.Count == 0)

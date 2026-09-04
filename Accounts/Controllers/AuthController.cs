@@ -438,6 +438,7 @@ namespace Accounts.Controllers
             var staffId = person.Staff.StaffId;
 
             var legacySidebar = await _rbac.GetFilteredSidebarAsync(staffId);
+            var legacyPermissions = (await _rbac.GetEffectivePermissionsAsync(staffId)).ToList();
             var legacyAllowedIds = await _rbac.GetEffectivePermissionIdsAsync(staffId);
             var legacyFeatures = await _db.Features.AsNoTracking()
                 .Where(f => legacyAllowedIds.Contains(f.PermissionId))
@@ -455,7 +456,7 @@ namespace Accounts.Controllers
                 personId      = person.PersonId,
                 staffId,
                 menus         = legacySidebar,
-                permissions   = legacyFeatures.Select(f => f.FeatureKey).ToList(),
+                permissions   = legacyPermissions,
                 permissionDetails = legacyFeatures,
                 accessSource  = "StaffRbac"
             });
