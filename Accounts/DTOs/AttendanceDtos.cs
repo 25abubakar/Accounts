@@ -596,3 +596,20 @@ public sealed class SaveAttendanceRuleSettingDto
     public decimal CompletedLateDeductionPercentage { get; set; } = 50m;
     public string? Remarks { get; set; }
 }
+
+/// <summary>
+/// Effective Attendance scope for the signed-in user (role ∪ person extras ∩ ceiling).
+/// Employee scope and period scope are independent.
+/// </summary>
+public sealed class AttendanceAccessDto
+{
+    public bool ModuleAccess { get; set; }
+    public bool CanViewSelf { get; set; }
+    public bool CanViewCurrentMonth { get; set; }
+    public bool CanViewPreviousMonths { get; set; }
+    public bool CanViewEmployees { get; set; }
+    public bool CanViewAllEmployees { get; set; }
+
+    /// <summary>UI helper — previous months allowed for the caller's authorized employee scope.</summary>
+    public bool CanViewHistorical => CanViewPreviousMonths;
+}

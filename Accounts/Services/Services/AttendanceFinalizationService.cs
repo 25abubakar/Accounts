@@ -150,13 +150,21 @@ public sealed class AttendanceFinalizationService(
                 row.AttendanceDate >= monthStart &&
                 row.AttendanceDate <= dateTo)
             .ToListAsync(cancellationToken);
-        var existingByDay = existingRows.ToDictionary(row => (row.PersonId, row.AttendanceDate));
+        // Prefer newest Id if legacy duplicates somehow exist (unique index should prevent this).
+        var existingByDay = existingRows
+            .GroupBy(row => (row.PersonId, row.AttendanceDate))
+            .ToDictionary(
+                group => group.Key,
+                group => group.OrderByDescending(row => row.Id).First());
 
         var localNow = PakistanClock.Now();
         var utcNow = DateTime.UtcNow;
         var changed = 0;
 
-        foreach (var employee in employees)
+        // One StaffVacancy row per PersonId — avoids double Add for the same day key.
+        foreach (var employee in employees
+                     .GroupBy(e => e.PersonId)
+                     .Select(g => g.OrderByDescending(e => e.StaffId).First()))
         {
             mapRules.TryGetValue(employee.StaffId, out var mapRule);
             AttendanceRuleSetting? rule = null;
@@ -230,9 +238,117 @@ public sealed class AttendanceFinalizationService(
         }
 
         if (changed > 0)
-            await db.SaveChangesAsync(cancellationToken);
+            await SaveFinalizationsWithDuplicateRetryAsync(tenantId, monthStart, dateTo, cancellationToken);
 
         return changed;
+    }
+
+    private async Task SaveFinalizationsWithDuplicateRetryAsync(
+        int tenantId,
+        DateOnly monthStart,
+        DateOnly dateTo,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await db.SaveChangesAsync(cancellationToken);
+            return;
+        }
+        catch (DbUpdateException exception) when (IsDuplicateFinalizationKey(exception))
+        {
+            logger.LogWarning(
+                exception,
+                "Concurrent attendance finalization for tenant {TenantId}; merging inserts as updates.",
+                tenantId);
+        }
+
+        await MergePendingInsertsOntoExistingRowsAsync(tenantId, monthStart, dateTo, cancellationToken);
+        await db.SaveChangesAsync(cancellationToken);
+    }
+
+    private async Task MergePendingInsertsOntoExistingRowsAsync(
+        int tenantId,
+        DateOnly monthStart,
+        DateOnly dateTo,
+        CancellationToken cancellationToken)
+    {
+        var pendingAdds = db.ChangeTracker.Entries<AttendanceDailyFinalization>()
+            .Where(entry => entry.State == EntityState.Added)
+            .Select(entry => entry.Entity)
+            .ToList();
+
+        if (pendingAdds.Count == 0)
+            return;
+
+        foreach (var entry in db.ChangeTracker.Entries<AttendanceDailyFinalization>()
+                     .Where(e => e.State == EntityState.Added)
+                     .ToList())
+        {
+            entry.State = EntityState.Detached;
+        }
+
+        var personIds = pendingAdds.Select(row => row.PersonId).Distinct().ToArray();
+        var existing = await db.Set<AttendanceDailyFinalization>()
+            .IgnoreQueryFilters()
+            .Where(row =>
+                row.TenantId == tenantId &&
+                personIds.Contains(row.PersonId) &&
+                row.AttendanceDate >= monthStart &&
+                row.AttendanceDate <= dateTo)
+            .ToListAsync(cancellationToken);
+
+        var byDay = existing
+            .GroupBy(row => (row.PersonId, row.AttendanceDate))
+            .ToDictionary(
+                group => group.Key,
+                group => group.OrderByDescending(row => row.Id).First());
+
+        foreach (var pending in pendingAdds)
+        {
+            if (!byDay.TryGetValue((pending.PersonId, pending.AttendanceDate), out var row))
+            {
+                db.Set<AttendanceDailyFinalization>().Add(pending);
+                continue;
+            }
+
+            row.StaffId = pending.StaffId;
+            row.AttendanceRecordId = pending.AttendanceRecordId;
+            row.State = pending.State;
+            row.IsWorkingDay = pending.IsWorkingDay;
+            row.IsFinalized = pending.IsFinalized;
+            row.IsFullDayAbsent = pending.IsFullDayAbsent;
+            row.RequiredMinutes = pending.RequiredMinutes;
+            row.WorkedMinutes = pending.WorkedMinutes;
+            row.ShortMinutes = pending.ShortMinutes;
+            row.OvertimeMinutes = pending.OvertimeMinutes;
+            row.LateMinutes = pending.LateMinutes;
+            row.LateBandMinutes = pending.LateBandMinutes;
+            row.LatePenaltyMinutes = pending.LatePenaltyMinutes;
+            row.FinalizedDateUtc = pending.FinalizedDateUtc;
+            row.LastEvaluatedDateUtc = pending.LastEvaluatedDateUtc;
+        }
+    }
+
+    private static bool IsDuplicateFinalizationKey(DbUpdateException exception)
+    {
+        for (Exception? inner = exception.InnerException; inner is not null; inner = inner.InnerException)
+        {
+            if (inner is not Microsoft.Data.SqlClient.SqlException sql)
+                continue;
+
+            // 2601 = duplicate key; 2627 = unique constraint violation
+            if (sql.Number is not (2601 or 2627))
+                continue;
+
+            return sql.Message.Contains(
+                       "IX_AttendanceDailyFinalizations_TenantId_PersonId_AttendanceDate",
+                       StringComparison.OrdinalIgnoreCase)
+                   || sql.Message.Contains(
+                       "AttendanceDailyFinalizations",
+                       StringComparison.OrdinalIgnoreCase);
+        }
+
+        return false;
     }
 
     private static bool HasChanged(

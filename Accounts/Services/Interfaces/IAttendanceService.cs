@@ -21,8 +21,9 @@ public interface IAttendanceService
     Task<DailyAttendanceReportDto> GetStaffAttendanceReportAsync(string identityUserId, bool organizationWide, DateOnly dateFrom, DateOnly dateTo, CancellationToken cancellationToken = default);
     Task<DailyAttendanceReportDto> GetSupervisorAttendanceReportAsync(string identityUserId, DateOnly attendanceDate, CancellationToken cancellationToken = default);
     Task<SupervisorAttendanceSaveResultDto> SaveSupervisorAttendanceAsync(string identityUserId, SaveSupervisorAttendanceDto dto, CancellationToken cancellationToken = default);
-    Task<bool> CanViewHistoricalAttendanceAsync(string identityUserId, bool organizationWide, CancellationToken cancellationToken = default);
+        Task<bool> CanViewHistoricalAttendanceAsync(string identityUserId, bool organizationWide, CancellationToken cancellationToken = default);
     Task<bool> CanViewTeamHistoricalAttendanceAsync(string identityUserId, bool organizationWide, CancellationToken cancellationToken = default);
+    Task<AttendanceAccessDto> GetAttendanceAccessAsync(string identityUserId, bool organizationWide, CancellationToken cancellationToken = default);
     Task<MonthlyAttendanceChartDto> GetMonthlyChartAsync(string identityUserId, bool organizationWide, int year, int month, CancellationToken cancellationToken = default);
     Task<AttendanceDeductionReportDto> GetDeductionReportAsync(string identityUserId, bool organizationWide, int year, int month, CancellationToken cancellationToken = default);
 }

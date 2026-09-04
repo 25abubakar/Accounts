@@ -28,11 +28,18 @@ public sealed class AttendanceService : IAttendanceService
     private readonly ApplicationDbContext _db;
     private readonly AttendanceFinalizationService _finalization;
     private readonly IMemoryCache _cache;
-    public AttendanceService(ApplicationDbContext db, AttendanceFinalizationService finalization, IMemoryCache cache)
+    private readonly RbacService _rbac;
+
+    public AttendanceService(
+        ApplicationDbContext db,
+        AttendanceFinalizationService finalization,
+        IMemoryCache cache,
+        RbacService rbac)
     {
         _db = db;
         _finalization = finalization;
         _cache = cache;
+        _rbac = rbac;
     }
 
     public async Task<MyAttendanceTodayDto> GetTodayAsync(string identityUserId, CancellationToken cancellationToken = default)
@@ -279,8 +286,11 @@ public sealed class AttendanceService : IAttendanceService
         bool organizationWide,
         CancellationToken cancellationToken = default)
     {
+        var access = await ResolveAttendanceAccessAsync(identityUserId, organizationWide, cancellationToken);
+        EnsureAttendanceModuleAccess(access);
+        var scope = ResolveEmployeeScopeFlags(access, organizationWide, forceSelfOnly: false);
         var visibility = await ResolveAttendanceVisibilityAsync(
-            identityUserId, organizationWide, selfOnly: false, cancellationToken);
+            identityUserId, scope.OrganizationWide, scope.SelfOnly, cancellationToken);
         var visiblePersonIds = visibility.VisiblePersonIds;
         var callerPersonId = visibility.CallerPersonId;
 
@@ -349,8 +359,12 @@ public sealed class AttendanceService : IAttendanceService
         if (year is < 2000 or > 2100 || month is < 1 or > 12)
             throw new ArgumentOutOfRangeException(nameof(month), "A valid Timing Chart month is required.");
 
+        var access = await ResolveAttendanceAccessAsync(identityUserId, organizationWide, cancellationToken);
+        EnsureAttendanceModuleAccess(access);
+        EnsureAllowedAttendancePeriod(access, new DateOnly(year, month, 1), new DateOnly(year, month, DateTime.DaysInMonth(year, month)));
+        var scope = ResolveEmployeeScopeFlags(access, organizationWide, forceSelfOnly: false);
         var visibility = await ResolveAttendanceVisibilityAsync(
-            identityUserId, organizationWide, selfOnly: false, cancellationToken);
+            identityUserId, scope.OrganizationWide, scope.SelfOnly, cancellationToken);
         var employee = await GetTimingChartEmployeeAsync(staffId, cancellationToken);
         if (!visibility.VisiblePersonIds.Contains(employee.PersonId))
             throw new InvalidOperationException("This employee is outside your attendance hierarchy.");
@@ -396,8 +410,12 @@ public sealed class AttendanceService : IAttendanceService
         if (year is < 2000 or > 2100 || month is < 1 or > 12)
             throw new ArgumentOutOfRangeException(nameof(month), "A valid Staff Schedule month is required.");
 
+        var access = await ResolveAttendanceAccessAsync(identityUserId, organizationWide, cancellationToken);
+        EnsureAttendanceModuleAccess(access);
+        EnsureAllowedAttendancePeriod(access, new DateOnly(year, month, 1), new DateOnly(year, month, DateTime.DaysInMonth(year, month)));
+        var scope = ResolveEmployeeScopeFlags(access, organizationWide, forceSelfOnly: false);
         var visibility = await ResolveAttendanceVisibilityAsync(
-            identityUserId, organizationWide, selfOnly: false, cancellationToken);
+            identityUserId, scope.OrganizationWide, scope.SelfOnly, cancellationToken);
         var visiblePersonIds = visibility.VisiblePersonIds;
         var dateFrom = new DateOnly(year, month, 1);
         var dateTo = new DateOnly(year, month, DateTime.DaysInMonth(year, month));
@@ -675,11 +693,12 @@ public sealed class AttendanceService : IAttendanceService
         CancellationToken cancellationToken = default)
     {
         var (callerPerson, _) = await ResolvePersonAsync(identityUserId, cancellationToken);
-        var canViewHistory = organizationWide ||
-            await HasAttendanceHistoryAccessAsync(identityUserId, "/attendance/daily-report", "TEAM_HISTORY", cancellationToken);
-        EnsureAllowedAttendancePeriod(canViewHistory, dateFrom, dateTo);
+        var access = await ResolveAttendanceAccessAsync(identityUserId, organizationWide, cancellationToken);
+        EnsureAttendanceModuleAccess(access);
+        EnsureAllowedAttendancePeriod(access, dateFrom, dateTo);
+        var scope = ResolveEmployeeScopeFlags(access, organizationWide, forceSelfOnly: false);
         var report = await GetAttendanceReportAsync(
-            identityUserId, organizationWide, selfOnly: false, dateFrom, dateTo, cancellationToken);
+            identityUserId, scope.OrganizationWide, scope.SelfOnly, dateFrom, dateTo, cancellationToken);
 
         if (includeAllAttendanceTypes)
         {
@@ -745,11 +764,15 @@ public sealed class AttendanceService : IAttendanceService
         CancellationToken cancellationToken = default)
     {
         var (callerPerson, _) = await ResolvePersonAsync(identityUserId, cancellationToken);
+        var access = await ResolveAttendanceAccessAsync(identityUserId, organizationWide, cancellationToken);
+        EnsureAttendanceModuleAccess(access);
+        EnsureAllowedAttendancePeriod(access, dateFrom, dateTo);
+        var scope = ResolveEmployeeScopeFlags(access, organizationWide, forceSelfOnly: false);
         // Remote Attendance intentionally uses the same hierarchy boundary and
         // status evaluation as Daily Attendance, then filters by the database
         // attendance-type master used by Map Attendance.
         var report = await GetAttendanceReportAsync(
-            identityUserId, organizationWide, selfOnly: false, dateFrom, dateTo, cancellationToken);
+            identityUserId, scope.OrganizationWide, scope.SelfOnly, dateFrom, dateTo, cancellationToken);
         var remoteAttendanceTypeId = await _db.AttendanceTypes.AsNoTracking()
             .Where(type => type.IsActive && type.Code == "REMOTE" && type.TenantId == callerPerson.TenantId)
             .Select(type => (int?)type.Id)
@@ -786,12 +809,17 @@ public sealed class AttendanceService : IAttendanceService
         if (dateFrom > dateTo)
             throw new ArgumentException("Date From cannot be later than Date To.");
 
+        var access = await ResolveAttendanceAccessAsync(identityUserId, organizationWide, cancellationToken);
+        EnsureAttendanceModuleAccess(access);
+        EnsureAllowedAttendancePeriod(access, dateFrom, dateTo);
+        var scope = ResolveEmployeeScopeFlags(access, organizationWide, forceSelfOnly: false);
+
         await ApplicationLoginSessionSchema.EnsureCreatedAsync(_db, cancellationToken);
 
         var visibility = await ResolveAttendanceVisibilityAsync(
             identityUserId,
-            organizationWide,
-            selfOnly: false,
+            scope.OrganizationWide,
+            scope.SelfOnly,
             cancellationToken);
         var visiblePersonIds = visibility.VisiblePersonIds;
 
@@ -876,12 +904,16 @@ public sealed class AttendanceService : IAttendanceService
         CancellationToken cancellationToken = default)
     {
         var (callerPerson, _) = await ResolvePersonAsync(identityUserId, cancellationToken);
-        var canViewHistory = organizationWide ||
-            await HasAttendanceHistoryAccessAsync(identityUserId, "/attendance/staff", "OWN_HISTORY", cancellationToken);
-        EnsureAllowedAttendancePeriod(canViewHistory, dateFrom, dateTo);
+        var access = await ResolveAttendanceAccessAsync(identityUserId, organizationWide, cancellationToken);
+        EnsureAttendanceModuleAccess(access);
+        if (!access.CanViewSelf)
+            throw new UnauthorizedAccessException("You are not allowed to view your own attendance.");
+        EnsureAllowedAttendancePeriod(access, dateFrom, dateTo);
+        // Staff Attendance page remains self-scoped; employee/all-employee grants
+        // apply to team/org reports, not this personal attendance screen.
         var report = await GetAttendanceReportAsync(
             identityUserId,
-            organizationWide,
+            organizationWide: false,
             selfOnly: true,
             dateFrom,
             dateTo,
@@ -1348,54 +1380,174 @@ public sealed class AttendanceService : IAttendanceService
     public async Task<bool> CanViewHistoricalAttendanceAsync(
         string identityUserId, bool organizationWide, CancellationToken cancellationToken = default)
     {
-        if (organizationWide) return true;
-        return await HasAttendanceHistoryAccessAsync(identityUserId, "/attendance/staff", "OWN_HISTORY", cancellationToken);
+        var access = await ResolveAttendanceAccessAsync(identityUserId, organizationWide, cancellationToken);
+        return access.CanViewPreviousMonths;
     }
 
     public async Task<bool> CanViewTeamHistoricalAttendanceAsync(
         string identityUserId, bool organizationWide, CancellationToken cancellationToken = default)
     {
-        if (organizationWide) return true;
-        return await HasAttendanceHistoryAccessAsync(identityUserId, "/attendance/daily-report", "TEAM_HISTORY", cancellationToken);
+        var access = await ResolveAttendanceAccessAsync(identityUserId, organizationWide, cancellationToken);
+        return access.CanViewPreviousMonths;
     }
 
-    private async Task<bool> HasAttendanceHistoryAccessAsync(
-        string identityUserId, string route, string permissionSuffix, CancellationToken cancellationToken)
+    public async Task<AttendanceAccessDto> GetAttendanceAccessAsync(
+        string identityUserId,
+        bool organizationWide,
+        CancellationToken cancellationToken = default) =>
+        await ResolveAttendanceAccessAsync(identityUserId, organizationWide, cancellationToken);
+
+    private static void EnsureAttendanceModuleAccess(AttendanceAccessDto access)
     {
-        return await _db.AccessFeatures.AsNoTracking().AnyAsync(access =>
-            access.IsAllow && access.Feature != null &&
-            access.StaffMenuAccess != null && access.StaffMenuAccess.IsAllow &&
-            access.StaffMenuAccess.Menu != null &&
-            access.StaffMenuAccess.Menu.Route == route &&
-            access.StaffMenuAccess.Staff != null &&
-            access.StaffMenuAccess.Staff.Person != null &&
-            access.StaffMenuAccess.Staff.Person.IdentityUserId == identityUserId &&
-            (access.Feature.FeatureKey == "MENU_" + access.StaffMenuAccess.MenuId + "_" + permissionSuffix ||
-             access.Feature.FeatureKey == "MENU_" + access.StaffMenuAccess.MenuId + "_HISTORY"), cancellationToken);
+        if (!access.ModuleAccess)
+            throw new UnauthorizedAccessException("Attendance module access is required.");
+        if (!access.CanViewSelf && !access.CanViewEmployees && !access.CanViewAllEmployees)
+            throw new UnauthorizedAccessException("No Attendance view permission is granted.");
     }
 
-    private async Task<bool> HasExplicitHistoricalAttendanceAccessAsync(
-        string identityUserId, CancellationToken cancellationToken)
+    private static void EnsureAllowedAttendancePeriod(AttendanceAccessDto access, DateOnly dateFrom, DateOnly dateTo)
     {
-        return await _db.AccessFeatures.AsNoTracking().AnyAsync(access =>
-            access.IsAllow && access.Feature != null &&
-            access.StaffMenuAccess != null && access.StaffMenuAccess.IsAllow &&
-            access.StaffMenuAccess.Menu != null &&
-            access.StaffMenuAccess.Menu.Route == "/attendance/staff" &&
-            access.StaffMenuAccess.Staff != null &&
-            access.StaffMenuAccess.Staff.Person != null &&
-            access.StaffMenuAccess.Staff.Person.IdentityUserId == identityUserId &&
-            access.Feature.FeatureKey == "MENU_" + access.StaffMenuAccess.MenuId + "_HISTORY", cancellationToken);
-    }
-
-    private static void EnsureAllowedAttendancePeriod(bool canViewHistory, DateOnly dateFrom, DateOnly dateTo)
-    {
-        if (canViewHistory) return;
+        if (access.CanViewPreviousMonths) return;
         var today = DateOnly.FromDateTime(PakistanClock.Now());
         var currentMonthStart = new DateOnly(today.Year, today.Month, 1);
         var currentMonthEnd = currentMonthStart.AddMonths(1).AddDays(-1);
+        if (!access.CanViewCurrentMonth)
+            throw new InvalidOperationException("You are not allowed to view attendance for the selected period.");
         if (dateFrom < currentMonthStart || dateTo > currentMonthEnd)
             throw new InvalidOperationException("Employees can view attendance for the current month only.");
+    }
+
+    private static (bool OrganizationWide, bool SelfOnly) ResolveEmployeeScopeFlags(
+        AttendanceAccessDto access,
+        bool adminOrganizationWide,
+        bool forceSelfOnly)
+    {
+        if (adminOrganizationWide || access.CanViewAllEmployees)
+            return (OrganizationWide: true, SelfOnly: false);
+        if (forceSelfOnly || !access.CanViewEmployees)
+            return (OrganizationWide: false, SelfOnly: true);
+        // Existing hierarchy path — ResolveAttendanceVisibilityAsync unchanged.
+        return (OrganizationWide: false, SelfOnly: false);
+    }
+
+    private async Task<AttendanceAccessDto> ResolveAttendanceAccessAsync(
+        string identityUserId,
+        bool organizationWide,
+        CancellationToken cancellationToken)
+    {
+        if (organizationWide)
+        {
+            return new AttendanceAccessDto
+            {
+                ModuleAccess = true,
+                CanViewSelf = true,
+                CanViewCurrentMonth = true,
+                CanViewPreviousMonths = true,
+                CanViewEmployees = true,
+                CanViewAllEmployees = true
+            };
+        }
+
+        var staffId = await _db.Persons.AsNoTracking()
+            .Where(person => person.IdentityUserId == identityUserId && person.Staff != null)
+            .Select(person => (Guid?)person.Staff!.StaffId)
+            .FirstOrDefaultAsync(cancellationToken);
+
+        if (!staffId.HasValue)
+        {
+            return new AttendanceAccessDto();
+        }
+
+        var keys = await _rbac.GetEffectivePermissionsAsync(staffId.Value);
+        var keySet = keys.ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        var attendanceMenuIds = await _db.Menus.AsNoTracking()
+            .Where(menu => menu.IsActive && AttendanceAccessKeys.AttendanceMenuRoutes.Contains(menu.Route))
+            .Select(menu => menu.Id)
+            .ToListAsync(cancellationToken);
+
+        var hasModule = attendanceMenuIds.Any(menuId =>
+            keySet.Contains($"MENU_{menuId}") ||
+            keySet.Contains($"MENU_{menuId}_VIEW"));
+
+        if (!hasModule)
+            return new AttendanceAccessDto();
+
+        var hasViewSelf = AttendanceAccessKeys.HasSuffix(keySet, AttendanceAccessKeys.ViewSelf);
+        var hasCurrentMonth = AttendanceAccessKeys.HasSuffix(keySet, AttendanceAccessKeys.CurrentMonth);
+        var hasPreviousMonths = AttendanceAccessKeys.HasSuffix(keySet, AttendanceAccessKeys.PreviousMonths);
+        var hasOwnHistory = AttendanceAccessKeys.HasSuffix(keySet, AttendanceAccessKeys.LegacyOwnHistory)
+            || AttendanceAccessKeys.HasSuffix(keySet, AttendanceAccessKeys.LegacyHistory);
+        var hasTeamHistory = AttendanceAccessKeys.HasSuffix(keySet, AttendanceAccessKeys.LegacyTeamHistory);
+        var hasViewEmployees = AttendanceAccessKeys.HasSuffix(keySet, AttendanceAccessKeys.ViewEmployees);
+        var hasViewAllEmployees = AttendanceAccessKeys.HasSuffix(keySet, AttendanceAccessKeys.ViewAllEmployees);
+
+        // Safe defaults: module VIEW already meant self + current month before these features existed.
+        var canViewSelf = hasViewSelf || hasModule;
+        var canViewCurrentMonth = hasCurrentMonth || hasModule;
+
+        // Period: new flag OR legacy history grants (do not invent employee scope from OWN_HISTORY).
+        var canViewPreviousMonths = hasPreviousMonths || hasOwnHistory || hasTeamHistory;
+
+        // Employee scope: explicit grant, legacy TEAM_HISTORY, or existing hierarchy-eligible roles
+        // so Supervisors/Managers keep subordinate visibility without a manual re-grant.
+        var hierarchyEligible = await IsHierarchyEligibleForAttendanceAsync(identityUserId, cancellationToken);
+        var canViewEmployees = hasViewEmployees || hasTeamHistory || hierarchyEligible;
+
+        return new AttendanceAccessDto
+        {
+            ModuleAccess = true,
+            CanViewSelf = canViewSelf,
+            CanViewCurrentMonth = canViewCurrentMonth,
+            CanViewPreviousMonths = canViewPreviousMonths,
+            CanViewEmployees = canViewEmployees,
+            CanViewAllEmployees = hasViewAllEmployees
+        };
+    }
+
+    /// <summary>
+    /// Mirrors the expansion gate inside ResolveAttendanceVisibilityAsync without changing that method:
+    /// rank/scope that would include subordinates → treat as View Employees for backward compatibility.
+    /// Agents (rank &lt; 200 and Self scope) remain self-only unless explicitly granted.
+    /// </summary>
+    private async Task<bool> IsHierarchyEligibleForAttendanceAsync(
+        string identityUserId,
+        CancellationToken cancellationToken)
+    {
+        var caller = await _db.Persons.AsNoTracking()
+            .Where(person => person.IdentityUserId == identityUserId && person.IsActive)
+            .Select(person => new
+            {
+                OrganizationId = person.Staff != null && person.Staff.Vacancy != null
+                    ? (int?)person.Staff.Vacancy.OrganizationId
+                    : null,
+                JobTitle = person.Staff != null && person.Staff.Vacancy != null
+                    ? (person.Staff.Vacancy.DesignationNav != null
+                        ? person.Staff.Vacancy.DesignationNav.Name
+                        : person.Staff.Vacancy.JobTitle)
+                    : null,
+                AttendanceScope = person.Staff != null &&
+                    person.Staff.Vacancy != null &&
+                    person.Staff.Vacancy.DesignationNav != null
+                        ? person.Staff.Vacancy.DesignationNav.AttendanceVisibilityScope
+                        : AttendanceVisibilityScope.Self
+            })
+            .FirstOrDefaultAsync(cancellationToken);
+
+        if (caller == null || !caller.OrganizationId.HasValue)
+            return false;
+
+        var callerRank = AttendanceRoleRank(caller.JobTitle);
+        var derivedScope = callerRank switch
+        {
+            >= 300 => AttendanceVisibilityScope.OrganizationNodeAndDescendants,
+            >= 200 => AttendanceVisibilityScope.OrganizationNode,
+            _ => AttendanceVisibilityScope.Self
+        };
+        var effectiveScope = (AttendanceVisibilityScope)Math.Max(
+            (int)caller.AttendanceScope,
+            (int)derivedScope);
+        return effectiveScope != AttendanceVisibilityScope.Self;
     }
 
     public async Task<AttendanceDeductionReportDto> GetDeductionReportAsync(
@@ -1487,11 +1639,16 @@ public sealed class AttendanceService : IAttendanceService
         var dateFrom = new DateOnly(year, month, 1);
         var dateTo = new DateOnly(year, month, DateTime.DaysInMonth(year, month));
 
+        var access = await ResolveAttendanceAccessAsync(identityUserId, organizationWide, cancellationToken);
+        EnsureAttendanceModuleAccess(access);
+        EnsureAllowedAttendancePeriod(access, dateFrom, dateTo);
+        var scope = ResolveEmployeeScopeFlags(access, organizationWide, forceSelfOnly: false);
+
         // Monthly Chart intentionally delegates to the same hierarchy boundary
         // as Daily Attendance. Admin organization-wide access and supervisor/job
         // rank visibility are therefore resolved in exactly one place.
         var report = await GetAttendanceReportAsync(
-            identityUserId, organizationWide, selfOnly: false, dateFrom, dateTo, cancellationToken);
+            identityUserId, scope.OrganizationWide, scope.SelfOnly, dateFrom, dateTo, cancellationToken);
 
         var visiblePersonIds = report.Rows.Select(row => row.PersonId).Distinct().ToList();
         var profilePhotos = await _db.Persons.AsNoTracking()
@@ -1650,7 +1807,10 @@ public sealed class AttendanceService : IAttendanceService
         var visibility = await ResolveAttendanceVisibilityAsync(
             identityUserId, organizationWide, selfOnly, cancellationToken);
 
-        await EvaluateStatusesAsync(visibility.TenantId, dateFrom, dateTo, cancellationToken);
+        // Reports must not re-evaluate the entire requested range on every GET.
+        // Historical days are owned by the hourly finalizer; only refresh the
+        // live window (yesterday + today) that can still change.
+        await EvaluateLiveStatusesAsync(visibility.TenantId, dateFrom, dateTo, cancellationToken);
 
         // The hierarchy is authorized above; row generation, date expansion and
         // attendance joins are performed set-wise by SQL Server.
@@ -1662,6 +1822,10 @@ public sealed class AttendanceService : IAttendanceService
                 visibility.VisiblePersonIds,
                 visibility.People.ToDictionary(person => person.PersonId, person => person.FullName),
                 dateFrom, dateTo, cancellationToken);
+        }
+        catch (SqlException ex) when (IsSqlCancellation(ex))
+        {
+            throw new OperationCanceledException("Attendance report was cancelled.", ex);
         }
         catch (SqlException ex) when (ex.Number == 2812)
         {
@@ -2190,11 +2354,14 @@ public sealed class AttendanceService : IAttendanceService
         Guid staffId,
         CancellationToken cancellationToken)
     {
+        var access = await ResolveAttendanceAccessAsync(identityUserId, organizationWide, cancellationToken);
+        EnsureAttendanceModuleAccess(access);
+        var scope = ResolveEmployeeScopeFlags(access, organizationWide, forceSelfOnly: false);
         var visibility = await ResolveAttendanceVisibilityAsync(
-            identityUserId, organizationWide, selfOnly: false, cancellationToken);
+            identityUserId, scope.OrganizationWide, scope.SelfOnly, cancellationToken);
         var employee = await GetTimingChartEmployeeAsync(staffId, cancellationToken);
         var canEdit = visibility.VisiblePersonIds.Contains(employee.PersonId) &&
-            (organizationWide || employee.PersonId != visibility.CallerPersonId);
+            (scope.OrganizationWide || employee.PersonId != visibility.CallerPersonId);
         if (!canEdit)
             throw new InvalidOperationException("Only an authorized head can update this employee's Timing Chart.");
 
@@ -2624,12 +2791,30 @@ public sealed class AttendanceService : IAttendanceService
         await AttendanceRecordSchema.EnsureCameraColumnsAsync(_db, cancellationToken);
         if (year is < 2000 or > 2100 || month is < 1 or > 12) throw new ArgumentOutOfRangeException(nameof(month), "A valid report month is required.");
         var requestedFrom = new DateOnly(year, month, 1);
-        var canViewRequestedHistory = canViewOthers ||
-            await HasExplicitHistoricalAttendanceAccessAsync(identityUserId, cancellationToken);
-        EnsureAllowedAttendancePeriod(canViewRequestedHistory, requestedFrom, requestedFrom.AddMonths(1).AddDays(-1));
+        var access = await ResolveAttendanceAccessAsync(identityUserId, organizationWide: canViewOthers, cancellationToken);
+        EnsureAttendanceModuleAccess(access);
+        EnsureAllowedAttendancePeriod(access, requestedFrom, requestedFrom.AddMonths(1).AddDays(-1));
         var callerPersonId = await _db.Persons.AsNoTracking().Where(p => p.IdentityUserId == identityUserId).Select(p => (Guid?)p.PersonId).FirstOrDefaultAsync(cancellationToken);
         var personId = canViewOthers && requestedPersonId.HasValue ? requestedPersonId.Value : callerPersonId
             ?? throw new KeyNotFoundException("No employee profile is linked to this account.");
+
+        if (personId != callerPersonId)
+        {
+            if (!access.CanViewAllEmployees && !access.CanViewEmployees && !canViewOthers)
+                throw new UnauthorizedAccessException("You are not allowed to view other employees' attendance.");
+            if (!access.CanViewAllEmployees && !canViewOthers)
+            {
+                var scope = ResolveEmployeeScopeFlags(access, adminOrganizationWide: false, forceSelfOnly: false);
+                var visibility = await ResolveAttendanceVisibilityAsync(
+                    identityUserId, scope.OrganizationWide, scope.SelfOnly, cancellationToken);
+                if (!visibility.VisiblePersonIds.Contains(personId))
+                    throw new UnauthorizedAccessException("The selected employee is outside your attendance hierarchy.");
+            }
+        }
+        else if (!access.CanViewSelf)
+        {
+            throw new UnauthorizedAccessException("You are not allowed to view your own attendance.");
+        }
 
         var employee = await _db.StaffDirectoryRows.AsNoTracking()
             .Where(s => s.PersonId == personId && s.IsPersonActive)
@@ -2700,15 +2885,52 @@ public sealed class AttendanceService : IAttendanceService
             .FirstOrDefaultAsync(cancellationToken)
         ?? throw new InvalidOperationException("No active attendance policy is configured for this company.");
 
-    private Task EvaluateStatusesAsync(int tenantId, DateOnly dateFrom, DateOnly dateTo, CancellationToken cancellationToken) =>
-        _db.Database.ExecuteSqlRawAsync(
-            "EXEC dbo.usp_Attendance_EvaluateStatuses @TenantId, @DateFrom, @DateTo, @AsOfUtc",
-            new object[] {
-                new SqlParameter("@TenantId", tenantId),
-                new SqlParameter("@DateFrom", dateFrom.ToDateTime(TimeOnly.MinValue)),
-                new SqlParameter("@DateTo", dateTo.ToDateTime(TimeOnly.MinValue)),
-                new SqlParameter("@AsOfUtc", PakistanClock.Now())
-            }, cancellationToken);
+    private async Task EvaluateLiveStatusesAsync(
+        int tenantId,
+        DateOnly dateFrom,
+        DateOnly dateTo,
+        CancellationToken cancellationToken)
+    {
+        var today = DateOnly.FromDateTime(PakistanClock.Now());
+        var liveFrom = today.AddDays(-1);
+        var from = dateFrom > liveFrom ? dateFrom : liveFrom;
+        var to = dateTo < today ? dateTo : today;
+        if (to < from)
+            return;
+
+        await EvaluateStatusesAsync(tenantId, from, to, cancellationToken);
+    }
+
+    private async Task EvaluateStatusesAsync(int tenantId, DateOnly dateFrom, DateOnly dateTo, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await _db.Database.ExecuteSqlRawAsync(
+                "EXEC dbo.usp_Attendance_EvaluateStatuses @TenantId, @DateFrom, @DateTo, @AsOfUtc",
+                [
+                    new SqlParameter("@TenantId", tenantId),
+                    new SqlParameter("@DateFrom", dateFrom.ToDateTime(TimeOnly.MinValue)),
+                    new SqlParameter("@DateTo", dateTo.ToDateTime(TimeOnly.MinValue)),
+                    new SqlParameter("@AsOfUtc", PakistanClock.Now())
+                ],
+                cancellationToken);
+        }
+        catch (SqlException ex) when (IsSqlCancellation(ex))
+        {
+            throw new OperationCanceledException("Attendance status evaluation was cancelled.", ex);
+        }
+    }
+
+    private static bool IsSqlCancellation(SqlException ex) =>
+        IsCancellationMessage(ex.Message)
+        || ex.InnerException is OperationCanceledException
+        || ex.Errors.Cast<SqlError>().Any(error => IsCancellationMessage(error.Message));
+
+    private static bool IsCancellationMessage(string? message) =>
+        !string.IsNullOrWhiteSpace(message)
+        && (message.Contains("Operation cancelled", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("Operation canceled", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("Timeout expired", StringComparison.OrdinalIgnoreCase));
 
     private static MyAttendanceTodayDto Map(
         Person person,

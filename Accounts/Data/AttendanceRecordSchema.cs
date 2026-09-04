@@ -20,6 +20,27 @@ public static class AttendanceRecordSchema
         {
             if (AppliedCameraReportSchemaVersion >= CameraReportSchemaVersion) return;
 
+            // Fast path: schema + report procedure already present — skip exclusive
+            // CREATE OR ALTER DDL that otherwise blocks concurrent requests on startup.
+            var alreadyReady = await db.Database
+                .SqlQueryRaw<int>("""
+                    SELECT CASE
+                        WHEN OBJECT_ID(N'[dbo].[AttendanceRecords]', N'U') IS NOT NULL
+                         AND COL_LENGTH(N'[dbo].[AttendanceRecords]', N'CameraCheckInUtc') IS NOT NULL
+                         AND COL_LENGTH(N'[dbo].[AttendanceRecords]', N'CameraCheckOutUtc') IS NOT NULL
+                         AND COL_LENGTH(N'[dbo].[AttendanceRecords]', N'PlatformActionStatusId') IS NOT NULL
+                         AND OBJECT_ID(N'dbo.usp_Attendance_DailyReport', N'P') IS NOT NULL
+                         AND OBJECT_ID(N'dbo.usp_Attendance_EvaluateStatuses', N'P') IS NOT NULL
+                        THEN 1 ELSE 0 END AS [Value]
+                    """)
+                .SingleAsync(ct);
+
+            if (alreadyReady == 1)
+            {
+                AppliedCameraReportSchemaVersion = CameraReportSchemaVersion;
+                return;
+            }
+
             await db.Database.ExecuteSqlRawAsync(
                 """
                 DECLARE @lockResult int;

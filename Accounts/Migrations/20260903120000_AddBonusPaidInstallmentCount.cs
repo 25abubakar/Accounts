@@ -20,7 +20,10 @@ public sealed class AddBonusPaidInstallmentCount : Migration
                 ADD PaidInstallmentCount int NOT NULL
                     CONSTRAINT DF_PayrollBonusLines_PaidInstallmentCount DEFAULT (0);
             END
+            """);
 
+        migrationBuilder.Sql(
+            """
             -- Already fully paid lines: treat all installments as consumed.
             UPDATE dbo.PayrollBonusLines
             SET PaidInstallmentCount = CASE

@@ -307,6 +307,33 @@ public sealed class EobiEligibility : ITenantEntity
     public Person? Person { get; set; }
 }
 
+/// <summary>Staff monthly EOBI contribution rows (legacy StaffMonthlyEOBI / vgetStaffMonthlyEOBI).</summary>
+[Table("StaffMonthlyEobis")]
+public sealed class StaffMonthlyEobi : ITenantEntity
+{
+    [Key] public long Id { get; set; }
+    public int TenantId { get; set; }
+    public Guid PersonId { get; set; }
+    public Guid StaffId { get; set; }
+    [MaxLength(50)] public string? StaffNumber { get; set; }
+    [Required, MaxLength(200)] public string FullName { get; set; } = string.Empty;
+    [MaxLength(200)] public string? Department { get; set; }
+    [MaxLength(200)] public string? Designation { get; set; }
+    public DateOnly? DateOfJoining { get; set; }
+    [MaxLength(80)] public string? EobiRef { get; set; }
+    [Column(TypeName = "decimal(18,2)")] public decimal SalaryBase { get; set; }
+    [Column(TypeName = "decimal(18,2)")] public decimal CompanyShare { get; set; }
+    [Column(TypeName = "decimal(18,2)")] public decimal StaffShare { get; set; }
+    [Column(TypeName = "decimal(18,2)")] public decimal TotalAmount { get; set; }
+    public int Month { get; set; }
+    public int Year { get; set; }
+    [MaxLength(500)] public string? Remarks { get; set; }
+    public bool IsApproved { get; set; }
+    public bool IsPaid { get; set; }
+    public DateTime CreatedOnUtc { get; set; } = DateTime.UtcNow;
+    public DateTime? UpdatedOnUtc { get; set; }
+}
+
 [Table("PayScaleRuleRegistrations")]
 public sealed class PayScaleRuleRegistration : ITenantEntity
 {

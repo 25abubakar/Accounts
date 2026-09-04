@@ -1636,6 +1636,13 @@ namespace Accounts.Services.Services
                 "ADD"    => $"{menu.Title} - Add",
                 "EDIT"   => $"{menu.Title} - Edit",
                 "DELETE" => $"{menu.Title} - Delete",
+                "VIEW_SELF" => $"{menu.Title} - View Self Attendance",
+                "CURRENT_MONTH" => $"{menu.Title} - View Current Month",
+                "PREVIOUS_MONTHS" => $"{menu.Title} - View Previous Months",
+                "VIEW_EMPLOYEES" => $"{menu.Title} - View Employee Attendance",
+                "VIEW_ALL_EMPLOYEES" => $"{menu.Title} - View All Employees Attendance",
+                "OWN_HISTORY" => $"{menu.Title} - View Own Previous Months",
+                "TEAM_HISTORY" => $"{menu.Title} - View Team Previous Months",
                 ""       => menu.Title,
                 _        => $"{menu.Title} - {suffix}"
             };

@@ -102,8 +102,8 @@ public sealed class SeedPayRuleAndLeaveLookups : Migration
                     SortOrder = source.SortOrder,
                     IsActive = 1
                 WHEN NOT MATCHED THEN INSERT
-                    (LookupTypeId, ValueCode, DisplayText, SortOrder, IsActive, CreatedOn)
-                    VALUES (@LookupTypeId, source.ValueCode, source.DisplayText, source.SortOrder, 1, SYSUTCDATETIME());
+                    (LookupTypeId, ValueCode, DisplayText, SortOrder, IsDefault, IsActive, CreatedOn)
+                    VALUES (@LookupTypeId, source.ValueCode, source.DisplayText, source.SortOrder, 0, 1, SYSUTCDATETIME());
 
                 SET @LookupTypeId = NULL;
                 FETCH NEXT FROM lookup_cursor INTO @LookupTypeCode, @LookupTypeName;

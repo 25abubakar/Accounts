@@ -854,7 +854,17 @@ public sealed class AttendanceController : ControllerBase
         if (!await HasAttendanceMenuActionAsync("VIEW", ct, "/attendance/staff"))
             return Forbid();
         var orgWide = await CanViewOrganizationAsync(ct);
-        return Ok(new { canViewHistorical = await _service.CanViewHistoricalAttendanceAsync(UserId(), orgWide, ct) });
+        var access = await _service.GetAttendanceAccessAsync(UserId(), orgWide, ct);
+        return Ok(new
+        {
+            canViewHistorical = access.CanViewPreviousMonths,
+            canViewSelf = access.CanViewSelf,
+            canViewCurrentMonth = access.CanViewCurrentMonth,
+            canViewPreviousMonths = access.CanViewPreviousMonths,
+            canViewEmployees = access.CanViewEmployees,
+            canViewAllEmployees = access.CanViewAllEmployees,
+            moduleAccess = access.ModuleAccess
+        });
     }
 
     [HttpGet("report/daily/access")]
@@ -864,7 +874,26 @@ public sealed class AttendanceController : ControllerBase
         if (!await HasAttendanceMenuActionAsync("VIEW", ct, "/attendance/daily-report"))
             return Forbid();
         var orgWide = await CanViewOrganizationAsync(ct);
-        return Ok(new { canViewHistorical = await _service.CanViewTeamHistoricalAttendanceAsync(UserId(), orgWide, ct) });
+        var access = await _service.GetAttendanceAccessAsync(UserId(), orgWide, ct);
+        return Ok(new
+        {
+            canViewHistorical = access.CanViewPreviousMonths,
+            canViewSelf = access.CanViewSelf,
+            canViewCurrentMonth = access.CanViewCurrentMonth,
+            canViewPreviousMonths = access.CanViewPreviousMonths,
+            canViewEmployees = access.CanViewEmployees,
+            canViewAllEmployees = access.CanViewAllEmployees,
+            moduleAccess = access.ModuleAccess
+        });
+    }
+
+    [HttpGet("access")]
+    [ResponseCache(NoStore = true, Location = ResponseCacheLocation.None)]
+    public async Task<IActionResult> AttendanceAccess(CancellationToken ct)
+    {
+        var orgWide = await CanViewOrganizationAsync(ct);
+        var access = await _service.GetAttendanceAccessAsync(UserId(), orgWide, ct);
+        return Ok(access);
     }
 
     [HttpGet("report/monthly-chart")]
@@ -1162,6 +1191,14 @@ public sealed class AttendanceController : ControllerBase
             }
             return Ok(result);
         }
+        catch (OperationCanceledException) when (HttpContext.RequestAborted.IsCancellationRequested)
+        {
+            return StatusCode(499);
+        }
+        catch (SqlException ex) when (IsCancelledSql(ex))
+        {
+            return StatusCode(499);
+        }
         catch (KeyNotFoundException ex) { return NotFound(new { message = ex.Message }); }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
         catch (ArgumentOutOfRangeException ex) { return BadRequest(new { message = ex.Message }); }
@@ -1171,11 +1208,26 @@ public sealed class AttendanceController : ControllerBase
     private async Task<IActionResult> Execute<T>(Func<Task<T>> action)
     {
         try { return Ok(await action()); }
+        catch (OperationCanceledException) when (HttpContext.RequestAborted.IsCancellationRequested)
+        {
+            return StatusCode(499);
+        }
+        catch (SqlException ex) when (IsCancelledSql(ex))
+        {
+            return StatusCode(499);
+        }
         catch (KeyNotFoundException ex) { return NotFound(new { message = ex.Message }); }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
         catch (ArgumentOutOfRangeException ex) { return BadRequest(new { message = ex.Message }); }
         catch (UnauthorizedAccessException) { return Unauthorized(); }
     }
+
+    private static bool IsCancelledSql(SqlException ex) =>
+        (!string.IsNullOrWhiteSpace(ex.Message) &&
+         (ex.Message.Contains("Operation cancelled", StringComparison.OrdinalIgnoreCase)
+          || ex.Message.Contains("Operation canceled", StringComparison.OrdinalIgnoreCase)
+          || ex.Message.Contains("Timeout expired", StringComparison.OrdinalIgnoreCase)))
+        || ex.InnerException is OperationCanceledException;
 
     private static string? Trim(string? value, int maxLength)
     {

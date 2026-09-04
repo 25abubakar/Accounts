@@ -16,7 +16,8 @@ public sealed class PayAndAllowancesController(
     ITenantService tenant,
     RbacService rbac,
     TenantPermissionService tenantPermissions,
-    PayrollCalculationService payroll) : ControllerBase
+    PayrollCalculationService payroll,
+    StaffMonthlyEobiService staffMonthlyEobi) : ControllerBase
 {
     [HttpGet("benefits")]
     public async Task<IActionResult> Benefits(CancellationToken ct) =>
@@ -683,12 +684,12 @@ public sealed class PayAndAllowancesController(
 
     [HttpGet("eobi-settings")]
     public async Task<IActionResult> EobiSettings(CancellationToken ct) =>
-        await Read("/pay-allowances/eobi", db.EobiSettings.OrderByDescending(x => x.EffectiveFrom), ct);
+        await Read("/pay-allowances/eobi-settings", db.EobiSettings.OrderByDescending(x => x.EffectiveFrom), ct);
 
     [HttpPost("eobi-settings")]
     public async Task<IActionResult> CreateEobi(EobiSettingSave dto, CancellationToken ct)
     {
-        var denied = await Guard("/pay-allowances/eobi", "ADD", ct); if (denied != null) return denied;
+        var denied = await Guard("/pay-allowances/eobi-settings", "ADD", ct); if (denied != null) return denied;
         var error = ValidateEobi(dto); if (error != null) return BadRequest(new { message = error });
         var row = new EobiSetting { TenantId = tenant.RequiredTenantId, EmployeeRatePercentage = dto.EmployeeRatePercentage, EmployerRatePercentage = dto.EmployerRatePercentage, MinimumWage = dto.MinimumWage, MaximumContributionBase = dto.MaximumContributionBase, EffectiveFrom = dto.EffectiveFrom, EffectiveTo = dto.EffectiveTo, IsActive = dto.IsActive };
         db.Add(row); await db.SaveChangesAsync(ct); return Ok(row);
@@ -697,7 +698,7 @@ public sealed class PayAndAllowancesController(
     [HttpPut("eobi-settings/{id:int}")]
     public async Task<IActionResult> UpdateEobi(int id, EobiSettingSave dto, CancellationToken ct)
     {
-        var denied = await Guard("/pay-allowances/eobi", "EDIT", ct); if (denied != null) return denied;
+        var denied = await Guard("/pay-allowances/eobi-settings", "EDIT", ct); if (denied != null) return denied;
         var row = await db.EobiSettings.SingleOrDefaultAsync(x => x.Id == id, ct); if (row == null) return NotFound();
         var error = ValidateEobi(dto); if (error != null) return BadRequest(new { message = error });
         row.EmployeeRatePercentage = dto.EmployeeRatePercentage; row.EmployerRatePercentage = dto.EmployerRatePercentage; row.MinimumWage = dto.MinimumWage; row.MaximumContributionBase = dto.MaximumContributionBase; row.EffectiveFrom = dto.EffectiveFrom; row.EffectiveTo = dto.EffectiveTo; row.IsActive = dto.IsActive; row.UpdatedOnUtc = DateTime.UtcNow;
@@ -706,7 +707,76 @@ public sealed class PayAndAllowancesController(
 
     [HttpDelete("eobi-settings/{id:int}")]
     public async Task<IActionResult> DeleteEobi(int id, CancellationToken ct) =>
-        await Delete("/pay-allowances/eobi", db.EobiSettings, id, ct);
+        await Delete("/pay-allowances/eobi-settings", db.EobiSettings, id, ct);
+
+    [HttpGet("staff-monthly-eobi")]
+    public async Task<IActionResult> StaffMonthlyEobiList([FromQuery] int year, [FromQuery] int month, CancellationToken ct)
+    {
+        var denied = await Guard("/pay-allowances/eobi", "VIEW", ct); if (denied != null) return denied;
+        if (year is < 2000 or > 2200 || month is < 1 or > 12)
+            return BadRequest(new { message = "Enter a valid EOBI month and year." });
+        var rows = await staffMonthlyEobi.ListAsync(year, month, ct);
+        return Ok(rows.Select(MapStaffMonthlyEobi));
+    }
+
+    [HttpPost("staff-monthly-eobi/create")]
+    [Idempotent]
+    public async Task<IActionResult> CreateStaffMonthlyEobi([FromBody] StaffMonthlyEobiCreateSave dto, CancellationToken ct)
+    {
+        var denied = await Guard("/pay-allowances/eobi", "ADD", ct); if (denied != null) return denied;
+        if (dto.Year is < 2000 or > 2200 || dto.Month is < 1 or > 12)
+            return BadRequest(new { message = "Enter a valid EOBI month and year." });
+        try
+        {
+            var rows = await staffMonthlyEobi.CreateOrRefreshAsync(dto.Year, dto.Month, ct);
+            return Ok(new { message = "Created Successfully", rows = rows.Select(MapStaffMonthlyEobi) });
+        }
+        catch (InvalidOperationException ex)
+        {
+            return Conflict(new { message = ex.Message });
+        }
+    }
+
+    [HttpPut("staff-monthly-eobi/{id:long}")]
+    public async Task<IActionResult> UpdateStaffMonthlyEobi(long id, [FromBody] StaffMonthlyEobiUpdateSave dto, CancellationToken ct)
+    {
+        var denied = await Guard("/pay-allowances/eobi", "EDIT", ct); if (denied != null) return denied;
+        try
+        {
+            var row = await staffMonthlyEobi.UpdateAsync(id, dto.EobiRef, ct);
+            return Ok(MapStaffMonthlyEobi(row));
+        }
+        catch (KeyNotFoundException)
+        {
+            return NotFound();
+        }
+        catch (InvalidOperationException ex)
+        {
+            return Conflict(new { message = ex.Message });
+        }
+    }
+
+    private static object MapStaffMonthlyEobi(StaffMonthlyEobi row) => new
+    {
+        id = row.Id,
+        personId = row.PersonId,
+        staffGuid = row.StaffId,
+        staffId = row.StaffNumber,
+        eobiRef = row.EobiRef,
+        fullName = row.FullName,
+        department = row.Department,
+        designation = row.Designation,
+        doj = row.DateOfJoining,
+        salaryBase = row.SalaryBase,
+        coyShare = row.CompanyShare,
+        staffShare = row.StaffShare,
+        totAmount = row.TotalAmount,
+        month = row.Month,
+        year = row.Year,
+        remarks = row.Remarks,
+        isApproved = row.IsApproved,
+        isPaid = row.IsPaid
+    };
 
     [HttpGet("tax-slabs")]
     public async Task<IActionResult> TaxSlabs(CancellationToken ct) =>
@@ -1078,6 +1148,8 @@ public sealed record PayrollLineSave(decimal AllowanceAmount, decimal EmployerBe
 public sealed record EobiSettingSave(decimal EmployeeRatePercentage, decimal EmployerRatePercentage, decimal MinimumWage, decimal MaximumContributionBase, DateOnly EffectiveFrom, DateOnly? EffectiveTo, bool IsActive);
 public sealed record TaxSlabSave(string TaxYear, decimal FromAmount, decimal? ToAmount, decimal FixedTaxAmount, decimal RatePercentage, bool IsActive);
 public sealed record EobiEligibilitySave(Guid PersonId, string? EobiNumber, DateOnly EffectiveFrom, DateOnly? EffectiveTo, bool IsEligible, string? Remarks);
+public sealed record StaffMonthlyEobiCreateSave(int Year, int Month);
+public sealed record StaffMonthlyEobiUpdateSave(string? EobiRef);
 public sealed record BenefitRuleSave(string BenefitsType, string Name, string? Company, string? Entitled, string? Contract, string? Frequency, DateOnly? ValidFrom, DateOnly? ValidTo, decimal MaximumExpense, string? ServiceStatus, string? Scale, DateOnly? Wef, decimal MinimumService, decimal MaximumPh, decimal MinimumPh, bool IsIneligible, string? ShareType, decimal CompanyShare, decimal StaffShare, int? OrganizationId, string? CompanyName);
 public sealed record BenefitParameterSave(int BenefitRuleId, string Name, DateOnly? PeriodFrom, DateOnly? PeriodTo, decimal MinimumService, string? AmountType, string? PayType, decimal CompanyShare, decimal StaffShare, BonusDistributionSave? BonusDistribution);
 public sealed record BonusDistributionSave(int? Month, decimal BasicPercentage, decimal ServicePercentage, decimal ServiceYears, decimal AssessmentPercentage, decimal AttendancePercentage, decimal LeavePercentage, decimal DisciplinePercentage, int Installments);

@@ -7,11 +7,20 @@ public static class ApplicationLoginSessionSchema
     private const string MigrationId = "20260722123000_AddApplicationLoginSessions";
     private static readonly SemaphoreSlim LocalGate = new(1, 1);
 
+    // Once the schema is verified for this process lifetime, skip the expensive SQL on every request.
+    private static volatile bool _ensured;
+
     public static async Task EnsureCreatedAsync(ApplicationDbContext db, CancellationToken ct = default)
     {
+        // Fast path: already verified in this process — no DB round-trip.
+        if (_ensured) return;
+
         await LocalGate.WaitAsync(ct);
         try
         {
+            // Double-checked locking: another thread may have set the flag while we waited.
+            if (_ensured) return;
+
             await db.Database.ExecuteSqlRawAsync(
                 $$"""
                 DECLARE @lockResult int;
@@ -94,6 +103,9 @@ public static class ApplicationLoginSessionSchema
                 END CATCH;
                 """,
                 ct);
+
+            // Mark as done for the lifetime of this process so subsequent calls return immediately.
+            _ensured = true;
         }
         finally
         {

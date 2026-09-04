@@ -107,6 +107,7 @@ namespace Accounts.Services.Services
 
         public async Task<IEnumerable<OrgNodeDto>> GetAllAsync() =>
             await _db.OrganizationTree
+                .AsNoTracking()
                 .Include(n => n.Parent)
                 .OrderBy(n => n.Id)
                 .Select(n => ToDto(n))

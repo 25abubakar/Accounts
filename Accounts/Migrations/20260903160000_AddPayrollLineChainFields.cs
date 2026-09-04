@@ -46,7 +46,10 @@ public sealed class AddPayrollLineChainFields : Migration
                 ALTER TABLE dbo.PayrollLines ADD IsPending bit NOT NULL CONSTRAINT DF_PayrollLines_IsPending DEFAULT (0);
             IF COL_LENGTH('dbo.PayrollLines', 'PendingReviewDays') IS NULL
                 ALTER TABLE dbo.PayrollLines ADD PendingReviewDays int NOT NULL CONSTRAINT DF_PayrollLines_PendingReviewDays DEFAULT (0);
+            """);
 
+        migrationBuilder.Sql(
+            """
             -- Backfill Month/Year from run when still defaulted.
             UPDATE pl
             SET pl.[Month] = pr.[Month], pl.[Year] = pr.[Year]

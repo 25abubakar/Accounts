@@ -57,6 +57,7 @@ namespace Accounts.Data
         public DbSet<EobiSetting>              EobiSettings            => Set<EobiSetting>();
         public DbSet<PayrollTaxSlab>           PayrollTaxSlabs         => Set<PayrollTaxSlab>();
         public DbSet<EobiEligibility>          EobiEligibilities       => Set<EobiEligibility>();
+        public DbSet<StaffMonthlyEobi>         StaffMonthlyEobis       => Set<StaffMonthlyEobi>();
         public DbSet<PayScaleRuleRegistration> PayScaleRuleRegistrations => Set<PayScaleRuleRegistration>();
         public DbSet<PayScaleAllowance>        PayScaleAllowances      => Set<PayScaleAllowance>();
         public DbSet<PayScaleTada>             PayScaleTadas           => Set<PayScaleTada>();
@@ -270,6 +271,8 @@ namespace Accounts.Data
             builder.Entity<PayrollTaxSlab>().HasQueryFilter(row =>
                 _tenantService != null && !_tenantService.IsSuperAdmin && _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
             builder.Entity<EobiEligibility>().HasQueryFilter(row =>
+                _tenantService != null && !_tenantService.IsSuperAdmin && _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
+            builder.Entity<StaffMonthlyEobi>().HasQueryFilter(row =>
                 _tenantService != null && !_tenantService.IsSuperAdmin && _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
             builder.Entity<PayScaleRuleRegistration>().HasQueryFilter(row =>
                 _tenantService != null && !_tenantService.IsSuperAdmin && _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
@@ -1605,6 +1608,22 @@ namespace Accounts.Data
             {
                 e.HasIndex(x => new { x.TenantId, x.PersonId }).IsUnique();
                 e.HasOne(x => x.Person).WithMany().HasForeignKey(x => x.PersonId).OnDelete(DeleteBehavior.Restrict);
+                e.HasOne<Tenant>().WithMany().HasForeignKey(x => x.TenantId).OnDelete(DeleteBehavior.Restrict);
+            });
+            builder.Entity<StaffMonthlyEobi>(e =>
+            {
+                e.ToTable("StaffMonthlyEobis");
+                e.HasKey(x => x.Id);
+                e.Property(x => x.Id).ValueGeneratedOnAdd();
+                e.Property(x => x.FullName).HasMaxLength(200).IsRequired();
+                e.Property(x => x.StaffNumber).HasMaxLength(50);
+                e.Property(x => x.Department).HasMaxLength(200);
+                e.Property(x => x.Designation).HasMaxLength(200);
+                e.Property(x => x.EobiRef).HasMaxLength(80);
+                e.Property(x => x.Remarks).HasMaxLength(500);
+                e.HasIndex(x => new { x.TenantId, x.PersonId, x.Year, x.Month }).IsUnique();
+                e.HasIndex(x => new { x.TenantId, x.Year, x.Month });
+                e.HasOne<Person>().WithMany().HasForeignKey(x => x.PersonId).OnDelete(DeleteBehavior.Restrict);
                 e.HasOne<Tenant>().WithMany().HasForeignKey(x => x.TenantId).OnDelete(DeleteBehavior.Restrict);
             });
             builder.Entity<PayScaleRuleRegistration>(e =>
