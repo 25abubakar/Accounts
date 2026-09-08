@@ -105,6 +105,7 @@ builder.Services.AddCors(options =>
         policy.WithOrigins(allowedFrontendOrigins)
               .AllowAnyHeader()
               .AllowAnyMethod()
+              .WithExposedHeaders("Content-Disposition", "X-Conversion-Engine", "X-Conversion-Quality")
               .AllowCredentials());
 });
 
@@ -208,6 +209,16 @@ builder.Services.AddScoped<IAttendanceService, AttendanceService>();
 builder.Services.AddScoped<AttendanceFinalizationService>();
 builder.Services.AddScoped<PayrollCalculationService>();
 builder.Services.AddScoped<StaffMonthlyEobiService>();
+builder.Services.AddScoped<StaffTaxService>();
+builder.Services.AddOptions<FileConversionOptions>()
+    .Bind(builder.Configuration.GetSection(FileConversionOptions.SectionName))
+    .Validate(options => options.MaximumFileSizeMb is > 0 and <= 100, "MaximumFileSizeMb must be between 1 and 100.")
+    .Validate(options => options.MaximumOutputSizeMb is > 0 and <= 500, "MaximumOutputSizeMb must be between 1 and 500.")
+    .Validate(options => options.TimeoutSeconds is >= 10 and <= 600, "TimeoutSeconds must be between 10 and 600.")
+    .Validate(options => options.MaximumConcurrentConversions is >= 1 and <= 8, "MaximumConcurrentConversions must be between 1 and 8.")
+    .ValidateOnStart();
+builder.Services.AddSingleton<IFileConversionService, LibreOfficeFileConversionService>();
+builder.Services.AddHostedService<FileConversionCleanupService>();
 builder.Services.AddHostedService<AttendanceFinalizationScheduler>();
 builder.Services.AddAutoMapper(_ => { }, typeof(Program).Assembly);
 

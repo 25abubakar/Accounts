@@ -20,14 +20,30 @@ public sealed class AttendanceDailyFinalizationCalculatorTests
     }
 
     [Fact]
-    public void MissingCheckoutAfterDeadline_RequiresReviewAndCreatesNoDeduction()
+    public void MissingCheckoutAfterDeadline_FinalizesChargeableAbsence()
     {
         var result = Calculate(
             now: new DateTime(2026, 8, 24, 21, 0, 0),
             checkIn: new DateTime(2026, 8, 24, 8, 56, 0));
 
-        Assert.Equal(AttendanceFinalizationStates.PendingReview, result.State);
-        Assert.False(result.IsFinalized);
+        Assert.Equal(AttendanceFinalizationStates.Absent, result.State);
+        Assert.True(result.IsFinalized);
+        Assert.True(result.IsFullDayAbsent);
+        Assert.Equal(540, result.ShortMinutes);
+    }
+
+    [Fact]
+    public void ClosedPunches_WinOverStaleExplicitAbsent()
+    {
+        var result = Calculate(
+            now: new DateTime(2026, 8, 24, 18, 0, 0),
+            checkIn: new DateTime(2026, 8, 24, 9, 0, 0),
+            checkOut: new DateTime(2026, 8, 24, 18, 0, 0),
+            explicitAbsent: true);
+
+        Assert.Equal(AttendanceFinalizationStates.Completed, result.State);
+        Assert.True(result.IsFinalized);
+        Assert.False(result.IsFullDayAbsent);
         Assert.Equal(0, result.ShortMinutes);
     }
 

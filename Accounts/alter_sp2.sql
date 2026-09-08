@@ -182,10 +182,21 @@ BEGIN
                 AND attendance.AttendanceDate = effective.AttendanceDate
           )
     )
+    -- Attendance evaluator duplicate-insert guard v1
     INSERT dbo.AttendanceRecords
         (TenantId, PersonId, AttendanceDate, AttendanceStatusId, PlatformActionStatusId, TotalBreakMinutes, CreatedDate, ModifiedDate)
-    SELECT TenantId, PersonId, AttendanceDate, @Absent, @PlatformAbsent, 0, @AsOfUtc, @AsOfUtc
-    FROM Missing
+    SELECT d.TenantId, d.PersonId, d.AttendanceDate, @Absent, @PlatformAbsent, 0, @AsOfUtc, @AsOfUtc
+    FROM (
+        SELECT TenantId, PersonId, AttendanceDate
+        FROM Missing
+        GROUP BY TenantId, PersonId, AttendanceDate
+    ) d
+    WHERE NOT EXISTS (
+        SELECT 1
+        FROM dbo.AttendanceRecords existing WITH (UPDLOCK, HOLDLOCK)
+        WHERE existing.PersonId = d.PersonId
+          AND existing.AttendanceDate = d.AttendanceDate
+    )
     OPTION (MAXRECURSION 367);
 
     UPDATE attendance

@@ -154,7 +154,18 @@ public sealed class PayrollCalculationService(
         var profiles = await db.PersonHrProfiles.AsNoTracking()
             .Where(x => personIds.Contains(x.PersonId))
             .ToDictionaryAsync(x => x.PersonId, cancellationToken);
+        var packageIds = profiles.Values
+            .Where(x => x.SalaryPackageId.HasValue)
+            .Select(x => x.SalaryPackageId!.Value)
+            .Distinct()
+            .ToArray();
+        var packages = packageIds.Length == 0
+            ? new Dictionary<int, SalaryPackage>()
+            : await db.SalaryPackages.AsNoTracking()
+                .Where(x => x.IsActive && packageIds.Contains(x.Id))
+                .ToDictionaryAsync(x => x.Id, cancellationToken);
         var scales = await db.SalaryScales.AsNoTracking().Where(x => x.IsActive).ToListAsync(cancellationToken);
+        var scaleById = scales.ToDictionary(x => x.Id);
         var scaleByName = scales
             .Where(x => !string.IsNullOrWhiteSpace(x.ScaleName))
             .GroupBy(x => x.ScaleName.Trim(), StringComparer.OrdinalIgnoreCase)
@@ -205,14 +216,23 @@ public sealed class PayrollCalculationService(
         foreach (var employee in employees)
         {
             profiles.TryGetValue(employee.PersonId, out var profile);
+            SalaryPackage? package = null;
+            if (profile?.SalaryPackageId is int pkgId)
+                packages.TryGetValue(pkgId, out package);
+
             SalaryScale? scale = null;
-            if (!string.IsNullOrWhiteSpace(profile?.Scale)) scaleByName.TryGetValue(profile.Scale.Trim(), out scale);
+            if (package != null && scaleById.TryGetValue(package.SalaryScaleId, out var packageScale))
+                scale = packageScale;
+            else if (!string.IsNullOrWhiteSpace(profile?.Scale))
+                scaleByName.TryGetValue(profile.Scale.Trim(), out scale);
 
             designationByStaff.TryGetValue(employee.StaffId, out var designationId);
             shiftByStaff.TryGetValue(employee.StaffId, out var shiftCode);
+            var packageAllowanceRefs = ParsePackageRefs(package?.AllowanceReference);
             var scaleAllowances = allowances.Where(x =>
                 IsAllowanceApplicable(x, designationId, shiftCode) &&
-                IsAllowanceScaleApplicable(x, scale?.Id)).ToList();
+                IsAllowanceScaleApplicable(x, scale?.Id) &&
+                IsPackageAllowanceAllowed(x, packageAllowanceRefs)).ToList();
             var hasScaleAllowanceConfiguration = scale != null && allowances.Any(x =>
                 x.SalaryScaleId == scale.Id &&
                 !x.AllowanceCategory.Equals("SHIFT", StringComparison.OrdinalIgnoreCase) &&
@@ -234,17 +254,28 @@ public sealed class PayrollCalculationService(
                 .Sum(x => x.CalculatedValue));
             if (!hasScaleAllowanceConfiguration)
                 generalAllowance = Money(generalAllowance + (scale?.MedicalAllowance ?? 0) + (scale?.TravellingAllowance ?? 0) + (scale?.Other ?? 0));
-            // TADA is cash and joins Gross via General/Allowance total (Leave stays non-cash).
+            // TADA is cash and joins Gross via General/Allowance total (Leave stays non-cash; package LeaveReference is metadata only).
+            // Phase-1 2C: attendance approved adjustment ≈ period adjustment; OtherDeduction ≈ manual; no Proficiency/Loan modules.
             if (scale != null)
-                generalAllowance = Money(generalAllowance + tadas.Where(x => x.SalaryScaleId == scale.Id).Sum(x => x.CalculatedValue));
+            {
+                var packageTadaRefs = ParsePackageRefs(package?.TadaReference);
+                var scaleTadas = tadas.Where(x => x.SalaryScaleId == scale.Id);
+                if (packageTadaRefs.Count > 0)
+                    scaleTadas = scaleTadas.Where(x => packageTadaRefs.Contains(x.TadaReference));
+                generalAllowance = Money(generalAllowance + scaleTadas.Sum(x => x.CalculatedValue));
+            }
             var allowanceAmount = Money(generalAllowance + apptAllowance + shiftAllowance);
 
             var scaleBasic = Money(profile?.BasicSalary is > 0 ? profile.BasicSalary.Value : scale?.BasicSalary ?? 0);
             var incrementSalary = Money(profile?.IncrementSalary is > 0 ? profile.IncrementSalary.Value : scale?.YearlyIncrement ?? 0);
             var maxSalary = Money(profile?.MaxSalary is > 0 ? profile.MaxSalary.Value : scale?.MaximumSalary ?? 0);
-            var currentPay = Money(profile?.CurrentPay is > 0 ? profile.CurrentPay.Value
-                : scale?.CurrentPay is > 0 ? scale.CurrentPay
-                : scaleBasic);
+            var currentPay = PayrollCurrentPayCalculator.Compute(
+                scaleBasic,
+                incrementSalary,
+                maxSalary,
+                profile?.ScaleDate,
+                periodEnd,
+                scale?.ApplyAfter);
             var basicSalary = Money(currentPay > 0 ? currentPay : scaleBasic);
 
             var serviceYears = profile?.JoiningDate is DateTime joining
@@ -368,6 +399,26 @@ public sealed class PayrollCalculationService(
         if (category is "SHIFT" or "NIGHT")
             return !allowance.SalaryScaleId.HasValue || allowance.SalaryScaleId == salaryScaleId;
         return salaryScaleId.HasValue && allowance.SalaryScaleId == salaryScaleId;
+    }
+
+    /// <summary>
+    /// When package.AllowanceReference is set, GENERAL rows must match; APPT/SHIFT still apply by designation/shift on the package scale.
+    /// </summary>
+    private static bool IsPackageAllowanceAllowed(PayScaleAllowance allowance, IReadOnlySet<string> packageAllowanceRefs)
+    {
+        if (packageAllowanceRefs.Count == 0) return true;
+        var category = allowance.AllowanceCategory.Trim().ToUpperInvariant();
+        if (category is "APPT" or "SHIFT" or "NIGHT") return true;
+        return !string.IsNullOrWhiteSpace(allowance.AllowanceReference)
+            && packageAllowanceRefs.Contains(allowance.AllowanceReference.Trim());
+    }
+
+    private static HashSet<string> ParsePackageRefs(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw)) return new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        return raw.Split([',', ';'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Where(x => x.Length > 0)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
     }
 
     private static bool IsBenefitApplicable(

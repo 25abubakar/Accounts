@@ -134,7 +134,7 @@ public sealed class AttendanceService : IAttendanceService
         record.ModifiedDate = localNow;
         if (record.Id == 0) _db.AttendanceRecords.Add(record);
         await _db.SaveChangesAsync(cancellationToken);
-        await EvaluateStatusesAsync(person.TenantId, effectiveDate, effectiveDate, cancellationToken);
+        await RecalculateAttendanceDependentsAsync(person.TenantId, effectiveDate, cancellationToken);
         return Map(person, record, localNow, timing, attendanceRule);
     }
 
@@ -170,7 +170,7 @@ public sealed class AttendanceService : IAttendanceService
             record.PlatformActionStatusId = policy.PlatformAbsentStatusId;
             record.ModifiedDate = now;
             await _db.SaveChangesAsync(cancellationToken);
-            await EvaluateStatusesAsync(person.TenantId, record.AttendanceDate, record.AttendanceDate, cancellationToken);
+            await RecalculateAttendanceDependentsAsync(person.TenantId, record.AttendanceDate, cancellationToken);
             return await GetTodayAsync(identityUserId, cancellationToken);
         }
 
@@ -218,7 +218,7 @@ public sealed class AttendanceService : IAttendanceService
             record.PlatformActionStatusId = policy.PlatformAbsentStatusId;
             record.ModifiedDate = now;
             await _db.SaveChangesAsync(cancellationToken);
-            await EvaluateStatusesAsync(person.TenantId, record.AttendanceDate, record.AttendanceDate, cancellationToken);
+            await RecalculateAttendanceDependentsAsync(person.TenantId, record.AttendanceDate, cancellationToken);
             return await GetTodayAsync(identityUserId, cancellationToken);
         }
 
@@ -230,7 +230,7 @@ public sealed class AttendanceService : IAttendanceService
         record.CheckOutUtc = now;
         record.ModifiedDate = now;
         await _db.SaveChangesAsync(cancellationToken);
-        await EvaluateStatusesAsync(person.TenantId, record.AttendanceDate, record.AttendanceDate, cancellationToken);
+        await RecalculateAttendanceDependentsAsync(person.TenantId, record.AttendanceDate, cancellationToken);
         await _db.Entry(record).Reference(x => x.AttendanceStatus).LoadAsync(cancellationToken);
         return Map(person, record, now, timing, attendanceRule);
     }
@@ -1002,6 +1002,10 @@ public sealed class AttendanceService : IAttendanceService
                 {
                     var deductibleShortMinutes = 0;
                     var deductibleMinutes = 0;
+                    reportRowsByDay.TryGetValue(
+                        (finalization.PersonId, finalization.AttendanceDate),
+                        out var reportRow);
+
                     if (finalization.IsFinalized)
                     {
                         deductibleShortMinutes = Math.Max(0, finalization.ShortMinutes);
@@ -1016,18 +1020,21 @@ public sealed class AttendanceService : IAttendanceService
                         deductibleMinutes = Math.Max(
                             deductibleShortMinutes,
                             Math.Max(0, finalization.LatePenaltyMinutes));
+
+                        // On-time Present (full shift) must never keep stale Absent/late money.
+                        if (reportRow is not null && IsOnTimeFullPresent(reportRow))
+                            deductibleMinutes = 0;
+
                         cumulativeDeductibleMinutes += deductibleMinutes;
                     }
 
-                    if (!reportRowsByDay.TryGetValue(
-                            (finalization.PersonId, finalization.AttendanceDate),
-                            out var reportRow))
+                    if (reportRow is null)
                         continue;
 
                     reportRow.DeductionAmount = finalization.IsFinalized
                         ? CalculateDeductionAmount(deductibleMinutes, rate.PerHour)
                         : null;
-                    reportRow.LatePenaltyMinutes = finalization.IsFinalized
+                    reportRow.LatePenaltyMinutes = finalization.IsFinalized && !IsOnTimeFullPresent(reportRow)
                         ? Math.Max(0, finalization.LatePenaltyMinutes)
                         : 0;
                     reportRow.TotalDeductionAmount = CalculateDeductionAmount(
@@ -1060,24 +1067,286 @@ public sealed class AttendanceService : IAttendanceService
             return;
 
         var finalizationMarkerKey = BuildFinalizationMarkerCacheKey(tenantId, year, month, requestedDates, personIdsHash);
-        if (_cache.TryGetValue(finalizationMarkerKey, out _))
+        var includesToday = requestedDates.Contains(PakistanClock.Today());
+        var needsRefresh = await RequiresFinalizationRefreshAsync(
+            tenantId,
+            periodRows,
+            personIds,
+            requestedDates,
+            cancellationToken);
+
+        // Closed months always re-sync visible people (DB attendance fixes must clear/create Ded).
+        // Current month uses a short marker unless dirty detection says refresh.
+        var shouldRefresh = needsRefresh
+            || !includesToday
+            || !_cache.TryGetValue(finalizationMarkerKey, out _);
+
+        if (!shouldRefresh)
             return;
 
-        if (await RequiresFinalizationRefreshAsync(tenantId, periodRows, personIds, requestedDates, cancellationToken))
+        _cache.Remove(finalizationMarkerKey);
+        _cache.Remove(BuildDeductionRateCacheKey(tenantId, year, month, personIdsHash));
+
+        var monthStart = new DateOnly(year, month, 1);
+        var monthEnd = monthStart.AddMonths(1).AddDays(-1);
+        var today = PakistanClock.Today();
+        var evalTo = monthEnd < today ? monthEnd : today;
+        if (monthStart <= evalTo)
+            await EvaluateStatusesAsync(tenantId, monthStart, evalTo, cancellationToken);
+
+        await _finalization.RefreshPeriodAsync(
+            tenantId,
+            year,
+            month,
+            personIds,
+            cancellationToken);
+
+        await RepairStaleOnTimePresentChargesAsync(
+            tenantId,
+            periodRows,
+            cancellationToken);
+
+        // Persist the same rule against DB status so Deduction/Payroll stay aligned.
+        await RepairStalePresentChargesFromRecordsAsync(
+            tenantId,
+            personIds,
+            year,
+            month,
+            cancellationToken);
+
+        // Only throttle current-month re-entry; historical months refresh every open.
+        if (includesToday)
         {
-            await _finalization.RefreshPeriodAsync(tenantId, year, month, cancellationToken);
-            _cache.Remove(BuildDeductionRateCacheKey(tenantId, year, month, personIdsHash));
+            _cache.Set(
+                finalizationMarkerKey,
+                true,
+                new MemoryCacheEntryOptions
+                {
+                    AbsoluteExpirationRelativeToNow = CurrentDayReadFreshnessWindow,
+                    Size = 1,
+                });
+        }
+    }
+
+    private async Task RepairStalePresentChargesFromRecordsAsync(
+        int tenantId,
+        Guid[] personIds,
+        int year,
+        int month,
+        CancellationToken cancellationToken)
+    {
+        if (personIds.Length == 0)
+            return;
+
+        var monthStart = new DateOnly(year, month, 1);
+        var monthEnd = monthStart.AddMonths(1).AddDays(-1);
+        var records = await _db.AttendanceRecords
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(row =>
+                row.TenantId == tenantId &&
+                personIds.Contains(row.PersonId) &&
+                row.AttendanceDate >= monthStart &&
+                row.AttendanceDate <= monthEnd &&
+                row.CheckInUtc != null &&
+                row.CheckOutUtc != null)
+            .Select(row => new
+            {
+                row.PersonId,
+                row.AttendanceDate,
+                row.CheckInUtc,
+                row.CheckOutUtc,
+                row.TotalBreakMinutes,
+                row.AttendanceStatusId,
+                row.PlatformActionStatusId,
+            })
+            .ToListAsync(cancellationToken);
+        if (records.Count == 0)
+            return;
+
+        var processStatusIds = records
+            .Where(row => row.AttendanceStatusId.HasValue)
+            .Select(row => row.AttendanceStatusId!.Value)
+            .Distinct()
+            .ToArray();
+        var platformStatusIds = records
+            .Where(row => row.PlatformActionStatusId.HasValue)
+            .Select(row => row.PlatformActionStatusId!.Value)
+            .Distinct()
+            .ToArray();
+
+        var processStatuses = processStatusIds.Length == 0
+            ? new Dictionary<int, string>()
+            : (await _db.ProcessStatusStyles.IgnoreQueryFilters().AsNoTracking()
+                .Where(status => processStatusIds.Contains(status.Id))
+                .Select(status => new
+                {
+                    status.Id,
+                    Name = status.Status != null ? status.Status.StatusName : status.Code
+                })
+                .ToListAsync(cancellationToken))
+                .ToDictionary(row => row.Id, row => row.Name ?? string.Empty);
+        var platformStatuses = platformStatusIds.Length == 0
+            ? new Dictionary<int, string>()
+            : (await _db.PlatformSettingActionStatuses.IgnoreQueryFilters().AsNoTracking()
+                .Where(status => platformStatusIds.Contains(status.Id))
+                .Select(status => new
+                {
+                    status.Id,
+                    Name = status.Status != null ? status.Status.Name : string.Empty
+                })
+                .ToListAsync(cancellationToken))
+                .ToDictionary(row => row.Id, row => row.Name ?? string.Empty);
+
+        var onTimeKeys = new HashSet<FinalizationProbeKey>();
+        foreach (var record in records)
+        {
+            var statusName = record.AttendanceStatusId is int processId &&
+                processStatuses.TryGetValue(processId, out var processName)
+                    ? processName
+                    : record.PlatformActionStatusId is int platformId &&
+                      platformStatuses.TryGetValue(platformId, out var platformName)
+                        ? platformName
+                        : string.Empty;
+            if (statusName.Contains("Absent", StringComparison.OrdinalIgnoreCase) ||
+                statusName.Contains("Late", StringComparison.OrdinalIgnoreCase) ||
+                statusName.Contains("Early", StringComparison.OrdinalIgnoreCase))
+                continue;
+            if (!statusName.Contains("Present", StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            var worked = Math.Max(
+                0,
+                (int)Math.Floor((record.CheckOutUtc!.Value - record.CheckInUtc!.Value).TotalMinutes) -
+                Math.Max(0, record.TotalBreakMinutes));
+            // Full required minutes are validated against finalization.RequiredMinutes below.
+            if (worked <= 0)
+                continue;
+
+            onTimeKeys.Add(new FinalizationProbeKey(record.PersonId, record.AttendanceDate));
         }
 
-        var includesToday = requestedDates.Contains(PakistanClock.Today());
-        _cache.Set(
-            finalizationMarkerKey,
-            true,
-            new MemoryCacheEntryOptions
-            {
-                AbsoluteExpirationRelativeToNow = includesToday ? CurrentDayReadFreshnessWindow : HistoricalPeriodRateCacheDuration,
-                Size = 1,
-            });
+        if (onTimeKeys.Count == 0)
+            return;
+
+        var dates = onTimeKeys.Select(key => key.AttendanceDate).Distinct().ToArray();
+        var rows = await _db.AttendanceDailyFinalizations
+            .IgnoreQueryFilters()
+            .Where(row =>
+                row.TenantId == tenantId &&
+                personIds.Contains(row.PersonId) &&
+                dates.Contains(row.AttendanceDate))
+            .ToListAsync(cancellationToken);
+
+        var changed = false;
+        var utcNow = DateTime.UtcNow;
+        foreach (var row in rows)
+        {
+            if (!onTimeKeys.Contains(new FinalizationProbeKey(row.PersonId, row.AttendanceDate)))
+                continue;
+            if (row.RequiredMinutes > 0 && row.WorkedMinutes < row.RequiredMinutes)
+                continue;
+            if (row.ShortMinutes <= 0 &&
+                row.LatePenaltyMinutes <= 0 &&
+                !row.IsFullDayAbsent)
+                continue;
+
+            row.State = AttendanceFinalizationStates.Completed;
+            row.IsFinalized = true;
+            row.IsFullDayAbsent = false;
+            row.ShortMinutes = 0;
+            row.LateMinutes = 0;
+            row.LateBandMinutes = 0;
+            row.LatePenaltyMinutes = 0;
+            if (row.WorkedMinutes <= 0 && row.RequiredMinutes > 0)
+                row.WorkedMinutes = row.RequiredMinutes;
+            row.LastEvaluatedDateUtc = utcNow;
+            changed = true;
+        }
+
+        if (changed)
+            await _db.SaveChangesAsync(cancellationToken);
+    }
+
+    /// <summary>
+    /// Clears Ded money on finalization when the attendance grid already shows on-time Present.
+    /// Rules still charge 1 Hr Late / Absent / short-time Present normally.
+    /// </summary>
+    private async Task RepairStaleOnTimePresentChargesAsync(
+        int tenantId,
+        IReadOnlyList<DailyAttendanceRowDto> periodRows,
+        CancellationToken cancellationToken)
+    {
+        var onTimeDays = periodRows
+            .Where(IsOnTimeFullPresent)
+            .Select(row => new FinalizationProbeKey(row.PersonId, row.Date))
+            .ToHashSet();
+        if (onTimeDays.Count == 0)
+            return;
+
+        var personIds = onTimeDays.Select(day => day.PersonId).Distinct().ToArray();
+        var dates = onTimeDays.Select(day => day.AttendanceDate).Distinct().ToArray();
+        var rows = await _db.AttendanceDailyFinalizations
+            .IgnoreQueryFilters()
+            .Where(row =>
+                row.TenantId == tenantId &&
+                personIds.Contains(row.PersonId) &&
+                dates.Contains(row.AttendanceDate))
+            .ToListAsync(cancellationToken);
+
+        var changed = false;
+        var utcNow = DateTime.UtcNow;
+        foreach (var row in rows)
+        {
+            if (!onTimeDays.Contains(new FinalizationProbeKey(row.PersonId, row.AttendanceDate)))
+                continue;
+            if (row.ShortMinutes <= 0 &&
+                row.LatePenaltyMinutes <= 0 &&
+                row.LateMinutes <= 0 &&
+                !row.IsFullDayAbsent &&
+                string.Equals(row.State, AttendanceFinalizationStates.Completed, StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            row.State = AttendanceFinalizationStates.Completed;
+            row.IsFinalized = true;
+            row.IsFullDayAbsent = false;
+            row.ShortMinutes = 0;
+            row.LateMinutes = 0;
+            row.LateBandMinutes = 0;
+            row.LatePenaltyMinutes = 0;
+            if (row.WorkedMinutes <= 0 && row.RequiredMinutes > 0)
+                row.WorkedMinutes = row.RequiredMinutes;
+            row.LastEvaluatedDateUtc = utcNow;
+            changed = true;
+        }
+
+        if (changed)
+            await _db.SaveChangesAsync(cancellationToken);
+    }
+
+    private static bool IsOnTimeFullPresent(DailyAttendanceRowDto row)
+    {
+        var status = row.AttendanceStatus ?? string.Empty;
+        if (status.Contains("Absent", StringComparison.OrdinalIgnoreCase) ||
+            status.Contains("Late", StringComparison.OrdinalIgnoreCase) ||
+            status.Contains("Early", StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        var looksPresent = row.Present ||
+            status.Contains("Present", StringComparison.OrdinalIgnoreCase);
+        if (!looksPresent)
+            return false;
+
+        if (string.IsNullOrWhiteSpace(row.CheckInTime) || string.IsNullOrWhiteSpace(row.CheckOutTime))
+            return false;
+
+        if (row.LateMinutes > 0)
+            return false;
+
+        if (row.RequiredMinutes > 0 && row.WorkingMinutes < row.RequiredMinutes)
+            return false;
+
+        return true;
     }
 
     private async Task<bool> RequiresFinalizationRefreshAsync(
@@ -1097,7 +1366,15 @@ public sealed class AttendanceService : IAttendanceService
             .Select(row => new FinalizationProbeRow(
                 row.PersonId,
                 row.AttendanceDate,
-                row.LastEvaluatedDateUtc))
+                row.LastEvaluatedDateUtc,
+                row.AttendanceRecordId,
+                row.State,
+                row.ShortMinutes,
+                row.LatePenaltyMinutes,
+                row.IsFinalized,
+                row.IsFullDayAbsent,
+                row.WorkedMinutes,
+                row.RequiredMinutes))
             .ToListAsync(cancellationToken);
 
         var expectedKeys = periodRows
@@ -1111,14 +1388,132 @@ public sealed class AttendanceService : IAttendanceService
         if (!expectedKeys.SetEquals(actualKeys))
             return true;
 
+        var records = await _db.AttendanceRecords
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(row =>
+                row.TenantId == tenantId &&
+                personIds.Contains(row.PersonId) &&
+                requestedDates.Contains(row.AttendanceDate))
+            .Select(row => new AttendanceProbeRow(
+                row.PersonId,
+                row.AttendanceDate,
+                row.Id,
+                row.CheckInUtc,
+                row.CheckOutUtc,
+                row.CreatedDate,
+                row.ModifiedDate))
+            .ToListAsync(cancellationToken);
+
+        var finalizationByDay = finalizations.ToDictionary(
+            row => new FinalizationProbeKey(row.PersonId, row.AttendanceDate));
+
+        foreach (var record in records)
+        {
+            if (!finalizationByDay.TryGetValue(
+                    new FinalizationProbeKey(record.PersonId, record.AttendanceDate),
+                    out var finalization))
+                return true;
+
+            if (finalization.AttendanceRecordId != record.Id)
+                return true;
+
+            // Attendance timestamps are stored in Pakistan business time; LastEvaluated is UTC.
+            var evaluatedLocal = ToPakistanLocal(finalization.LastEvaluatedDateUtc);
+            var latestTouch = new[] { record.ModifiedDate, record.CreatedDate, record.CheckInUtc, record.CheckOutUtc }
+                .Where(value => value.HasValue)
+                .Select(value => DateTime.SpecifyKind(value!.Value, DateTimeKind.Unspecified))
+                .DefaultIfEmpty(DateTime.MinValue)
+                .Max();
+            if (latestTouch > evaluatedLocal.AddSeconds(2))
+                return true;
+
+            var closedPunches = record.CheckInUtc.HasValue && record.CheckOutUtc.HasValue;
+            var isAbsentState = string.Equals(
+                finalization.State,
+                AttendanceFinalizationStates.Absent,
+                StringComparison.OrdinalIgnoreCase);
+            var isPendingReview = string.Equals(
+                finalization.State,
+                AttendanceFinalizationStates.PendingReview,
+                StringComparison.OrdinalIgnoreCase);
+
+            // Closed punches still charged as absence → stale after DB attendance correction.
+            if (closedPunches && (finalization.IsFullDayAbsent || isAbsentState))
+                return true;
+
+            // Check-in without checkout: status/money must be chargeable Absent, not open review.
+            if (record.CheckInUtc.HasValue && !record.CheckOutUtc.HasValue)
+            {
+                if (isPendingReview)
+                    return true;
+                if (isAbsentState && (!finalization.IsFinalized || finalization.ShortMinutes <= 0))
+                    return true;
+            }
+        }
+
+        // Report status Present/Completed while finalization still Absent (or reverse money gap).
+        foreach (var periodRow in periodRows)
+        {
+            if (!finalizationByDay.TryGetValue(
+                    new FinalizationProbeKey(periodRow.PersonId, periodRow.Date),
+                    out var finalization))
+                return true;
+
+            var status = periodRow.AttendanceStatus ?? string.Empty;
+            var statusLooksPresent = status.Contains("Present", StringComparison.OrdinalIgnoreCase) &&
+                !status.Contains("Absent", StringComparison.OrdinalIgnoreCase);
+            var statusLooksAbsent = status.Contains("Absent", StringComparison.OrdinalIgnoreCase);
+            var finalizationAbsent = finalization.IsFullDayAbsent ||
+                string.Equals(finalization.State, AttendanceFinalizationStates.Absent, StringComparison.OrdinalIgnoreCase);
+            var chargeableMinutes = Math.Max(finalization.ShortMinutes, finalization.LatePenaltyMinutes);
+            // Full on-time Present on the grid must not keep Ded/TDed from a previous Absent row.
+            var onTimeFullDay =
+                periodRow.WorkingMinutes >= Math.Max(1, periodRow.RequiredMinutes) &&
+                periodRow.LateMinutes <= 0 &&
+                !string.IsNullOrWhiteSpace(periodRow.CheckInTime) &&
+                !string.IsNullOrWhiteSpace(periodRow.CheckOutTime);
+
+            if (statusLooksPresent && finalizationAbsent)
+                return true;
+            if (statusLooksPresent && onTimeFullDay && chargeableMinutes > 0)
+                return true;
+            if (statusLooksAbsent && (!finalization.IsFinalized || finalization.ShortMinutes <= 0))
+                return true;
+        }
+
         var today = PakistanClock.Today();
         if (!requestedDates.Contains(today))
             return false;
 
-        var freshnessCutoff = PakistanClock.Now().Subtract(CurrentDayReadFreshnessWindow);
+        var freshnessCutoffUtc = DateTime.UtcNow.Subtract(CurrentDayReadFreshnessWindow);
         return finalizations.Any(row =>
             row.AttendanceDate == today &&
-            row.LastEvaluatedDateUtc < freshnessCutoff);
+            row.LastEvaluatedDateUtc < freshnessCutoffUtc);
+    }
+
+    private static DateTime ToPakistanLocal(DateTime value)
+    {
+        if (value.Kind == DateTimeKind.Utc)
+            return TimeZoneInfo.ConvertTimeFromUtc(value, PakistanClock.TimeZone);
+        if (value.Kind == DateTimeKind.Local)
+            return TimeZoneInfo.ConvertTime(value, PakistanClock.TimeZone);
+        return TimeZoneInfo.ConvertTimeFromUtc(
+            DateTime.SpecifyKind(value, DateTimeKind.Utc),
+            PakistanClock.TimeZone);
+    }
+
+    private async Task RecalculateAttendanceDependentsAsync(
+        int tenantId,
+        DateOnly attendanceDate,
+        CancellationToken cancellationToken)
+    {
+        await EvaluateStatusesAsync(tenantId, attendanceDate, attendanceDate, cancellationToken);
+        await _finalization.RefreshPeriodAsync(
+            tenantId,
+            attendanceDate.Year,
+            attendanceDate.Month,
+            cancellationToken: cancellationToken);
     }
 
     private async Task<List<AttendanceDeductionReportRow>> LoadDeductionRateRowsCachedAsync(
@@ -1362,9 +1757,8 @@ public sealed class AttendanceService : IAttendanceService
             }
 
             await _db.SaveChangesAsync(cancellationToken);
-            await EvaluateStatusesAsync(
+            await RecalculateAttendanceDependentsAsync(
                 supervisor.TenantId,
-                dto.AttendanceDate,
                 dto.AttendanceDate,
                 cancellationToken);
             await transaction.CommitAsync(cancellationToken);
@@ -1568,6 +1962,14 @@ public sealed class AttendanceService : IAttendanceService
 
         await _finalization.RefreshPeriodAsync(
             visibility.TenantId,
+            year,
+            month,
+            visibility.VisiblePersonIds,
+            cancellationToken);
+
+        await RepairStalePresentChargesFromRecordsAsync(
+            visibility.TenantId,
+            visibility.VisiblePersonIds.ToArray(),
             year,
             month,
             cancellationToken);
@@ -2919,7 +3321,31 @@ public sealed class AttendanceService : IAttendanceService
         {
             throw new OperationCanceledException("Attendance status evaluation was cancelled.", ex);
         }
+        catch (SqlException ex) when (IsDuplicateAttendanceRecordKey(ex))
+        {
+            // Concurrent check-in / duplicate StaffVacancy rows can race the evaluator INSERT.
+            try
+            {
+                await _db.Database.ExecuteSqlRawAsync(
+                    "EXEC dbo.usp_Attendance_EvaluateStatuses @TenantId, @DateFrom, @DateTo, @AsOfUtc",
+                    [
+                        new SqlParameter("@TenantId", tenantId),
+                        new SqlParameter("@DateFrom", dateFrom.ToDateTime(TimeOnly.MinValue)),
+                        new SqlParameter("@DateTo", dateTo.ToDateTime(TimeOnly.MinValue)),
+                        new SqlParameter("@AsOfUtc", PakistanClock.Now())
+                    ],
+                    cancellationToken);
+            }
+            catch (SqlException retryEx) when (IsDuplicateAttendanceRecordKey(retryEx) || IsSqlCancellation(retryEx))
+            {
+                // Leave existing attendance rows; finalization refresh still runs after this.
+            }
+        }
     }
+
+    private static bool IsDuplicateAttendanceRecordKey(SqlException ex) =>
+        ex.Number is 2601 or 2627
+        && ex.Message.Contains("IX_AttendanceRecords_PersonId_AttendanceDate", StringComparison.OrdinalIgnoreCase);
 
     private static bool IsSqlCancellation(SqlException ex) =>
         IsCancellationMessage(ex.Message)
@@ -3094,7 +3520,26 @@ public sealed class AttendanceService : IAttendanceService
     }
 
     private readonly record struct FinalizationProbeKey(Guid PersonId, DateOnly AttendanceDate);
-    private readonly record struct FinalizationProbeRow(Guid PersonId, DateOnly AttendanceDate, DateTime LastEvaluatedDateUtc);
+    private readonly record struct FinalizationProbeRow(
+        Guid PersonId,
+        DateOnly AttendanceDate,
+        DateTime LastEvaluatedDateUtc,
+        long? AttendanceRecordId,
+        string State,
+        int ShortMinutes,
+        int LatePenaltyMinutes,
+        bool IsFinalized,
+        bool IsFullDayAbsent,
+        int WorkedMinutes,
+        int RequiredMinutes);
+    private readonly record struct AttendanceProbeRow(
+        Guid PersonId,
+        DateOnly AttendanceDate,
+        long Id,
+        DateTime? CheckInUtc,
+        DateTime? CheckOutUtc,
+        DateTime CreatedDate,
+        DateTime? ModifiedDate);
 }
 
 

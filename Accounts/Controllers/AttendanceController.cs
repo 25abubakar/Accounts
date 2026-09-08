@@ -1188,6 +1188,13 @@ public sealed class AttendanceController : ControllerBase
                         "attendance",
                         realtimeAction,
                         _tenant.TenantId.Value));
+                await _realtime.PublishEventToTenantAsync(
+                    _tenant.TenantId.Value,
+                    RealtimeEventDto.Create(
+                        RealtimeEventTypes.DeductionChanged,
+                        "attendance",
+                        realtimeAction,
+                        _tenant.TenantId.Value));
             }
             return Ok(result);
         }

@@ -55,6 +55,8 @@ public class PersonHrProfile : ITenantEntity
     public DateTime? PromotionFrom { get; set; }
     public DateTime? PromotionTo { get; set; }
 
+    /// <summary>Assigned compensation package (Person → SalaryPackage → Scale/Allowances/TADA).</summary>
+    public int? SalaryPackageId { get; set; }
     [MaxLength(80)] public string? Scale { get; set; }
     public DateTime? ScaleDate { get; set; }
     [Column(TypeName = "decimal(18,2)")] public decimal? BasicSalary { get; set; }
@@ -74,4 +76,7 @@ public class PersonHrProfile : ITenantEntity
 
     [ForeignKey(nameof(PersonId))]
     public Person? Person { get; set; }
+
+    [ForeignKey(nameof(SalaryPackageId))]
+    public SalaryPackage? SalaryPackage { get; set; }
 }

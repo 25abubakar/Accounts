@@ -202,26 +202,52 @@ namespace Accounts.Services.Services
             profile.PostingPerDay = dto.PostingPerDay;
             profile.PromotionFrom = dto.PromotionFrom;
             profile.PromotionTo = dto.PromotionTo;
-            var scaleName = dto.Scale?.Trim();
-            SalaryScale? selectedScale = null;
-            if (!string.IsNullOrWhiteSpace(scaleName))
+
+            SalaryPackage? selectedPackage = null;
+            if (dto.SalaryPackageId is int packageId and > 0)
+            {
+                selectedPackage = await _db.SalaryPackages.AsNoTracking()
+                    .Include(x => x.SalaryScale)
+                    .FirstOrDefaultAsync(x => x.Id == packageId && x.TenantId == person.TenantId && x.IsActive);
+                if (selectedPackage == null)
+                    return (null, "The selected salary package is not active or does not belong to this company.");
+            }
+
+            var scaleName = selectedPackage?.SalaryScale?.ScaleName?.Trim() ?? dto.Scale?.Trim();
+            SalaryScale? selectedScale = selectedPackage?.SalaryScale;
+            if (selectedScale == null && !string.IsNullOrWhiteSpace(scaleName))
             {
                 selectedScale = await _db.SalaryScales.AsNoTracking()
                     .FirstOrDefaultAsync(scale => scale.TenantId == person.TenantId && scale.IsActive && scale.ScaleName == scaleName);
                 if (selectedScale == null) return (null, "The selected salary scale is not active or does not belong to this company.");
             }
+
             var workingDays = decimal.TryParse(dto.WorkingDays, NumberStyles.Number, CultureInfo.InvariantCulture, out var parsedDays) && parsedDays > 0 ? parsedDays : 26m;
             var workingHours = decimal.TryParse(dto.WorkingHours, NumberStyles.Number, CultureInfo.InvariantCulture, out var parsedHours) && parsedHours > 0 ? parsedHours : ResolveWorkingHours(dto.TimingFrom, dto.TimingTo);
             var basicSalary = selectedScale?.BasicSalary ?? dto.BasicSalary;
-            var perDay = basicSalary.HasValue ? decimal.Round(basicSalary.Value / workingDays, 2, MidpointRounding.AwayFromZero) : dto.AccountsPerDay;
+            var incrementSalary = selectedScale?.YearlyIncrement ?? dto.IncrementSalary;
+            var maxSalary = selectedScale?.MaximumSalary ?? dto.MaxSalary;
+            var scaleDate = dto.ScaleDate;
+            var asOf = DateOnly.FromDateTime(DateTime.UtcNow.Date);
+            var currentPay = basicSalary.HasValue
+                ? PayrollCurrentPayCalculator.Compute(
+                    basicSalary.Value,
+                    incrementSalary ?? 0,
+                    maxSalary ?? 0,
+                    scaleDate,
+                    asOf,
+                    selectedScale?.ApplyAfter)
+                : dto.CurrentPay;
+            var perDay = currentPay.HasValue ? decimal.Round(currentPay.Value / workingDays, 2, MidpointRounding.AwayFromZero) : dto.AccountsPerDay;
             var perHour = perDay.HasValue ? decimal.Round(perDay.Value / workingHours, 2, MidpointRounding.AwayFromZero) : dto.AccountsPerHour;
 
+            profile.SalaryPackageId = selectedPackage?.Id;
             profile.Scale = scaleName;
-            profile.ScaleDate = dto.ScaleDate;
+            profile.ScaleDate = scaleDate;
             profile.BasicSalary = basicSalary;
-            profile.IncrementSalary = selectedScale?.YearlyIncrement ?? dto.IncrementSalary;
-            profile.MaxSalary = selectedScale?.MaximumSalary ?? dto.MaxSalary;
-            profile.CurrentPay = selectedScale?.BasicSalary ?? dto.CurrentPay;
+            profile.IncrementSalary = incrementSalary;
+            profile.MaxSalary = maxSalary;
+            profile.CurrentPay = currentPay;
             profile.AccountsPerDay = perDay;
             profile.AccountsPerHour = perHour;
             profile.LeaveFrom = dto.LeaveFrom;
@@ -1277,6 +1303,7 @@ namespace Accounts.Services.Services
                 PostingPerDay = profile.PostingPerDay,
                 PromotionFrom = profile.PromotionFrom,
                 PromotionTo = profile.PromotionTo,
+                SalaryPackageId = profile.SalaryPackageId,
                 Scale = profile.Scale,
                 ScaleDate = profile.ScaleDate,
                 BasicSalary = profile.BasicSalary,
@@ -1371,6 +1398,7 @@ namespace Accounts.Services.Services
                 PostingPerDay = profile?.PostingPerDay,
                 PromotionFrom = profile?.PromotionFrom,
                 PromotionTo = profile?.PromotionTo,
+                SalaryPackageId = profile?.SalaryPackageId,
                 Scale = profile?.Scale,
                 ScaleDate = profile?.ScaleDate,
                 BasicSalary = profile?.BasicSalary,

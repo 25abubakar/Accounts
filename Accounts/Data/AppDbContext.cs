@@ -56,6 +56,8 @@ namespace Accounts.Data
         public DbSet<PayrollLine>              PayrollLines            => Set<PayrollLine>();
         public DbSet<EobiSetting>              EobiSettings            => Set<EobiSetting>();
         public DbSet<PayrollTaxSlab>           PayrollTaxSlabs         => Set<PayrollTaxSlab>();
+        public DbSet<PayrollStaffTax>          PayrollStaffTaxes       => Set<PayrollStaffTax>();
+        public DbSet<PayrollTaxParameter>      PayrollTaxParameters    => Set<PayrollTaxParameter>();
         public DbSet<EobiEligibility>          EobiEligibilities       => Set<EobiEligibility>();
         public DbSet<StaffMonthlyEobi>         StaffMonthlyEobis       => Set<StaffMonthlyEobi>();
         public DbSet<PayScaleRuleRegistration> PayScaleRuleRegistrations => Set<PayScaleRuleRegistration>();
@@ -269,6 +271,10 @@ namespace Accounts.Data
             builder.Entity<EobiSetting>().HasQueryFilter(row =>
                 _tenantService != null && !_tenantService.IsSuperAdmin && _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
             builder.Entity<PayrollTaxSlab>().HasQueryFilter(row =>
+                _tenantService != null && !_tenantService.IsSuperAdmin && _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
+            builder.Entity<PayrollStaffTax>().HasQueryFilter(row =>
+                _tenantService != null && !_tenantService.IsSuperAdmin && _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
+            builder.Entity<PayrollTaxParameter>().HasQueryFilter(row =>
                 _tenantService != null && !_tenantService.IsSuperAdmin && _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
             builder.Entity<EobiEligibility>().HasQueryFilter(row =>
                 _tenantService != null && !_tenantService.IsSuperAdmin && _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
@@ -1323,10 +1329,15 @@ namespace Accounts.Data
                 e.ToTable("PersonHrProfiles");
                 e.HasKey(x => x.PersonId);
                 e.HasIndex(x => x.TenantId);
+                e.HasIndex(x => new { x.TenantId, x.SalaryPackageId });
                 e.HasOne(x => x.Person)
                  .WithOne()
                  .HasForeignKey<PersonHrProfile>(x => x.PersonId)
                  .OnDelete(DeleteBehavior.Cascade);
+                e.HasOne(x => x.SalaryPackage)
+                 .WithMany()
+                 .HasForeignKey(x => x.SalaryPackageId)
+                 .OnDelete(DeleteBehavior.Restrict);
             });
 
             builder.Entity<PersonEducation>(e =>
@@ -1601,7 +1612,32 @@ namespace Accounts.Data
             });
             builder.Entity<PayrollTaxSlab>(e =>
             {
+                e.Property(x => x.SlabName).HasMaxLength(80).IsRequired();
+                e.Property(x => x.RateType).HasMaxLength(80);
                 e.HasIndex(x => new { x.TenantId, x.TaxYear, x.FromAmount }).IsUnique();
+                e.HasOne<Tenant>().WithMany().HasForeignKey(x => x.TenantId).OnDelete(DeleteBehavior.Restrict);
+            });
+            builder.Entity<PayrollStaffTax>(e =>
+            {
+                e.ToTable("PayrollStaffTaxes");
+                e.HasKey(x => x.Id);
+                e.Property(x => x.Id).ValueGeneratedOnAdd();
+                e.Property(x => x.TaxRef).HasMaxLength(80).IsRequired();
+                e.Property(x => x.FullName).HasMaxLength(200).IsRequired();
+                e.Property(x => x.StaffNumber).HasMaxLength(50);
+                e.Property(x => x.Department).HasMaxLength(200);
+                e.Property(x => x.Designation).HasMaxLength(200);
+                e.Property(x => x.Frequency).HasMaxLength(30);
+                e.HasIndex(x => new { x.TenantId, x.TaxRef }).IsUnique();
+                e.HasIndex(x => new { x.TenantId, x.PersonId, x.DateFrom });
+                e.HasOne<Person>().WithMany().HasForeignKey(x => x.PersonId).OnDelete(DeleteBehavior.Restrict);
+                e.HasOne<Tenant>().WithMany().HasForeignKey(x => x.TenantId).OnDelete(DeleteBehavior.Restrict);
+            });
+            builder.Entity<PayrollTaxParameter>(e =>
+            {
+                e.ToTable("PayrollTaxParameters");
+                e.HasKey(x => x.Id);
+                e.HasIndex(x => x.TenantId);
                 e.HasOne<Tenant>().WithMany().HasForeignKey(x => x.TenantId).OnDelete(DeleteBehavior.Restrict);
             });
             builder.Entity<EobiEligibility>(e =>

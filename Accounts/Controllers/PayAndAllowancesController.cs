@@ -17,7 +17,8 @@ public sealed class PayAndAllowancesController(
     RbacService rbac,
     TenantPermissionService tenantPermissions,
     PayrollCalculationService payroll,
-    StaffMonthlyEobiService staffMonthlyEobi) : ControllerBase
+    StaffMonthlyEobiService staffMonthlyEobi,
+    StaffTaxService staffTax) : ControllerBase
 {
     [HttpGet("benefits")]
     public async Task<IActionResult> Benefits(CancellationToken ct) =>
@@ -778,29 +779,374 @@ public sealed class PayAndAllowancesController(
         isPaid = row.IsPaid
     };
 
+    private static object MapStaffTax(PayrollStaffTax row) => new
+    {
+        id = row.Id,
+        taxId = row.TaxRef,
+        personId = row.PersonId,
+        staffGuid = row.StaffId,
+        staffId = row.StaffNumber,
+        fullName = row.FullName,
+        department = row.Department,
+        designation = row.Designation,
+        dateFrom = row.DateFrom,
+        dateTo = row.DateTo,
+        frequency = row.Frequency,
+        min = row.MonthlyPay,
+        net = row.MonthlyPay,
+        maxSalary = row.IncomePay,
+        incomePay = row.IncomePay,
+        taxMonths = row.TotMonth,
+        adjustment = row.TaxAdjustment,
+        taxableIncome = row.TaxableIncome,
+        taxAmount = row.TaxAmount,
+        monthlyTaxAmt = row.MonthlyTaxAmt,
+        payMonth = row.PayMonth,
+        netTax = row.NetTax,
+        monthlyNetTax = row.MonthlyNetTax,
+        extraAmount = row.ExtraAmount,
+        monthlyPay = row.MonthlyPay,
+        totMonth = row.TotMonth,
+        dedPercentage = row.DedPercentage,
+        isActive = row.IsActive
+    };
+
+    private static object MapStaffTaxCalculation(StaffTaxCalculationResult row) => new
+    {
+        personId = row.PersonId,
+        staffGuid = row.StaffGuid,
+        staffId = row.StaffId,
+        fullName = row.FullName,
+        department = row.Department,
+        designation = row.Designation,
+        dateFrom = row.DateFrom,
+        dateTo = row.DateTo,
+        frequency = row.Frequency,
+        monthlyPay = row.MonthlyPay,
+        totMonth = row.TotMonth,
+        incomePay = row.IncomePay,
+        annual = row.IncomePay,
+        extraAmount = row.ExtraAmount,
+        taxableIncome = row.TaxableIncome,
+        taxAmount = row.TaxAmount,
+        grossTax = row.TaxAmount,
+        taxAdjustment = row.TaxAdjustment,
+        netTax = row.NetTax,
+        payMonth = row.PayMonth,
+        monthlyTaxAmt = row.MonthlyTaxAmt,
+        monthlyNetTax = row.MonthlyNetTax,
+        dedPercentage = row.DedPercentage,
+        taxYear = row.TaxYear,
+        minTaxAmt = row.MinTaxAmt
+    };
+
+    private static object MapTaxParameter(PayrollTaxParameter row) => new
+    {
+        id = row.Id,
+        minTaxAmt = row.MinTaxAmt,
+        dedPercentage = row.DedPercentage,
+        isActive = row.IsActive
+    };
+
+    private static StaffTaxCalculateRequest ToCalculateRequest(StaffTaxCalculateSave dto) =>
+        new(dto.PersonId, dto.DateFrom, dto.DateTo, dto.Frequency, dto.MonthlyPay, dto.TotMonth,
+            dto.ExtraAmount, dto.TaxAdjustment, dto.PayMonth, dto.DedPercentage);
+
+    private static StaffTaxSaveRequest ToSaveRequest(long? id, StaffTaxUpsertSave dto) =>
+        new(id, dto.PersonId, dto.DateFrom, dto.DateTo, dto.Frequency, dto.MonthlyPay, dto.TotMonth,
+            dto.ExtraAmount, dto.TaxAdjustment, dto.PayMonth, dto.DedPercentage, dto.IsActive);
+
+    [HttpGet("staff-taxes")]
+    public async Task<IActionResult> StaffTaxes(CancellationToken ct)
+    {
+        var denied = await Guard("/pay-allowances/tax", "VIEW", ct); if (denied != null) return denied;
+        var rows = await staffTax.ListAsync(ct);
+        return Ok(rows.Select(MapStaffTax));
+    }
+
+    [HttpGet("staff-taxes/candidates")]
+    public async Task<IActionResult> StaffTaxCandidates(CancellationToken ct)
+    {
+        var denied = await Guard("/pay-allowances/tax", "VIEW", ct); if (denied != null) return denied;
+        return Ok(await staffTax.CandidatesAsync(ct));
+    }
+
+    [HttpPost("staff-taxes/calculate")]
+    public async Task<IActionResult> CalculateStaffTax([FromBody] StaffTaxCalculateSave dto, CancellationToken ct)
+    {
+        var denied = await Guard("/pay-allowances/tax", "VIEW", ct); if (denied != null) return denied;
+        try
+        {
+            var result = await staffTax.CalculateAsync(ToCalculateRequest(dto), ct);
+            return Ok(MapStaffTaxCalculation(result));
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
+    }
+
+    [HttpPost("staff-taxes")]
+    public async Task<IActionResult> CreateStaffTax([FromBody] StaffTaxUpsertSave dto, CancellationToken ct)
+    {
+        var denied = await Guard("/pay-allowances/tax", "ADD", ct); if (denied != null) return denied;
+        try
+        {
+            var row = await staffTax.SaveAsync(ToSaveRequest(null, dto), ct);
+            return Ok(MapStaffTax(row));
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
+    }
+
+    [HttpPut("staff-taxes/{id:long}")]
+    public async Task<IActionResult> UpdateStaffTax(long id, [FromBody] StaffTaxUpsertSave dto, CancellationToken ct)
+    {
+        var denied = await Guard("/pay-allowances/tax", "EDIT", ct); if (denied != null) return denied;
+        try
+        {
+            var row = await staffTax.SaveAsync(ToSaveRequest(id, dto), ct);
+            return Ok(MapStaffTax(row));
+        }
+        catch (KeyNotFoundException)
+        {
+            return NotFound();
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
+    }
+
+    [HttpPatch("staff-taxes/{id:long}")]
+    public async Task<IActionResult> PatchStaffTax(long id, [FromBody] StaffTaxPatchSave dto, CancellationToken ct)
+    {
+        var denied = await Guard("/pay-allowances/tax", "EDIT", ct); if (denied != null) return denied;
+        try
+        {
+            var row = await staffTax.PatchAsync(id, new StaffTaxPatchRequest(dto.NetTax, dto.TaxAdjustment, dto.MonthlyTaxAmt, dto.IsActive), ct);
+            return Ok(MapStaffTax(row));
+        }
+        catch (KeyNotFoundException)
+        {
+            return NotFound();
+        }
+    }
+
+    [HttpDelete("staff-taxes/{id:long}")]
+    public async Task<IActionResult> DeleteStaffTax(long id, CancellationToken ct)
+    {
+        var denied = await Guard("/pay-allowances/tax", "DELETE", ct); if (denied != null) return denied;
+        try
+        {
+            await staffTax.DeleteAsync(id, ct);
+            return NoContent();
+        }
+        catch (KeyNotFoundException)
+        {
+            return NotFound();
+        }
+    }
+
+    [HttpGet("tax-parameters")]
+    public async Task<IActionResult> TaxParameters(CancellationToken ct)
+    {
+        var denied = await Guard("/pay-allowances/tax", "VIEW", ct); if (denied != null) return denied;
+        var rows = await staffTax.ListParametersAsync(ct);
+        return Ok(rows.Select(MapTaxParameter));
+    }
+
+    [HttpPost("tax-parameters")]
+    public async Task<IActionResult> CreateTaxParameter([FromBody] TaxParameterSave dto, CancellationToken ct)
+    {
+        var denied = await Guard("/pay-allowances/tax", "ADD", ct); if (denied != null) return denied;
+        try
+        {
+            var row = await staffTax.SaveParameterAsync(null, dto.MinTaxAmt, dto.DedPercentage, dto.IsActive, ct);
+            return Ok(MapTaxParameter(row));
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
+    }
+
+    [HttpPut("tax-parameters/{id:int}")]
+    public async Task<IActionResult> UpdateTaxParameter(int id, [FromBody] TaxParameterSave dto, CancellationToken ct)
+    {
+        var denied = await Guard("/pay-allowances/tax", "EDIT", ct); if (denied != null) return denied;
+        try
+        {
+            var row = await staffTax.SaveParameterAsync(id, dto.MinTaxAmt, dto.DedPercentage, dto.IsActive, ct);
+            return Ok(MapTaxParameter(row));
+        }
+        catch (KeyNotFoundException)
+        {
+            return NotFound();
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
+    }
+
+    [HttpPatch("tax-parameters/{id:int}")]
+    public async Task<IActionResult> PatchTaxParameter(int id, [FromBody] TaxParameterPatchSave dto, CancellationToken ct)
+    {
+        var denied = await Guard("/pay-allowances/tax", "EDIT", ct); if (denied != null) return denied;
+        try
+        {
+            var existing = await staffTax.ListParametersAsync(ct);
+            var current = existing.FirstOrDefault(x => x.Id == id);
+            if (current == null) return NotFound();
+            var row = await staffTax.SaveParameterAsync(
+                id,
+                dto.MinTaxAmt ?? current.MinTaxAmt,
+                dto.DedPercentage ?? current.DedPercentage,
+                dto.IsActive ?? current.IsActive,
+                ct);
+            return Ok(MapTaxParameter(row));
+        }
+        catch (KeyNotFoundException)
+        {
+            return NotFound();
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
+    }
+
+    [HttpDelete("tax-parameters/{id:int}")]
+    public async Task<IActionResult> DeleteTaxParameter(int id, CancellationToken ct)
+    {
+        var denied = await Guard("/pay-allowances/tax", "DELETE", ct); if (denied != null) return denied;
+        try
+        {
+            await staffTax.DeleteParameterAsync(id, ct);
+            return NoContent();
+        }
+        catch (KeyNotFoundException)
+        {
+            return NotFound();
+        }
+    }
+
     [HttpGet("tax-slabs")]
     public async Task<IActionResult> TaxSlabs(CancellationToken ct) =>
         await Read("/pay-allowances/tax", db.PayrollTaxSlabs.OrderByDescending(x => x.TaxYear).ThenBy(x => x.FromAmount), ct);
 
+    [HttpGet("tax-lookups")]
+    public async Task<IActionResult> TaxLookups(CancellationToken ct)
+    {
+        var denied = await Guard("/pay-allowances/tax", "VIEW", ct); if (denied != null) return denied;
+        var rates = await db.RateTypes.AsNoTracking()
+            .Where(x => x.IsActive)
+            .OrderBy(x => x.DisplayOrder).ThenBy(x => x.Name)
+            .Select(x => x.Name)
+            .Distinct()
+            .ToListAsync(ct);
+        return Ok(new { rateTypes = rates });
+    }
+
     [HttpPost("tax-slabs")]
-    public async Task<IActionResult> CreateTax(TaxSlabSave dto, CancellationToken ct)
+    public async Task<IActionResult> CreateTax([FromBody] TaxSlabSave dto, CancellationToken ct)
     {
         var denied = await Guard("/pay-allowances/tax", "ADD", ct); if (denied != null) return denied;
-        var error = ValidateTax(dto); if (error != null) return BadRequest(new { message = error });
-        if (await TaxOverlap(dto, null, ct)) return Conflict(new { message = "This tax slab overlaps an existing active slab." });
-        var row = new PayrollTaxSlab { TenantId = tenant.RequiredTenantId, TaxYear = dto.TaxYear.Trim(), FromAmount = dto.FromAmount, ToAmount = dto.ToAmount, FixedTaxAmount = dto.FixedTaxAmount, RatePercentage = dto.RatePercentage, IsActive = dto.IsActive };
-        db.Add(row); await db.SaveChangesAsync(ct); return Ok(row);
+        if (dto is null) return BadRequest(new { message = "Tax bracket payload is required." });
+        var normalized = NormalizeTaxSlab(dto);
+        var error = await ValidateTaxAsync(normalized, ct); if (error != null) return BadRequest(new { message = error });
+        if (await TaxOverlap(normalized, null, ct)) return Conflict(new { message = "This tax slab overlaps an existing active slab." });
+        var row = new PayrollTaxSlab
+        {
+            TenantId = tenant.RequiredTenantId,
+            TaxYear = normalized.TaxYear!.Trim(),
+            SlabName = normalized.SlabName.Trim(),
+            FromAmount = normalized.FromAmount,
+            ToAmount = normalized.ToAmount,
+            RateType = Clean(normalized.RateType),
+            FixedTaxAmount = normalized.FixedTaxAmount,
+            RatePercentage = normalized.RatePercentage,
+            TotTax = normalized.TotTax,
+            IsActive = normalized.IsActive,
+        };
+        try
+        {
+            db.Add(row);
+            await db.SaveChangesAsync(ct);
+            return Ok(row);
+        }
+        catch (DbUpdateException ex)
+        {
+            return BadRequest(new { message = ex.InnerException?.Message ?? ex.Message });
+        }
     }
 
     [HttpPut("tax-slabs/{id:int}")]
-    public async Task<IActionResult> UpdateTax(int id, TaxSlabSave dto, CancellationToken ct)
+    public async Task<IActionResult> UpdateTax(int id, [FromBody] TaxSlabSave dto, CancellationToken ct)
+    {
+        var denied = await Guard("/pay-allowances/tax", "EDIT", ct); if (denied != null) return denied;
+        if (dto is null) return BadRequest(new { message = "Tax bracket payload is required." });
+        var row = await db.PayrollTaxSlabs.SingleOrDefaultAsync(x => x.Id == id, ct); if (row == null) return NotFound();
+        var normalized = NormalizeTaxSlab(dto, row.TaxYear);
+        var error = await ValidateTaxAsync(normalized, ct); if (error != null) return BadRequest(new { message = error });
+        if (await TaxOverlap(normalized, id, ct)) return Conflict(new { message = "This tax slab overlaps an existing active slab." });
+        row.TaxYear = normalized.TaxYear!.Trim();
+        row.SlabName = normalized.SlabName.Trim();
+        row.FromAmount = normalized.FromAmount;
+        row.ToAmount = normalized.ToAmount;
+        row.RateType = Clean(normalized.RateType);
+        row.FixedTaxAmount = normalized.FixedTaxAmount;
+        row.RatePercentage = normalized.RatePercentage;
+        row.TotTax = normalized.TotTax;
+        row.IsActive = normalized.IsActive;
+        row.UpdatedOnUtc = DateTime.UtcNow;
+        try
+        {
+            await db.SaveChangesAsync(ct);
+            return Ok(row);
+        }
+        catch (DbUpdateException ex)
+        {
+            return BadRequest(new { message = ex.InnerException?.Message ?? ex.Message });
+        }
+    }
+
+    [HttpPatch("tax-slabs/{id:int}")]
+    public async Task<IActionResult> PatchTax(int id, TaxSlabPatchSave dto, CancellationToken ct)
     {
         var denied = await Guard("/pay-allowances/tax", "EDIT", ct); if (denied != null) return denied;
         var row = await db.PayrollTaxSlabs.SingleOrDefaultAsync(x => x.Id == id, ct); if (row == null) return NotFound();
-        var error = ValidateTax(dto); if (error != null) return BadRequest(new { message = error });
-        if (await TaxOverlap(dto, id, ct)) return Conflict(new { message = "This tax slab overlaps an existing active slab." });
-        row.TaxYear = dto.TaxYear.Trim(); row.FromAmount = dto.FromAmount; row.ToAmount = dto.ToAmount; row.FixedTaxAmount = dto.FixedTaxAmount; row.RatePercentage = dto.RatePercentage; row.IsActive = dto.IsActive; row.UpdatedOnUtc = DateTime.UtcNow;
-        await db.SaveChangesAsync(ct); return Ok(row);
+
+        if (dto.SlabName != null) row.SlabName = dto.SlabName.Trim();
+        if (dto.FromAmount.HasValue) row.FromAmount = dto.FromAmount.Value;
+        if (dto.ToAmount.HasValue) row.ToAmount = dto.ToAmount.Value;
+        if (dto.RateType != null) row.RateType = Clean(dto.RateType);
+        if (dto.FixedTaxAmount.HasValue) row.FixedTaxAmount = dto.FixedTaxAmount.Value;
+        if (dto.RatePercentage.HasValue) row.RatePercentage = dto.RatePercentage.Value;
+        if (dto.TotTax.HasValue) row.TotTax = dto.TotTax.Value;
+        if (dto.IsActive.HasValue) row.IsActive = dto.IsActive.Value;
+
+        var check = new TaxSlabSave
+        {
+            TaxYear = row.TaxYear,
+            SlabName = row.SlabName,
+            FromAmount = row.FromAmount,
+            ToAmount = row.ToAmount,
+            RateType = row.RateType,
+            FixedTaxAmount = row.FixedTaxAmount,
+            RatePercentage = row.RatePercentage,
+            TotTax = row.TotTax,
+            IsActive = row.IsActive,
+        };
+        var error = await ValidateTaxAsync(check, ct); if (error != null) return BadRequest(new { message = error });
+        if (await TaxOverlap(check, id, ct)) return Conflict(new { message = "This tax slab overlaps an existing active slab." });
+
+        row.UpdatedOnUtc = DateTime.UtcNow;
+        await db.SaveChangesAsync(ct);
+        return Ok(row);
     }
 
     [HttpDelete("tax-slabs/{id:int}")]
@@ -811,8 +1157,30 @@ public sealed class PayAndAllowancesController(
     public async Task<IActionResult> Eligibility(CancellationToken ct)
     {
         var denied = await Guard("/pay-allowances/eobi-eligibility", "VIEW", ct); if (denied != null) return denied;
-        var rows = await db.EobiEligibilities.AsNoTracking().OrderBy(x => x.Person!.FullName)
-            .Select(x => new { x.Id, x.PersonId, PersonName = x.Person!.FullName, StaffNumber = x.Person.Staff != null ? x.Person.Staff.LoginId : null, x.EobiNumber, x.EffectiveFrom, x.EffectiveTo, x.IsEligible, x.Remarks }).ToListAsync(ct);
+        var rows = await (
+            from e in db.EobiEligibilities.AsNoTracking()
+            join p in db.Persons.AsNoTracking() on e.PersonId equals p.PersonId
+            join hr in db.PersonHrProfiles.AsNoTracking() on p.PersonId equals hr.PersonId into hrJoin
+            from hr in hrJoin.DefaultIfEmpty()
+            join dir in db.StaffDirectoryRows.AsNoTracking() on p.PersonId equals dir.PersonId into dirJoin
+            from dir in dirJoin.DefaultIfEmpty()
+            orderby p.FullName
+            select new
+            {
+                id = e.Id,
+                personId = e.PersonId,
+                staffId = dir != null ? dir.EmployeeId : null,
+                fullName = p.FullName,
+                eobiNo = e.EobiNumber,
+                eobiNumber = e.EobiNumber,
+                department = dir != null ? dir.Department : null,
+                doj = hr != null && hr.JoiningDate != null ? DateOnly.FromDateTime(hr.JoiningDate.Value) : (DateOnly?)null,
+                isOn = e.IsEligible,
+                isEligible = e.IsEligible,
+                effectiveFrom = e.EffectiveFrom,
+                effectiveTo = e.EffectiveTo,
+                remarks = e.Remarks,
+            }).ToListAsync(ct);
         return Ok(rows);
     }
 
@@ -824,7 +1192,9 @@ public sealed class PayAndAllowancesController(
         if (!await db.Persons.AnyAsync(x => x.PersonId == dto.PersonId, ct)) return BadRequest(new { message = "Selected employee was not found." });
         if (await db.EobiEligibilities.AnyAsync(x => x.PersonId == dto.PersonId, ct)) return Conflict(new { message = "EOBI eligibility already exists for this employee." });
         var row = new EobiEligibility { TenantId = tenant.RequiredTenantId, PersonId = dto.PersonId, EobiNumber = Clean(dto.EobiNumber), EffectiveFrom = dto.EffectiveFrom, EffectiveTo = dto.EffectiveTo, IsEligible = dto.IsEligible, Remarks = Clean(dto.Remarks) };
-        db.Add(row); await db.SaveChangesAsync(ct); return Ok(row);
+        db.Add(row);
+        await SyncPersonJoiningDateAsync(dto.PersonId, dto.EffectiveFrom, ct);
+        await db.SaveChangesAsync(ct); return Ok(row);
     }
 
     [HttpPut("eobi-eligibility/{id:int}")]
@@ -836,6 +1206,7 @@ public sealed class PayAndAllowancesController(
         if (!await db.Persons.AnyAsync(x => x.PersonId == dto.PersonId, ct)) return BadRequest(new { message = "Selected employee was not found." });
         if (await db.EobiEligibilities.AnyAsync(x => x.Id != id && x.PersonId == dto.PersonId, ct)) return Conflict(new { message = "EOBI eligibility already exists for this employee." });
         row.PersonId = dto.PersonId; row.EobiNumber = Clean(dto.EobiNumber); row.EffectiveFrom = dto.EffectiveFrom; row.EffectiveTo = dto.EffectiveTo; row.IsEligible = dto.IsEligible; row.Remarks = Clean(dto.Remarks); row.UpdatedOnUtc = DateTime.UtcNow;
+        await SyncPersonJoiningDateAsync(dto.PersonId, dto.EffectiveFrom, ct);
         await db.SaveChangesAsync(ct); return Ok(row);
     }
 
@@ -872,8 +1243,32 @@ public sealed class PayAndAllowancesController(
     private async Task<bool> TaxOverlap(TaxSlabSave dto, int? id, CancellationToken ct)
     {
         if (!dto.IsActive) return false;
+        var taxYear = (dto.TaxYear ?? string.Empty).Trim();
         var upper = dto.ToAmount ?? decimal.MaxValue;
-        return await db.PayrollTaxSlabs.AnyAsync(x => x.Id != id && x.IsActive && x.TaxYear == dto.TaxYear.Trim() && x.FromAmount <= upper && (x.ToAmount == null || x.ToAmount >= dto.FromAmount), ct);
+        return await db.PayrollTaxSlabs.AnyAsync(x => x.Id != id && x.IsActive && x.TaxYear == taxYear && x.FromAmount <= upper && (x.ToAmount == null || x.ToAmount >= dto.FromAmount), ct);
+    }
+
+    private static TaxSlabSave NormalizeTaxSlab(TaxSlabSave dto, string? existingTaxYear = null)
+    {
+        var year = DateTime.UtcNow.Year;
+        var fallback = string.IsNullOrWhiteSpace(existingTaxYear) ? $"{year}-{year + 1}" : existingTaxYear.Trim();
+        dto.TaxYear = string.IsNullOrWhiteSpace(dto.TaxYear) ? fallback : dto.TaxYear.Trim();
+        dto.SlabName = (dto.SlabName ?? string.Empty).Trim();
+        dto.RateType = string.IsNullOrWhiteSpace(dto.RateType) ? null : dto.RateType.Trim();
+        return dto;
+    }
+
+    private async Task<string?> ValidateTaxAsync(TaxSlabSave x, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(x.TaxYear)) return "Tax year is required.";
+        if (string.IsNullOrWhiteSpace(x.SlabName)) return "Slab name is required.";
+        if (x.FromAmount < 0 || (x.ToAmount.HasValue && x.ToAmount.Value < x.FromAmount) || x.FixedTaxAmount < 0 || x.RatePercentage is < 0 or > 100)
+            return "Enter a valid tax range and rate.";
+        if (x.TotTax is < 0) return "Total tax cannot be negative.";
+        if (!string.IsNullOrWhiteSpace(x.RateType)
+            && !await db.RateTypes.AsNoTracking().AnyAsync(type => type.IsActive && type.Name == x.RateType.Trim(), ct))
+            return "Select a valid rate type.";
+        return null;
     }
 
     private async Task<string?> ValidateDefinition(string code, string name, string calculation, decimal amount, decimal percentage, CancellationToken ct)
@@ -898,8 +1293,32 @@ public sealed class PayAndAllowancesController(
         return normalized == null ? "Select a valid payroll status." : null;
     }
     private static string? ValidateEobi(EobiSettingSave x) => x.EmployeeRatePercentage is < 0 or > 100 || x.EmployerRatePercentage is < 0 or > 100 || x.MinimumWage < 0 || x.MaximumContributionBase < 0 ? "Enter valid EOBI rates and amounts." : x.EffectiveTo < x.EffectiveFrom ? "Effective To cannot be before Effective From." : null;
-    private static string? ValidateTax(TaxSlabSave x) => string.IsNullOrWhiteSpace(x.TaxYear) ? "Tax year is required." : x.FromAmount < 0 || x.ToAmount < x.FromAmount || x.FixedTaxAmount < 0 || x.RatePercentage is < 0 or > 100 ? "Enter a valid tax range and rate." : null;
     private static string? ValidateEligibility(EobiEligibilitySave x) => x.PersonId == Guid.Empty ? "Employee is required." : x.EffectiveTo < x.EffectiveFrom ? "Effective To cannot be before Effective From." : null;
+
+    private async Task SyncPersonJoiningDateAsync(Guid personId, DateOnly joiningDate, CancellationToken ct)
+    {
+        var profile = await db.PersonHrProfiles.SingleOrDefaultAsync(x => x.PersonId == personId, ct);
+        if (profile == null)
+        {
+            var personTenantId = await db.Persons.AsNoTracking()
+                .Where(x => x.PersonId == personId)
+                .Select(x => x.TenantId)
+                .FirstOrDefaultAsync(ct);
+            if (personTenantId == 0) personTenantId = tenant.RequiredTenantId;
+            db.PersonHrProfiles.Add(new PersonHrProfile
+            {
+                PersonId = personId,
+                TenantId = personTenantId,
+                JoiningDate = joiningDate.ToDateTime(TimeOnly.MinValue),
+                CreatedDate = DateTime.UtcNow,
+            });
+            return;
+        }
+
+        profile.JoiningDate = joiningDate.ToDateTime(TimeOnly.MinValue);
+        profile.ModifiedDate = DateTime.UtcNow;
+    }
+
     private static string? ValidateBenefitRule(BenefitRuleSave x)
     {
         if (string.IsNullOrWhiteSpace(x.BenefitsType) || string.IsNullOrWhiteSpace(x.Name)) return "Benefits Type and Name are required.";
@@ -1146,7 +1565,35 @@ public sealed record PayBonusSave(string Code, string Name, string CalculationTy
 public sealed record PayrollRunSave(int Year, int Month, string? RunNumber, DateOnly PayDate, string Status, string? Notes);
 public sealed record PayrollLineSave(decimal AllowanceAmount, decimal EmployerBenefitAmount, decimal StaffBenefitDeduction, decimal BonusAmount, decimal OvertimeAmount, decimal AttendanceDeduction, decimal AttendanceAdjustment, decimal TaxAmount, decimal EmployeeEobiAmount, decimal EmployerEobiAmount, decimal OtherDeduction, string? Remarks);
 public sealed record EobiSettingSave(decimal EmployeeRatePercentage, decimal EmployerRatePercentage, decimal MinimumWage, decimal MaximumContributionBase, DateOnly EffectiveFrom, DateOnly? EffectiveTo, bool IsActive);
-public sealed record TaxSlabSave(string TaxYear, decimal FromAmount, decimal? ToAmount, decimal FixedTaxAmount, decimal RatePercentage, bool IsActive);
+public sealed class TaxSlabSave
+{
+    public string? TaxYear { get; set; }
+    public string SlabName { get; set; } = string.Empty;
+    public decimal FromAmount { get; set; }
+    public decimal? ToAmount { get; set; }
+    public string? RateType { get; set; }
+    public decimal FixedTaxAmount { get; set; }
+    public decimal RatePercentage { get; set; }
+    public decimal? TotTax { get; set; }
+    public bool IsActive { get; set; } = true;
+}
+
+public sealed class TaxSlabPatchSave
+{
+    public string? SlabName { get; set; }
+    public decimal? FromAmount { get; set; }
+    public decimal? ToAmount { get; set; }
+    public string? RateType { get; set; }
+    public decimal? FixedTaxAmount { get; set; }
+    public decimal? RatePercentage { get; set; }
+    public decimal? TotTax { get; set; }
+    public bool? IsActive { get; set; }
+}
+public sealed record TaxParameterSave(decimal MinTaxAmt, decimal DedPercentage = 100, bool IsActive = true);
+public sealed record TaxParameterPatchSave(decimal? MinTaxAmt, decimal? DedPercentage, bool? IsActive);
+public sealed record StaffTaxCalculateSave(Guid PersonId, DateOnly DateFrom, DateOnly DateTo, string? Frequency, decimal MonthlyPay, int TotMonth, decimal ExtraAmount, decimal TaxAdjustment, int PayMonth, decimal DedPercentage);
+public sealed record StaffTaxUpsertSave(Guid PersonId, DateOnly DateFrom, DateOnly DateTo, string? Frequency, decimal MonthlyPay, int TotMonth, decimal ExtraAmount, decimal TaxAdjustment, int PayMonth, decimal DedPercentage, bool IsActive = true);
+public sealed record StaffTaxPatchSave(decimal? NetTax, decimal? TaxAdjustment, decimal? MonthlyTaxAmt, bool? IsActive);
 public sealed record EobiEligibilitySave(Guid PersonId, string? EobiNumber, DateOnly EffectiveFrom, DateOnly? EffectiveTo, bool IsEligible, string? Remarks);
 public sealed record StaffMonthlyEobiCreateSave(int Year, int Month);
 public sealed record StaffMonthlyEobiUpdateSave(string? EobiRef);

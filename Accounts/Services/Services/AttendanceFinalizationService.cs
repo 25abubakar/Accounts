@@ -50,6 +50,14 @@ public sealed class AttendanceFinalizationService(
         int tenantId,
         int year,
         int month,
+        CancellationToken cancellationToken = default) =>
+        await RefreshPeriodAsync(tenantId, year, month, scopedPersonIds: null, cancellationToken);
+
+    public async Task<int> RefreshPeriodAsync(
+        int tenantId,
+        int year,
+        int month,
+        IReadOnlyCollection<Guid>? scopedPersonIds,
         CancellationToken cancellationToken = default)
     {
         if (year is < 2000 or > 2100 || month is < 1 or > 12)
@@ -61,6 +69,10 @@ public sealed class AttendanceFinalizationService(
         var dateTo = monthEnd < today ? monthEnd : today;
         if (monthStart > dateTo)
             return 0;
+
+        var personFilter = scopedPersonIds is { Count: > 0 }
+            ? scopedPersonIds.ToHashSet()
+            : null;
 
         var employees = await (
             from staff in db.StaffVacancies.IgnoreQueryFilters().AsNoTracking()
@@ -79,6 +91,9 @@ public sealed class AttendanceFinalizationService(
                 profile == null ? null : profile.JoiningDate,
                 person.TerminationDateUtc))
             .ToListAsync(cancellationToken);
+
+        if (personFilter is not null)
+            employees = employees.Where(employee => personFilter.Contains(employee.PersonId)).ToList();
 
         if (employees.Count == 0)
             return 0;
@@ -142,6 +157,22 @@ public sealed class AttendanceFinalizationService(
                     status.IsPaid))
                 .ToDictionaryAsync(status => status.Id, cancellationToken);
 
+        var platformStatusIds = records
+            .Where(record => record.PlatformActionStatusId.HasValue)
+            .Select(record => record.PlatformActionStatusId!.Value)
+            .Distinct()
+            .ToArray();
+        var platformStatuses = platformStatusIds.Length == 0
+            ? new Dictionary<int, StatusRow>()
+            : await db.PlatformSettingActionStatuses.IgnoreQueryFilters().AsNoTracking()
+                .Where(status => platformStatusIds.Contains(status.Id))
+                .Select(status => new StatusRow(
+                    status.Id,
+                    status.Status.Name,
+                    status.Status.Name,
+                    false))
+                .ToDictionaryAsync(status => status.Id, cancellationToken);
+
         var existingRows = await db.Set<AttendanceDailyFinalization>()
             .IgnoreQueryFilters()
             .Where(row =>
@@ -193,7 +224,8 @@ public sealed class AttendanceFinalizationService(
                     Math.Max(0, rule?.MissingCheckoutAfterShiftEndMinutes ?? 120));
                 var effectiveCheckIn = attendance?.EffectiveCheckInUtc ?? attendance?.CheckInUtc;
                 var effectiveCheckOut = attendance?.EffectiveCheckOutUtc ?? attendance?.CheckOutUtc;
-                var isExplicitAbsent = !isNotRequired && IsAbsentAttendance(attendance, statuses);
+                var isExplicitAbsent = !isNotRequired &&
+                    IsAbsentAttendance(attendance, statuses, platformStatuses);
                 var isExcused = isNotRequired ||
                     (!isExplicitAbsent && IsExcusedAttendance(attendance, statuses));
                 var calculation = AttendanceDailyFinalizationCalculator.Calculate(
@@ -455,12 +487,26 @@ public sealed class AttendanceFinalizationService(
 
     private static bool IsAbsentAttendance(
         AttendanceRecord? attendance,
-        IReadOnlyDictionary<int, StatusRow> statuses)
+        IReadOnlyDictionary<int, StatusRow> processStatuses,
+        IReadOnlyDictionary<int, StatusRow> platformStatuses)
     {
-        if (attendance?.AttendanceStatusId is not int statusId ||
-            !statuses.TryGetValue(statusId, out var status))
-            return false;
+        if (attendance is null) return false;
 
+        if (attendance.AttendanceStatusId is int processStatusId &&
+            processStatuses.TryGetValue(processStatusId, out var processStatus) &&
+            IsAbsentStatus(processStatus))
+            return true;
+
+        if (attendance.PlatformActionStatusId is int platformStatusId &&
+            platformStatuses.TryGetValue(platformStatusId, out var platformStatus) &&
+            IsAbsentStatus(platformStatus))
+            return true;
+
+        return false;
+    }
+
+    private static bool IsAbsentStatus(StatusRow status)
+    {
         var absent = Normalize(nameof(AttendanceFinalizationStates.Absent));
         return Normalize(status.Code) == absent ||
                Normalize(status.Name).Contains(absent, StringComparison.Ordinal);

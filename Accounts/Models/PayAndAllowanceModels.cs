@@ -282,10 +282,62 @@ public sealed class PayrollTaxSlab : ITenantEntity
     [Key] public int Id { get; set; }
     public int TenantId { get; set; }
     [Required, MaxLength(20)] public string TaxYear { get; set; } = string.Empty;
+    /// <summary>Display name from legacy Tax Rules (e.g. Slab 1).</summary>
+    [Required, MaxLength(80)] public string SlabName { get; set; } = string.Empty;
     [Column(TypeName = "decimal(18,2)")] public decimal FromAmount { get; set; }
     [Column(TypeName = "decimal(18,2)")] public decimal? ToAmount { get; set; }
+    /// <summary>PlatformTypes.RateTypes name (e.g. Percentage).</summary>
+    [MaxLength(80)] public string? RateType { get; set; }
     [Column(TypeName = "decimal(18,2)")] public decimal FixedTaxAmount { get; set; }
     [Column(TypeName = "decimal(9,4)")] public decimal RatePercentage { get; set; }
+    /// <summary>Optional total tax display field from legacy Tax Rules grid.</summary>
+    [Column(TypeName = "decimal(18,2)")] public decimal? TotTax { get; set; }
+    public bool IsActive { get; set; } = true;
+    public DateTime CreatedOnUtc { get; set; } = DateTime.UtcNow;
+    public DateTime? UpdatedOnUtc { get; set; }
+}
+
+/// <summary>Staff annual/period tax calculation rows (legacy Staff Tax / Cal Tax).</summary>
+[Table("PayrollStaffTaxes")]
+public sealed class PayrollStaffTax : ITenantEntity
+{
+    [Key] public long Id { get; set; }
+    public int TenantId { get; set; }
+    public Guid PersonId { get; set; }
+    public Guid StaffId { get; set; }
+    [MaxLength(50)] public string? StaffNumber { get; set; }
+    [Required, MaxLength(80)] public string TaxRef { get; set; } = string.Empty;
+    [Required, MaxLength(200)] public string FullName { get; set; } = string.Empty;
+    [MaxLength(200)] public string? Department { get; set; }
+    [MaxLength(200)] public string? Designation { get; set; }
+    public DateOnly DateFrom { get; set; }
+    public DateOnly DateTo { get; set; }
+    [MaxLength(30)] public string Frequency { get; set; } = "Monthly";
+    [Column(TypeName = "decimal(18,2)")] public decimal MonthlyPay { get; set; }
+    public int TotMonth { get; set; } = 12;
+    [Column(TypeName = "decimal(18,2)")] public decimal IncomePay { get; set; }
+    [Column(TypeName = "decimal(18,2)")] public decimal ExtraAmount { get; set; }
+    [Column(TypeName = "decimal(18,2)")] public decimal TaxableIncome { get; set; }
+    [Column(TypeName = "decimal(18,2)")] public decimal TaxAmount { get; set; }
+    [Column(TypeName = "decimal(18,2)")] public decimal TaxAdjustment { get; set; }
+    [Column(TypeName = "decimal(18,2)")] public decimal NetTax { get; set; }
+    public int PayMonth { get; set; } = 12;
+    [Column(TypeName = "decimal(18,2)")] public decimal MonthlyTaxAmt { get; set; }
+    [Column(TypeName = "decimal(18,2)")] public decimal MonthlyNetTax { get; set; }
+    [Column(TypeName = "decimal(9,4)")] public decimal DedPercentage { get; set; } = 100;
+    public bool IsActive { get; set; } = true;
+    public DateTime CreatedOnUtc { get; set; } = DateTime.UtcNow;
+    public DateTime? UpdatedOnUtc { get; set; }
+}
+
+/// <summary>Tenant tax calculation parameters (min tax / deductible % of income).</summary>
+[Table("PayrollTaxParameters")]
+public sealed class PayrollTaxParameter : ITenantEntity
+{
+    [Key] public int Id { get; set; }
+    public int TenantId { get; set; }
+    [Column(TypeName = "decimal(18,2)")] public decimal MinTaxAmt { get; set; }
+    [Column(TypeName = "decimal(9,4)")] public decimal DedPercentage { get; set; } = 100;
     public bool IsActive { get; set; } = true;
     public DateTime CreatedOnUtc { get; set; } = DateTime.UtcNow;
     public DateTime? UpdatedOnUtc { get; set; }

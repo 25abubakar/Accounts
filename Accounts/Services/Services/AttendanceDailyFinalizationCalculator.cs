@@ -42,9 +42,7 @@ public static class AttendanceDailyFinalizationCalculator
         if (input.IsExcused)
             return Final(AttendanceFinalizationStates.Excused, true, false, required, 0, 0, 0, 0);
 
-        if (input.IsExplicitAbsent)
-            return Final(AttendanceFinalizationStates.Absent, true, true, required, 0, 0, 0, 0);
-
+        // Completed punches always win over a stale Explicit Absent (DB attendance corrections).
         if (input.CheckInLocal.HasValue && input.CheckOutLocal.HasValue &&
             input.CheckOutLocal.Value >= input.CheckInLocal.Value)
         {
@@ -73,10 +71,14 @@ public static class AttendanceDailyFinalizationCalculator
                 latePenalty);
         }
 
+        if (input.IsExplicitAbsent)
+            return Final(AttendanceFinalizationStates.Absent, true, true, required, 0, 0, 0, 0);
+
+        // Align with EvaluateStatuses: check-in without checkout past deadline = chargeable Absent.
         if (input.CheckOutLocal.HasValue ||
             (input.CheckInLocal.HasValue && input.LocalNow >= input.FinalizationDeadlineLocal))
         {
-            return Pending(required);
+            return Final(AttendanceFinalizationStates.Absent, true, true, required, 0, 0, 0, 0);
         }
 
         if (input.CheckInLocal.HasValue)
@@ -90,9 +92,6 @@ public static class AttendanceDailyFinalizationCalculator
 
     private static AttendanceDayCalculation Open(string state, int required) =>
         new(state, true, false, false, required, 0, 0, 0, 0, 0, 0);
-
-    private static AttendanceDayCalculation Pending(int required) =>
-        new(AttendanceFinalizationStates.PendingReview, true, false, false, required, 0, 0, 0, 0, 0, 0);
 
     private static AttendanceDayCalculation Final(
         string state,

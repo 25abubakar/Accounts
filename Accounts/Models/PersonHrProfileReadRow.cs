@@ -59,6 +59,7 @@ public class PersonHrProfileReadRow
     public decimal? PostingPerDay { get; set; }
     public DateTime? PromotionFrom { get; set; }
     public DateTime? PromotionTo { get; set; }
+    public int? SalaryPackageId { get; set; }
     public string? Scale { get; set; }
     public DateTime? ScaleDate { get; set; }
     public decimal? BasicSalary { get; set; }
