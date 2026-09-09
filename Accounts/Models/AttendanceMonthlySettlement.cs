@@ -22,6 +22,10 @@ public sealed class AttendanceMonthlySettlement : ITenantEntity
     public decimal? AdjustmentAmount { get; set; }
     public bool IsAdjustmentApproved { get; set; }
     [MaxLength(255)] public string? AdjustmentRemarks { get; set; }
+    [MaxLength(450)] public string? AdjustmentSubmittedByUserId { get; set; }
+    public DateTime? AdjustmentSubmittedDateUtc { get; set; }
+    [MaxLength(450)] public string? AdjustmentApprovedByUserId { get; set; }
+    public DateTime? AdjustmentApprovedDateUtc { get; set; }
 
     public Person? Person { get; set; }
 }

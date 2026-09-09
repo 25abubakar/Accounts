@@ -2011,13 +2011,16 @@ public sealed class AttendanceService : IAttendanceService
                     DeductibleMinutes = row.DeductibleMinutes,
                     NetOvertimeMinutes = row.NetOvertimeMinutes,
                     NetDeduction = row.NetDeduction,
+                    // Compatibility flag only. Ordinary finalized shortage and
+                    // excess-absence deductions are always payroll-applicable.
+                    IsDeductionActive = true,
                     OvertimeBonusAmount = row.OvertimeBonusAmount,
                     IsOvertimeApproved = row.IsOvertimeApproved,
                     IsOvertimeBonusActive = row.IsOvertimeBonusActive,
                     AdjustmentAmount = row.AdjustmentAmount,
                     IsAdjustmentApproved = row.IsAdjustmentApproved,
                     AdjustmentRemarks = row.AdjustmentRemarks,
-                    FinalSalary = row.FinalSalary,
+                    FinalSalary = CalculateDeductionDisplaySalary(row),
                     PendingReviewDays = row.PendingReviewDays,
                     OpenDays = row.OpenDays,
                     LastFinalizedDate = row.LastFinalizedDate
@@ -2029,6 +2032,16 @@ public sealed class AttendanceService : IAttendanceService
             throw new InvalidOperationException(
                 "The attendance deduction report procedure is not installed. Apply pending database migrations before requesting deductions.", ex);
         }
+    }
+
+    private static decimal CalculateDeductionDisplaySalary(AttendanceDeductionReportRow row)
+    {
+        // Positive adjustments are deduction relief only and cannot increase salary
+        // above the value that existed before the attendance deduction.
+        return Math.Max(0, row.FinalSalary -
+            (row.IsAdjustmentApproved
+                ? Math.Max(0, row.AdjustmentAmount - row.NetDeduction)
+                : 0));
     }
 
     public async Task<MonthlyAttendanceChartDto> GetMonthlyChartAsync(

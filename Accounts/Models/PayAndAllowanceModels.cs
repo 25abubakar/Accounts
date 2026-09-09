@@ -201,6 +201,9 @@ public sealed class PayrollRun : ITenantEntity
     [MaxLength(450)] public string? ApprovedByUserId { get; set; }
     [MaxLength(150)] public string? ApprovedByName { get; set; }
     public DateTime? ApprovedOnUtc { get; set; }
+    [MaxLength(450)] public string? PaidByUserId { get; set; }
+    [MaxLength(150)] public string? PaidByName { get; set; }
+    public DateTime? PaidOnUtc { get; set; }
     public DateTime CreatedOnUtc { get; set; } = DateTime.UtcNow;
     public DateTime? UpdatedOnUtc { get; set; }
     public ICollection<PayrollLine> Lines { get; set; } = new List<PayrollLine>();
@@ -240,7 +243,10 @@ public sealed class PayrollLine : ITenantEntity
     [Column(TypeName = "decimal(18,2)")] public decimal BonusAmount { get; set; }
     [Column(TypeName = "decimal(18,2)")] public decimal OvertimeAmount { get; set; }
     [Column(TypeName = "decimal(18,2)")] public decimal AttendanceDeduction { get; set; }
+    public bool IsAttendanceDeductionActive { get; set; } = true;
     [Column(TypeName = "decimal(18,2)")] public decimal AttendanceAdjustment { get; set; }
+    public bool IsAttendanceAdjustmentApproved { get; set; }
+    [MaxLength(255)] public string? AttendanceAdjustmentRemarks { get; set; }
     [Column(TypeName = "decimal(18,2)")] public decimal TaxableIncome { get; set; }
     [Column(TypeName = "decimal(18,2)")] public decimal TaxAmount { get; set; }
     [Column(TypeName = "decimal(18,2)")] public decimal EmployeeEobiAmount { get; set; }

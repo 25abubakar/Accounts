@@ -329,6 +329,8 @@ public sealed class PayAndAllowancesController(
         var row = await db.PayrollBenefitRules.SingleOrDefaultAsync(x => x.Id == id, ct); if (row == null) return NotFound();
         if (await db.PayrollBenefitParameters.AnyAsync(x => x.BenefitRuleId == id, ct))
             return Conflict(new { message = "Delete the linked benefit parameters before deleting this rule." });
+        if (await db.PayrollBonusRuns.AnyAsync(x => x.BenefitRuleId == id, ct))
+            return Conflict(new { message = "Delete the generated bonus runs for this rule before deleting it." });
         db.PayrollBenefitRules.Remove(row);
         await db.SaveChangesAsync(ct);
         return Ok(new { message = "Benefit rule deleted successfully." });
@@ -389,7 +391,7 @@ public sealed class PayAndAllowancesController(
             BenefitRuleId = dto.BenefitRuleId,
             Reference = $"TMP-{Guid.NewGuid():N}"[..30],
         };
-        ApplyBenefitParameter(row, dto);
+        ApplyBenefitParameter(row, dto, benefitRule.BenefitsType);
         db.PayrollBenefitParameters.Add(row);
         await db.SaveChangesAsync(ct);
         row.Reference = BuildReference("P", "BEN", row.Id);
@@ -412,7 +414,7 @@ public sealed class PayAndAllowancesController(
         if (await db.PayrollBenefitParameters.AnyAsync(x => x.Id != id && x.BenefitRuleId == dto.BenefitRuleId && x.Name == dto.Name.Trim(), ct))
             return Conflict(new { message = "This parameter already exists for the selected benefit rule." });
         row.BenefitRuleId = dto.BenefitRuleId;
-        ApplyBenefitParameter(row, dto);
+        ApplyBenefitParameter(row, dto, benefitRule.BenefitsType);
         if (benefitRule.BenefitsType.Equals("Bonus", StringComparison.OrdinalIgnoreCase) && dto.BonusDistribution != null)
         {
             row.BonusDistribution ??= CreateBonusDistribution(row.Id, dto.BonusDistribution);
@@ -476,26 +478,27 @@ public sealed class PayAndAllowancesController(
         // Saved lines are authoritative. Live preview only when there is no run,
         // or a Draft run still has no lines (userculate pending).
         if (run != null && run.Lines.Count > 0)
-            return Ok(PayrollResponse(run, run.Lines));
+            return Ok(await PayrollResponseAsync(run, run.Lines, ct));
         if (run != null && !run.Status.Equals("Draft", StringComparison.OrdinalIgnoreCase))
-            return Ok(PayrollResponse(run, Array.Empty<PayrollLine>()));
+            return Ok(await PayrollResponseAsync(run, Array.Empty<PayrollLine>(), ct));
         var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
         if (string.IsNullOrWhiteSpace(userId)) return Forbid();
         var preview = await payroll.PreviewAsync(userId, year, month, ct);
-        return Ok(PayrollResponse(run, preview));
+        return Ok(await PayrollResponseAsync(run, preview, ct));
     }
 
     [HttpPost("payroll-runs")]
     [Idempotent]
     public async Task<IActionResult> CreatePayrollRun(PayrollRunSave dto, CancellationToken ct)
     {
-        var denied = await Guard("/pay-allowances/payroll", "ADD", ct); if (denied != null) return denied;
+        var denied = await Guard("/pay-allowances/payroll", "VIEW", ct); if (denied != null) return denied;
+        var authorityDenied = await GuardPayrollAuthority("CREATE", ct); if (authorityDenied != null) return authorityDenied;
         var error = await ValidatePayrollAsync(dto, ct); if (error != null) return BadRequest(new { message = error });
         var userId = User.FindFirstValue(ClaimTypes.NameIdentifier); if (string.IsNullOrWhiteSpace(userId)) return Forbid();
         try
         {
-            var run = await payroll.GenerateAsync(userId, ActorName(), dto.Year, dto.Month, dto.PayDate, ct);
-            return Ok(PayrollResponse(run, run.Lines));
+            var run = await payroll.GenerateAsync(userId, await ActorNameAsync(ct), dto.Year, dto.Month, dto.PayDate, ct);
+            return Ok(await PayrollResponseAsync(run, run.Lines, ct));
         }
         catch (InvalidOperationException ex) { return Conflict(new { message = ex.Message }); }
     }
@@ -504,7 +507,8 @@ public sealed class PayAndAllowancesController(
     [Idempotent]
     public async Task<IActionResult> UpdatePayrollRun(long id, PayrollRunSave dto, CancellationToken ct)
     {
-        var denied = await Guard("/pay-allowances/payroll", "EDIT", ct); if (denied != null) return denied;
+        var denied = await Guard("/pay-allowances/payroll", "VIEW", ct); if (denied != null) return denied;
+        var authorityDenied = await GuardPayrollAuthority("CREATE", ct); if (authorityDenied != null) return authorityDenied;
         var row = await db.PayrollRuns.SingleOrDefaultAsync(x => x.Id == id, ct); if (row == null) return NotFound();
         if (!row.Status.Equals("Draft", StringComparison.OrdinalIgnoreCase)) return Conflict(new { message = "Only a Draft payroll run can be edited." });
         var error = await ValidatePayrollAsync(dto, ct); if (error != null) return BadRequest(new { message = error });
@@ -512,8 +516,8 @@ public sealed class PayAndAllowancesController(
         var userId = User.FindFirstValue(ClaimTypes.NameIdentifier); if (string.IsNullOrWhiteSpace(userId)) return Forbid();
         try
         {
-            var run = await payroll.GenerateAsync(userId, ActorName(), dto.Year, dto.Month, dto.PayDate, ct);
-            return Ok(PayrollResponse(run, run.Lines));
+            var run = await payroll.GenerateAsync(userId, await ActorNameAsync(ct), dto.Year, dto.Month, dto.PayDate, ct);
+            return Ok(await PayrollResponseAsync(run, run.Lines, ct));
         }
         catch (InvalidOperationException ex) { return Conflict(new { message = ex.Message }); }
     }
@@ -528,19 +532,50 @@ public sealed class PayAndAllowancesController(
             return Conflict(new { message = "Only a Draft payroll line can be edited." });
         if (new[] { dto.AllowanceAmount, dto.EmployerBenefitAmount, dto.StaffBenefitDeduction, dto.BonusAmount, dto.OvertimeAmount, dto.AttendanceDeduction, dto.TaxAmount, dto.EmployeeEobiAmount, dto.EmployerEobiAmount, dto.OtherDeduction }.Any(x => x < 0))
             return BadRequest(new { message = "Payroll amounts other than the attendance adjustment cannot be negative." });
-        line.AllowanceAmount = dto.AllowanceAmount;
-        line.GeneralAllowanceAmount = dto.AllowanceAmount;
-        line.ApptAllowanceAmount = 0;
-        line.ShiftAllowanceAmount = 0;
-        line.EmployerBenefitAmount = dto.EmployerBenefitAmount;
-        line.StaffBenefitDeduction = dto.StaffBenefitDeduction;
-        line.BonusAmount = dto.BonusAmount;
-        line.OvertimeAmount = dto.OvertimeAmount;
-        line.AttendanceDeduction = dto.AttendanceDeduction;
-        line.AttendanceAdjustment = dto.AttendanceAdjustment;
-        line.TaxAmount = dto.TaxAmount;
-        line.EmployeeEobiAmount = dto.EmployeeEobiAmount;
-        line.EmployerEobiAmount = dto.EmployerEobiAmount;
+        if (dto.AllowanceAmount != line.AllowanceAmount ||
+            dto.EmployerBenefitAmount != line.EmployerBenefitAmount ||
+            dto.StaffBenefitDeduction != line.StaffBenefitDeduction ||
+            dto.BonusAmount != line.BonusAmount ||
+            dto.OvertimeAmount != line.OvertimeAmount ||
+            dto.AttendanceDeduction != line.AttendanceDeduction ||
+            dto.TaxAmount != line.TaxAmount ||
+            dto.EmployeeEobiAmount != line.EmployeeEobiAmount ||
+            dto.EmployerEobiAmount != line.EmployerEobiAmount)
+            return BadRequest(new { message = "Calculated payroll values are read-only. Update their source module and regenerate the Draft payroll." });
+
+        var adjustmentRemarks = Clean(dto.AttendanceAdjustmentRemarks);
+        if (dto.AttendanceAdjustment != line.AttendanceAdjustment || adjustmentRemarks != line.AttendanceAdjustmentRemarks)
+        {
+            if (adjustmentRemarks == null)
+                return BadRequest(new { message = "Adjustment comments are required." });
+
+            var settlement = await db.AttendanceMonthlySettlements.SingleOrDefaultAsync(x =>
+                x.PersonId == line.PersonId &&
+                x.SettlementYear == line.PayrollRun.Year &&
+                x.SettlementMonth == line.PayrollRun.Month, ct);
+            if (settlement == null)
+            {
+                settlement = new AttendanceMonthlySettlement
+                {
+                    TenantId = tenant.RequiredTenantId,
+                    PersonId = line.PersonId,
+                    SettlementYear = line.PayrollRun.Year,
+                    SettlementMonth = line.PayrollRun.Month
+                };
+                db.AttendanceMonthlySettlements.Add(settlement);
+            }
+
+            settlement.AdjustmentAmount = dto.AttendanceAdjustment;
+            settlement.AdjustmentRemarks = adjustmentRemarks;
+            settlement.IsAdjustmentApproved = false;
+            settlement.AdjustmentSubmittedByUserId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+            settlement.AdjustmentSubmittedDateUtc = DateTime.UtcNow;
+            settlement.AdjustmentApprovedByUserId = null;
+            settlement.AdjustmentApprovedDateUtc = null;
+            line.AttendanceAdjustment = dto.AttendanceAdjustment;
+            line.IsAttendanceAdjustmentApproved = false;
+            line.AttendanceAdjustmentRemarks = adjustmentRemarks;
+        }
         line.OtherDeduction = dto.OtherDeduction;
         line.Remarks = Clean(dto.Remarks);
         line.UpdatedOnUtc = DateTime.UtcNow;
@@ -575,7 +610,10 @@ public sealed class PayAndAllowancesController(
             line.BonusAmount,
             line.OvertimeAmount,
             line.AttendanceDeduction,
+            line.IsAttendanceDeductionActive,
             line.AttendanceAdjustment,
+            line.IsAttendanceAdjustmentApproved,
+            line.AttendanceAdjustmentRemarks,
             line.TaxableIncome,
             line.TaxAmount,
             line.EmployeeEobiAmount,
@@ -597,45 +635,88 @@ public sealed class PayAndAllowancesController(
     [Idempotent]
     public async Task<IActionResult> ProcessPayroll(long id, CancellationToken ct)
     {
-        var denied = await Guard("/pay-allowances/payroll", "EDIT", ct); if (denied != null) return denied;
+        var denied = await Guard("/pay-allowances/payroll", "VIEW", ct); if (denied != null) return denied;
+        var authorityDenied = await GuardPayrollAuthority("VERIFY", ct); if (authorityDenied != null) return authorityDenied;
         var run = await db.PayrollRuns.Include(x => x.Lines).SingleOrDefaultAsync(x => x.Id == id, ct);
         if (run == null) return NotFound();
         if (!run.Status.Equals("Draft", StringComparison.OrdinalIgnoreCase))
             return Conflict(new { message = "Only a Draft payroll can be processed." });
         if (run.Lines.Count == 0) return BadRequest(new { message = "Generate payroll lines before processing." });
+        var pendingAdjustments = run.Lines.Count(x => x.AttendanceAdjustment != 0 && !x.IsAttendanceAdjustmentApproved);
+        if (pendingAdjustments > 0)
+            return Conflict(new { message = $"Payroll cannot be processed: {pendingAdjustments} monthly adjustment(s) still require approval." });
         var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
         if (string.IsNullOrWhiteSpace(userId)) return Forbid();
+        if (string.Equals(run.CreatedByUserId, userId, StringComparison.Ordinal))
+            return Conflict(new { message = "The payroll creator cannot verify/process the same payroll. A different authorized finance supervisor must verify it." });
         var pending = await payroll.CountPendingReviewEmployeesAsync(userId, run.Year, run.Month, ct);
         if (pending > 0)
             return Conflict(new { message = $"Payroll cannot be processed: {pending} employee(s) still have Pending Review attendance for this month." });
         run.Status = "In Review";
         run.VerifiedByUserId = User.FindFirstValue(ClaimTypes.NameIdentifier);
-        run.VerifiedByName = ActorName();
+        run.VerifiedByName = await ActorNameAsync(ct);
         run.VerifiedOnUtc = DateTime.UtcNow;
         run.UpdatedOnUtc = DateTime.UtcNow;
         await db.SaveChangesAsync(ct);
-        return Ok(PayrollResponse(run, run.Lines));
+        return Ok(await PayrollResponseAsync(run, run.Lines, ct));
+    }
+
+    [HttpPost("payroll-runs/{id:long}/approve")]
+    [Idempotent]
+    public async Task<IActionResult> ApprovePayroll(long id, CancellationToken ct)
+    {
+        var denied = await Guard("/pay-allowances/payroll", "VIEW", ct); if (denied != null) return denied;
+        var authorityDenied = await GuardPayrollAuthority("APPROVE", ct); if (authorityDenied != null) return authorityDenied;
+        var run = await db.PayrollRuns.Include(x => x.Lines).SingleOrDefaultAsync(x => x.Id == id, ct);
+        if (run == null) return NotFound();
+        if (!run.Status.Equals("In Review", StringComparison.OrdinalIgnoreCase))
+            return Conflict(new { message = "Only an In Review payroll can be approved." });
+
+        var approverUserId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+        if (string.IsNullOrWhiteSpace(approverUserId)) return Forbid();
+        if (string.Equals(run.CreatedByUserId, approverUserId, StringComparison.Ordinal))
+            return Conflict(new { message = "The payroll creator cannot approve the same payroll. A different authorized higher authority must approve it." });
+        if (string.Equals(run.VerifiedByUserId, approverUserId, StringComparison.Ordinal))
+            return Conflict(new { message = "The person who processed/verified this payroll cannot approve it. A different authorized higher authority must approve it." });
+
+        var now = DateTime.UtcNow;
+        run.Status = "Approved";
+        run.ApprovedByUserId = approverUserId;
+        run.ApprovedByName = await ActorNameAsync(ct);
+        run.ApprovedOnUtc = now;
+        run.UpdatedOnUtc = now;
+        foreach (var line in run.Lines)
+        {
+            line.IsApproved = true;
+            line.UpdatedOnUtc = now;
+        }
+
+        await db.SaveChangesAsync(ct);
+        return Ok(await PayrollResponseAsync(run, run.Lines, ct));
     }
 
     [HttpPost("payroll-runs/{id:long}/pay")]
     [Idempotent]
     public async Task<IActionResult> PayPayroll(long id, CancellationToken ct)
     {
-        var denied = await Guard("/pay-allowances/payroll", "EDIT", ct); if (denied != null) return denied;
+        var denied = await Guard("/pay-allowances/payroll", "VIEW", ct); if (denied != null) return denied;
+        var authorityDenied = await GuardPayrollAuthority("PAY", ct); if (authorityDenied != null) return authorityDenied;
         var run = await db.PayrollRuns.Include(x => x.Lines).SingleOrDefaultAsync(x => x.Id == id, ct);
         if (run == null) return NotFound();
-        if (!run.Status.Equals("In Review", StringComparison.OrdinalIgnoreCase) && !run.Status.Equals("Approved", StringComparison.OrdinalIgnoreCase))
-            return Conflict(new { message = "Process payroll before payment." });
+        if (!run.Status.Equals("Approved", StringComparison.OrdinalIgnoreCase))
+            return Conflict(new { message = "Payroll must be approved by an authorized higher authority before payment." });
         var payUserId = User.FindFirstValue(ClaimTypes.NameIdentifier);
         if (string.IsNullOrWhiteSpace(payUserId)) return Forbid();
+        if (string.Equals(run.ApprovedByUserId, payUserId, StringComparison.Ordinal))
+            return Conflict(new { message = "The payroll approver cannot dispatch the same payroll. An authorized finance user must complete salary dispatch." });
         var pendingPay = await payroll.CountPendingReviewEmployeesAsync(payUserId, run.Year, run.Month, ct);
         if (pendingPay > 0)
             return Conflict(new { message = $"Payroll cannot be paid: {pendingPay} employee(s) still have Pending Review attendance for this month." });
         var now = DateTime.UtcNow;
         run.Status = "Finalized";
-        run.ApprovedByUserId = User.FindFirstValue(ClaimTypes.NameIdentifier);
-        run.ApprovedByName = ActorName();
-        run.ApprovedOnUtc = now;
+        run.PaidByUserId = payUserId;
+        run.PaidByName = await ActorNameAsync(ct);
+        run.PaidOnUtc = now;
         run.UpdatedOnUtc = now;
         foreach (var line in run.Lines)
         {
@@ -665,7 +746,7 @@ public sealed class PayAndAllowancesController(
             }
         }
         await db.SaveChangesAsync(ct);
-        return Ok(PayrollResponse(run, run.Lines));
+        return Ok(await PayrollResponseAsync(run, run.Lines, ct));
     }
 
     [HttpDelete("payroll-runs/{id:long}")]
@@ -1240,12 +1321,48 @@ public sealed class PayAndAllowancesController(
         return await rbac.HasAccessAsync(staffId.Value, $"MENU_{menuId.Value}_{action}") ? null : Forbid();
     }
 
+    private async Task<IActionResult?> GuardPayrollAuthority(string actionCode, CancellationToken ct)
+    {
+        var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+        if (string.IsNullOrWhiteSpace(userId)) return Forbid();
+        var staffId = await db.Persons.AsNoTracking()
+            .Where(person => person.IdentityUserId == userId && person.Staff != null)
+            .Select(person => (Guid?)person.Staff!.StaffId)
+            .FirstOrDefaultAsync(ct);
+        if (!staffId.HasValue)
+            return StatusCode(StatusCodes.Status403Forbidden, new { message = "No active staff profile is linked to this account." });
+
+        var normalizedAction = actionCode.Trim().ToUpperInvariant();
+        var assigned = await db.ProcessActionAuthorities.AsNoTracking().AnyAsync(authority =>
+            authority.ProcessCode == "PAYROLL" &&
+            authority.ActionCode == normalizedAction &&
+            authority.StaffId == staffId.Value &&
+            authority.IsActive, ct);
+        return assigned
+            ? null
+            : StatusCode(StatusCodes.Status403Forbidden, new
+            {
+                message = $"You are not assigned to the Payroll {normalizedAction} stage. Configure this person in HR Management > Process > Reports > Approve Process."
+            });
+    }
+
     private async Task<bool> TaxOverlap(TaxSlabSave dto, int? id, CancellationToken ct)
     {
         if (!dto.IsActive) return false;
         var taxYear = (dto.TaxYear ?? string.Empty).Trim();
-        var upper = dto.ToAmount ?? decimal.MaxValue;
-        return await db.PayrollTaxSlabs.AnyAsync(x => x.Id != id && x.IsActive && x.TaxYear == taxYear && x.FromAmount <= upper && (x.ToAmount == null || x.ToAmount >= dto.FromAmount), ct);
+        // Adjacent slabs may share a boundary (for example 3,200,001-4,100,000
+        // followed by 4,100,000 and above). Payroll resolution deliberately uses
+        // the slab with the highest matching lower bound at that exact boundary.
+        // Keep an unlimited upper bound as NULL. decimal.MaxValue cannot be sent
+        // to SQL Server's decimal(18,2) column without a conversion overflow.
+        var candidates = db.PayrollTaxSlabs.Where(x =>
+            x.Id != id &&
+            x.IsActive &&
+            x.TaxYear == taxYear &&
+            (x.ToAmount == null || x.ToAmount > dto.FromAmount));
+        return dto.ToAmount.HasValue
+            ? await candidates.AnyAsync(x => x.FromAmount < dto.ToAmount.Value, ct)
+            : await candidates.AnyAsync(ct);
     }
 
     private static TaxSlabSave NormalizeTaxSlab(TaxSlabSave dto, string? existingTaxYear = null)
@@ -1390,14 +1507,17 @@ public sealed class PayAndAllowancesController(
         row.OrganizationId = x.OrganizationId;
         row.CompanyName = Clean(x.CompanyName);
     }
-    private static void ApplyBenefitParameter(PayrollBenefitParameter row, BenefitParameterSave x)
+    private static void ApplyBenefitParameter(PayrollBenefitParameter row, BenefitParameterSave x, string benefitType)
     {
         row.Name = x.Name.Trim();
         row.PeriodFrom = x.PeriodFrom;
         row.PeriodTo = x.PeriodTo;
         row.MinimumService = x.MinimumService;
-        row.AmountType = string.IsNullOrWhiteSpace(x.AmountType) ? "PH" : x.AmountType.Trim();
-        row.PayType = string.IsNullOrWhiteSpace(x.PayType) ? "Basic" : x.PayType.Trim();
+        var isEobi = benefitType.Equals("EOBI", StringComparison.OrdinalIgnoreCase);
+        // EOBI shares are fixed values and do not use the generic Amount Type or
+        // Pay Type selectors. Ignore stale/client-supplied values for this type.
+        row.AmountType = isEobi ? "Fixed" : string.IsNullOrWhiteSpace(x.AmountType) ? "PH" : x.AmountType.Trim();
+        row.PayType = isEobi ? string.Empty : string.IsNullOrWhiteSpace(x.PayType) ? "Basic" : x.PayType.Trim();
         row.CompanyShare = x.CompanyShare;
         row.StaffShare = x.StaffShare;
     }
@@ -1488,7 +1608,55 @@ public sealed class PayAndAllowancesController(
             .Select(v => v.ValueCode)
             .ToListAsync(ct);
     private static string? Clean(string? x) => string.IsNullOrWhiteSpace(x) ? null : x.Trim();
-    private string ActorName() => User.FindFirstValue(ClaimTypes.Name) ?? User.FindFirstValue(ClaimTypes.Email) ?? User.Identity?.Name ?? "User";
+    private async Task<string> ActorNameAsync(CancellationToken ct)
+    {
+        var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+        if (!string.IsNullOrWhiteSpace(userId))
+        {
+            var fullName = await db.Persons.AsNoTracking()
+                .Where(person => person.IdentityUserId == userId)
+                .Select(person => person.FullName)
+                .FirstOrDefaultAsync(ct);
+            if (!string.IsNullOrWhiteSpace(fullName)) return fullName.Trim();
+        }
+
+        return User.FindFirstValue(ClaimTypes.Name)
+            ?? User.FindFirstValue(ClaimTypes.Email)
+            ?? User.Identity?.Name
+            ?? "User";
+    }
+
+    private async Task<object> PayrollResponseAsync(PayrollRun? run, IEnumerable<PayrollLine> lines, CancellationToken ct)
+    {
+        if (run != null)
+        {
+            var actorIds = new[] { run.CreatedByUserId, run.VerifiedByUserId, run.ApprovedByUserId, run.PaidByUserId }
+                .Where(id => !string.IsNullOrWhiteSpace(id))
+                .Select(id => id!)
+                .Distinct(StringComparer.Ordinal)
+                .ToArray();
+
+            if (actorIds.Length > 0)
+            {
+                var names = await db.Persons.AsNoTracking()
+                    .Where(person => actorIds.Contains(person.IdentityUserId))
+                    .Select(person => new { person.IdentityUserId, person.FullName })
+                    .ToDictionaryAsync(person => person.IdentityUserId, person => person.FullName, StringComparer.Ordinal, ct);
+
+                if (run.CreatedByUserId != null && names.TryGetValue(run.CreatedByUserId, out var createdBy))
+                    run.CreatedByName = createdBy;
+                if (run.VerifiedByUserId != null && names.TryGetValue(run.VerifiedByUserId, out var verifiedBy))
+                    run.VerifiedByName = verifiedBy;
+                if (run.ApprovedByUserId != null && names.TryGetValue(run.ApprovedByUserId, out var approvedBy))
+                    run.ApprovedByName = approvedBy;
+                if (run.PaidByUserId != null && names.TryGetValue(run.PaidByUserId, out var paidBy))
+                    run.PaidByName = paidBy;
+            }
+        }
+
+        return PayrollResponse(run, lines);
+    }
+
     private static object PayrollResponse(PayrollRun? run, IEnumerable<PayrollLine> lines) => new
     {
         run = run == null ? null : new
@@ -1509,6 +1677,9 @@ public sealed class PayAndAllowancesController(
             run.ApprovedByUserId,
             run.ApprovedByName,
             run.ApprovedOnUtc,
+            run.PaidByUserId,
+            run.PaidByName,
+            run.PaidOnUtc,
             run.UpdatedOnUtc
         },
         lines = lines.OrderBy(x => x.FullName).Select(x => new
@@ -1541,7 +1712,10 @@ public sealed class PayAndAllowancesController(
             x.BonusAmount,
             x.OvertimeAmount,
             x.AttendanceDeduction,
+            x.IsAttendanceDeductionActive,
             x.AttendanceAdjustment,
+            x.IsAttendanceAdjustmentApproved,
+            x.AttendanceAdjustmentRemarks,
             x.TaxableIncome,
             x.TaxAmount,
             x.EmployeeEobiAmount,
@@ -1563,7 +1737,7 @@ public sealed class PayAndAllowancesController(
 public sealed record PayBenefitSave(string Code, string Name, string CalculationType, decimal Amount, decimal Percentage, bool IsTaxable, bool IsEobiContributory, bool IsActive, string? Description);
 public sealed record PayBonusSave(string Code, string Name, string CalculationType, decimal Amount, decimal Percentage, string Frequency, bool IsTaxable, bool IsActive, string? Description);
 public sealed record PayrollRunSave(int Year, int Month, string? RunNumber, DateOnly PayDate, string Status, string? Notes);
-public sealed record PayrollLineSave(decimal AllowanceAmount, decimal EmployerBenefitAmount, decimal StaffBenefitDeduction, decimal BonusAmount, decimal OvertimeAmount, decimal AttendanceDeduction, decimal AttendanceAdjustment, decimal TaxAmount, decimal EmployeeEobiAmount, decimal EmployerEobiAmount, decimal OtherDeduction, string? Remarks);
+public sealed record PayrollLineSave(decimal AllowanceAmount, decimal EmployerBenefitAmount, decimal StaffBenefitDeduction, decimal BonusAmount, decimal OvertimeAmount, decimal AttendanceDeduction, decimal AttendanceAdjustment, string? AttendanceAdjustmentRemarks, decimal TaxAmount, decimal EmployeeEobiAmount, decimal EmployerEobiAmount, decimal OtherDeduction, string? Remarks);
 public sealed record EobiSettingSave(decimal EmployeeRatePercentage, decimal EmployerRatePercentage, decimal MinimumWage, decimal MaximumContributionBase, DateOnly EffectiveFrom, DateOnly? EffectiveTo, bool IsActive);
 public sealed class TaxSlabSave
 {

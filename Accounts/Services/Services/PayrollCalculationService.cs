@@ -128,12 +128,22 @@ public sealed class PayrollCalculationService(
         line.EmployerEobiAmount = Money(Math.Max(0, line.EmployerEobiAmount));
         line.OtherDeduction = Money(Math.Max(0, line.OtherDeduction));
 
-        var positiveAdjustment = Math.Max(0, line.AttendanceAdjustment);
-        var negativeAdjustment = Math.Max(0, -line.AttendanceAdjustment);
-        // AGENTS: Gross = Basic + Allowances + Bonus + OT + positive approved adjustment.
-        line.TaxableIncome = Money(line.BasicSalary + line.AllowanceAmount + line.BonusAmount + line.OvertimeAmount + positiveAdjustment);
+        // Attendance adjustments are deduction corrections, not earnings. A positive
+        // approved adjustment gives back up to the attendance deduction; a negative
+        // adjustment is an additional deduction. Neither changes taxable gross.
+        // Ordinary finalized shortage and excess-absence deductions always post to
+        // payroll. The attendance engine has already excluded the configured monthly
+        // absence allowance and decides separately whether the special T-Present
+        // (completed-late) penalty applies. A positive approved adjustment gives relief;
+        // a negative approved adjustment adds a further deduction.
+        var postedAttendanceDeduction = line.AttendanceDeduction;
+        var approvedAdjustment = line.IsAttendanceAdjustmentApproved ? line.AttendanceAdjustment : 0;
+        var deductionRelief = Math.Min(postedAttendanceDeduction, Math.Max(0, approvedAdjustment));
+        var effectiveAttendanceDeduction = postedAttendanceDeduction - deductionRelief;
+        var additionalAdjustmentDeduction = Math.Max(0, -approvedAdjustment);
+        line.TaxableIncome = Money(line.BasicSalary + line.AllowanceAmount + line.BonusAmount + line.OvertimeAmount);
         line.GrossPay = line.TaxableIncome;
-        line.TotalDeduction = Money(line.AttendanceDeduction + line.StaffBenefitDeduction + line.TaxAmount + line.EmployeeEobiAmount + line.OtherDeduction + negativeAdjustment);
+        line.TotalDeduction = Money(effectiveAttendanceDeduction + line.StaffBenefitDeduction + line.TaxAmount + line.EmployeeEobiAmount + line.OtherDeduction + additionalAdjustmentDeduction);
         line.NetPay = Money(Math.Max(0, line.GrossPay - line.TotalDeduction));
     }
 
@@ -205,8 +215,9 @@ public sealed class PayrollCalculationService(
             .Where(x => x.IsEligible && personIds.Contains(x.PersonId) && x.EffectiveFrom <= periodEnd && (x.EffectiveTo == null || x.EffectiveTo >= periodStart))
             .Select(x => x.PersonId)
             .ToHashSetAsync(cancellationToken);
+        var payrollTaxYear = ResolveTaxYear(year, month);
         var taxSlabs = await db.PayrollTaxSlabs.AsNoTracking()
-            .Where(x => x.IsActive && x.TaxYear == year.ToString())
+            .Where(x => x.IsActive && x.TaxYear == payrollTaxYear)
             .OrderBy(x => x.FromAmount)
             .ToListAsync(cancellationToken);
         var attendanceByPerson = attendance.Rows.ToDictionary(x => x.PersonId);
@@ -312,9 +323,9 @@ public sealed class PayrollCalculationService(
             var overtime = attendanceRow is { IsOvertimeApproved: true, IsOvertimeBonusActive: true } ? attendanceRow.OvertimeBonusAmount : 0;
             // Attendance finalization → Deduction report → NetDeduction / approved adjustment.
             var attendanceDeduction = attendanceRow?.NetDeduction ?? 0;
-            var adjustment = attendanceRow is { IsAdjustmentApproved: true } ? attendanceRow.AdjustmentAmount : 0;
+            var adjustment = attendanceRow?.AdjustmentAmount ?? 0;
             var pendingDays = attendanceRow?.PendingReviewDays ?? 0;
-            var taxableMonthly = basicSalary + allowanceAmount + bonusAmount + overtime + Math.Max(0, adjustment);
+            var taxableMonthly = basicSalary + allowanceAmount + bonusAmount + overtime;
             var tax = CalculateMonthlyTax(taxableMonthly, taxSlabs);
             decimal employeeEobi = 0;
             decimal employerEobi = 0;
@@ -361,7 +372,12 @@ public sealed class PayrollCalculationService(
                 BonusAmount = bonusAmount,
                 OvertimeAmount = overtime,
                 AttendanceDeduction = attendanceDeduction,
+                // Retained as a compatibility snapshot only. It must never suppress
+                // ordinary shortage or excess-absence deductions.
+                IsAttendanceDeductionActive = true,
                 AttendanceAdjustment = adjustment,
+                IsAttendanceAdjustmentApproved = attendanceRow?.IsAdjustmentApproved ?? false,
+                AttendanceAdjustmentRemarks = attendanceRow?.AdjustmentRemarks,
                 TaxableIncome = Money(taxableMonthly),
                 TaxAmount = tax,
                 EmployeeEobiAmount = employeeEobi,
@@ -489,6 +505,10 @@ public sealed class PayrollCalculationService(
     }
 
     private static decimal Money(decimal value) => Math.Round(value, 2, MidpointRounding.AwayFromZero);
+
+    private static string ResolveTaxYear(int year, int month) =>
+        month >= 7 ? $"{year}-{year + 1}" : $"{year - 1}-{year}";
+
     private static void ValidatePeriod(int year, int month)
     {
         if (year is < 2000 or > 2200 || month is < 1 or > 12)

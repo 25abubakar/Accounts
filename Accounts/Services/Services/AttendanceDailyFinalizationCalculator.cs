@@ -140,8 +140,11 @@ public static class AttendanceDailyFinalizationCalculator
         decimal completedPercentage)
     {
         if (lateBandMinutes <= 0) return 0;
-        if (!ruleActive) return lateBandMinutes;
+        // The completed-late switch controls T-Present only. Employees who did
+        // not complete their required hours remain subject to the normal late
+        // band regardless of this switch.
         if (!completedRequiredMinutes) return lateBandMinutes;
+        if (!ruleActive) return 0;
 
         var percentage = Math.Clamp(completedPercentage, 0m, 100m);
         return (int)decimal.Round(

@@ -371,6 +371,7 @@ public sealed class AttendanceDeductionRowDto
     public int DeductibleMinutes { get; set; }
     public int NetOvertimeMinutes { get; set; }
     public decimal NetDeduction { get; set; }
+    public bool IsDeductionActive { get; set; }
     public decimal OvertimeBonusAmount { get; set; }
     public bool IsOvertimeApproved { get; set; }
     public bool IsOvertimeBonusActive { get; set; }

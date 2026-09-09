@@ -130,6 +130,7 @@ namespace Accounts.Data
         public DbSet<Tenant>                   Tenants                  => Set<Tenant>();
         public DbSet<TenantMenuPermission>     TenantMenuPermissions    => Set<TenantMenuPermission>();
         public DbSet<TenantRolePermission>     TenantRolePermissions    => Set<TenantRolePermission>();
+        public DbSet<ProcessActionAuthority>   ProcessActionAuthorities => Set<ProcessActionAuthority>();
 
         // â”€â”€ Communication Center â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         public DbSet<AppLookupType>     AppLookupTypes     => Set<AppLookupType>();
@@ -1598,8 +1599,16 @@ namespace Accounts.Data
                 e.HasIndex(x => new { x.TenantId, x.RunNumber }).IsUnique();
                 e.HasOne<Tenant>().WithMany().HasForeignKey(x => x.TenantId).OnDelete(DeleteBehavior.Restrict);
             });
+            builder.Entity<ProcessActionAuthority>(e =>
+            {
+                e.HasIndex(x => new { x.TenantId, x.ProcessCode, x.ActionCode, x.StaffId }).IsUnique();
+                e.HasIndex(x => new { x.TenantId, x.ProcessCode, x.ActionCode, x.IsActive });
+                e.HasOne<Tenant>().WithMany().HasForeignKey(x => x.TenantId).OnDelete(DeleteBehavior.Restrict);
+                e.HasOne<StaffVacancy>().WithMany().HasForeignKey(x => x.StaffId).OnDelete(DeleteBehavior.Restrict);
+            });
             builder.Entity<PayrollLine>(e =>
             {
+                e.Property(x => x.IsAttendanceDeductionActive).HasDefaultValue(true);
                 e.HasIndex(x => new { x.TenantId, x.PayrollRunId, x.PersonId }).IsUnique();
                 e.HasIndex(x => new { x.TenantId, x.PersonId, x.IsPaid });
                 e.HasOne(x => x.PayrollRun).WithMany(x => x.Lines).HasForeignKey(x => x.PayrollRunId).OnDelete(DeleteBehavior.Cascade);

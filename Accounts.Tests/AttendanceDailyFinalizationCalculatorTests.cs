@@ -147,13 +147,29 @@ public sealed class AttendanceDailyFinalizationCalculatorTests
     }
 
     [Fact]
-    public void LateEmployee_WhenCompletedRuleIsInactive_UsesFullLateBand()
+    public void TPresentEmployee_WhenCompletedRuleIsInactive_HasNoLatePenalty()
     {
         var result = Calculate(
             now: new DateTime(2026, 8, 24, 18, 30, 0),
             checkIn: new DateTime(2026, 8, 24, 9, 30, 0),
             checkOut: new DateTime(2026, 8, 24, 18, 30, 0));
 
+        Assert.Equal(540, result.WorkedMinutes);
+        Assert.Equal(0, result.ShortMinutes);
+        Assert.Equal(60, result.LateBandMinutes);
+        Assert.Equal(0, result.LatePenaltyMinutes);
+    }
+
+    [Fact]
+    public void LateEmployee_WhenCompletedRuleIsInactive_StillUsesNormalLateBand()
+    {
+        var result = Calculate(
+            now: new DateTime(2026, 8, 24, 18, 0, 0),
+            checkIn: new DateTime(2026, 8, 24, 9, 30, 0),
+            checkOut: new DateTime(2026, 8, 24, 18, 0, 0));
+
+        Assert.Equal(510, result.WorkedMinutes);
+        Assert.Equal(30, result.ShortMinutes);
         Assert.Equal(60, result.LateBandMinutes);
         Assert.Equal(60, result.LatePenaltyMinutes);
     }

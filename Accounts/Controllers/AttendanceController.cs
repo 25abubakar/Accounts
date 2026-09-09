@@ -157,6 +157,8 @@ public sealed class AttendanceController : ControllerBase
         rule.IsOpenAttendance = dto.IsOpenAttendance;
         await _db.SaveChangesAsync(ct);
 
+        await PublishDeductionConfigurationChangedAsync(tenantId, dto.StaffId.ToString());
+
         return Ok(ToMapRuleDto(rule, shift.DisplayText));
     }
 
@@ -260,6 +262,7 @@ public sealed class AttendanceController : ControllerBase
         if (rule == null) return NotFound(new { message = "The attendance rule was not found." });
         _db.AttendanceRuleSettings.Remove(rule);
         await _db.SaveChangesAsync(ct);
+        await PublishDeductionConfigurationChangedAsync(_tenant.RequiredTenantId, rule.Id.ToString(CultureInfo.InvariantCulture));
         return Ok(new { message = "Attendance rule deleted successfully." });
     }
 
@@ -473,6 +476,12 @@ public sealed class AttendanceController : ControllerBase
         if (!_tenant.TenantId.HasValue) return Forbid();
         if (!await HasAttendanceMenuActionAsync("EDIT", ct, "/attendance/deduction"))
             return Forbid();
+        if (!dto.AdjustmentAmount.HasValue)
+            return BadRequest(new { message = "Adjustment amount is required." });
+        if (string.IsNullOrWhiteSpace(dto.Remarks))
+            return BadRequest(new { message = "A valid adjustment reason is required." });
+        if (await HasLockedPayrollAsync(dto.PersonId, dto.Year, dto.Month, ct))
+            return Conflict(new { message = "This payroll is already in review or finalized. Reopen the payroll before changing its deduction adjustment." });
 
         var record = await _db.AttendanceMonthlySettlements
             .FirstOrDefaultAsync(s => s.PersonId == dto.PersonId 
@@ -493,7 +502,14 @@ public sealed class AttendanceController : ControllerBase
         }
 
         record.AdjustmentAmount = dto.AdjustmentAmount;
-        record.AdjustmentRemarks = string.IsNullOrWhiteSpace(dto.Remarks) ? null : dto.Remarks.Trim();
+        record.AdjustmentRemarks = dto.Remarks.Trim();
+        record.IsAdjustmentApproved = false;
+        record.AdjustmentSubmittedByUserId = UserId();
+        record.AdjustmentSubmittedDateUtc = DateTime.UtcNow;
+        record.AdjustmentApprovedByUserId = null;
+        record.AdjustmentApprovedDateUtc = null;
+
+        await SyncDraftPayrollAdjustmentAsync(dto.PersonId, dto.Year, dto.Month, dto.AdjustmentAmount.Value, false, record.AdjustmentRemarks, ct);
 
         await _db.SaveChangesAsync(ct);
         await PublishDeductionChangedAsync(
@@ -509,10 +525,14 @@ public sealed class AttendanceController : ControllerBase
     public async Task<IActionResult> ApproveAdjustment([FromBody] ApproveAdjustmentRequestDto dto, CancellationToken ct)
     {
         if (!_tenant.TenantId.HasValue) return Forbid();
-        if (!await HasAttendanceMenuActionAsync("EDIT", ct, "/attendance/deduction"))
+        var canApproveFromDeduction = await HasAttendanceMenuActionAsync("APPROVE", ct, "/attendance/deduction");
+        var canApproveFromPayroll = await HasAttendanceMenuActionAsync("APPROVE", ct, "/pay-allowances/payroll");
+        if (!canApproveFromDeduction && !canApproveFromPayroll)
             return Forbid();
         if (await HasPendingAttendanceReviewAsync(dto.PersonId, dto.Year, dto.Month, ct))
             return Conflict(new { message = "Missing or invalid checkout attendance must be resolved before deduction approval." });
+        if (await HasLockedPayrollAsync(dto.PersonId, dto.Year, dto.Month, ct))
+            return Conflict(new { message = "This payroll is already in review or finalized. Reopen the payroll before approving its deduction adjustment." });
 
         var validCode = await _db.ProcessApprovalCodes.FirstOrDefaultAsync(x => x.TenantId == _tenant.RequiredTenantId && x.ProcessName == "DeductionAdjustment", ct);
         if (validCode == null || validCode.PinCode != dto.PinCode)
@@ -527,23 +547,24 @@ public sealed class AttendanceController : ControllerBase
                                       && s.TenantId == _tenant.RequiredTenantId, ct);
 
         if (record == null)
-        {
-            record = new AttendanceMonthlySettlement
-            {
-                TenantId = _tenant.RequiredTenantId,
-                PersonId = dto.PersonId,
-                SettlementYear = dto.Year,
-                SettlementMonth = dto.Month
-            };
-            _db.AttendanceMonthlySettlements.Add(record);
-        }
+            return BadRequest(new { message = "Save an adjustment amount and reason before approval." });
+
+        if (!record.AdjustmentAmount.HasValue || record.AdjustmentAmount.Value == 0 || string.IsNullOrWhiteSpace(record.AdjustmentRemarks))
+            return BadRequest(new { message = "A non-zero adjustment amount and valid reason are required before approval." });
 
         if (record.IsAdjustmentApproved)
             return BadRequest(new { message = "Already approved." });
 
+        var approverUserId = UserId();
+        if (!string.IsNullOrWhiteSpace(record.AdjustmentSubmittedByUserId) &&
+            string.Equals(record.AdjustmentSubmittedByUserId, approverUserId, StringComparison.Ordinal))
+            return Conflict(new { message = "The person who submitted this adjustment cannot approve it. Approval must be completed by a different authorized higher authority." });
+
         record.IsAdjustmentApproved = true;
-        record.ApprovedByUserId = UserId();
-        record.ApprovedDateUtc = DateTime.UtcNow;
+        record.AdjustmentApprovedByUserId = approverUserId;
+        record.AdjustmentApprovedDateUtc = DateTime.UtcNow;
+
+        await SyncDraftPayrollAdjustmentAsync(dto.PersonId, dto.Year, dto.Month, record.AdjustmentAmount.Value, true, record.AdjustmentRemarks, ct);
 
         await _db.SaveChangesAsync(ct);
         await PublishDeductionChangedAsync(
@@ -1073,6 +1094,7 @@ public sealed class AttendanceController : ControllerBase
         rule.Remarks = string.IsNullOrWhiteSpace(dto.Remarks) ? null : dto.Remarks.Trim();
 
         await _db.SaveChangesAsync(ct);
+        await PublishDeductionConfigurationChangedAsync(tenantId, rule.Id.ToString(CultureInfo.InvariantCulture));
         return Ok(ToAttendanceRuleSettingDto(rule, attendanceType));
     }
 
@@ -1135,6 +1157,60 @@ public sealed class AttendanceController : ControllerBase
                 row.State == AttendanceFinalizationStates.PendingReview,
             cancellationToken);
     }
+
+    private Task<bool> HasLockedPayrollAsync(
+        Guid personId,
+        int year,
+        int month,
+        CancellationToken cancellationToken) =>
+        _db.PayrollLines.AsNoTracking().AnyAsync(
+            line =>
+                line.TenantId == _tenant.RequiredTenantId &&
+                line.PersonId == personId &&
+                line.PayrollRun != null &&
+                line.PayrollRun.Year == year &&
+                line.PayrollRun.Month == month &&
+                line.PayrollRun.Status != "Draft",
+            cancellationToken);
+
+    private async Task SyncDraftPayrollAdjustmentAsync(
+        Guid personId,
+        int year,
+        int month,
+        decimal adjustment,
+        bool isApproved,
+        string? remarks,
+        CancellationToken cancellationToken)
+    {
+        var lines = await _db.PayrollLines
+            .Where(line =>
+                line.TenantId == _tenant.RequiredTenantId &&
+                line.PersonId == personId &&
+                line.PayrollRun != null &&
+                line.PayrollRun.Year == year &&
+                line.PayrollRun.Month == month &&
+                line.PayrollRun.Status == "Draft")
+            .ToListAsync(cancellationToken);
+
+        foreach (var line in lines)
+        {
+            line.AttendanceAdjustment = adjustment;
+            line.IsAttendanceAdjustmentApproved = isApproved;
+            line.AttendanceAdjustmentRemarks = remarks;
+            line.UpdatedOnUtc = DateTime.UtcNow;
+            PayrollCalculationService.Recalculate(line);
+        }
+    }
+
+    private Task PublishDeductionConfigurationChangedAsync(int tenantId, string entityId) =>
+        _realtime.PublishEventToTenantAsync(
+            tenantId,
+            RealtimeEventDto.Create(
+                RealtimeEventTypes.DeductionChanged,
+                "deduction",
+                "deduction-configuration-changed",
+                tenantId,
+                entityId));
 
     private async Task PublishDeductionChangedAsync(
         Guid personId,

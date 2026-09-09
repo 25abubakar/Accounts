@@ -1,5 +1,7 @@
 using Accounts.Data;
 using Accounts.Services.Interfaces;
+using Accounts.Services.Services;
+using Accounts.Models;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Data.SqlClient;
@@ -17,16 +19,25 @@ public sealed class ProcessCategoryApproversController : ControllerBase
 {
     private readonly ApplicationDbContext _db;
     private readonly ITenantService _tenant;
+    private readonly RbacService _rbac;
+    private readonly TenantPermissionService _tenantPermissions;
 
-    public ProcessCategoryApproversController(ApplicationDbContext db, ITenantService tenant)
+    public ProcessCategoryApproversController(
+        ApplicationDbContext db,
+        ITenantService tenant,
+        RbacService rbac,
+        TenantPermissionService tenantPermissions)
     {
         _db = db;
         _tenant = tenant;
+        _rbac = rbac;
+        _tenantPermissions = tenantPermissions;
     }
 
     [HttpGet]
     public async Task<IActionResult> GetAll(CancellationToken ct)
     {
+        var denied = await Guard("VIEW", ct); if (denied != null) return denied;
         if (_tenant.IsSuperAdmin || !_tenant.TenantId.HasValue)
             return Forbid();
 
@@ -86,12 +97,30 @@ public sealed class ProcessCategoryApproversController : ControllerBase
                     ProfilePhotoUrl = GetNullableString(reader, "ProfilePhotoUrl")
                 }, ct);
 
-        return Ok(new { categories, assignments });
+        var actionAuthorities = await (
+            from authority in _db.ProcessActionAuthorities.AsNoTracking()
+            join staff in _db.StaffVacancies.AsNoTracking() on authority.StaffId equals staff.StaffId
+            join person in _db.Persons.AsNoTracking() on staff.PersonId equals person.PersonId
+            where authority.TenantId == tenantId && authority.IsActive
+            orderby authority.ProcessCode, authority.ActionCode, person.FullName
+            select new
+            {
+                authority.Id,
+                authority.ProcessCode,
+                authority.ActionCode,
+                authority.StaffId,
+                StaffName = person.FullName,
+                StaffNumber = staff.LoginId,
+                person.ProfilePhotoUrl
+            }).ToListAsync(ct);
+
+        return Ok(new { categories, assignments, actionAuthorities });
     }
 
     [HttpGet("staff")]
     public async Task<IActionResult> GetStaff(CancellationToken ct)
     {
+        var denied = await Guard("VIEW", ct); if (denied != null) return denied;
         if (_tenant.IsSuperAdmin || !_tenant.TenantId.HasValue)
             return Forbid();
 
@@ -131,6 +160,7 @@ public sealed class ProcessCategoryApproversController : ControllerBase
     [HttpPost]
     public async Task<IActionResult> Assign([FromBody] AssignApproverDto dto, CancellationToken ct)
     {
+        var denied = await Guard("EDIT", ct); if (denied != null) return denied;
         if (_tenant.IsSuperAdmin || !_tenant.TenantId.HasValue)
             return Forbid();
 
@@ -179,6 +209,7 @@ public sealed class ProcessCategoryApproversController : ControllerBase
     [HttpDelete("{id:int}")]
     public async Task<IActionResult> Remove(int id, CancellationToken ct)
     {
+        var denied = await Guard("EDIT", ct); if (denied != null) return denied;
         if (_tenant.IsSuperAdmin || !_tenant.TenantId.HasValue)
             return Forbid();
 
@@ -192,6 +223,111 @@ public sealed class ProcessCategoryApproversController : ControllerBase
             return NotFound(new { message = "Assignment not found." });
 
         return Ok(new { message = "Approver removed." });
+    }
+
+    [HttpGet("my-authorities")]
+    public async Task<IActionResult> MyAuthorities([FromQuery] string processCode, CancellationToken ct)
+    {
+        if (!_tenant.TenantId.HasValue) return Forbid();
+        var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+        if (string.IsNullOrWhiteSpace(userId)) return Unauthorized();
+        var normalizedProcess = NormalizeProcessCode(processCode);
+        if (normalizedProcess == null) return BadRequest(new { message = "A valid process code is required." });
+
+        var staffId = await _db.Persons.AsNoTracking()
+            .Where(person => person.IdentityUserId == userId && person.Staff != null)
+            .Select(person => (Guid?)person.Staff!.StaffId)
+            .FirstOrDefaultAsync(ct);
+        if (!staffId.HasValue) return Ok(Array.Empty<string>());
+
+        var actions = await _db.ProcessActionAuthorities.AsNoTracking()
+            .Where(authority => authority.ProcessCode == normalizedProcess && authority.StaffId == staffId.Value && authority.IsActive)
+            .Select(authority => authority.ActionCode)
+            .Distinct()
+            .OrderBy(action => action)
+            .ToListAsync(ct);
+        return Ok(actions);
+    }
+
+    [HttpPost("action-authorities")]
+    public async Task<IActionResult> AssignActionAuthority([FromBody] AssignActionAuthorityDto dto, CancellationToken ct)
+    {
+        var denied = await Guard("EDIT", ct); if (denied != null) return denied;
+        if (_tenant.IsSuperAdmin || !_tenant.TenantId.HasValue) return Forbid();
+        var processCode = NormalizeProcessCode(dto.ProcessCode);
+        var actionCode = NormalizeActionCode(dto.ActionCode);
+        if (processCode == null || actionCode == null)
+            return BadRequest(new { message = "Select a valid process and workflow stage." });
+        if (!await _db.StaffVacancies.AsNoTracking().AnyAsync(staff => staff.StaffId == dto.StaffId && staff.TenantId == _tenant.RequiredTenantId, ct))
+            return BadRequest(new { message = "Staff member not found in this tenant." });
+
+        var existing = await _db.ProcessActionAuthorities
+            .SingleOrDefaultAsync(authority => authority.ProcessCode == processCode && authority.ActionCode == actionCode && authority.StaffId == dto.StaffId, ct);
+        if (existing == null)
+        {
+            _db.ProcessActionAuthorities.Add(new ProcessActionAuthority
+            {
+                TenantId = _tenant.RequiredTenantId,
+                ProcessCode = processCode,
+                ActionCode = actionCode,
+                StaffId = dto.StaffId,
+                IsActive = true,
+                CreatedByUserId = User.FindFirstValue(ClaimTypes.NameIdentifier)
+            });
+        }
+        else
+        {
+            existing.IsActive = true;
+        }
+
+        await _db.SaveChangesAsync(ct);
+        return Ok(new { message = "Process authority assigned successfully." });
+    }
+
+    [HttpDelete("action-authorities/{id:int}")]
+    public async Task<IActionResult> RemoveActionAuthority(int id, CancellationToken ct)
+    {
+        var denied = await Guard("EDIT", ct); if (denied != null) return denied;
+        if (_tenant.IsSuperAdmin || !_tenant.TenantId.HasValue) return Forbid();
+        var authority = await _db.ProcessActionAuthorities.SingleOrDefaultAsync(item => item.Id == id, ct);
+        if (authority == null) return NotFound(new { message = "Process authority assignment not found." });
+        _db.ProcessActionAuthorities.Remove(authority);
+        await _db.SaveChangesAsync(ct);
+        return Ok(new { message = "Process authority removed." });
+    }
+
+    private static string? NormalizeProcessCode(string? value) =>
+        string.Equals(value?.Trim(), "PAYROLL", StringComparison.OrdinalIgnoreCase) ? "PAYROLL" : null;
+
+    private static string? NormalizeActionCode(string? value) => value?.Trim().ToUpperInvariant() switch
+    {
+        "CREATE" => "CREATE",
+        "VERIFY" => "VERIFY",
+        "APPROVE" => "APPROVE",
+        "PAY" => "PAY",
+        _ => null
+    };
+
+    private async Task<IActionResult?> Guard(string action, CancellationToken ct)
+    {
+        const string route = "/hr/process/report";
+        if (!_tenant.TenantId.HasValue || TenantPermissionService.IsSuperAdmin(User)) return Forbid();
+        if (TenantPermissionService.IsTenantAdmin(User))
+            return await _tenantPermissions.HasMenuRouteAsync(User, [route], action, ct) ? null : Forbid();
+
+        var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+        if (string.IsNullOrWhiteSpace(userId)) return Forbid();
+        var staffId = await _db.Persons.AsNoTracking()
+            .Where(person => person.IdentityUserId == userId && person.Staff != null)
+            .Select(person => (Guid?)person.Staff!.StaffId)
+            .FirstOrDefaultAsync(ct);
+        var menuId = await _db.Menus.AsNoTracking()
+            .Where(menu => menu.IsActive && menu.Route == route)
+            .Select(menu => (int?)menu.Id)
+            .FirstOrDefaultAsync(ct);
+        if (!staffId.HasValue || !menuId.HasValue) return Forbid();
+        if (action == "VIEW" && await _rbac.HasAccessAsync(staffId.Value, $"MENU_{menuId.Value}")) return null;
+        return await _rbac.HasAccessAsync(staffId.Value, $"MENU_{menuId.Value}_{action}") ? null : Forbid();
     }
 
     private async Task<List<T>> QueryAsync<T>(
@@ -292,5 +428,12 @@ file sealed class StaffPickerRow
 public sealed class AssignApproverDto
 {
     public int CategoryId { get; set; }
+    public Guid StaffId { get; set; }
+}
+
+public sealed class AssignActionAuthorityDto
+{
+    public string ProcessCode { get; set; } = string.Empty;
+    public string ActionCode { get; set; } = string.Empty;
     public Guid StaffId { get; set; }
 }

@@ -4,6 +4,7 @@ using Accounts.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 #nullable disable
@@ -11,9 +12,11 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace Accounts.Migrations
 {
     [DbContext(typeof(ApplicationDbContext))]
-    partial class ApplicationDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260909055305_AddDeductionAdjustmentMakerCheckerAudit")]
+    partial class AddDeductionAdjustmentMakerCheckerAudit
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -4420,17 +4423,6 @@ namespace Accounts.Migrations
                         .HasMaxLength(1000)
                         .HasColumnType("nvarchar(1000)");
 
-                    b.Property<string>("PaidByName")
-                        .HasMaxLength(150)
-                        .HasColumnType("nvarchar(150)");
-
-                    b.Property<string>("PaidByUserId")
-                        .HasMaxLength(450)
-                        .HasColumnType("nvarchar(450)");
-
-                    b.Property<DateTime?>("PaidOnUtc")
-                        .HasColumnType("datetime2");
-
                     b.Property<DateOnly>("PayDate")
                         .HasColumnType("date");
 
@@ -5829,52 +5821,6 @@ namespace Accounts.Migrations
                     b.HasIndex("TenantId", "CategoryId", "DisplayOrder");
 
                     b.ToTable("PlatformTypeValues", (string)null);
-                });
-
-            modelBuilder.Entity("Accounts.Models.ProcessActionAuthority", b =>
-                {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("int");
-
-                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
-
-                    b.Property<string>("ActionCode")
-                        .IsRequired()
-                        .HasMaxLength(30)
-                        .HasColumnType("nvarchar(30)");
-
-                    b.Property<string>("CreatedByUserId")
-                        .HasMaxLength(450)
-                        .HasColumnType("nvarchar(450)");
-
-                    b.Property<DateTime>("CreatedDateUtc")
-                        .HasColumnType("datetime2");
-
-                    b.Property<bool>("IsActive")
-                        .HasColumnType("bit");
-
-                    b.Property<string>("ProcessCode")
-                        .IsRequired()
-                        .HasMaxLength(50)
-                        .HasColumnType("nvarchar(50)");
-
-                    b.Property<Guid>("StaffId")
-                        .HasColumnType("uniqueidentifier");
-
-                    b.Property<int>("TenantId")
-                        .HasColumnType("int");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("StaffId");
-
-                    b.HasIndex("TenantId", "ProcessCode", "ActionCode", "IsActive");
-
-                    b.HasIndex("TenantId", "ProcessCode", "ActionCode", "StaffId")
-                        .IsUnique();
-
-                    b.ToTable("ProcessActionAuthorities");
                 });
 
             modelBuilder.Entity("Accounts.Models.ProcessApprovalCode", b =>
@@ -8451,21 +8397,6 @@ namespace Accounts.Migrations
                     b.Navigation("Category");
 
                     b.Navigation("Tenant");
-                });
-
-            modelBuilder.Entity("Accounts.Models.ProcessActionAuthority", b =>
-                {
-                    b.HasOne("Accounts.Models.StaffVacancy", null)
-                        .WithMany()
-                        .HasForeignKey("StaffId")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
-
-                    b.HasOne("Accounts.Models.Tenant", null)
-                        .WithMany()
-                        .HasForeignKey("TenantId")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
                 });
 
             modelBuilder.Entity("Accounts.Models.ProcessStatusStyle", b =>
