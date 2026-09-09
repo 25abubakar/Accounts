@@ -355,6 +355,8 @@ public sealed class PayAndAllowancesController(
                 MinSer = x.MinimumService,
                 AmtType = x.AmountType,
                 PayTypeId = x.PayType,
+                x.Amount,
+                x.Percentage,
                 MaxPh = x.BenefitRule.MaximumPh,
                 MinPh = x.BenefitRule.MinimumPh,
                 CoyShare = x.CompanyShare,
@@ -381,6 +383,7 @@ public sealed class PayAndAllowancesController(
         var benefitRule = await db.PayrollBenefitRules.AsNoTracking().SingleOrDefaultAsync(x => x.Id == dto.BenefitRuleId, ct);
         if (benefitRule == null)
             return BadRequest(new { message = "Selected benefit rule was not found." });
+        var paymentError = ValidateBenefitParameterPaymentSelection(benefitRule.BenefitsType, dto); if (paymentError != null) return BadRequest(new { message = paymentError });
         var distributionError = ValidateBonusDistribution(benefitRule.BenefitsType, dto.BonusDistribution); if (distributionError != null) return BadRequest(new { message = distributionError });
         if (await db.PayrollBenefitParameters.AnyAsync(x => x.BenefitRuleId == dto.BenefitRuleId && x.Name == dto.Name.Trim(), ct))
             return Conflict(new { message = "This parameter already exists for the selected benefit rule." });
@@ -410,6 +413,7 @@ public sealed class PayAndAllowancesController(
         var benefitRule = await db.PayrollBenefitRules.AsNoTracking().SingleOrDefaultAsync(x => x.Id == dto.BenefitRuleId, ct);
         if (benefitRule == null)
             return BadRequest(new { message = "Selected benefit rule was not found." });
+        var paymentError = ValidateBenefitParameterPaymentSelection(benefitRule.BenefitsType, dto); if (paymentError != null) return BadRequest(new { message = paymentError });
         var distributionError = ValidateBonusDistribution(benefitRule.BenefitsType, dto.BonusDistribution); if (distributionError != null) return BadRequest(new { message = distributionError });
         if (await db.PayrollBenefitParameters.AnyAsync(x => x.Id != id && x.BenefitRuleId == dto.BenefitRuleId && x.Name == dto.Name.Trim(), ct))
             return Conflict(new { message = "This parameter already exists for the selected benefit rule." });
@@ -1239,30 +1243,68 @@ public sealed class PayAndAllowancesController(
     {
         var denied = await Guard("/pay-allowances/eobi-eligibility", "VIEW", ct); if (denied != null) return denied;
         var rows = await (
-            from e in db.EobiEligibilities.AsNoTracking()
-            join p in db.Persons.AsNoTracking() on e.PersonId equals p.PersonId
-            join hr in db.PersonHrProfiles.AsNoTracking() on p.PersonId equals hr.PersonId into hrJoin
+            from dir in db.StaffDirectoryRows.AsNoTracking()
+            where dir.IsPersonActive
+            join e0 in db.EobiEligibilities.AsNoTracking() on dir.PersonId equals e0.PersonId into eligibilityJoin
+            from e in eligibilityJoin.DefaultIfEmpty()
+            join hr in db.PersonHrProfiles.AsNoTracking() on dir.PersonId equals hr.PersonId into hrJoin
             from hr in hrJoin.DefaultIfEmpty()
-            join dir in db.StaffDirectoryRows.AsNoTracking() on p.PersonId equals dir.PersonId into dirJoin
-            from dir in dirJoin.DefaultIfEmpty()
-            orderby p.FullName
+            orderby dir.FullName
             select new
             {
-                id = e.Id,
-                personId = e.PersonId,
-                staffId = dir != null ? dir.EmployeeId : null,
-                fullName = p.FullName,
-                eobiNo = e.EobiNumber,
-                eobiNumber = e.EobiNumber,
-                department = dir != null ? dir.Department : null,
+                id = e != null ? e.Id : 0,
+                personId = dir.PersonId,
+                staffId = dir.EmployeeId,
+                fullName = dir.FullName,
+                eobiNo = e != null ? e.EobiNumber : null,
+                eobiNumber = e != null ? e.EobiNumber : null,
+                department = dir.Department,
                 doj = hr != null && hr.JoiningDate != null ? DateOnly.FromDateTime(hr.JoiningDate.Value) : (DateOnly?)null,
-                isOn = e.IsEligible,
-                isEligible = e.IsEligible,
-                effectiveFrom = e.EffectiveFrom,
-                effectiveTo = e.EffectiveTo,
-                remarks = e.Remarks,
+                isOn = e != null && e.IsEligible,
+                isEligible = e != null && e.IsEligible,
+                effectiveFrom = e != null ? e.EffectiveFrom : (hr != null && hr.JoiningDate != null ? DateOnly.FromDateTime(hr.JoiningDate.Value) : DateOnly.FromDateTime(DateTime.UtcNow)),
+                effectiveTo = e != null ? e.EffectiveTo : null,
+                remarks = e != null ? e.Remarks : null,
             }).ToListAsync(ct);
         return Ok(rows);
+    }
+
+    [HttpPost("eobi-eligibility/reload")]
+    [Idempotent]
+    public async Task<IActionResult> ReloadEligibility(CancellationToken ct)
+    {
+        var denied = await Guard("/pay-allowances/eobi-eligibility", "ADD", ct); if (denied != null) return denied;
+        var staff = await db.StaffDirectoryRows.AsNoTracking()
+            .Where(x => x.IsPersonActive)
+            .GroupBy(x => x.PersonId)
+            .Select(x => new { PersonId = x.Key })
+            .ToListAsync(ct);
+        var personIds = staff.Select(x => x.PersonId).ToArray();
+        var existing = await db.EobiEligibilities
+            .Where(x => personIds.Contains(x.PersonId))
+            .Select(x => x.PersonId)
+            .ToHashSetAsync(ct);
+        var joiningDates = await db.PersonHrProfiles.AsNoTracking()
+            .Where(x => personIds.Contains(x.PersonId))
+            .ToDictionaryAsync(x => x.PersonId, x => x.JoiningDate, ct);
+        var today = DateOnly.FromDateTime(DateTime.UtcNow);
+        var added = 0;
+        foreach (var employee in staff.Where(x => !existing.Contains(x.PersonId)))
+        {
+            joiningDates.TryGetValue(employee.PersonId, out var joiningDate);
+            db.EobiEligibilities.Add(new EobiEligibility
+            {
+                TenantId = tenant.RequiredTenantId,
+                PersonId = employee.PersonId,
+                EffectiveFrom = joiningDate.HasValue ? DateOnly.FromDateTime(joiningDate.Value) : today,
+                IsEligible = false,
+                CreatedOnUtc = DateTime.UtcNow
+            });
+            added++;
+        }
+        if (added > 0)
+            await db.SaveChangesAsync(ct);
+        return Ok(new { message = $"Staff reloaded successfully. {staff.Count} active staff available; {added} new eligibility record(s) added as Off.", total = staff.Count, added });
     }
 
     [HttpPost("eobi-eligibility")]
@@ -1448,7 +1490,8 @@ public sealed class PayAndAllowancesController(
     {
         if (x.BenefitRuleId <= 0 || string.IsNullOrWhiteSpace(x.Name)) return "Benefits Rule and Name are required.";
         if (x.PeriodTo < x.PeriodFrom) return "Pd_To cannot be before Pd_From.";
-        if (x.MinimumService < 0 || x.CompanyShare < 0 || x.StaffShare < 0) return "Parameter values cannot be negative.";
+        if (x.MinimumService < 0 || x.Amount < 0 || x.Percentage < 0 || x.CompanyShare < 0 || x.StaffShare < 0) return "Parameter values cannot be negative.";
+        if (x.Percentage > 100) return "Percentage cannot be greater than 100.";
         return null;
     }
     private static string? ValidateBonusDistribution(string benefitType, BonusDistributionSave? x)
@@ -1461,6 +1504,19 @@ public sealed class PayAndAllowancesController(
         if (x.Installments is < 1 or > 120) return "Installments must be between 1 and 120.";
         var percentages = new[] { x.BasicPercentage, x.ServicePercentage, x.AssessmentPercentage, x.AttendancePercentage, x.LeavePercentage, x.DisciplinePercentage };
         return percentages.Any(value => value is < 0 or > 100) ? "Bonus distribution percentages must be between 0 and 100." : null;
+    }
+    private static string? ValidateBenefitParameterPaymentSelection(string benefitType, BenefitParameterSave x)
+    {
+        if (benefitType.Equals("EOBI", StringComparison.OrdinalIgnoreCase)) return null;
+        var amountType = x.AmountType?.Trim() ?? string.Empty;
+        if (amountType.Equals("Figure", StringComparison.OrdinalIgnoreCase))
+            return x.Amount > 0 ? null : "Amount (PH) must be greater than zero when AmtType is Figure.";
+        if (!amountType.Equals("Pay Ref", StringComparison.OrdinalIgnoreCase))
+            return "Select Figure or Pay Ref as AmtType.";
+        if (string.IsNullOrWhiteSpace(x.PayType)) return "PayType is required when AmtType is Pay Ref.";
+        if (!new[] { "Basic", "Current", "CurrentPay", "Net", "Gross" }.Contains(x.PayType.Trim(), StringComparer.OrdinalIgnoreCase))
+            return "Selected PayType is invalid.";
+        return x.Percentage is > 0 and <= 100 ? null : "Percentage must be between 0.0001 and 100 when AmtType is Pay Ref.";
     }
     private async Task<string?> ValidateBenefitRuleReferences(BenefitRuleSave x, CancellationToken ct)
     {
@@ -1516,8 +1572,13 @@ public sealed class PayAndAllowancesController(
         var isEobi = benefitType.Equals("EOBI", StringComparison.OrdinalIgnoreCase);
         // EOBI shares are fixed values and do not use the generic Amount Type or
         // Pay Type selectors. Ignore stale/client-supplied values for this type.
-        row.AmountType = isEobi ? "Fixed" : string.IsNullOrWhiteSpace(x.AmountType) ? "PH" : x.AmountType.Trim();
-        row.PayType = isEobi ? string.Empty : string.IsNullOrWhiteSpace(x.PayType) ? "Basic" : x.PayType.Trim();
+        var amountType = x.AmountType?.Trim() ?? string.Empty;
+        var isFigure = amountType.Equals("Figure", StringComparison.OrdinalIgnoreCase);
+        var isPayReference = amountType.Equals("Pay Ref", StringComparison.OrdinalIgnoreCase);
+        row.AmountType = isEobi ? string.Empty : amountType;
+        row.Amount = !isEobi && isFigure ? x.Amount : 0;
+        row.Percentage = !isEobi && isPayReference ? x.Percentage : 0;
+        row.PayType = !isEobi && isPayReference ? x.PayType?.Trim() ?? string.Empty : string.Empty;
         row.CompanyShare = x.CompanyShare;
         row.StaffShare = x.StaffShare;
     }
@@ -1772,5 +1833,5 @@ public sealed record EobiEligibilitySave(Guid PersonId, string? EobiNumber, Date
 public sealed record StaffMonthlyEobiCreateSave(int Year, int Month);
 public sealed record StaffMonthlyEobiUpdateSave(string? EobiRef);
 public sealed record BenefitRuleSave(string BenefitsType, string Name, string? Company, string? Entitled, string? Contract, string? Frequency, DateOnly? ValidFrom, DateOnly? ValidTo, decimal MaximumExpense, string? ServiceStatus, string? Scale, DateOnly? Wef, decimal MinimumService, decimal MaximumPh, decimal MinimumPh, bool IsIneligible, string? ShareType, decimal CompanyShare, decimal StaffShare, int? OrganizationId, string? CompanyName);
-public sealed record BenefitParameterSave(int BenefitRuleId, string Name, DateOnly? PeriodFrom, DateOnly? PeriodTo, decimal MinimumService, string? AmountType, string? PayType, decimal CompanyShare, decimal StaffShare, BonusDistributionSave? BonusDistribution);
+public sealed record BenefitParameterSave(int BenefitRuleId, string Name, DateOnly? PeriodFrom, DateOnly? PeriodTo, decimal MinimumService, string? AmountType, string? PayType, decimal Amount, decimal Percentage, decimal CompanyShare, decimal StaffShare, BonusDistributionSave? BonusDistribution);
 public sealed record BonusDistributionSave(int? Month, decimal BasicPercentage, decimal ServicePercentage, decimal ServiceYears, decimal AssessmentPercentage, decimal AttendancePercentage, decimal LeavePercentage, decimal DisciplinePercentage, int Installments);

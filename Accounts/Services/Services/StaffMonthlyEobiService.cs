@@ -35,8 +35,32 @@ public sealed class StaffMonthlyEobiService(
                 && x.EffectiveFrom <= periodEnd
                 && (x.EffectiveTo == null || x.EffectiveTo >= periodStart))
             .OrderByDescending(x => x.EffectiveFrom)
-            .FirstOrDefaultAsync(cancellationToken)
-            ?? throw new InvalidOperationException("No active EOBI setting covers this month. Configure EOBI Settings first.");
+            .FirstOrDefaultAsync(cancellationToken);
+
+        // The legacy Benefits workspace stores EOBI as fixed company/staff shares.
+        // Prefer that effective-dated configuration; retain EobiSettings as the
+        // percentage-based fallback for tenants which use the newer setup screen.
+        var eobiBenefit = await db.PayrollBenefitRules.AsNoTracking()
+            .Include(x => x.Parameters)
+            .Where(x => x.BenefitsType == "EOBI"
+                && !x.IsIneligible
+                && (x.ValidFrom == null || x.ValidFrom <= periodEnd)
+                && (x.ValidTo == null || x.ValidTo >= periodStart)
+                && (x.Wef == null || x.Wef <= periodEnd))
+            .OrderByDescending(x => x.Wef ?? x.ValidFrom)
+            .ThenByDescending(x => x.Id)
+            .FirstOrDefaultAsync(cancellationToken);
+        var eobiParameter = eobiBenefit?.Parameters
+            .Where(x => (!x.PeriodFrom.HasValue || x.PeriodFrom <= periodEnd)
+                && (!x.PeriodTo.HasValue || x.PeriodTo >= periodStart))
+            .OrderByDescending(x => x.PeriodFrom)
+            .ThenByDescending(x => x.Id)
+            .FirstOrDefault();
+        var fixedCompanyShare = Money(eobiParameter?.CompanyShare ?? eobiBenefit?.CompanyShare ?? 0);
+        var fixedStaffShare = Money(eobiParameter?.StaffShare ?? eobiBenefit?.StaffShare ?? 0);
+        var hasFixedBenefitShares = fixedCompanyShare > 0 || fixedStaffShare > 0;
+        if (!hasFixedBenefitShares && eobiSetting == null)
+            throw new InvalidOperationException("No EOBI contribution configuration covers this month. Configure an EOBI Benefit Rule/Parameter or EOBI Settings first.");
 
         var eligibilities = await db.EobiEligibilities.AsNoTracking()
             .Where(x => x.IsEligible
@@ -68,10 +92,17 @@ public sealed class StaffMonthlyEobiService(
             .GroupBy(x => x.ScaleName.Trim(), StringComparer.OrdinalIgnoreCase)
             .ToDictionary(x => x.Key, x => x.First(), StringComparer.OrdinalIgnoreCase);
 
-        var existing = await db.StaffMonthlyEobis
-            .Where(row => row.Year == year && row.Month == month && personIds.Contains(row.PersonId))
+        var allExisting = await db.StaffMonthlyEobis
+            .Where(row => row.Year == year && row.Month == month)
             .ToListAsync(cancellationToken);
-        var existingByPerson = existing
+        var staleDraftRows = allExisting
+            .Where(row => !personIds.Contains(row.PersonId) && !row.IsApproved && !row.IsPaid)
+            .ToList();
+        if (staleDraftRows.Count > 0)
+            db.StaffMonthlyEobis.RemoveRange(staleDraftRows);
+
+        var existingByPerson = allExisting
+            .Where(row => personIds.Contains(row.PersonId))
             .GroupBy(row => row.PersonId)
             .ToDictionary(g => g.Key, g => g.OrderByDescending(x => x.Id).First());
 
@@ -94,12 +125,17 @@ public sealed class StaffMonthlyEobiService(
                 : scaleBasic);
             var basicSalary = Money(currentPay > 0 ? currentPay : scaleBasic);
 
-            var wageBase = basicSalary <= 0 ? 0 : Math.Max(basicSalary, eobiSetting.MinimumWage);
-            var contributionBase = eobiSetting.MaximumContributionBase > 0
-                ? Math.Min(wageBase, eobiSetting.MaximumContributionBase)
-                : wageBase;
-            var staffShare = Money(contributionBase * eobiSetting.EmployeeRatePercentage / 100m);
-            var companyShare = Money(contributionBase * eobiSetting.EmployerRatePercentage / 100m);
+            var staffShare = fixedStaffShare;
+            var companyShare = fixedCompanyShare;
+            if (!hasFixedBenefitShares && eobiSetting != null)
+            {
+                var wageBase = basicSalary <= 0 ? 0 : Math.Max(basicSalary, eobiSetting.MinimumWage);
+                var contributionBase = eobiSetting.MaximumContributionBase > 0
+                    ? Math.Min(wageBase, eobiSetting.MaximumContributionBase)
+                    : wageBase;
+                staffShare = Money(contributionBase * eobiSetting.EmployeeRatePercentage / 100m);
+                companyShare = Money(contributionBase * eobiSetting.EmployerRatePercentage / 100m);
+            }
             var total = Money(staffShare + companyShare);
 
             eligibilityByPerson.TryGetValue(employee.PersonId, out var eligibility);
@@ -166,6 +202,7 @@ public sealed class StaffMonthlyEobiService(
             createdOrUpdated++;
         }
 
+        createdOrUpdated += staleDraftRows.Count;
         if (createdOrUpdated == 0 && skippedPaid > 0)
             throw new InvalidOperationException("All EOBI rows for this month are already paid and cannot be regenerated.");
 

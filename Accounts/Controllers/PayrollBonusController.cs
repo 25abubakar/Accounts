@@ -146,8 +146,11 @@ public sealed class PayrollBonusController(
             var serviceYears = joining.HasValue
                 ? Math.Max(0, (decimal)(periodEnd.ToDateTime(TimeOnly.MinValue) - joining.Value.Date).TotalDays / 365.2425m)
                 : 0;
+            var parameter = ResolveBonusParameter(rule, request.Month, periodStart, periodEnd, serviceYears);
+            var distribution = parameter?.BonusDistribution;
+            var usesFigure = parameter != null && parameter.AmountType.Equals("Figure", StringComparison.OrdinalIgnoreCase);
             if (profile == null) reasons.Add("HR profile is missing");
-            if (salary <= 0) reasons.Add("Salary is missing");
+            if (!usesFigure && salary <= 0) reasons.Add("Salary is missing");
             if (!string.IsNullOrWhiteSpace(rule.Scale)
                 && !string.Equals(rule.Scale.Trim(), profile?.Scale?.Trim(), StringComparison.OrdinalIgnoreCase))
                 reasons.Add($"Requires scale {rule.Scale}");
@@ -171,10 +174,16 @@ public sealed class PayrollBonusController(
             }
 
             var valid = reasons.Count == 0;
-            var bonusAmount = rule.MaximumExpense > 0 ? Math.Min(salary, rule.MaximumExpense) : salary;
-            var distribution = ResolveBonusDistribution(rule, request.Month, periodStart, periodEnd, serviceYears);
+            var bonusAmount = ResolveBonusAmount(parameter, profile, salary);
             if (distribution == null) reasons.Add("No matching bonus distribution for this month/service");
+            if (bonusAmount <= 0) reasons.Add("Bonus Figure / Pay Ref amount is not configured");
             valid = reasons.Count == 0;
+            var completedServiceYears = Math.Floor(serviceYears);
+            var effectiveServicePercent = distribution == null
+                ? 0
+                : distribution.ServiceYears > 0
+                    ? distribution.ServicePercentage * Math.Min(1m, completedServiceYears / distribution.ServiceYears)
+                    : distribution.ServicePercentage;
 
             var line = new PayrollBonusLine
             {
@@ -192,12 +201,12 @@ public sealed class PayrollBonusController(
                 BaseSalary = salary,
                 BonusAmount = bonusAmount,
                 BasicPercent = distribution?.BasicPercentage ?? defaultPercent,
-                ServicePercent = distribution != null && serviceYears >= distribution.ServiceYears ? distribution.ServicePercentage : 0,
+                ServicePercent = effectiveServicePercent,
                 AttendancePercent = distribution?.AttendancePercentage ?? 0,
                 AssessmentPercent = distribution?.AssessmentPercentage ?? 0,
                 LeavePercent = distribution?.LeavePercentage ?? 0,
                 DisciplinePercent = distribution?.DisciplinePercentage ?? 0,
-                ServiceYears = Math.Round(serviceYears, 2),
+                ServiceYears = completedServiceYears,
                 Month = request.Month,
                 Year = request.Year,
                 Installment = Math.Max(1, distribution?.Installments ?? 1),
@@ -453,7 +462,7 @@ public sealed class PayrollBonusController(
         return value > 0 ? value : 100m;
     }
 
-    private static PayrollBonusDistribution? ResolveBonusDistribution(
+    private static PayrollBenefitParameter? ResolveBonusParameter(
         PayrollBenefitRule rule,
         int month,
         DateOnly periodStart,
@@ -463,11 +472,28 @@ public sealed class PayrollBonusController(
             .Where(parameter => parameter.BonusDistribution != null
                 && (!parameter.PeriodFrom.HasValue || parameter.PeriodFrom <= periodEnd)
                 && (!parameter.PeriodTo.HasValue || parameter.PeriodTo >= periodStart)
-                && serviceYears >= parameter.MinimumService
+                && serviceYears * 12m >= parameter.MinimumService
                 && (!parameter.BonusDistribution!.Month.HasValue || parameter.BonusDistribution.Month == month))
             .OrderByDescending(parameter => parameter.MinimumService)
-            .Select(parameter => parameter.BonusDistribution)
             .FirstOrDefault();
+
+    private static decimal ResolveBonusAmount(PayrollBenefitParameter? parameter, PersonHrProfile? profile, decimal salary)
+    {
+        if (parameter == null) return salary;
+        if (parameter.AmountType.Equals("Figure", StringComparison.OrdinalIgnoreCase))
+            return Money(parameter.Amount);
+
+        var payReference = parameter.PayType.Trim().ToLowerInvariant() switch
+        {
+            "basic" => profile?.BasicSalary ?? salary,
+            "current" or "currentpay" => profile?.CurrentPay is > 0 ? profile.CurrentPay.Value : salary,
+            // Gross and Net snapshots are not available while a bonus run is being generated.
+            // Current pay is the safe persisted salary fallback until payroll finalization.
+            "gross" or "net" => salary,
+            _ => salary
+        };
+        return Money(payReference * parameter.Percentage / 100m);
+    }
 
     private static bool IsOrganizationDescendant(int candidateId, int ancestorId, IReadOnlyDictionary<int, OrganizationTree> nodes)
     {

@@ -300,7 +300,7 @@ public sealed class PayrollCalculationService(
                 var parameters = rule.Parameters.Where(parameter =>
                     (!parameter.PeriodFrom.HasValue || parameter.PeriodFrom <= periodEnd) &&
                     (!parameter.PeriodTo.HasValue || parameter.PeriodTo >= periodStart) &&
-                    serviceYears >= parameter.MinimumService).ToList();
+                    serviceYears * 12m >= parameter.MinimumService).ToList();
                 if (parameters.Count == 0)
                 {
                     employerBenefits += ResolveShare(rule.CompanyShare, rule.ShareType, basicSalary);

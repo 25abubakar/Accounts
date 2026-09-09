@@ -70,6 +70,8 @@ public sealed class PayrollBenefitParameter : ITenantEntity
     [Column(TypeName = "decimal(9,2)")] public decimal MinimumService { get; set; }
     [Required, MaxLength(30)] public string AmountType { get; set; } = "PH";
     [Required, MaxLength(30)] public string PayType { get; set; } = "Basic";
+    [Column(TypeName = "decimal(18,2)")] public decimal Amount { get; set; }
+    [Column(TypeName = "decimal(9,4)")] public decimal Percentage { get; set; }
     [Column(TypeName = "decimal(18,2)")] public decimal CompanyShare { get; set; }
     [Column(TypeName = "decimal(18,2)")] public decimal StaffShare { get; set; }
     public DateTime CreatedOnUtc { get; set; } = DateTime.UtcNow;
