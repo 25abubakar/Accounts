@@ -15,10 +15,48 @@ public sealed class StaffMonthlyEobiService(
         CancellationToken cancellationToken)
     {
         ValidatePeriod(year, month);
-        return await db.StaffMonthlyEobis.AsNoTracking()
-            .Where(row => row.Year == year && row.Month == month)
+        var periodStart = new DateOnly(year, month, 1);
+        var periodEnd = periodStart.AddMonths(1).AddDays(-1);
+
+        // Only staff who are IsOn/IsEligible on the EOBI Eligible List for this month.
+        var eligiblePersonIds = await db.EobiEligibilities.AsNoTracking()
+            .Where(x => x.IsEligible
+                && x.EffectiveFrom <= periodEnd
+                && (x.EffectiveTo == null || x.EffectiveTo >= periodStart))
+            .Select(x => x.PersonId)
+            .Distinct()
+            .ToListAsync(cancellationToken);
+
+        var rows = await db.StaffMonthlyEobis.AsNoTracking()
+            .Where(row => row.Year == year && row.Month == month && eligiblePersonIds.Contains(row.PersonId))
             .OrderBy(row => row.FullName)
             .ToListAsync(cancellationToken);
+
+        if (rows.Count == 0) return rows;
+
+        // Overlay identity from staff directory / HR so grid never shows shifted LT/dept text.
+        var personIds = rows.Select(x => x.PersonId).Distinct().ToArray();
+        var directory = await db.StaffDirectoryRows.AsNoTracking()
+            .Where(x => personIds.Contains(x.PersonId))
+            .ToDictionaryAsync(x => x.PersonId, cancellationToken);
+        var profiles = await db.PersonHrProfiles.AsNoTracking()
+            .Where(x => personIds.Contains(x.PersonId))
+            .ToDictionaryAsync(x => x.PersonId, cancellationToken);
+
+        foreach (var row in rows)
+        {
+            if (directory.TryGetValue(row.PersonId, out var employee))
+            {
+                row.StaffNumber = employee.EmployeeId;
+                row.FullName = employee.FullName;
+                row.Department = employee.Department;
+                row.Designation = employee.Designation;
+            }
+            if (profiles.TryGetValue(row.PersonId, out var profile) && profile.JoiningDate is DateTime joined)
+                row.DateOfJoining = DateOnly.FromDateTime(joined);
+        }
+
+        return rows;
     }
 
     public async Task<IReadOnlyList<StaffMonthlyEobi>> CreateOrRefreshAsync(
@@ -29,6 +67,9 @@ public sealed class StaffMonthlyEobiService(
         ValidatePeriod(year, month);
         var periodStart = new DateOnly(year, month, 1);
         var periodEnd = periodStart.AddMonths(1).AddDays(-1);
+        var today = PakistanClock.Today();
+        var currentMonthStart = new DateOnly(today.Year, today.Month, 1);
+        var isHistoricalPeriod = periodEnd < currentMonthStart;
 
         var eobiSetting = await db.EobiSettings.AsNoTracking()
             .Where(x => x.IsActive
@@ -67,6 +108,12 @@ public sealed class StaffMonthlyEobiService(
                 && x.EffectiveFrom <= periodEnd
                 && (x.EffectiveTo == null || x.EffectiveTo >= periodStart))
             .ToListAsync(cancellationToken);
+        if (eligibilities.Count == 0 && isHistoricalPeriod)
+        {
+            var historicalRows = await ListAsync(year, month, cancellationToken);
+            if (historicalRows.Count > 0)
+                return historicalRows;
+        }
         if (eligibilities.Count == 0)
             throw new InvalidOperationException("No eligible employees for this month. Maintain EOBI Eligibility List first.");
 
@@ -79,6 +126,12 @@ public sealed class StaffMonthlyEobiService(
             .Where(x => x.IsPersonActive && eligiblePersonIds.Contains(x.PersonId))
             .OrderBy(x => x.FullName)
             .ToListAsync(cancellationToken);
+        if (employees.Count == 0 && isHistoricalPeriod)
+        {
+            var historicalRows = await ListAsync(year, month, cancellationToken);
+            if (historicalRows.Count > 0)
+                return historicalRows;
+        }
         if (employees.Count == 0)
             throw new InvalidOperationException("Eligible employees were not found in the active staff directory.");
 
@@ -95,9 +148,11 @@ public sealed class StaffMonthlyEobiService(
         var allExisting = await db.StaffMonthlyEobis
             .Where(row => row.Year == year && row.Month == month)
             .ToListAsync(cancellationToken);
-        var staleDraftRows = allExisting
-            .Where(row => !personIds.Contains(row.PersonId) && !row.IsApproved && !row.IsPaid)
-            .ToList();
+        var staleDraftRows = isHistoricalPeriod
+            ? []
+            : allExisting
+                .Where(row => !personIds.Contains(row.PersonId) && !row.IsApproved && !row.IsPaid)
+                .ToList();
         if (staleDraftRows.Count > 0)
             db.StaffMonthlyEobis.RemoveRange(staleDraftRows);
 
@@ -139,13 +194,14 @@ public sealed class StaffMonthlyEobiService(
             var total = Money(staffShare + companyShare);
 
             eligibilityByPerson.TryGetValue(employee.PersonId, out var eligibility);
+            // Screenshot grid: Eobi_Ref stays blank unless eligibility already has an EOBI number.
+            // Do not invent EOBI-{yyyyMM}-{staffId} refs.
             var eobiRef = string.IsNullOrWhiteSpace(eligibility?.EobiNumber)
-                ? $"EOBI-{year}{month:00}-{employee.EmployeeId}"
+                ? null
                 : eligibility!.EobiNumber!.Trim();
 
-            var remarks = basicSalary <= 0
-                ? "Review: missing salary configuration (current/basic pay is zero)."
-                : null;
+            // Remarks stays empty unless user/process fills it — no invented review text on generate.
+            string? remarks = null;
 
             if (existingByPerson.TryGetValue(employee.PersonId, out var row))
             {
@@ -162,14 +218,18 @@ public sealed class StaffMonthlyEobiService(
                 row.Designation = employee.Designation;
                 row.DateOfJoining = profile?.JoiningDate is DateTime joined
                     ? DateOnly.FromDateTime(joined)
-                    : null;
-                if (string.IsNullOrWhiteSpace(row.EobiRef))
+                    : row.DateOfJoining;
+                // Keep user-entered refs; replace only blank or auto-invented EOBI-yyyyMM- staff refs.
+                if (string.IsNullOrWhiteSpace(row.EobiRef)
+                    || row.EobiRef.StartsWith("EOBI-", StringComparison.OrdinalIgnoreCase))
                     row.EobiRef = eobiRef;
                 row.SalaryBase = basicSalary;
                 row.CompanyShare = companyShare;
                 row.StaffShare = staffShare;
                 row.TotalAmount = total;
-                row.Remarks = remarks;
+                if (string.IsNullOrWhiteSpace(row.Remarks)
+                    || row.Remarks.StartsWith("Review:", StringComparison.OrdinalIgnoreCase))
+                    row.Remarks = remarks;
                 row.UpdatedOnUtc = now;
                 createdOrUpdated++;
                 continue;

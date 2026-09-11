@@ -11,6 +11,7 @@ public sealed class AssessmentSchedule : ITenantEntity
     public int AssessmentYear { get; set; }
     public byte AssessmentMonth { get; set; }
     public byte OpenDay { get; set; } = 25;
+    public byte CloseDay { get; set; } = 8;
     public bool IsManualOverride { get; set; }
     public bool IsActive { get; set; } = true;
     public DateTime CreatedDateUtc { get; set; }

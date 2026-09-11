@@ -428,11 +428,15 @@ public sealed class AttendanceFinalizationService(
         string? timeFrom,
         string? timeTo)
     {
+        // Timing Chart day override wins; otherwise Map Attendance TimeFrom/TimeTo
+        // (announced shift) is the real one-day length — not a blanket rule WorkingMinutes.
         if (schedule?.WorkingMinutes > 0)
             return schedule.WorkingMinutes;
+        if (TryTime(timeFrom, out _) && TryTime(timeTo, out _))
+            return ShiftMinutes(timeFrom, timeTo);
         if (rule?.WorkingMinutes > 0)
             return rule.WorkingMinutes;
-        return ShiftMinutes(timeFrom, timeTo);
+        return 540;
     }
 
     private static int ShiftMinutes(string? timeFrom, string? timeTo)

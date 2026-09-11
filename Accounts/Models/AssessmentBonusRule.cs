@@ -12,6 +12,8 @@ public sealed class AssessmentBonusRule : ITenantEntity
     [Column(TypeName = "decimal(18,2)")] public decimal BonusAmount { get; set; }
     [Column(TypeName = "decimal(18,2)")] public decimal DecrementAmount { get; set; }
     [Column(TypeName = "decimal(18,2)")] public decimal MinimumBonusAmount { get; set; }
+    public byte OpenDay { get; set; } = 25;
+    public byte CloseDay { get; set; } = 8;
     public bool AppliesToHigherRanks { get; set; }
     public bool IsActive { get; set; } = true;
     public DateTime CreatedDateUtc { get; set; }

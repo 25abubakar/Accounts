@@ -9,10 +9,17 @@ public sealed class FileConversionCleanupService(
 {
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        await CleanupAsync(stoppingToken);
-        using var timer = new PeriodicTimer(TimeSpan.FromMinutes(15));
-        while (await timer.WaitForNextTickAsync(stoppingToken))
+        try
+        {
             await CleanupAsync(stoppingToken);
+            using var timer = new PeriodicTimer(TimeSpan.FromMinutes(15));
+            while (await timer.WaitForNextTickAsync(stoppingToken))
+                await CleanupAsync(stoppingToken);
+        }
+        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+        {
+            // Host shutdown / debugger restart cancels PeriodicTimer by design.
+        }
     }
 
     private Task CleanupAsync(CancellationToken cancellationToken)

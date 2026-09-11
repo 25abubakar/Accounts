@@ -13,26 +13,33 @@ public sealed class IdempotencyCleanupService(
         var interval = TimeSpan.FromMinutes(options.Value.CleanupIntervalMinutes);
         using var timer = new PeriodicTimer(interval, timeProvider);
 
-        while (await timer.WaitForNextTickAsync(stoppingToken))
+        try
         {
-            try
+            while (await timer.WaitForNextTickAsync(stoppingToken))
             {
-                await using var scope = scopeFactory.CreateAsyncScope();
-                var store = scope.ServiceProvider.GetRequiredService<IIdempotencyStore>();
-                var deleted = await store.DeleteExpiredAsync(
-                    timeProvider.GetUtcNow().UtcDateTime,
-                    stoppingToken);
-                if (deleted > 0)
-                    logger.LogInformation("Deleted {Count} expired idempotency records.", deleted);
+                try
+                {
+                    await using var scope = scopeFactory.CreateAsyncScope();
+                    var store = scope.ServiceProvider.GetRequiredService<IIdempotencyStore>();
+                    var deleted = await store.DeleteExpiredAsync(
+                        timeProvider.GetUtcNow().UtcDateTime,
+                        stoppingToken);
+                    if (deleted > 0)
+                        logger.LogInformation("Deleted {Count} expired idempotency records.", deleted);
+                }
+                catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+                {
+                    break;
+                }
+                catch (Exception exception)
+                {
+                    logger.LogError(exception, "Idempotency cleanup failed.");
+                }
             }
-            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
-            {
-                break;
-            }
-            catch (Exception exception)
-            {
-                logger.LogError(exception, "Idempotency cleanup failed.");
-            }
+        }
+        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+        {
+            // Host shutdown / debugger restart cancels PeriodicTimer by design.
         }
     }
 }

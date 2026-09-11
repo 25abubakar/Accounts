@@ -370,7 +370,20 @@ public sealed class AttendanceDeductionRowDto
     public int LatePenaltyMinutes { get; set; }
     public int DeductibleMinutes { get; set; }
     public int NetOvertimeMinutes { get; set; }
+    /// <summary>Gross attendance charge (HrsDeduction × PerHour). Payroll uses this + AdjustmentAmount.</summary>
     public decimal NetDeduction { get; set; }
+    /// <summary>Payroll-aligned monthly gross used for PerDay/PerHour (CurrentPay + allowances + bonus).</summary>
+    public decimal GrossSalary { get; set; }
+    /// <summary>HrsDeduction × PerHour (before money Adjustment column).</summary>
+    public decimal GrossDeduction { get; set; }
+    /// <summary>GrossDeduction ± approved AdjustmentAmount (floored at 0). UI Net Deduction.</summary>
+    public decimal NetDeduct { get; set; }
+    /// <summary>Whole hours after hour-bank: Short − HrsAdjust.</summary>
+    public int HrsDeduction { get; set; }
+    /// <summary>AdjustAbsentDays × daily working hours (rule relaxation), whole hours.</summary>
+    public int HrsAdjust { get; set; }
+    /// <summary>Scheduled / standard hours for the month (whole hours).</summary>
+    public int NStdHr { get; set; }
     public bool IsDeductionActive { get; set; }
     public decimal OvertimeBonusAmount { get; set; }
     public bool IsOvertimeApproved { get; set; }
@@ -378,6 +391,7 @@ public sealed class AttendanceDeductionRowDto
     public decimal AdjustmentAmount { get; set; }
     public bool IsAdjustmentApproved { get; set; }
     public string? AdjustmentRemarks { get; set; }
+    /// <summary>Deprecated — Final Pay removed from Deduction UI. Kept for API compatibility (always 0).</summary>
     public decimal FinalSalary { get; set; }
     public int PendingReviewDays { get; set; }
     public int OpenDays { get; set; }

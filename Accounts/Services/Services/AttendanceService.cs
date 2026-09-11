@@ -29,17 +29,20 @@ public sealed class AttendanceService : IAttendanceService
     private readonly AttendanceFinalizationService _finalization;
     private readonly IMemoryCache _cache;
     private readonly RbacService _rbac;
+    private readonly PayrollGrossSalaryResolver _grossSalary;
 
     public AttendanceService(
         ApplicationDbContext db,
         AttendanceFinalizationService finalization,
         IMemoryCache cache,
-        RbacService rbac)
+        RbacService rbac,
+        PayrollGrossSalaryResolver grossSalary)
     {
         _db = db;
         _finalization = finalization;
         _cache = cache;
         _rbac = rbac;
+        _grossSalary = grossSalary;
     }
 
     public async Task<MyAttendanceTodayDto> GetTodayAsync(string identityUserId, CancellationToken cancellationToken = default)
@@ -969,9 +972,26 @@ public sealed class AttendanceService : IAttendanceService
                 personIds,
                 personIdsHash,
                 cancellationToken);
+            var grossByPerson = await _grossSalary.ResolveAsync(year, month, personIds, cancellationToken);
             var ratesByPerson = rateRows
                 .GroupBy(row => row.PersonId)
-                .ToDictionary(group => group.Key, group => group.First());
+                .ToDictionary(group => group.Key, group =>
+                {
+                    var rate = group.First();
+                    grossByPerson.TryGetValue(rate.PersonId, out var basis);
+                    var salaryBase = basis?.GrossSalary ?? 0m;
+                    var fullDays = rate.FullMonthWorkingDays > 0 ? rate.FullMonthWorkingDays : Math.Max(rate.MonthWorkingDays, 0);
+                    var fullMinutes = rate.FullMonthWorkingMinutes > 0 ? rate.FullMonthWorkingMinutes : Math.Max(rate.MonthWorkingMinutes, 0);
+                    if (salaryBase <= 0 && rate.PerDay > 0 && fullDays > 0)
+                        salaryBase = Math.Round(rate.PerDay * fullDays, 2, MidpointRounding.AwayFromZero);
+                    rate.PerDay = fullDays > 0 && salaryBase > 0
+                        ? Math.Round(salaryBase / fullDays, 2, MidpointRounding.AwayFromZero)
+                        : 0m;
+                    rate.PerHour = fullMinutes > 0 && salaryBase > 0
+                        ? Math.Round((salaryBase / fullMinutes) * 60m, 2, MidpointRounding.AwayFromZero)
+                        : 0m;
+                    return rate;
+                });
             var reportRowsByDay = periodRows.ToDictionary(row => (row.PersonId, row.Date));
 
             foreach (var reportRowsForPerson in periodRows.GroupBy(row => row.PersonId))
@@ -992,15 +1012,19 @@ public sealed class AttendanceService : IAttendanceService
                     .OrderBy(row => row.AttendanceDate)
                     .ThenBy(row => row.Id)
                     .ToList();
-                var rawShortMinutes = ordered
-                    .Where(row => row.IsFinalized)
-                    .Sum(row => Math.Max(0, row.ShortMinutes));
-                var remainingAbsentWaiverMinutes = Math.Max(0, rawShortMinutes - rate.NetShortMinutes);
+                var fullDays = rate.FullMonthWorkingDays > 0 ? rate.FullMonthWorkingDays : Math.Max(rate.MonthWorkingDays, 0);
+                var fullMinutes = rate.FullMonthWorkingMinutes > 0 ? rate.FullMonthWorkingMinutes : Math.Max(rate.MonthWorkingMinutes, 0);
+                var minutesPerDay = rate.OneDayWorkingMinutes > 0
+                    ? rate.OneDayWorkingMinutes
+                    : fullDays > 0
+                        ? (int)Math.Round(fullMinutes / (decimal)fullDays, MidpointRounding.AwayFromZero)
+                        : 0;
+                // Attendance Rules "Adjust Absent Days / Month" × Map Attendance one-day minutes.
+                var remainingWaiverMinutes = Math.Max(0, rate.AdjustAbsentDays) * Math.Max(0, minutesPerDay);
                 var cumulativeDeductibleMinutes = 0;
 
                 foreach (var finalization in ordered)
                 {
-                    var deductibleShortMinutes = 0;
                     var deductibleMinutes = 0;
                     reportRowsByDay.TryGetValue(
                         (finalization.PersonId, finalization.AttendanceDate),
@@ -1008,18 +1032,17 @@ public sealed class AttendanceService : IAttendanceService
 
                     if (finalization.IsFinalized)
                     {
-                        deductibleShortMinutes = Math.Max(0, finalization.ShortMinutes);
-                        if (finalization.IsFullDayAbsent && remainingAbsentWaiverMinutes > 0)
-                        {
-                            var waivedMinutes = Math.Min(deductibleShortMinutes, remainingAbsentWaiverMinutes);
-                            deductibleShortMinutes -= waivedMinutes;
-                            remainingAbsentWaiverMinutes -= waivedMinutes;
-                        }
-                        // Late and short time overlap. Taking the larger amount prevents
-                        // the same missing hour from being deducted twice.
-                        deductibleMinutes = Math.Max(
-                            deductibleShortMinutes,
+                        // Late and short overlap — charge the larger amount once.
+                        var rawChargeable = Math.Max(
+                            Math.Max(0, finalization.ShortMinutes),
                             Math.Max(0, finalization.LatePenaltyMinutes));
+                        if (remainingWaiverMinutes > 0 && rawChargeable > 0)
+                        {
+                            var waived = Math.Min(rawChargeable, remainingWaiverMinutes);
+                            rawChargeable -= waived;
+                            remainingWaiverMinutes -= waived;
+                        }
+                        deductibleMinutes = rawChargeable;
 
                         // On-time Present (full shift) must never keep stale Absent/late money.
                         if (reportRow is not null && IsOnTimeFullPresent(reportRow))
@@ -1986,44 +2009,100 @@ public sealed class AttendanceService : IAttendanceService
                 .AsNoTracking()
                 .ToListAsync(cancellationToken);
 
+            var grossByPerson = await _grossSalary.ResolveAsync(
+                year,
+                month,
+                sqlRows.Select(x => x.PersonId).Distinct().ToArray(),
+                cancellationToken);
+
             return new AttendanceDeductionReportDto
             {
                 Year = year,
                 Month = month,
-                Rows = sqlRows.Select(row => new AttendanceDeductionRowDto
+                Rows = sqlRows.Select(row =>
                 {
-                    Id = row.Id,
-                    PersonId = row.PersonId,
-                    StaffId = row.StaffId,
-                    StaffNumber = row.StaffNumber,
-                    EmployeeName = row.EmployeeName,
-                    JobTitle = row.JobTitle,
-                    Department = row.Department,
-                    Month = row.Month,
-                    Year = row.Year,
-                    PerDay = row.PerDay,
-                    PerHour = row.PerHour,
-                    MonthWorkingDays = row.MonthWorkingDays,
-                    MonthWorkingMinutes = row.MonthWorkingMinutes,
-                    MonthAttendanceMinutes = row.MonthAttendanceMinutes,
-                    NetShortMinutes = row.NetShortMinutes,
-                    LatePenaltyMinutes = row.LatePenaltyMinutes,
-                    DeductibleMinutes = row.DeductibleMinutes,
-                    NetOvertimeMinutes = row.NetOvertimeMinutes,
-                    NetDeduction = row.NetDeduction,
-                    // Compatibility flag only. Ordinary finalized shortage and
-                    // excess-absence deductions are always payroll-applicable.
-                    IsDeductionActive = true,
-                    OvertimeBonusAmount = row.OvertimeBonusAmount,
-                    IsOvertimeApproved = row.IsOvertimeApproved,
-                    IsOvertimeBonusActive = row.IsOvertimeBonusActive,
-                    AdjustmentAmount = row.AdjustmentAmount,
-                    IsAdjustmentApproved = row.IsAdjustmentApproved,
-                    AdjustmentRemarks = row.AdjustmentRemarks,
-                    FinalSalary = CalculateDeductionDisplaySalary(row),
-                    PendingReviewDays = row.PendingReviewDays,
-                    OpenDays = row.OpenDays,
-                    LastFinalizedDate = row.LastFinalizedDate
+                    grossByPerson.TryGetValue(row.PersonId, out var basis);
+                    var grossSalary = basis?.GrossSalary ?? 0m;
+                    // Payroll gross (CurrentPay + allowances + bonus). Fall back to SP basic/current rates.
+                    var salaryBase = grossSalary;
+                    if (salaryBase <= 0 && row.PerDay > 0 && row.FullMonthWorkingDays > 0)
+                        salaryBase = Math.Round(row.PerDay * row.FullMonthWorkingDays, 2, MidpointRounding.AwayFromZero);
+                    else if (salaryBase <= 0 && row.PerDay > 0 && row.MonthWorkingDays > 0)
+                        salaryBase = Math.Round(row.PerDay * row.MonthWorkingDays, 2, MidpointRounding.AwayFromZero);
+
+                    var fullMonthDays = row.FullMonthWorkingDays > 0 ? row.FullMonthWorkingDays : Math.Max(row.MonthWorkingDays, 0);
+                    var fullMonthMinutes = row.FullMonthWorkingMinutes > 0 ? row.FullMonthWorkingMinutes : Math.Max(row.MonthWorkingMinutes, 0);
+
+                    // Per Day = Gross / working days; Per Hour = Gross / total working minutes × 60
+                    // (= PerDay / hours-per-day).
+                    var perDay = fullMonthDays > 0 && salaryBase > 0
+                        ? Math.Round(salaryBase / fullMonthDays, 2, MidpointRounding.AwayFromZero)
+                        : 0m;
+                    var perHour = fullMonthMinutes > 0 && salaryBase > 0
+                        ? Math.Round((salaryBase / fullMonthMinutes) * 60m, 2, MidpointRounding.AwayFromZero)
+                        : 0m;
+
+                    // Short hrs = raw shortage. Hrs Adjust = AdjustAbsentDays × THIS employee's
+                    // Map Attendance one-day hours (6/7/8/9/10…), not a blended month average.
+                    var shortMinutes = Math.Max(0, row.NetShortMinutes);
+                    var rawChargeableMinutes = Math.Max(0, row.DeductibleMinutes);
+                    var minutesPerDay = row.OneDayWorkingMinutes > 0
+                        ? row.OneDayWorkingMinutes
+                        : fullMonthDays > 0
+                            ? (int)Math.Round(fullMonthMinutes / (decimal)fullMonthDays, MidpointRounding.AwayFromZero)
+                            : 0;
+                    var adjustCapMinutes = Math.Max(0, row.AdjustAbsentDays) * Math.Max(0, minutesPerDay);
+                    var adjustMinutes = Math.Min(rawChargeableMinutes, adjustCapMinutes);
+                    var deductionMinutes = Math.Max(0, rawChargeableMinutes - adjustMinutes);
+
+                    var grossDeduction = Math.Round((deductionMinutes / 60m) * perHour, 2, MidpointRounding.AwayFromZero);
+                    var otBonus = row.IsOvertimeBonusActive
+                        ? Math.Round((row.NetOvertimeMinutes / 60m) * perHour, 2, MidpointRounding.AwayFromZero)
+                        : 0m;
+                    var approvedAdj = row.IsAdjustmentApproved ? row.AdjustmentAmount : 0m;
+                    // Net Deduction = Gross Deduction ± boss Adjustment amount (positive reduces, negative increases).
+                    var netDeduct = Math.Max(0m, Math.Round(grossDeduction - approvedAdj, 2, MidpointRounding.AwayFromZero));
+
+                    return new AttendanceDeductionRowDto
+                    {
+                        Id = row.Id,
+                        PersonId = row.PersonId,
+                        StaffId = row.StaffId,
+                        StaffNumber = row.StaffNumber,
+                        EmployeeName = row.EmployeeName,
+                        JobTitle = row.JobTitle,
+                        Department = row.Department,
+                        Month = row.Month,
+                        Year = row.Year,
+                        PerDay = perDay,
+                        PerHour = perHour,
+                        MonthWorkingDays = row.MonthWorkingDays,
+                        MonthWorkingMinutes = row.MonthWorkingMinutes,
+                        MonthAttendanceMinutes = row.MonthAttendanceMinutes,
+                        NetShortMinutes = shortMinutes,
+                        LatePenaltyMinutes = row.LatePenaltyMinutes,
+                        DeductibleMinutes = deductionMinutes,
+                        NetOvertimeMinutes = row.NetOvertimeMinutes,
+                        // Payroll still receives gross attendance charge + AdjustmentAmount separately.
+                        NetDeduction = grossDeduction,
+                        GrossSalary = salaryBase,
+                        GrossDeduction = grossDeduction,
+                        NetDeduct = netDeduct,
+                        HrsDeduction = MinutesToWholeHours(deductionMinutes),
+                        HrsAdjust = MinutesToWholeHours(adjustMinutes),
+                        NStdHr = MinutesToWholeHours(row.MonthWorkingMinutes),
+                        IsDeductionActive = true,
+                        OvertimeBonusAmount = otBonus,
+                        IsOvertimeApproved = row.IsOvertimeApproved,
+                        IsOvertimeBonusActive = row.IsOvertimeBonusActive,
+                        AdjustmentAmount = row.AdjustmentAmount,
+                        IsAdjustmentApproved = row.IsAdjustmentApproved,
+                        AdjustmentRemarks = row.AdjustmentRemarks,
+                        FinalSalary = 0m,
+                        PendingReviewDays = row.PendingReviewDays,
+                        OpenDays = row.OpenDays,
+                        LastFinalizedDate = row.LastFinalizedDate
+                    };
                 }).ToList()
             };
         }
@@ -2034,15 +2113,8 @@ public sealed class AttendanceService : IAttendanceService
         }
     }
 
-    private static decimal CalculateDeductionDisplaySalary(AttendanceDeductionReportRow row)
-    {
-        // Positive adjustments are deduction relief only and cannot increase salary
-        // above the value that existed before the attendance deduction.
-        return Math.Max(0, row.FinalSalary -
-            (row.IsAdjustmentApproved
-                ? Math.Max(0, row.AdjustmentAmount - row.NetDeduction)
-                : 0));
-    }
+    private static int MinutesToWholeHours(int minutes) =>
+        Math.Max(0, minutes) / 60;
 
     public async Task<MonthlyAttendanceChartDto> GetMonthlyChartAsync(
         string identityUserId, bool organizationWide, int year, int month,

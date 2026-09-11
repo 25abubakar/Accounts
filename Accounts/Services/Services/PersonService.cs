@@ -236,7 +236,8 @@ namespace Accounts.Services.Services
                     maxSalary ?? 0,
                     scaleDate,
                     asOf,
-                    selectedScale?.ApplyAfter)
+                    selectedScale?.ApplyAfter,
+                    PayrollCurrentPayCalculator.ParseMonthsCsv(selectedScale?.IncrementMonths))
                 : dto.CurrentPay;
             var perDay = currentPay.HasValue ? decimal.Round(currentPay.Value / workingDays, 2, MidpointRounding.AwayFromZero) : dto.AccountsPerDay;
             var perHour = perDay.HasValue ? decimal.Round(perDay.Value / workingHours, 2, MidpointRounding.AwayFromZero) : dto.AccountsPerHour;

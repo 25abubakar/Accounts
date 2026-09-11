@@ -9,14 +9,19 @@ public sealed class StaffTaxService(
     ApplicationDbContext db,
     ITenantService tenant)
 {
-    public async Task<IReadOnlyList<PayrollStaffTax>> ListAsync(CancellationToken cancellationToken) =>
-        await db.PayrollStaffTaxes.AsNoTracking()
+    public async Task<IReadOnlyList<PayrollStaffTax>> ListAsync(CancellationToken cancellationToken)
+    {
+        var minMonthly = await ResolveMinMonthlyPayThresholdAsync(cancellationToken);
+        return await db.PayrollStaffTaxes.AsNoTracking()
+            .Where(x => x.MonthlyPay >= minMonthly)
             .OrderBy(x => x.FullName)
             .ThenByDescending(x => x.DateFrom)
             .ToListAsync(cancellationToken);
+    }
 
     public async Task<IReadOnlyList<StaffTaxCandidateDto>> CandidatesAsync(CancellationToken cancellationToken)
     {
+        var minMonthly = await ResolveMinMonthlyPayThresholdAsync(cancellationToken);
         var employees = await db.StaffDirectoryRows.AsNoTracking()
             .Where(x => x.IsPersonActive)
             .OrderBy(x => x.FullName)
@@ -52,33 +57,98 @@ public sealed class StaffTaxService(
                     employee.Designation,
                     ResolveMonthlyPay(profile, scale));
             })
+            // Tax Parameter Min Amount only: who appears on Staff Tax / Staff ID dropdown.
+            .Where(x => x.MonthlyPay >= minMonthly)
             .ToList();
+    }
+
+    /// <summary>
+    /// Upsert Staff Tax for employees whose monthly pay meets Tax Parameter Min Amount.
+    /// Tax Parameter does not affect tax math — slabs alone determine tax.
+    /// </summary>
+    public async Task<IReadOnlyList<PayrollStaffTax>> SyncTaxableStaffAsync(
+        DateOnly? dateFrom,
+        DateOnly? dateTo,
+        CancellationToken cancellationToken)
+    {
+        var bounds = dateFrom.HasValue && dateTo.HasValue && dateTo >= dateFrom
+            ? (dateFrom.Value, dateTo.Value)
+            : CurrentFiscalBounds();
+        var from = bounds.Item1;
+        var to = bounds.Item2;
+
+        var candidates = await CandidatesAsync(cancellationToken);
+        var eligiblePersonIds = new HashSet<Guid>();
+        var existing = await db.PayrollStaffTaxes
+            .Where(x => x.DateFrom == from && x.DateTo == to)
+            .ToListAsync(cancellationToken);
+        var existingByPerson = existing
+            .GroupBy(x => x.PersonId)
+            .ToDictionary(g => g.Key, g => g.OrderByDescending(x => x.Id).First());
+
+        foreach (var candidate in candidates)
+        {
+            eligiblePersonIds.Add(candidate.PersonId);
+            existingByPerson.TryGetValue(candidate.PersonId, out var existingRow);
+            await SaveAsync(new StaffTaxSaveRequest(
+                Id: existingRow?.Id,
+                PersonId: candidate.PersonId,
+                DateFrom: from,
+                DateTo: to,
+                Frequency: "Monthly",
+                MonthlyPay: candidate.MonthlyPay,
+                TotMonth: 12,
+                ExtraAmount: 0,
+                TaxAdjustment: existingRow?.TaxAdjustment ?? 0,
+                PayMonth: 12,
+                DedPercentage: 100,
+                IsActive: true), cancellationToken);
+        }
+
+        var stale = await db.PayrollStaffTaxes
+            .Where(x => x.DateFrom == from && x.DateTo == to && !eligiblePersonIds.Contains(x.PersonId))
+            .ToListAsync(cancellationToken);
+        if (stale.Count > 0)
+        {
+            db.PayrollStaffTaxes.RemoveRange(stale);
+            await db.SaveChangesAsync(cancellationToken);
+        }
+
+        return await ListAsync(cancellationToken);
+    }
+
+    private static (DateOnly From, DateOnly To) CurrentFiscalBounds()
+    {
+        var today = DateOnly.FromDateTime(DateTime.UtcNow);
+        return today.Month >= 7
+            ? (new DateOnly(today.Year, 7, 1), new DateOnly(today.Year + 1, 6, 30))
+            : (new DateOnly(today.Year - 1, 7, 1), new DateOnly(today.Year, 6, 30));
     }
 
     public async Task<StaffTaxCalculationResult> CalculateAsync(StaffTaxCalculateRequest request, CancellationToken cancellationToken)
     {
         var (employee, monthlyPayHint) = await ResolveEmployeeAsync(request.PersonId, cancellationToken);
-        var parameter = await ResolveActiveParameterAsync(cancellationToken);
-        var monthlyPay = request.MonthlyPay > 0 ? Money(request.MonthlyPay) : monthlyPayHint;
+        var monthlyPay = request.MonthlyPay > 0 ? PayrollTaxCalculator.Money(request.MonthlyPay) : monthlyPayHint;
         var units = request.TotMonth <= 0 ? 12 : request.TotMonth;
         var payMonths = request.PayMonth <= 0 ? units : request.PayMonth;
-        var dedPercentage = request.DedPercentage > 0
-            ? request.DedPercentage
-            : parameter?.DedPercentage > 0 ? parameter.DedPercentage : 100m;
-        var extra = Money(Math.Max(0, request.ExtraAmount));
-        var adjustment = Money(request.TaxAdjustment);
+        // Tax Parameter is eligibility-only (who appears on Staff Tax). It never adjusts deductible % or tax.
+        var dedPercentage = request.DedPercentage > 0 ? request.DedPercentage : 100m;
+        var extra = PayrollTaxCalculator.Money(Math.Max(0, request.ExtraAmount));
+        var adjustment = PayrollTaxCalculator.Money(request.TaxAdjustment);
 
-        var totalIncome = Money(monthlyPay * units);
-        var incomePay = Money(totalIncome * dedPercentage / 100m);
-        var taxableIncome = Money(incomePay + extra);
+        var totalIncome = PayrollTaxCalculator.Money(monthlyPay * units);
+        var incomePay = PayrollTaxCalculator.Money(totalIncome * dedPercentage / 100m);
+        var taxableIncome = PayrollTaxCalculator.Money(incomePay + extra);
         var taxYear = ResolveTaxYear(request.DateFrom);
         var slabs = await LoadSlabsAsync(taxYear, cancellationToken);
-        var grossTax = CalculateAnnualTax(taxableIncome, slabs);
-        if (parameter is { MinTaxAmt: > 0 } && taxableIncome > 0 && grossTax < parameter.MinTaxAmt)
-            grossTax = Money(parameter.MinTaxAmt);
+        var breakdown = PayrollTaxCalculator.Resolve(taxableIncome, slabs);
+        var grossTax = breakdown.AnnualTax;
 
-        var netTax = Money(grossTax + adjustment);
-        var monthlyTaxAmt = payMonths > 0 ? Money(netTax / payMonths) : 0;
+        var netTax = PayrollTaxCalculator.Money(grossTax + adjustment);
+        var monthlyTaxAmt = payMonths > 0 ? PayrollTaxCalculator.Money(netTax / payMonths) : 0;
+        var netMonthlyPay = PayrollTaxCalculator.Money(Math.Max(0, monthlyPay - monthlyTaxAmt));
+        var netAnnualPay = PayrollTaxCalculator.Money(Math.Max(0, taxableIncome - netTax));
+        var minMonthly = await ResolveMinMonthlyPayThresholdAsync(cancellationToken);
 
         return new StaffTaxCalculationResult(
             employee.PersonId,
@@ -103,7 +173,14 @@ public sealed class StaffTaxService(
             monthlyTaxAmt,
             dedPercentage,
             taxYear,
-            parameter?.MinTaxAmt ?? 0);
+            minMonthly,
+            breakdown.SlabName,
+            breakdown.ExcessBase,
+            breakdown.ExcessAmount,
+            breakdown.FixedTaxAmount,
+            breakdown.RatePercentage,
+            netMonthlyPay,
+            netAnnualPay);
     }
 
     public async Task<PayrollStaffTax> SaveAsync(StaffTaxSaveRequest request, CancellationToken cancellationToken)
@@ -111,6 +188,7 @@ public sealed class StaffTaxService(
         if (request.DateTo < request.DateFrom)
             throw new InvalidOperationException("Date To must be on or after Date From.");
 
+        var minMonthly = await ResolveMinMonthlyPayThresholdAsync(cancellationToken);
         var calc = await CalculateAsync(new StaffTaxCalculateRequest(
             request.PersonId,
             request.DateFrom,
@@ -122,6 +200,10 @@ public sealed class StaffTaxService(
             request.TaxAdjustment,
             request.PayMonth,
             request.DedPercentage), cancellationToken);
+
+        if (calc.MonthlyPay < minMonthly)
+            throw new InvalidOperationException(
+                $"Staff Tax only includes employees with monthly pay of at least {minMonthly:N2} (Tax Parameter Min Amount).");
 
         var now = DateTime.UtcNow;
         PayrollStaffTax row;
@@ -176,17 +258,17 @@ public sealed class StaffTaxService(
 
         if (request.NetTax.HasValue)
         {
-            row.NetTax = Money(request.NetTax.Value);
-            row.MonthlyTaxAmt = row.PayMonth > 0 ? Money(row.NetTax / row.PayMonth) : 0;
+            row.NetTax = PayrollTaxCalculator.Money(request.NetTax.Value);
+            row.MonthlyTaxAmt = row.PayMonth > 0 ? PayrollTaxCalculator.Money(row.NetTax / row.PayMonth) : 0;
             row.MonthlyNetTax = row.MonthlyTaxAmt;
         }
 
         if (request.TaxAdjustment.HasValue)
-            row.TaxAdjustment = Money(request.TaxAdjustment.Value);
+            row.TaxAdjustment = PayrollTaxCalculator.Money(request.TaxAdjustment.Value);
 
         if (request.MonthlyTaxAmt.HasValue)
         {
-            row.MonthlyTaxAmt = Money(request.MonthlyTaxAmt.Value);
+            row.MonthlyTaxAmt = PayrollTaxCalculator.Money(request.MonthlyTaxAmt.Value);
             row.MonthlyNetTax = row.MonthlyTaxAmt;
         }
 
@@ -214,8 +296,14 @@ public sealed class StaffTaxService(
 
     public async Task<PayrollTaxParameter> SaveParameterAsync(int? id, decimal minTaxAmt, decimal dedPercentage, bool isActive, CancellationToken cancellationToken)
     {
-        if (minTaxAmt < 0 || dedPercentage is < 0 or > 100)
-            throw new InvalidOperationException("Enter a valid minimum tax amount and deductible percentage (0-100).");
+        if (minTaxAmt < 0)
+            throw new InvalidOperationException("Enter a valid Min Amount (minimum monthly salary to include on Staff Tax).");
+
+        // DedPercentage is unused for tax; keep column stable at 100 when caller omits/zeros it.
+        if (dedPercentage is < 0 or > 100)
+            dedPercentage = 100m;
+        if (dedPercentage <= 0)
+            dedPercentage = 100m;
 
         PayrollTaxParameter row;
         if (id is > 0)
@@ -245,7 +333,7 @@ public sealed class StaffTaxService(
             }
         }
 
-        row.MinTaxAmt = Money(minTaxAmt);
+        row.MinTaxAmt = PayrollTaxCalculator.Money(minTaxAmt);
         row.DedPercentage = dedPercentage;
         row.IsActive = isActive;
         row.UpdatedOnUtc = DateTime.UtcNow;
@@ -288,6 +376,19 @@ public sealed class StaffTaxService(
             .Where(x => x.IsActive)
             .OrderByDescending(x => x.Id)
             .FirstOrDefaultAsync(cancellationToken);
+
+    /// <summary>
+    /// Tax Parameter Min Amount = minimum monthly salary for Staff Tax eligibility.
+    /// Default when unset: 600,000 / 12 = 50,000 (start of FBR salaried bands).
+    /// </summary>
+    private async Task<decimal> ResolveMinMonthlyPayThresholdAsync(CancellationToken cancellationToken)
+    {
+        var parameter = await ResolveActiveParameterAsync(cancellationToken);
+        if (parameter is { MinTaxAmt: > 0 })
+            return PayrollTaxCalculator.Money(parameter.MinTaxAmt);
+
+        return PayrollTaxCalculator.Money(PayrollTaxCalculator.TaxFreeAnnualCeiling / 12m);
+    }
 
     private async Task<List<PayrollTaxSlab>> LoadSlabsAsync(string taxYear, CancellationToken cancellationToken)
     {
@@ -340,22 +441,7 @@ public sealed class StaffTaxService(
         return from.Month >= 7 ? $"{year}-{year + 1}" : $"{year - 1}-{year}";
     }
 
-    private static decimal CalculateAnnualTax(decimal annualTaxable, IReadOnlyList<PayrollTaxSlab> slabs)
-    {
-        if (annualTaxable <= 0 || slabs.Count == 0)
-            return 0;
-
-        var ordered = slabs.OrderBy(x => x.FromAmount).ToList();
-        var slab = ordered.LastOrDefault(x =>
-            annualTaxable >= x.FromAmount && (!x.ToAmount.HasValue || annualTaxable <= x.ToAmount.Value));
-        if (slab == null)
-            return 0;
-
-        var excess = Math.Max(0, annualTaxable - slab.FromAmount);
-        return Money(slab.FixedTaxAmount + excess * slab.RatePercentage / 100m);
-    }
-
-    private static decimal Money(decimal value) => Math.Round(value, 2, MidpointRounding.AwayFromZero);
+    private static decimal Money(decimal value) => PayrollTaxCalculator.Money(value);
 }
 
 public sealed record StaffTaxCandidateDto(
@@ -390,7 +476,14 @@ public sealed record StaffTaxCalculationResult(
     decimal MonthlyNetTax,
     decimal DedPercentage,
     string TaxYear,
-    decimal MinTaxAmt);
+    decimal MinTaxAmt,
+    string SlabName = "",
+    decimal ExcessBase = 0,
+    decimal ExcessAmount = 0,
+    decimal FixedTaxAmount = 0,
+    decimal RatePercentage = 0,
+    decimal NetMonthlyPay = 0,
+    decimal NetAnnualPay = 0);
 
 public sealed record StaffTaxCalculateRequest(
     Guid PersonId,

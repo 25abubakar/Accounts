@@ -25,7 +25,14 @@ public sealed class ChatViewOnceCleanupService(
                 logger.LogError(exception, "View Once cleanup failed; it will retry on the next cycle.");
             }
 
-            await Task.Delay(TimeSpan.FromHours(1), stoppingToken);
+            try
+            {
+                await Task.Delay(TimeSpan.FromHours(1), stoppingToken);
+            }
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+            {
+                return;
+            }
         }
     }
 

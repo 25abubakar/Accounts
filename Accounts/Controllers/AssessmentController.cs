@@ -125,13 +125,18 @@ public sealed class AssessmentController : ControllerBase
         if (!tenantId.HasValue) return Ok(Array.Empty<object>());
         await AssessmentSchema.EnsureCurrentAsync(_db);
         var today = DateOnly.FromDateTime(PakistanClock.Now());
-        var configuredOpenDay = await _db.AssessmentSchedules.AsNoTracking().Where(x => x.AssessmentYear == assessmentYear && x.AssessmentMonth == assessmentMonth && x.IsActive).Select(x => (int?)x.OpenDay).FirstOrDefaultAsync(ct);
-        var windowOpen = assessmentYear == today.Year && assessmentMonth == today.Month && today.Day >= (configuredOpenDay ?? 25);
+        var activeRule = await _db.AssessmentBonusRules.AsNoTracking().FirstOrDefaultAsync(x => x.IsActive, ct);
+        var schedule = await _db.AssessmentSchedules.AsNoTracking()
+            .FirstOrDefaultAsync(x => x.AssessmentYear == assessmentYear && x.AssessmentMonth == assessmentMonth && x.IsActive, ct);
+        var configuredOpenDay = schedule?.OpenDay ?? activeRule?.OpenDay ?? 25;
+        var configuredCloseDay = schedule?.CloseDay ?? activeRule?.CloseDay ?? 8;
+        var cycle = AssessmentCycleWindow.Create(assessmentYear, assessmentMonth, configuredOpenDay, configuredCloseDay);
+        var windowOpen = activeRule != null && cycle.Contains(today);
         var saved = await _db.StaffAssessments.AsNoTracking()
             .Where(item => item.TenantId == tenantId.Value && item.AssessmentYear == assessmentYear &&
                            item.AssessmentMonth == assessmentMonth &&
                            (isTenantAdmin || item.AssessorPersonId == current!.PersonId))
-            .Select(item => new { item.SubjectPersonId, item.Rating, item.Amount })
+            .Select(item => new { item.SubjectPersonId, item.Rating, item.Amount, item.IsLocked, item.SubmittedDateUtc })
             .ToListAsync(ct);
         var savedByPerson = saved.GroupBy(item => item.SubjectPersonId)
             .ToDictionary(group => group.Key, group => group.First());
@@ -144,15 +149,20 @@ public sealed class AssessmentController : ControllerBase
             staffGuid = person.StaffGuid,
             person.StaffId,
             person.FullName,
-            department = person.Department ?? "GÇö",
-            jobTitle = person.JobTitle ?? "GÇö",
+            department = person.Department ?? "â€”",
+            jobTitle = person.JobTitle ?? "â€”",
             person.HierarchyLevel,
             rating = savedByPerson.GetValueOrDefault(person.PersonId)?.Rating,
             amount = savedByPerson.GetValueOrDefault(person.PersonId)?.Amount,
             bonusAmount = savedByPerson.GetValueOrDefault(person.PersonId)?.Amount,
-            canEdit = canEditAssessments && windowOpen,
+            canEdit = canEditAssessments && windowOpen && savedByPerson.GetValueOrDefault(person.PersonId)?.Rating == null && savedByPerson.GetValueOrDefault(person.PersonId)?.IsLocked != true,
             assessmentWindowOpen = windowOpen,
-            openDay = configuredOpenDay ?? 25
+            openDay = configuredOpenDay,
+            closeDay = configuredCloseDay,
+            openDate = cycle.OpenDate,
+            closeDate = cycle.CloseDate,
+            isLocked = savedByPerson.GetValueOrDefault(person.PersonId)?.IsLocked == true || savedByPerson.GetValueOrDefault(person.PersonId)?.Rating != null,
+            submittedDateUtc = savedByPerson.GetValueOrDefault(person.PersonId)?.SubmittedDateUtc
         }));
     }
 
@@ -165,10 +175,13 @@ public sealed class AssessmentController : ControllerBase
             return BadRequest(new { message = "Valid month, year and a position from 1 to 255 are required." });
         await AssessmentSchema.EnsureCurrentAsync(_db);
         var today = DateOnly.FromDateTime(PakistanClock.Now());
-        if (dto.Year != today.Year || dto.Month != today.Month) return BadRequest(new { message = "Assessment can only be saved for the running month." });
-        var openDay = await _db.AssessmentSchedules.AsNoTracking().Where(x => x.AssessmentYear == dto.Year && x.AssessmentMonth == dto.Month && x.IsActive).Select(x => (int?)x.OpenDay).FirstOrDefaultAsync(ct) ?? 25;
-        if (today.Day < openDay) return Conflict(new { message = $"Assessment entry opens on day {openDay} of this month." });
-
+        var rule = await _db.AssessmentBonusRules.AsNoTracking().FirstOrDefaultAsync(x => x.IsActive, ct);
+        if (rule == null) return Conflict(new { message = "Tenant assessment bonus rule is not configured or is inactive." });
+        var schedule = await _db.AssessmentSchedules.AsNoTracking()
+            .FirstOrDefaultAsync(x => x.AssessmentYear == dto.Year && x.AssessmentMonth == dto.Month && x.IsActive, ct);
+        var cycle = AssessmentCycleWindow.Create(dto.Year, dto.Month, schedule?.OpenDay ?? rule.OpenDay, schedule?.CloseDay ?? rule.CloseDay);
+        if (!cycle.Contains(today))
+            return Conflict(new { message = $"Assessment entry is available from {cycle.OpenDate:dd MMM yyyy} through {cycle.CloseDate:dd MMM yyyy}." });
         var assessor = await _db.Persons.AsNoTracking().Where(person => person.IdentityUserId == userId && person.IsActive)
             .Select(person => new { person.PersonId, person.TenantId, StaffId = person.Staff != null ? (Guid?)person.Staff.StaffId : null, JobTitle = person.Staff != null && person.Staff.Vacancy != null
                 ? (person.Staff.Vacancy.DesignationNav != null ? person.Staff.Vacancy.DesignationNav.Name : person.Staff.Vacancy.JobTitle) : null })
@@ -176,8 +189,6 @@ public sealed class AssessmentController : ControllerBase
         if (assessor == null || !assessor.StaffId.HasValue ||
             !await HasStaffMenuActionAsync(assessor.StaffId.Value, "/assessment/mark", "EDIT", ct))
             return Forbid();
-        var rule = await _db.AssessmentBonusRules.AsNoTracking().FirstOrDefaultAsync(x => x.IsActive, ct);
-        if (rule == null) return Conflict(new { message = "Tenant assessment bonus rule is not configured." });
         var amount = Math.Max(rule.MinimumBonusAmount, rule.BonusAmount - ((dto.Rating - 1) * rule.DecrementAmount));
         var allowed = await ResolveDirectSubjectIdsAsync(userId, assessor.PersonId, assessor.JobTitle, ct);
         if (!allowed.Contains(subjectPersonId)) return Forbid();
@@ -187,7 +198,7 @@ public sealed class AssessmentController : ControllerBase
             item.AssessmentMonth == dto.Month && item.Rating == dto.Rating, ct);
         if (duplicateRank) return Conflict(new { message = $"Position {dto.Rating} is already assigned to another team member for this month." });
 
-        var assessment = await _db.StaffAssessments.SingleOrDefaultAsync(item =>
+        var assessment = await _db.StaffAssessments.AsNoTracking().SingleOrDefaultAsync(item =>
             item.TenantId == assessor.TenantId && item.AssessorPersonId == assessor.PersonId &&
             item.SubjectPersonId == subjectPersonId && item.AssessmentYear == dto.Year &&
             item.AssessmentMonth == dto.Month, ct);
@@ -202,22 +213,96 @@ public sealed class AssessmentController : ControllerBase
                 AssessmentMonth = (byte)dto.Month,
                 Rating = (byte)dto.Rating,
                 Amount = amount,
+                IsLocked = true,
+                SubmittedDateUtc = DateTime.UtcNow,
                 CreatedDateUtc = DateTime.UtcNow
             };
             _db.StaffAssessments.Add(assessment);
         }
         else
         {
-            assessment.Rating = (byte)dto.Rating;
-            assessment.Amount = amount;
-            assessment.ModifiedDateUtc = DateTime.UtcNow;
+            if (assessment.IsLocked || assessment.Rating.HasValue)
+                return Conflict(new { message = "This assessment has already been submitted and is permanently locked." });
+            var submittedAt = DateTime.UtcNow;
+            var updated = await _db.StaffAssessments
+                .Where(item => item.Id == assessment.Id && !item.IsLocked && item.Rating == null)
+                .ExecuteUpdateAsync(setters => setters
+                    .SetProperty(item => item.Rating, (byte?)dto.Rating)
+                    .SetProperty(item => item.Amount, (decimal?)amount)
+                    .SetProperty(item => item.IsLocked, true)
+                    .SetProperty(item => item.SubmittedDateUtc, submittedAt)
+                    .SetProperty(item => item.ModifiedDateUtc, submittedAt), ct);
+            if (updated == 0)
+                return Conflict(new { message = "This assessment has already been submitted and is permanently locked." });
         }
-        await _db.SaveChangesAsync(ct);
+        try
+        {
+            await _db.SaveChangesAsync(ct);
+        }
+        catch (DbUpdateException)
+        {
+            return Conflict(new { message = $"Position {dto.Rating} is already assigned or this assessment was submitted by another request." });
+        }
+
+        // Keep an already-generated Draft payroll synchronized immediately. Approved
+        // or paid payroll is immutable and must never be changed by a later assessment.
+        var draftPayrollLines = await _db.PayrollLines.Include(line => line.PayrollRun)
+            .Where(line => line.PersonId == subjectPersonId && line.Year == dto.Year &&
+                line.Month == dto.Month && line.PayrollRun != null && line.PayrollRun.Status == "Draft")
+            .ToListAsync(ct);
+        if (draftPayrollLines.Count > 0)
+        {
+            var taxYear = dto.Month >= 7 ? $"{dto.Year}-{dto.Year + 1}" : $"{dto.Year - 1}-{dto.Year}";
+            var taxSlabs = await _db.PayrollTaxSlabs.AsNoTracking()
+                .Where(slab => slab.IsActive && slab.TaxYear == taxYear)
+                .OrderBy(slab => slab.FromAmount)
+                .ToListAsync(ct);
+            foreach (var line in draftPayrollLines)
+            {
+                line.AssessmentAmount = amount;
+                PayrollCalculationService.Recalculate(line);
+                line.TaxAmount = PayrollTaxCalculator.CalculateMonthlyTax(line.TaxableIncome, taxSlabs);
+                PayrollCalculationService.Recalculate(line);
+                if (line.PayrollRun != null) line.PayrollRun.UpdatedOnUtc = DateTime.UtcNow;
+            }
+            await _db.SaveChangesAsync(ct);
+        }
+
+        var incomplete = await _db.StaffAssessments.AsNoTracking().AnyAsync(item =>
+            item.AssessorPersonId == assessor.PersonId && item.AssessmentYear == dto.Year &&
+            item.AssessmentMonth == dto.Month && item.Rating == null && !item.IsLocked, ct);
+        if (!incomplete)
+        {
+            var cycleEntityId = AssessmentReminderEntityId(dto.Year, dto.Month, assessor.PersonId);
+            var reminders = await _db.AppNotes
+                .Where(note => note.EntityType == "ASSESSMENT_REMINDER" && note.IsActive &&
+                    (note.EntityId == cycleEntityId || note.Targets.Any(target => target.IsActive && target.TargetValue == assessor.PersonId.ToString())))
+                .ToListAsync(ct);
+            foreach (var reminder in reminders)
+            {
+                reminder.IsActive = false;
+                reminder.EndDateUtc = DateTime.UtcNow;
+                reminder.UpdatedOnUtc = DateTime.UtcNow;
+            }
+            if (reminders.Count > 0) await _db.SaveChangesAsync(ct);
+        }
         return Ok(new { message = "Monthly assessment saved." });
     }
 
     private async Task<HashSet<Guid>> ResolveDirectSubjectIdsAsync(string identityUserId, Guid assessorPersonId, string? assessorJobTitle, CancellationToken ct)
     {
+        // Explicit reporting assignments are authoritative. This lets a user who
+        // has been granted the Assessment tab work on the staff actually assigned
+        // to them, without requiring a hard-coded job-title name.
+        var assignedReports = await _db.Persons.AsNoTracking()
+            .Where(person => person.IsActive && person.PersonId != assessorPersonId &&
+                (person.ReportsToPersonId == assessorPersonId ||
+                 person.AlternativeReportsToPersonId == assessorPersonId))
+            .Select(person => person.PersonId)
+            .ToHashSetAsync(ct);
+        if (assignedReports.Count > 0) return assignedReports;
+
+        // Legacy fallback for tenants that have not yet configured Reports To.
         var callerRank = AttendanceRoleRank(assessorJobTitle);
         if (callerRank <= 100) return [];
         var scope = await _dataScope.ResolveAsync(identityUserId, ct);
@@ -241,9 +326,22 @@ public sealed class AssessmentController : ControllerBase
             return Forbid();
         await AssessmentSchema.EnsureCurrentAsync(_db);
         var today = DateOnly.FromDateTime(PakistanClock.Now());
-        var row = await _db.AssessmentSchedules.AsNoTracking().FirstOrDefaultAsync(x => x.AssessmentYear == today.Year && x.AssessmentMonth == today.Month && x.IsActive, ct);
-        var day = row?.OpenDay ?? 25;
-        return Ok(new { year = today.Year, month = today.Month, openDay = day, isManualOverride = row?.IsManualOverride ?? false, isOpen = today.Day >= day });
+        var rule = await _db.AssessmentBonusRules.AsNoTracking().FirstOrDefaultAsync(x => x.IsActive, ct);
+        var current = await ResolveCycleAsync(today.Year, today.Month, rule, ct);
+        var previousMonth = new DateOnly(today.Year, today.Month, 1).AddMonths(-1);
+        var previous = await ResolveCycleAsync(previousMonth.Year, previousMonth.Month, rule, ct);
+        var selected = current.Cycle.Contains(today) ? current : previous.Cycle.Contains(today) ? previous : current;
+        return Ok(new
+        {
+            year = selected.Cycle.Year,
+            month = selected.Cycle.Month,
+            openDay = selected.Cycle.OpenDate.Day,
+            closeDay = selected.Cycle.CloseDate.Day,
+            openDate = selected.Cycle.OpenDate,
+            closeDate = selected.Cycle.CloseDate,
+            isManualOverride = selected.IsManualOverride,
+            isOpen = rule != null && selected.Cycle.Contains(today)
+        });
     }
 
     [HttpPut("schedule")]
@@ -255,14 +353,34 @@ public sealed class AssessmentController : ControllerBase
         await AssessmentSchema.EnsureCurrentAsync(_db);
         var today = DateOnly.FromDateTime(PakistanClock.Now());
         if (dto.OpenDate.Year != today.Year || dto.OpenDate.Month != today.Month || dto.OpenDate.Day > DateTime.DaysInMonth(today.Year, today.Month)) return BadRequest(new { message = "Select a valid date in the running month." });
+        var rule = await _db.AssessmentBonusRules.AsNoTracking().FirstOrDefaultAsync(x => x.IsActive, ct);
+        if (rule == null) return Conflict(new { message = "Configure and activate the Assessment Rule before opening the cycle." });
         var row = await _db.AssessmentSchedules.SingleOrDefaultAsync(x => x.AssessmentYear == today.Year && x.AssessmentMonth == today.Month, ct);
         if (row == null) { row = new AssessmentSchedule { TenantId = _tenant.TenantId.Value, AssessmentYear = today.Year, AssessmentMonth = (byte)today.Month, CreatedDateUtc = DateTime.UtcNow, CreatedByUserId = User.FindFirstValue(ClaimTypes.NameIdentifier) }; _db.AssessmentSchedules.Add(row); }
-        row.OpenDay = (byte)dto.OpenDate.Day; row.IsManualOverride = true; row.IsActive = true;
+        row.OpenDay = (byte)dto.OpenDate.Day; row.CloseDay = rule.CloseDay; row.IsManualOverride = true; row.IsActive = true;
         await _db.SaveChangesAsync(ct);
         await _assessmentScheduler.RunNowAsync(CancellationToken.None);
         var generated = await _db.StaffAssessments.AsNoTracking().CountAsync(x => x.AssessmentYear == today.Year && x.AssessmentMonth == today.Month, ct);
-        return Ok(new { message = $"Assessment entry will open on {dto.OpenDate:dd MMM yyyy}.", generatedRows = generated });
+        var cycle = AssessmentCycleWindow.Create(today.Year, today.Month, row.OpenDay, row.CloseDay);
+        return Ok(new { message = $"Assessment entry is scheduled from {cycle.OpenDate:dd MMM yyyy} through {cycle.CloseDate:dd MMM yyyy}.", generatedRows = generated });
     }
+
+    private async Task<(AssessmentCycle Cycle, bool IsManualOverride)> ResolveCycleAsync(
+        int year,
+        int month,
+        AssessmentBonusRule? rule,
+        CancellationToken ct)
+    {
+        var schedule = await _db.AssessmentSchedules.AsNoTracking()
+            .FirstOrDefaultAsync(x => x.AssessmentYear == year && x.AssessmentMonth == month && x.IsActive, ct);
+        var cycle = AssessmentCycleWindow.Create(year, month,
+            schedule?.OpenDay ?? rule?.OpenDay ?? 25,
+            schedule?.CloseDay ?? rule?.CloseDay ?? 8);
+        return (cycle, schedule?.IsManualOverride == true);
+    }
+
+    private static string AssessmentReminderEntityId(int year, int month, Guid assessorPersonId) =>
+        $"{year:D4}-{month:D2}:{assessorPersonId:N}";
 
     private async Task<bool> HasStaffMenuActionAsync(
         Guid staffId,

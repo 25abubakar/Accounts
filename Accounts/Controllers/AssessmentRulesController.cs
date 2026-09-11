@@ -24,7 +24,7 @@ public sealed class AssessmentRulesController(
         await AssessmentSchema.EnsureCurrentAsync(db);
         var rows = await db.AssessmentBonusRules.AsNoTracking()
             .OrderBy(row => row.Id)
-            .Select(row => new { row.Id, row.RankNumber, row.BonusAmount, row.DecrementAmount, row.MinimumBonusAmount, row.AppliesToHigherRanks, row.IsActive })
+            .Select(row => new { row.Id, row.RankNumber, row.BonusAmount, row.DecrementAmount, row.MinimumBonusAmount, row.OpenDay, row.CloseDay, row.AppliesToHigherRanks, row.IsActive })
             .ToListAsync(ct);
         return Ok(rows);
     }
@@ -39,6 +39,7 @@ public sealed class AssessmentRulesController(
             return Conflict(new { message = "Only one assessment bonus rule is allowed. Edit the existing rule." });
         var row = new AssessmentBonusRule { TenantId = tenant.TenantId.Value, RankNumber = 1,
             BonusAmount = dto.BonusAmount, DecrementAmount = dto.DecrementAmount, MinimumBonusAmount = dto.MinimumBonusAmount, AppliesToHigherRanks = true,
+            OpenDay = (byte)dto.OpenDay, CloseDay = (byte)dto.CloseDay,
             IsActive = dto.IsActive, CreatedDateUtc = DateTime.UtcNow };
         db.AssessmentBonusRules.Add(row); await db.SaveChangesAsync(ct);
         return Ok(new { row.Id, message = "Assessment bonus rule created." });
@@ -54,6 +55,7 @@ public sealed class AssessmentRulesController(
         if (row == null) return NotFound();
         row.RankNumber = 1; row.BonusAmount = dto.BonusAmount;
         row.DecrementAmount = dto.DecrementAmount; row.MinimumBonusAmount = dto.MinimumBonusAmount;
+        row.OpenDay = (byte)dto.OpenDay; row.CloseDay = (byte)dto.CloseDay;
         row.AppliesToHigherRanks = true; row.IsActive = dto.IsActive;
         row.ModifiedDateUtc = DateTime.UtcNow; await db.SaveChangesAsync(ct);
         return Ok(new { message = "Assessment bonus rule updated." });
@@ -74,13 +76,18 @@ public sealed class AssessmentRulesController(
     private static string? Validate(RuleDto dto) => dto.BonusAmount < 0 ? "Base bonus cannot be negative."
         : dto.DecrementAmount < 0 ? "Decrement cannot be negative."
         : dto.MinimumBonusAmount < 0 ? "Minimum bonus cannot be negative."
-        : dto.MinimumBonusAmount > dto.BonusAmount ? "Minimum bonus cannot exceed the base bonus." : null;
+        : dto.MinimumBonusAmount > dto.BonusAmount ? "Minimum bonus cannot exceed the base bonus."
+        : dto.OpenDay is < 1 or > 31 ? "Assessment open day must be between 1 and 31."
+        : dto.CloseDay is < 1 or > 31 ? "Assessment close day must be between 1 and 31."
+        : dto.OpenDay <= dto.CloseDay ? "Open day must be greater than next-month close day to prevent overlapping monthly cycles." : null;
     public sealed class RuleDto
     {
         public int RankNumber { get; set; }
         public decimal BonusAmount { get; set; }
         public decimal DecrementAmount { get; set; }
         public decimal MinimumBonusAmount { get; set; }
+        public int OpenDay { get; set; } = 25;
+        public int CloseDay { get; set; } = 8;
         public bool AppliesToHigherRanks { get; set; }
         public bool IsActive { get; set; } = true;
     }

@@ -14,6 +14,8 @@ public sealed class StaffAssessment : ITenantEntity
     public byte AssessmentMonth { get; set; }
     public byte? Rating { get; set; }
     [Column(TypeName = "decimal(18,2)")] public decimal? Amount { get; set; }
+    public bool IsLocked { get; set; }
+    public DateTime? SubmittedDateUtc { get; set; }
     public DateTime CreatedDateUtc { get; set; }
     public DateTime? ModifiedDateUtc { get; set; }
 }

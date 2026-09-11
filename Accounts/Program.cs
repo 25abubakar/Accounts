@@ -170,6 +170,7 @@ builder.Services.AddScoped<IMenuService, MenuService>();
 builder.Services.AddScoped<IAccessService, AccessService>();
 builder.Services.AddScoped<IPermissionFilterService, PermissionFilterService>();
 builder.Services.AddScoped<RbacService>();
+builder.Services.AddScoped<MenuAuthorityService>();
 builder.Services.AddScoped<TenantPermissionService>();
 builder.Services.AddScoped<OptimizedMenuService>();
 builder.Services.AddHostedService<ProcessReportAutoTransferService>();
@@ -207,6 +208,7 @@ builder.Services.AddScoped<IAttendanceStatusRepository, AttendanceStatusReposito
 builder.Services.AddScoped<IAttendanceStatusService, AttendanceStatusService>();
 builder.Services.AddScoped<IAttendanceService, AttendanceService>();
 builder.Services.AddScoped<AttendanceFinalizationService>();
+builder.Services.AddScoped<PayrollGrossSalaryResolver>();
 builder.Services.AddScoped<PayrollCalculationService>();
 builder.Services.AddScoped<StaffMonthlyEobiService>();
 builder.Services.AddScoped<StaffTaxService>();
@@ -281,4 +283,4 @@ app.MapHub<ChatHub>("/hubs/chat");
 app.MapHub<ApplicationRealtimeHub>("/hubs/application");
 app.MapRazorPages();
 
-app.Run();
+   app.Run();

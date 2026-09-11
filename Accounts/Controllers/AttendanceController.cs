@@ -9,6 +9,7 @@ using Microsoft.AspNetCore.Mvc;
 using System.Security.Claims;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Data.SqlClient;
+using System.Data;
 using System.Globalization;
 using System.Text.RegularExpressions;
 
@@ -501,13 +502,22 @@ public sealed class AttendanceController : ControllerBase
             _db.AttendanceMonthlySettlements.Add(record);
         }
 
+        var editorUserId = UserId();
+        var isNewOrEmptySubmitter = string.IsNullOrWhiteSpace(record.AdjustmentSubmittedByUserId);
+        var isSameSubmitter = string.Equals(record.AdjustmentSubmittedByUserId, editorUserId, StringComparison.Ordinal);
+
         record.AdjustmentAmount = dto.AdjustmentAmount;
         record.AdjustmentRemarks = dto.Remarks.Trim();
         record.IsAdjustmentApproved = false;
-        record.AdjustmentSubmittedByUserId = UserId();
-        record.AdjustmentSubmittedDateUtc = DateTime.UtcNow;
         record.AdjustmentApprovedByUserId = null;
         record.AdjustmentApprovedDateUtc = null;
+        // First submitter stays the maker. A higher authority (CEO) who only corrects
+        // the amount must not become the submitter — otherwise they cannot approve.
+        if (isNewOrEmptySubmitter || isSameSubmitter)
+        {
+            record.AdjustmentSubmittedByUserId = editorUserId;
+            record.AdjustmentSubmittedDateUtc = DateTime.UtcNow;
+        }
 
         await SyncDraftPayrollAdjustmentAsync(dto.PersonId, dto.Year, dto.Month, dto.AdjustmentAmount.Value, false, record.AdjustmentRemarks, ct);
 
@@ -524,21 +534,33 @@ public sealed class AttendanceController : ControllerBase
     [Idempotent]
     public async Task<IActionResult> ApproveAdjustment([FromBody] ApproveAdjustmentRequestDto dto, CancellationToken ct)
     {
-        if (!_tenant.TenantId.HasValue) return Forbid();
-        var canApproveFromDeduction = await HasAttendanceMenuActionAsync("APPROVE", ct, "/attendance/deduction");
-        var canApproveFromPayroll = await HasAttendanceMenuActionAsync("APPROVE", ct, "/pay-allowances/payroll");
+        if (!_tenant.TenantId.HasValue)
+            return StatusCode(StatusCodes.Status403Forbidden, new { message = "Tenant scope is required to approve adjustments." });
+
+        // Approve permission preferred; Edit is accepted so TenantAdmin/staff with Deduction Edit
+        // (UI already treats Edit as approve-capable) are not blocked with an empty 403.
+        var canApproveFromDeduction =
+            await HasAttendanceMenuActionAsync("APPROVE", ct, "/attendance/deduction") ||
+            await HasAttendanceMenuActionAsync("EDIT", ct, "/attendance/deduction");
+        var canApproveFromPayroll =
+            await HasAttendanceMenuActionAsync("APPROVE", ct, "/pay-allowances/payroll") ||
+            await HasAttendanceMenuActionAsync("EDIT", ct, "/pay-allowances/payroll");
         if (!canApproveFromDeduction && !canApproveFromPayroll)
-            return Forbid();
+            return StatusCode(StatusCodes.Status403Forbidden, new
+            {
+                message = "You do not have permission to approve deduction adjustments. Grant Approve or Edit on Deduction or Payroll."
+            });
         if (await HasPendingAttendanceReviewAsync(dto.PersonId, dto.Year, dto.Month, ct))
             return Conflict(new { message = "Missing or invalid checkout attendance must be resolved before deduction approval." });
         if (await HasLockedPayrollAsync(dto.PersonId, dto.Year, dto.Month, ct))
             return Conflict(new { message = "This payroll is already in review or finalized. Reopen the payroll before approving its deduction adjustment." });
 
         var validCode = await _db.ProcessApprovalCodes.FirstOrDefaultAsync(x => x.TenantId == _tenant.RequiredTenantId && x.ProcessName == "DeductionAdjustment", ct);
-        if (validCode == null || validCode.PinCode != dto.PinCode)
-        {
+        // PIN is optional: only enforce when a non-zero code is configured for this process.
+        if (validCode is { PinCode: > 0 } && validCode.PinCode != dto.PinCode)
             return BadRequest(new { message = "Invalid approval code." });
-        }
+        if (validCode is { PinCode: > 0 } && dto.PinCode <= 0)
+            return BadRequest(new { message = "PIN code is required for this approval." });
 
         var record = await _db.AttendanceMonthlySettlements
             .FirstOrDefaultAsync(s => s.PersonId == dto.PersonId 
@@ -556,9 +578,15 @@ public sealed class AttendanceController : ControllerBase
             return BadRequest(new { message = "Already approved." });
 
         var approverUserId = UserId();
-        if (!string.IsNullOrWhiteSpace(record.AdjustmentSubmittedByUserId) &&
-            string.Equals(record.AdjustmentSubmittedByUserId, approverUserId, StringComparison.Ordinal))
-            return Conflict(new { message = "The person who submitted this adjustment cannot approve it. Approval must be completed by a different authorized higher authority." });
+        var isSelfSubmitter = !string.IsNullOrWhiteSpace(record.AdjustmentSubmittedByUserId) &&
+            string.Equals(record.AdjustmentSubmittedByUserId, approverUserId, StringComparison.Ordinal);
+        // Process → Approve Process → Deduction category authorities may correct and approve
+        // (including their own corrected line). Plain makers still cannot self-approve.
+        if (isSelfSubmitter && !await IsProcessCategoryApproverAsync("DEDUCTION", ct))
+            return Conflict(new
+            {
+                message = "The person who submitted this adjustment cannot approve it. A Process Deduction approver (e.g. CEO) may correct the amount and then approve, or another authorized user must approve."
+            });
 
         record.IsAdjustmentApproved = true;
         record.AdjustmentApprovedByUserId = approverUserId;
@@ -1172,6 +1200,51 @@ public sealed class AttendanceController : ControllerBase
                 line.PayrollRun.Month == month &&
                 line.PayrollRun.Status != "Draft",
             cancellationToken);
+
+    /// <summary>
+    /// True when the caller's staff is listed under Process → Approve Process for the given category
+    /// (e.g. DEDUCTION). Those authorities may correct adjustment amounts and approve.
+    /// </summary>
+    private async Task<bool> IsProcessCategoryApproverAsync(string categoryCode, CancellationToken cancellationToken)
+    {
+        var staffId = await CurrentStaffIdAsync(cancellationToken);
+        if (!staffId.HasValue || !_tenant.TenantId.HasValue || string.IsNullOrWhiteSpace(categoryCode))
+            return false;
+
+        var connection = _db.Database.GetDbConnection();
+        if (connection.State != ConnectionState.Open)
+            await connection.OpenAsync(cancellationToken);
+
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT CASE WHEN EXISTS (
+                SELECT 1
+                FROM dbo.ProcessCategoryApprovers pca
+                INNER JOIN dbo.ProcessWorkflowCategories cat ON cat.Id = pca.CategoryId
+                WHERE pca.TenantId = @tenantId
+                  AND pca.StaffId = @staffId
+                  AND cat.IsActive = 1
+                  AND UPPER(cat.Code) = UPPER(@categoryCode)
+            ) THEN 1 ELSE 0 END
+            """;
+        var tenantParam = command.CreateParameter();
+        tenantParam.ParameterName = "@tenantId";
+        tenantParam.Value = _tenant.RequiredTenantId;
+        command.Parameters.Add(tenantParam);
+        var staffParam = command.CreateParameter();
+        staffParam.ParameterName = "@staffId";
+        staffParam.Value = staffId.Value;
+        command.Parameters.Add(staffParam);
+        var codeParam = command.CreateParameter();
+        codeParam.ParameterName = "@categoryCode";
+        codeParam.Value = categoryCode.Trim();
+        command.Parameters.Add(codeParam);
+
+        var result = await command.ExecuteScalarAsync(cancellationToken);
+        return result is int i && i == 1
+            || result is long l && l == 1
+            || (result != null && result != DBNull.Value && Convert.ToInt32(result) == 1);
+    }
 
     private async Task SyncDraftPayrollAdjustmentAsync(
         Guid personId,

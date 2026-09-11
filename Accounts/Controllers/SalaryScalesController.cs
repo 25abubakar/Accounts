@@ -39,9 +39,8 @@ public sealed class SalaryScalesController : ControllerBase
         var rows = await _db.SalaryScales.AsNoTracking()
             .OrderBy(scale => scale.DisplayOrder == 0 ? int.MaxValue : scale.DisplayOrder)
             .ThenBy(scale => scale.ScaleName)
-            .Select(scale => ToDto(scale))
             .ToListAsync(ct);
-        return Ok(rows);
+        return Ok(rows.Select(ToDto).ToList());
     }
 
     [HttpGet("form-lookups")]
@@ -83,6 +82,9 @@ public sealed class SalaryScalesController : ControllerBase
             .AnyAsync(scale => scale.TenantId == _tenantService.RequiredTenantId && scale.ScaleName == scaleName, ct);
         if (duplicate) return BadRequest(new { message = "This scale name already exists." });
 
+        var months = NormalizeIncrementMonths(dto.IncrementMonths, dto.IncrementMonth);
+        var monthsCsv = PayrollCurrentPayCalculator.ToMonthsCsv(months);
+
         var scale = new SalaryScale
         {
             TenantId = _tenantService.RequiredTenantId,
@@ -91,7 +93,8 @@ public sealed class SalaryScalesController : ControllerBase
             RuleRegistrationId = dto.RuleRegistrationId,
             ApplicableType = NormalizeText(dto.ApplicableType, "", 50),
             ApplyAfter = dto.ApplyAfter,
-            IncrementMonth = dto.IncrementMonth,
+            IncrementMonth = months.Count > 0 ? months[0] : null,
+            IncrementMonths = monthsCsv,
             ScaleType = NormalizeText(dto.ScaleType, "Regular", 50),
             PayMode = NormalizeText(dto.PayMode, "PM", 20),
             FrequencyType = NormalizeText(dto.FrequencyType ?? dto.ScaleType, "Regular", 50),
@@ -130,12 +133,16 @@ public sealed class SalaryScalesController : ControllerBase
             .AnyAsync(item => item.TenantId == _tenantService.RequiredTenantId && item.Id != id && item.ScaleName == scaleName, ct);
         if (duplicate) return BadRequest(new { message = "This scale name already exists." });
 
+        var months = NormalizeIncrementMonths(dto.IncrementMonths, dto.IncrementMonth);
+        var monthsCsv = PayrollCurrentPayCalculator.ToMonthsCsv(months);
+
         scale.ScaleName = scaleName;
         scale.DisplayOrder = dto.DisplayOrder;
         scale.RuleRegistrationId = dto.RuleRegistrationId;
         scale.ApplicableType = NormalizeText(dto.ApplicableType, "", 50);
         scale.ApplyAfter = dto.ApplyAfter;
-        scale.IncrementMonth = dto.IncrementMonth;
+        scale.IncrementMonth = months.Count > 0 ? months[0] : null;
+        scale.IncrementMonths = monthsCsv;
         scale.ScaleType = NormalizeText(dto.ScaleType, "Regular", 50);
         scale.PayMode = NormalizeText(dto.PayMode, "PM", 20);
         scale.FrequencyType = NormalizeText(dto.FrequencyType ?? dto.ScaleType, "Regular", 50);
@@ -211,7 +218,19 @@ public sealed class SalaryScalesController : ControllerBase
         if (dto.MaximumSalary > 0 && dto.MaximumSalary < dto.BasicSalary) return "Maximum salary must be greater than or equal to basic salary.";
         if (new[] { dto.BasicSalary, dto.MaximumSalary, dto.YearlyIncrement, dto.GrossSalary, dto.MedicalAllowance, dto.TravellingAllowance, dto.Other }.Any(value => value < 0))
             return "Salary and allowance values cannot be negative.";
+        var months = NormalizeIncrementMonths(dto.IncrementMonths, dto.IncrementMonth);
+        if (dto.IncrementMonths is { Count: > 0 } && months.Count == 0)
+            return "Inc Month values must be calendar months 1–12 (January–December).";
         return null;
+    }
+
+    private static IReadOnlyList<int> NormalizeIncrementMonths(IReadOnlyList<int>? months, int? legacySingle)
+    {
+        if (months is { Count: > 0 })
+            return PayrollCurrentPayCalculator.NormalizeMonths(months);
+        if (legacySingle is >= 1 and <= 12)
+            return new[] { legacySingle.Value };
+        return Array.Empty<int>();
     }
 
     private static string NormalizeText(string? value, string fallback, int maxLength)
@@ -220,30 +239,38 @@ public sealed class SalaryScalesController : ControllerBase
         return trimmed.Length <= maxLength ? trimmed : trimmed[..maxLength];
     }
 
-    private static SalaryScaleDto ToDto(SalaryScale scale) => new()
+    private static SalaryScaleDto ToDto(SalaryScale scale)
     {
-        Id = scale.Id,
-        ScaleName = scale.ScaleName,
-        DisplayOrder = scale.DisplayOrder,
-        RuleRegistrationId = scale.RuleRegistrationId,
-        ApplicableType = scale.ApplicableType,
-        ApplyAfter = scale.ApplyAfter,
-        IncrementMonth = scale.IncrementMonth,
-        ScaleType = scale.ScaleType,
-        PayMode = scale.PayMode,
-        FrequencyType = scale.FrequencyType,
-        ContractType = scale.ContractType,
-        RateType = scale.RateType,
-        BasicSalary = scale.BasicSalary,
-        MaximumSalary = scale.MaximumSalary,
-        YearlyIncrement = scale.YearlyIncrement,
-        GrossSalary = scale.GrossSalary,
-        CurrentPay = scale.CurrentPay,
-        MedicalAllowance = scale.MedicalAllowance,
-        TravellingAllowance = scale.TravellingAllowance,
-        Other = scale.Other,
-        IsActive = scale.IsActive
-    };
+        var months = PayrollCurrentPayCalculator.ParseMonthsCsv(scale.IncrementMonths);
+        if (months.Count == 0 && scale.IncrementMonth is >= 1 and <= 12)
+            months = new[] { scale.IncrementMonth.Value };
+
+        return new()
+        {
+            Id = scale.Id,
+            ScaleName = scale.ScaleName,
+            DisplayOrder = scale.DisplayOrder,
+            RuleRegistrationId = scale.RuleRegistrationId,
+            ApplicableType = scale.ApplicableType,
+            ApplyAfter = scale.ApplyAfter,
+            IncrementMonth = months.Count > 0 ? months[0] : scale.IncrementMonth,
+            IncrementMonths = months.ToList(),
+            ScaleType = scale.ScaleType,
+            PayMode = scale.PayMode,
+            FrequencyType = scale.FrequencyType,
+            ContractType = scale.ContractType,
+            RateType = scale.RateType,
+            BasicSalary = scale.BasicSalary,
+            MaximumSalary = scale.MaximumSalary,
+            YearlyIncrement = scale.YearlyIncrement,
+            GrossSalary = scale.GrossSalary,
+            CurrentPay = scale.CurrentPay,
+            MedicalAllowance = scale.MedicalAllowance,
+            TravellingAllowance = scale.TravellingAllowance,
+            Other = scale.Other,
+            IsActive = scale.IsActive
+        };
+    }
 }
 
 public sealed class SalaryScaleDto
@@ -255,6 +282,7 @@ public sealed class SalaryScaleDto
     public string? ApplicableType { get; set; }
     public int? ApplyAfter { get; set; }
     public int? IncrementMonth { get; set; }
+    public List<int> IncrementMonths { get; set; } = [];
     public string ScaleType { get; set; } = "Regular";
     public string PayMode { get; set; } = "PM";
     public string FrequencyType { get; set; } = "Regular";
@@ -279,6 +307,7 @@ public sealed class SaveSalaryScaleDto
     public string? ApplicableType { get; set; }
     public int? ApplyAfter { get; set; }
     public int? IncrementMonth { get; set; }
+    public List<int>? IncrementMonths { get; set; }
     public string? ScaleType { get; set; }
     public string? PayMode { get; set; }
     public string? FrequencyType { get; set; }

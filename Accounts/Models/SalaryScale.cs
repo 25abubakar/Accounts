@@ -25,7 +25,15 @@ public class SalaryScale : ITenantEntity
 
     public int? ApplyAfter { get; set; }
 
+    /// <summary>Legacy single month (1–12). Prefer <see cref="IncrementMonths"/>.</summary>
     public int? IncrementMonth { get; set; }
+
+    /// <summary>
+    /// Comma-separated calendar months (1–12) when IncrementSal is split within the year.
+    /// Example: "1,6" → Jan + June; yearly 1000 → 500 each. Empty = full yearly increment.
+    /// </summary>
+    [MaxLength(100)]
+    public string? IncrementMonths { get; set; }
 
     [MaxLength(50)]
     public string ScaleType { get; set; } = "Regular";

@@ -131,6 +131,7 @@ namespace Accounts.Data
         public DbSet<TenantMenuPermission>     TenantMenuPermissions    => Set<TenantMenuPermission>();
         public DbSet<TenantRolePermission>     TenantRolePermissions    => Set<TenantRolePermission>();
         public DbSet<ProcessActionAuthority>   ProcessActionAuthorities => Set<ProcessActionAuthority>();
+        public DbSet<MenuAuthorityAction>      MenuAuthorityActions     => Set<MenuAuthorityAction>();
 
         // â”€â”€ Communication Center â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         public DbSet<AppLookupType>     AppLookupTypes     => Set<AppLookupType>();
@@ -578,6 +579,7 @@ namespace Accounts.Data
                 e.Property(x => x.GrossSalary).HasColumnType("decimal(18,2)");
                 e.Property(x => x.CurrentPay).HasColumnType("decimal(18,2)");
                 e.Property(x => x.ApplicableType).HasMaxLength(50);
+                e.Property(x => x.IncrementMonths).HasMaxLength(100);
                 e.HasOne(x => x.RuleRegistration).WithMany().HasForeignKey(x => x.RuleRegistrationId).OnDelete(DeleteBehavior.Restrict);
                 e.Property(x => x.MedicalAllowance).HasColumnType("decimal(18,2)");
                 e.Property(x => x.TravellingAllowance).HasColumnType("decimal(18,2)");
@@ -1605,6 +1607,11 @@ namespace Accounts.Data
                 e.HasIndex(x => new { x.TenantId, x.ProcessCode, x.ActionCode, x.IsActive });
                 e.HasOne<Tenant>().WithMany().HasForeignKey(x => x.TenantId).OnDelete(DeleteBehavior.Restrict);
                 e.HasOne<StaffVacancy>().WithMany().HasForeignKey(x => x.StaffId).OnDelete(DeleteBehavior.Restrict);
+            });
+            builder.Entity<MenuAuthorityAction>(e =>
+            {
+                e.HasIndex(x => new { x.MenuId, x.ActionCode }).IsUnique();
+                e.HasOne(x => x.Menu).WithMany().HasForeignKey(x => x.MenuId).OnDelete(DeleteBehavior.Cascade);
             });
             builder.Entity<PayrollLine>(e =>
             {

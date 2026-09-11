@@ -108,6 +108,20 @@ public sealed class PayrollAdjustmentCalculationTests
         Assert.Equal(92_500m, line.NetPay);
     }
 
+    [Fact]
+    public void Recalculate_AssessmentAmount_IsIncludedInTaxableGrossAndNetPay()
+    {
+        var line = BaseLine();
+        line.AllowanceAmount = 10_000m;
+        line.AssessmentAmount = 8_000m;
+
+        PayrollCalculationService.Recalculate(line);
+
+        Assert.Equal(118_000m, line.TaxableIncome);
+        Assert.Equal(118_000m, line.GrossPay);
+        Assert.Equal(118_000m, line.NetPay);
+    }
+
     private static PayrollLine BaseLine() => new()
     {
         BasicSalary = 100_000m

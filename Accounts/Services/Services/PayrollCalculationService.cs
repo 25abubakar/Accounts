@@ -119,6 +119,7 @@ public sealed class PayrollCalculationService(
         line.AllowanceAmount = Money(splitTotal > 0 ? splitTotal : Math.Max(0, line.AllowanceAmount));
         line.EmployerBenefitAmount = Money(line.EmployerBenefitAmount);
         line.StaffBenefitDeduction = Money(line.StaffBenefitDeduction);
+        line.AssessmentAmount = Money(Math.Max(0, line.AssessmentAmount));
         line.BonusAmount = Money(line.BonusAmount);
         line.OvertimeAmount = Money(line.OvertimeAmount);
         line.AttendanceDeduction = Money(Math.Max(0, line.AttendanceDeduction));
@@ -141,7 +142,7 @@ public sealed class PayrollCalculationService(
         var deductionRelief = Math.Min(postedAttendanceDeduction, Math.Max(0, approvedAdjustment));
         var effectiveAttendanceDeduction = postedAttendanceDeduction - deductionRelief;
         var additionalAdjustmentDeduction = Math.Max(0, -approvedAdjustment);
-        line.TaxableIncome = Money(line.BasicSalary + line.AllowanceAmount + line.BonusAmount + line.OvertimeAmount);
+        line.TaxableIncome = Money(line.BasicSalary + line.AllowanceAmount + line.AssessmentAmount + line.BonusAmount + line.OvertimeAmount);
         line.GrossPay = line.TaxableIncome;
         line.TotalDeduction = Money(effectiveAttendanceDeduction + line.StaffBenefitDeduction + line.TaxAmount + line.EmployeeEobiAmount + line.OtherDeduction + additionalAdjustmentDeduction);
         line.NetPay = Money(Math.Max(0, line.GrossPay - line.TotalDeduction));
@@ -200,19 +201,50 @@ public sealed class PayrollCalculationService(
             })
             .ToDictionaryAsync(x => x.StaffId, x => x.ShiftCode, cancellationToken);
         var benefitRules = await db.PayrollBenefitRules.AsNoTracking().Include(x => x.Parameters)
-            .Where(x => x.BenefitsType != "Bonus" && !x.IsIneligible)
+            .Where(x => x.BenefitsType != "Bonus" && x.BenefitsType != "EOBI" && !x.IsIneligible)
             .ToListAsync(cancellationToken);
         var organizationNodes = await db.OrganizationTree.AsNoTracking().ToDictionaryAsync(x => x.Id, cancellationToken);
         var bonusLines = await db.PayrollBonusLines.AsNoTracking().Include(x => x.BonusRun)
             .Where(x => x.IsApproved && !x.IsInactive && !x.IsPaid
                 && x.BonusRun != null && x.BonusRun.Status == "Approved")
             .ToListAsync(cancellationToken);
+        var assessmentRows = await db.StaffAssessments.AsNoTracking()
+            .Where(x => personIds.Contains(x.SubjectPersonId) && x.AssessmentYear == year &&
+                x.AssessmentMonth == month && x.Rating != null && x.IsLocked)
+            .Select(x => new { x.SubjectPersonId, x.Amount, x.SubmittedDateUtc, x.ModifiedDateUtc, x.CreatedDateUtc })
+            .ToListAsync(cancellationToken);
+        var assessmentByPerson = assessmentRows.GroupBy(x => x.SubjectPersonId)
+            .ToDictionary(group => group.Key, group => group
+                .OrderByDescending(x => x.SubmittedDateUtc ?? x.ModifiedDateUtc ?? x.CreatedDateUtc)
+                .First().Amount ?? 0m);
         var eobiSetting = await db.EobiSettings.AsNoTracking()
             .Where(x => x.IsActive && x.EffectiveFrom <= periodEnd && (x.EffectiveTo == null || x.EffectiveTo >= periodStart))
             .OrderByDescending(x => x.EffectiveFrom)
             .FirstOrDefaultAsync(cancellationToken);
+        var eobiBenefit = await db.PayrollBenefitRules.AsNoTracking()
+            .Include(x => x.Parameters)
+            .Where(x => x.BenefitsType == "EOBI"
+                && !x.IsIneligible
+                && (x.ValidFrom == null || x.ValidFrom <= periodEnd)
+                && (x.ValidTo == null || x.ValidTo >= periodStart)
+                && (x.Wef == null || x.Wef <= periodEnd))
+            .OrderByDescending(x => x.Wef ?? x.ValidFrom)
+            .ThenByDescending(x => x.Id)
+            .FirstOrDefaultAsync(cancellationToken);
+        var eobiParameter = eobiBenefit?.Parameters
+            .Where(x => (!x.PeriodFrom.HasValue || x.PeriodFrom <= periodEnd)
+                && (!x.PeriodTo.HasValue || x.PeriodTo >= periodStart))
+            .OrderByDescending(x => x.PeriodFrom)
+            .ThenByDescending(x => x.Id)
+            .FirstOrDefault();
+        var fixedEmployerEobi = Money(eobiParameter?.CompanyShare ?? eobiBenefit?.CompanyShare ?? 0);
+        var fixedEmployeeEobi = Money(eobiParameter?.StaffShare ?? eobiBenefit?.StaffShare ?? 0);
+        var hasFixedEobi = fixedEmployerEobi > 0 || fixedEmployeeEobi > 0;
         var eobiPeople = await db.EobiEligibilities.AsNoTracking()
-            .Where(x => x.IsEligible && personIds.Contains(x.PersonId) && x.EffectiveFrom <= periodEnd && (x.EffectiveTo == null || x.EffectiveTo >= periodStart))
+            .Where(x => personIds.Contains(x.PersonId)
+                && x.EffectiveFrom <= periodEnd
+                && ((x.IsEligible && x.EffectiveTo == null)
+                    || (x.EffectiveTo != null && x.EffectiveTo >= periodStart)))
             .Select(x => x.PersonId)
             .ToHashSetAsync(cancellationToken);
         var payrollTaxYear = ResolveTaxYear(year, month);
@@ -286,7 +318,8 @@ public sealed class PayrollCalculationService(
                 maxSalary,
                 profile?.ScaleDate,
                 periodEnd,
-                scale?.ApplyAfter);
+                scale?.ApplyAfter,
+                PayrollCurrentPayCalculator.ParseMonthsCsv(scale?.IncrementMonths));
             var basicSalary = Money(currentPay > 0 ? currentPay : scaleBasic);
 
             var serviceYears = profile?.JoiningDate is DateTime joining
@@ -319,24 +352,33 @@ public sealed class PayrollCalculationService(
             // Bonus → payroll: approved run lines, due installment only (PaidInstallmentCount).
             var bonusAmount = bonusLines.Where(x => x.PersonId == employee.PersonId && IsBonusInstallmentDue(x, year, month))
                 .Sum(x => x.InstallmentAmount > 0 ? x.InstallmentAmount : x.TotalBonus);
+            assessmentByPerson.TryGetValue(employee.PersonId, out var assessmentAmount);
             attendanceByPerson.TryGetValue(employee.PersonId, out var attendanceRow);
             var overtime = attendanceRow is { IsOvertimeApproved: true, IsOvertimeBonusActive: true } ? attendanceRow.OvertimeBonusAmount : 0;
             // Attendance finalization → Deduction report → NetDeduction / approved adjustment.
             var attendanceDeduction = attendanceRow?.NetDeduction ?? 0;
             var adjustment = attendanceRow?.AdjustmentAmount ?? 0;
             var pendingDays = attendanceRow?.PendingReviewDays ?? 0;
-            var taxableMonthly = basicSalary + allowanceAmount + bonusAmount + overtime;
+            var taxableMonthly = basicSalary + allowanceAmount + assessmentAmount + bonusAmount + overtime;
             var tax = CalculateMonthlyTax(taxableMonthly, taxSlabs);
             decimal employeeEobi = 0;
             decimal employerEobi = 0;
-            if (eobiSetting != null && eobiPeople.Contains(employee.PersonId))
+            if (eobiPeople.Contains(employee.PersonId))
             {
-                var wageBase = basicSalary <= 0 ? 0 : Math.Max(basicSalary, eobiSetting.MinimumWage);
-                var contributionBase = eobiSetting.MaximumContributionBase > 0
-                    ? Math.Min(wageBase, eobiSetting.MaximumContributionBase)
-                    : wageBase;
-                employeeEobi = contributionBase * eobiSetting.EmployeeRatePercentage / 100m;
-                employerEobi = contributionBase * eobiSetting.EmployerRatePercentage / 100m;
+                if (hasFixedEobi)
+                {
+                    employeeEobi = fixedEmployeeEobi;
+                    employerEobi = fixedEmployerEobi;
+                }
+                else if (eobiSetting != null)
+                {
+                    var wageBase = basicSalary <= 0 ? 0 : Math.Max(basicSalary, eobiSetting.MinimumWage);
+                    var contributionBase = eobiSetting.MaximumContributionBase > 0
+                        ? Math.Min(wageBase, eobiSetting.MaximumContributionBase)
+                        : wageBase;
+                    employeeEobi = contributionBase * eobiSetting.EmployeeRatePercentage / 100m;
+                    employerEobi = contributionBase * eobiSetting.EmployerRatePercentage / 100m;
+                }
             }
 
             var remarks = new List<string>();
@@ -369,6 +411,7 @@ public sealed class PayrollCalculationService(
                 AllowanceAmount = allowanceAmount,
                 EmployerBenefitAmount = employerBenefits,
                 StaffBenefitDeduction = staffBenefits,
+                AssessmentAmount = assessmentAmount,
                 BonusAmount = bonusAmount,
                 OvertimeAmount = overtime,
                 AttendanceDeduction = attendanceDeduction,
@@ -494,17 +537,10 @@ public sealed class PayrollCalculationService(
             : Money(value);
     }
 
-    private static decimal CalculateMonthlyTax(decimal monthlyTaxablePay, IReadOnlyList<PayrollTaxSlab> slabs)
-    {
-        if (monthlyTaxablePay <= 0 || slabs.Count == 0) return 0;
-        var annualPay = monthlyTaxablePay * 12m;
-        var slab = slabs.LastOrDefault(x => annualPay >= x.FromAmount && (!x.ToAmount.HasValue || annualPay <= x.ToAmount.Value));
-        if (slab == null) return 0;
-        var excess = Math.Max(0, annualPay - slab.FromAmount);
-        return Money((slab.FixedTaxAmount + excess * slab.RatePercentage / 100m) / 12m);
-    }
+    private static decimal CalculateMonthlyTax(decimal monthlyTaxablePay, IReadOnlyList<PayrollTaxSlab> slabs) =>
+        PayrollTaxCalculator.CalculateMonthlyTax(monthlyTaxablePay, slabs);
 
-    private static decimal Money(decimal value) => Math.Round(value, 2, MidpointRounding.AwayFromZero);
+    private static decimal Money(decimal value) => PayrollTaxCalculator.Money(value);
 
     private static string ResolveTaxYear(int year, int month) =>
         month >= 7 ? $"{year}-{year + 1}" : $"{year - 1}-{year}";

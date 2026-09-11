@@ -240,6 +240,7 @@ public sealed class PayrollLine : ITenantEntity
     [Column(TypeName = "decimal(18,2)")] public decimal ApptAllowanceAmount { get; set; }
     [Column(TypeName = "decimal(18,2)")] public decimal ShiftAllowanceAmount { get; set; }
     [Column(TypeName = "decimal(18,2)")] public decimal AllowanceAmount { get; set; }
+    [Column(TypeName = "decimal(18,2)")] public decimal AssessmentAmount { get; set; }
     [Column(TypeName = "decimal(18,2)")] public decimal EmployerBenefitAmount { get; set; }
     [Column(TypeName = "decimal(18,2)")] public decimal StaffBenefitDeduction { get; set; }
     [Column(TypeName = "decimal(18,2)")] public decimal BonusAmount { get; set; }
@@ -338,12 +339,17 @@ public sealed class PayrollStaffTax : ITenantEntity
     public DateTime? UpdatedOnUtc { get; set; }
 }
 
-/// <summary>Tenant tax calculation parameters (min tax / deductible % of income).</summary>
+/// <summary>
+/// Tenant Staff Tax eligibility only.
+/// <c>MinTaxAmt</c> = minimum monthly salary to include a person on Staff Tax list / Staff ID dropdown.
+/// Does not add, subtract, or floor tax — slabs alone calculate tax.
+/// </summary>
 [Table("PayrollTaxParameters")]
 public sealed class PayrollTaxParameter : ITenantEntity
 {
     [Key] public int Id { get; set; }
     public int TenantId { get; set; }
+    /// <summary>Minimum monthly pay required to appear on Staff Tax (legacy column name MinTaxAmt).</summary>
     [Column(TypeName = "decimal(18,2)")] public decimal MinTaxAmt { get; set; }
     [Column(TypeName = "decimal(9,4)")] public decimal DedPercentage { get; set; } = 100;
     public bool IsActive { get; set; } = true;

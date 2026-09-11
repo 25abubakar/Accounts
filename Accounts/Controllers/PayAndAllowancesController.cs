@@ -18,7 +18,8 @@ public sealed class PayAndAllowancesController(
     TenantPermissionService tenantPermissions,
     PayrollCalculationService payroll,
     StaffMonthlyEobiService staffMonthlyEobi,
-    StaffTaxService staffTax) : ControllerBase
+    StaffTaxService staffTax,
+    MenuAuthorityService menuAuthority) : ControllerBase
 {
     [HttpGet("benefits")]
     public async Task<IActionResult> Benefits(CancellationToken ct) =>
@@ -611,6 +612,7 @@ public sealed class PayAndAllowancesController(
             line.AllowanceAmount,
             line.EmployerBenefitAmount,
             line.StaffBenefitDeduction,
+            line.AssessmentAmount,
             line.BonusAmount,
             line.OvertimeAmount,
             line.AttendanceDeduction,
@@ -842,23 +844,21 @@ public sealed class PayAndAllowancesController(
         }
     }
 
+    /// <summary>
+    /// Legacy StaffMonthlyEOBI grid shape only:
+    /// Id, Eobi_Ref, StaffId, FullName, Department, DOJ, Coy_Share, StaffShare, Tot_Amount, Remarks, IsApproved, Paid.
+    /// </summary>
     private static object MapStaffMonthlyEobi(StaffMonthlyEobi row) => new
     {
         id = row.Id,
-        personId = row.PersonId,
-        staffGuid = row.StaffId,
-        staffId = row.StaffNumber,
         eobiRef = row.EobiRef,
+        staffId = row.StaffNumber,
         fullName = row.FullName,
         department = row.Department,
-        designation = row.Designation,
         doj = row.DateOfJoining,
-        salaryBase = row.SalaryBase,
         coyShare = row.CompanyShare,
         staffShare = row.StaffShare,
         totAmount = row.TotalAmount,
-        month = row.Month,
-        year = row.Year,
         remarks = row.Remarks,
         isApproved = row.IsApproved,
         isPaid = row.IsPaid
@@ -922,13 +922,24 @@ public sealed class PayAndAllowancesController(
         monthlyNetTax = row.MonthlyNetTax,
         dedPercentage = row.DedPercentage,
         taxYear = row.TaxYear,
-        minTaxAmt = row.MinTaxAmt
+        minTaxAmt = row.MinTaxAmt,
+        minMonthlyPay = row.MinTaxAmt,
+        slabName = row.SlabName,
+        excessBase = row.ExcessBase,
+        excessAmount = row.ExcessAmount,
+        fixedTaxAmount = row.FixedTaxAmount,
+        ratePercentage = row.RatePercentage,
+        netMonthlyPay = row.NetMonthlyPay,
+        netAnnualPay = row.NetAnnualPay,
+        yearlyDeductedTax = row.TaxAmount,
+        monthlyDeductedTax = row.MonthlyTaxAmt
     };
 
     private static object MapTaxParameter(PayrollTaxParameter row) => new
     {
         id = row.Id,
         minTaxAmt = row.MinTaxAmt,
+        minMonthlyPay = row.MinTaxAmt,
         dedPercentage = row.DedPercentage,
         isActive = row.IsActive
     };
@@ -954,6 +965,26 @@ public sealed class PayAndAllowancesController(
     {
         var denied = await Guard("/pay-allowances/tax", "VIEW", ct); if (denied != null) return denied;
         return Ok(await staffTax.CandidatesAsync(ct));
+    }
+
+    [HttpPost("staff-taxes/sync")]
+    [Idempotent]
+    public async Task<IActionResult> SyncStaffTaxes([FromBody] StaffTaxSyncSave? dto, CancellationToken ct)
+    {
+        var denied = await Guard("/pay-allowances/tax", "ADD", ct); if (denied != null) return denied;
+        try
+        {
+            var rows = await staffTax.SyncTaxableStaffAsync(dto?.DateFrom, dto?.DateTo, ct);
+            return Ok(new
+            {
+                message = "Staff Tax list updated from Tax Parameter Min Amount (salary eligibility only).",
+                rows = rows.Select(MapStaffTax)
+            });
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
     }
 
     [HttpPost("staff-taxes/calculate")]
@@ -1328,7 +1359,20 @@ public sealed class PayAndAllowancesController(
         var error = ValidateEligibility(dto); if (error != null) return BadRequest(new { message = error });
         if (!await db.Persons.AnyAsync(x => x.PersonId == dto.PersonId, ct)) return BadRequest(new { message = "Selected employee was not found." });
         if (await db.EobiEligibilities.AnyAsync(x => x.Id != id && x.PersonId == dto.PersonId, ct)) return Conflict(new { message = "EOBI eligibility already exists for this employee." });
-        row.PersonId = dto.PersonId; row.EobiNumber = Clean(dto.EobiNumber); row.EffectiveFrom = dto.EffectiveFrom; row.EffectiveTo = dto.EffectiveTo; row.IsEligible = dto.IsEligible; row.Remarks = Clean(dto.Remarks); row.UpdatedOnUtc = DateTime.UtcNow;
+        var effectiveTo = dto.EffectiveTo;
+        // Turning eligibility Off closes the current effective period at month end.
+        // Consequently the employee remains in already-generated/current-month EOBI,
+        // but is excluded automatically from the following month onward.
+        if (row.IsEligible && !dto.IsEligible && effectiveTo == null)
+        {
+            var today = PakistanClock.Today();
+            effectiveTo = new DateOnly(today.Year, today.Month, 1).AddMonths(1).AddDays(-1);
+        }
+        else if (!row.IsEligible && dto.IsEligible)
+        {
+            effectiveTo = null;
+        }
+        row.PersonId = dto.PersonId; row.EobiNumber = Clean(dto.EobiNumber); row.EffectiveFrom = dto.EffectiveFrom; row.EffectiveTo = effectiveTo; row.IsEligible = dto.IsEligible; row.Remarks = Clean(dto.Remarks); row.UpdatedOnUtc = DateTime.UtcNow;
         await SyncPersonJoiningDateAsync(dto.PersonId, dto.EffectiveFrom, ct);
         await db.SaveChangesAsync(ct); return Ok(row);
     }
@@ -1374,17 +1418,23 @@ public sealed class PayAndAllowancesController(
         if (!staffId.HasValue)
             return StatusCode(StatusCodes.Status403Forbidden, new { message = "No active staff profile is linked to this account." });
 
-        var normalizedAction = actionCode.Trim().ToUpperInvariant();
-        var assigned = await db.ProcessActionAuthorities.AsNoTracking().AnyAsync(authority =>
-            authority.ProcessCode == "PAYROLL" &&
-            authority.ActionCode == normalizedAction &&
-            authority.StaffId == staffId.Value &&
-            authority.IsActive, ct);
-        return assigned
+        var normalizedAction = MenuAuthorityService.NormalizeActionCode(actionCode);
+        if (normalizedAction == null)
+            return StatusCode(StatusCodes.Status403Forbidden, new { message = "Invalid payroll workflow stage." });
+
+        var assigned = await db.ProcessActionAuthorities.AsNoTracking()
+            .Where(authority =>
+                authority.ProcessCode == "PAYROLL" &&
+                authority.StaffId == staffId.Value &&
+                authority.IsActive)
+            .Select(authority => authority.ActionCode)
+            .ToListAsync(ct);
+        var expanded = await menuAuthority.ExpandAuthoritiesAsync("PAYROLL", assigned, ct);
+        return expanded.Contains(normalizedAction, StringComparer.OrdinalIgnoreCase)
             ? null
             : StatusCode(StatusCodes.Status403Forbidden, new
             {
-                message = $"You are not assigned to the Payroll {normalizedAction} stage. Configure this person in HR Management > Process > Reports > Approve Process."
+                message = $"You are not assigned to the Payroll {normalizedAction} stage. Configure this person in HR Management > Process > Approve Process."
             });
     }
 
@@ -1770,6 +1820,7 @@ public sealed class PayAndAllowancesController(
             x.AllowanceAmount,
             x.EmployerBenefitAmount,
             x.StaffBenefitDeduction,
+            x.AssessmentAmount,
             x.BonusAmount,
             x.OvertimeAmount,
             x.AttendanceDeduction,
@@ -1829,6 +1880,7 @@ public sealed record TaxParameterPatchSave(decimal? MinTaxAmt, decimal? DedPerce
 public sealed record StaffTaxCalculateSave(Guid PersonId, DateOnly DateFrom, DateOnly DateTo, string? Frequency, decimal MonthlyPay, int TotMonth, decimal ExtraAmount, decimal TaxAdjustment, int PayMonth, decimal DedPercentage);
 public sealed record StaffTaxUpsertSave(Guid PersonId, DateOnly DateFrom, DateOnly DateTo, string? Frequency, decimal MonthlyPay, int TotMonth, decimal ExtraAmount, decimal TaxAdjustment, int PayMonth, decimal DedPercentage, bool IsActive = true);
 public sealed record StaffTaxPatchSave(decimal? NetTax, decimal? TaxAdjustment, decimal? MonthlyTaxAmt, bool? IsActive);
+public sealed record StaffTaxSyncSave(DateOnly? DateFrom, DateOnly? DateTo);
 public sealed record EobiEligibilitySave(Guid PersonId, string? EobiNumber, DateOnly EffectiveFrom, DateOnly? EffectiveTo, bool IsEligible, string? Remarks);
 public sealed record StaffMonthlyEobiCreateSave(int Year, int Month);
 public sealed record StaffMonthlyEobiUpdateSave(string? EobiRef);
