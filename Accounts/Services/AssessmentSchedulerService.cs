@@ -26,18 +26,11 @@ public sealed class AssessmentSchedulerService(IServiceScopeFactory scopeFactory
         {
             await using var scope = scopeFactory.CreateAsyncScope();
             var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
-            var rbac = scope.ServiceProvider.GetRequiredService<RbacService>();
             await AssessmentSchema.EnsureCurrentAsync(db);
             var today = DateOnly.FromDateTime(PakistanClock.Now());
             var tenants = await db.Tenants.AsNoTracking().Where(x => x.IsActive).Select(x => x.Id).ToListAsync(ct);
             var org = await db.OrganizationTree.IgnoreQueryFilters().AsNoTracking().Select(x => new { x.Id, x.ParentId }).ToListAsync(ct);
             var children = org.Where(x => x.ParentId.HasValue).GroupBy(x => x.ParentId!.Value).ToDictionary(x => x.Key, x => x.Select(y => y.Id).ToList());
-            var assessmentMenuId = await db.Menus.AsNoTracking()
-                .Where(x => x.IsActive && x.Route == "/assessment/mark")
-                .Select(x => (int?)x.Id)
-                .FirstOrDefaultAsync(ct);
-            if (!assessmentMenuId.HasValue) return;
-
             foreach (var tenantId in tenants)
             {
                 var rule = await db.AssessmentBonusRules.IgnoreQueryFilters().AsNoTracking()
@@ -51,25 +44,16 @@ public sealed class AssessmentSchedulerService(IServiceScopeFactory scopeFactory
                 if (!cycle.HasValue) continue;
 
                 var people = await db.Persons.IgnoreQueryFilters().AsNoTracking().Where(x => x.TenantId == tenantId && x.IsActive && x.IdentityUserId != null && x.Staff != null && x.Staff.Vacancy != null)
-                    .Select(x => new PersonRow(x.PersonId, x.IdentityUserId!, x.Staff!.StaffId, x.Staff.Vacancy!.OrganizationId,
-                        x.Staff.Vacancy.DesignationNav != null ? x.Staff.Vacancy.DesignationNav.Name : x.Staff.Vacancy.JobTitle,
-                        x.ReportsToPersonId, x.AlternativeReportsToPersonId)).ToListAsync(ct);
+                    .Select(x => new PersonRow(x.PersonId, x.IdentityUserId!, x.Staff!.Vacancy!.OrganizationId,
+                        x.Staff.Vacancy.DesignationNav != null ? x.Staff.Vacancy.DesignationNav.Name : x.Staff.Vacancy.JobTitle)).ToListAsync(ct);
 
-                foreach (var assessor in people)
+                foreach (var assessor in people.Where(x => Rank(x.JobTitle) > 100))
                 {
-                    if (!await rbac.HasAccessAsync(assessor.StaffId, $"MENU_{assessmentMenuId.Value}_EDIT")) continue;
-                    var subjects = people.Where(x => x.PersonId != assessor.PersonId &&
-                        (x.ReportsToPersonId == assessor.PersonId || x.AlternativeReportsToPersonId == assessor.PersonId)).ToList();
-                    if (subjects.Count == 0)
-                    {
-                        var assessorRank = Rank(assessor.JobTitle);
-                        if (assessorRank <= 100) continue;
-                        var nodeIds = Descendants(assessor.OrganizationId, children);
-                        var lower = people.Where(x => x.PersonId != assessor.PersonId && nodeIds.Contains(x.OrganizationId) && Rank(x.JobTitle) > 0 && Rank(x.JobTitle) < assessorRank).ToList();
-                        if (lower.Count == 0) continue;
-                        var directRank = lower.Max(x => Rank(x.JobTitle));
-                        subjects = lower.Where(x => Rank(x.JobTitle) == directRank).ToList();
-                    }
+                    var nodeIds = Descendants(assessor.OrganizationId, children);
+                    var lower = people.Where(x => x.PersonId != assessor.PersonId && nodeIds.Contains(x.OrganizationId) && Rank(x.JobTitle) > 0 && Rank(x.JobTitle) < Rank(assessor.JobTitle)).ToList();
+                    if (lower.Count == 0) continue;
+                    var directRank = lower.Max(x => Rank(x.JobTitle));
+                    var subjects = lower.Where(x => Rank(x.JobTitle) == directRank).ToList();
                     var existing = await db.StaffAssessments.IgnoreQueryFilters().Where(x => x.TenantId == tenantId && x.AssessorPersonId == assessor.PersonId && x.AssessmentYear == cycle.Value.Year && x.AssessmentMonth == cycle.Value.Month).ToListAsync(ct);
                     foreach (var subject in subjects.Where(x => existing.All(y => y.SubjectPersonId != x.PersonId)))
                         db.StaffAssessments.Add(new StaffAssessment { TenantId = tenantId, AssessorPersonId = assessor.PersonId, SubjectPersonId = subject.PersonId, AssessmentYear = cycle.Value.Year, AssessmentMonth = (byte)cycle.Value.Month, CreatedDateUtc = DateTime.UtcNow });
@@ -124,5 +108,5 @@ public sealed class AssessmentSchedulerService(IServiceScopeFactory scopeFactory
     }
     private static string ReminderEntityId(int year, int month, Guid assessorPersonId) => $"{year:D4}-{month:D2}:{assessorPersonId:N}";
     private static int Rank(string? title) { if (string.IsNullOrWhiteSpace(title)) return 0; var v = new string(title.ToLowerInvariant().Where(char.IsLetterOrDigit).ToArray()); if (v.Contains("ceo") && !v.Contains("dutyceo")) return 700; if (v.Contains("dutyceo")) return 600; if (v.Contains("manager") && !v.Contains("deputy") && !v.Contains("depty") && !v.Contains("assistant") && !v.Contains("asst")) return 500; if (v.Contains("deputymanager") || v.Contains("deptymanager")) return 400; if (v.Contains("assistantmanager") || v.Contains("asstmanager")) return 300; if (v.Contains("supervisor") || v.Contains("teamlead")) return 200; if (v.Contains("agent") || v.Contains("bellboy")) return 100; return 0; }
-    private sealed record PersonRow(Guid PersonId, string IdentityUserId, Guid StaffId, int OrganizationId, string? JobTitle, Guid? ReportsToPersonId, Guid? AlternativeReportsToPersonId);
+    private sealed record PersonRow(Guid PersonId, string IdentityUserId, int OrganizationId, string? JobTitle);
 }

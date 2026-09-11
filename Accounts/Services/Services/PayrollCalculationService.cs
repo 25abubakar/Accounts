@@ -200,10 +200,17 @@ public sealed class PayrollCalculationService(
                     .FirstOrDefault()
             })
             .ToDictionaryAsync(x => x.StaffId, x => x.ShiftCode, cancellationToken);
-        var benefitRules = await db.PayrollBenefitRules.AsNoTracking().Include(x => x.Parameters)
+        var benefitRules = await db.PayrollBenefitRules.AsNoTracking()
+            .Include(x => x.Parameters)
+            .Include(x => x.OrganizationScopes)
+            .Include(x => x.ContractScopes)
             .Where(x => x.BenefitsType != "Bonus" && x.BenefitsType != "EOBI" && !x.IsIneligible)
             .ToListAsync(cancellationToken);
         var organizationNodes = await db.OrganizationTree.AsNoTracking().ToDictionaryAsync(x => x.Id, cancellationToken);
+        var employmentByPerson = await db.Persons.AsNoTracking()
+            .Where(x => personIds.Contains(x.PersonId))
+            .Select(x => new { x.PersonId, x.EmploymentStatus })
+            .ToDictionaryAsync(x => x.PersonId, x => x.EmploymentStatus, cancellationToken);
         var bonusLines = await db.PayrollBonusLines.AsNoTracking().Include(x => x.BonusRun)
             .Where(x => x.IsApproved && !x.IsInactive && !x.IsPaid
                 && x.BonusRun != null && x.BonusRun.Status == "Approved")
@@ -325,7 +332,19 @@ public sealed class PayrollCalculationService(
             var serviceYears = profile?.JoiningDate is DateTime joining
                 ? Math.Max(0, (decimal)(periodEnd.ToDateTime(TimeOnly.MinValue) - joining.Date).TotalDays / 365.2425m)
                 : 0;
-            var applicableBenefits = benefitRules.Where(rule => IsBenefitApplicable(rule, profile, employee.OrganizationId, organizationNodes, serviceYears, periodStart, periodEnd));
+            var applicableBenefits = benefitRules.Where(rule =>
+            {
+                employmentByPerson.TryGetValue(employee.PersonId, out var employmentStatus);
+                return IsBenefitApplicable(
+                    rule,
+                    profile,
+                    employee.OrganizationId,
+                    organizationNodes,
+                    serviceYears,
+                    periodStart,
+                    periodEnd,
+                    employmentStatus);
+            });
             decimal employerBenefits = 0;
             decimal staffBenefits = 0;
             foreach (var rule in applicableBenefits)
@@ -487,12 +506,44 @@ public sealed class PayrollCalculationService(
         IReadOnlyDictionary<int, OrganizationTree> organizationNodes,
         decimal serviceYears,
         DateOnly periodStart,
-        DateOnly periodEnd)
+        DateOnly periodEnd,
+        string? employmentStatus = null)
     {
         if (rule.ValidFrom.HasValue && rule.ValidFrom > periodEnd || rule.ValidTo.HasValue && rule.ValidTo < periodStart) return false;
         if (rule.Wef.HasValue && rule.Wef > periodEnd) return false;
         if (!string.IsNullOrWhiteSpace(rule.Scale) && !string.Equals(rule.Scale.Trim(), profile?.Scale?.Trim(), StringComparison.OrdinalIgnoreCase)) return false;
-        if (rule.OrganizationId.HasValue && (!organizationId.HasValue || !IsOrganizationDescendant(organizationId.Value, rule.OrganizationId.Value, organizationNodes))) return false;
+
+        var orgScopeIds = rule.OrganizationScopes?.Select(scope => scope.OrganizationId).Distinct().ToList()
+            ?? [];
+        if (orgScopeIds.Count == 0 && rule.OrganizationId.HasValue)
+            orgScopeIds.Add(rule.OrganizationId.Value);
+        if (orgScopeIds.Count > 0)
+        {
+            if (!organizationId.HasValue) return false;
+            var matched = orgScopeIds.Any(scopeId => IsOrganizationDescendant(organizationId.Value, scopeId, organizationNodes));
+            if (!matched) return false;
+        }
+
+        var contractNames = rule.ContractScopes?.Select(scope => scope.ContractName.Trim())
+                .Where(name => name.Length > 0)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList()
+            ?? [];
+        if (contractNames.Count == 0 && !string.IsNullOrWhiteSpace(rule.Contract))
+        {
+            contractNames = rule.Contract.Split([',', ';'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Where(name => name.Length > 0)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+        }
+        if (contractNames.Count > 0)
+        {
+            var employeeContract = ResolveEmployeeContractName(profile, employmentStatus, periodEnd);
+            if (string.IsNullOrWhiteSpace(employeeContract)
+                || !contractNames.Contains(employeeContract, StringComparer.OrdinalIgnoreCase))
+                return false;
+        }
+
         if (serviceYears < rule.MinimumService) return false;
         var anchor = rule.Wef ?? rule.ValidFrom ?? periodStart;
         var elapsedMonths = (periodStart.Year - anchor.Year) * 12 + periodStart.Month - anchor.Month;
@@ -504,6 +555,22 @@ public sealed class PayrollCalculationService(
             "onetime" or "one time" => elapsedMonths == 0,
             _ => true
         };
+    }
+
+    private static string? ResolveEmployeeContractName(PersonHrProfile? profile, string? employmentStatus, DateOnly periodEnd)
+    {
+        if (!string.IsNullOrWhiteSpace(employmentStatus))
+            return employmentStatus.Trim();
+        if (!string.IsNullOrWhiteSpace(profile?.InductionType))
+            return profile.InductionType.Trim();
+
+        var asOf = periodEnd.ToDateTime(TimeOnly.MinValue);
+        if (profile?.ProbationFrom is DateTime probationFrom
+            && probationFrom.Date <= asOf
+            && (profile.ProbationTo == null || profile.ProbationTo.Value.Date >= asOf))
+            return "Probation";
+
+        return null;
     }
 
     private static bool IsOrganizationDescendant(int candidateId, int ancestorId, IReadOnlyDictionary<int, OrganizationTree> nodes)

@@ -13,13 +13,8 @@ namespace Accounts.Services.Services;
 public sealed class TenantPermissionService
 {
     private readonly ApplicationDbContext _db;
-    private readonly RbacService? _rbac;
 
-    public TenantPermissionService(ApplicationDbContext db, RbacService? rbac = null)
-    {
-        _db = db;
-        _rbac = rbac;
-    }
+    public TenantPermissionService(ApplicationDbContext db) => _db = db;
 
     public static bool IsSuperAdmin(ClaimsPrincipal user) =>
         user.IsInRole("SuperAdmin") ||
@@ -41,12 +36,7 @@ public sealed class TenantPermissionService
         CancellationToken cancellationToken = default)
     {
         if (IsSuperAdmin(user)) return true;
-        if (!IsTenantAdmin(user))
-        {
-            var staffId = await ResolveStaffIdAsync(user, cancellationToken);
-            return staffId.HasValue && _rbac != null &&
-                await _rbac.HasAccessAsync(staffId.Value, featureKey);
-        }
+        if (!IsTenantAdmin(user)) return false;
 
         var tenantId = GetTenantId(user);
         if (!tenantId.HasValue || string.IsNullOrWhiteSpace(featureKey)) return false;
@@ -95,6 +85,7 @@ public sealed class TenantPermissionService
         CancellationToken cancellationToken = default)
     {
         if (IsSuperAdmin(user)) return true;
+        if (!IsTenantAdmin(user)) return false;
 
         var tenantId = GetTenantId(user);
         var normalizedRoutes = routes
@@ -116,20 +107,6 @@ public sealed class TenantPermissionService
             .ToList();
         if (matchingMenuIds.Count == 0) return false;
 
-        if (!IsTenantAdmin(user))
-        {
-            var staffId = await ResolveStaffIdAsync(user, cancellationToken);
-            if (!staffId.HasValue || _rbac == null) return false;
-            var normalizedAction = action.Trim().ToUpperInvariant();
-            foreach (var menuId in matchingMenuIds)
-            {
-                if (normalizedAction is "VIEW" or "READ" &&
-                    await _rbac.HasAccessAsync(staffId.Value, $"MENU_{menuId}")) return true;
-                if (await _rbac.HasAccessAsync(staffId.Value, $"MENU_{menuId}_{normalizedAction}")) return true;
-            }
-            return false;
-        }
-
         return await _db.TenantMenuPermissions.IgnoreQueryFilters().AsNoTracking()
             .AnyAsync(grant =>
                 matchingMenuIds.Contains(grant.MenuId) &&
@@ -139,19 +116,6 @@ public sealed class TenantPermissionService
                  capability == TenantCapability.Edit ? grant.CanEdit :
                  capability == TenantCapability.Delete ? grant.CanDelete :
                  grant.CanView), cancellationToken);
-    }
-
-    private async Task<Guid?> ResolveStaffIdAsync(ClaimsPrincipal user, CancellationToken cancellationToken)
-    {
-        var identityUserId = user.FindFirstValue(ClaimTypes.NameIdentifier);
-        var tenantId = GetTenantId(user);
-        if (string.IsNullOrWhiteSpace(identityUserId) || !tenantId.HasValue) return null;
-
-        return await _db.Persons.IgnoreQueryFilters().AsNoTracking()
-            .Where(person => person.TenantId == tenantId.Value && person.IsActive &&
-                person.IdentityUserId == identityUserId && person.Staff != null)
-            .Select(person => (Guid?)person.Staff!.StaffId)
-            .FirstOrDefaultAsync(cancellationToken);
     }
 
     public async Task<IReadOnlyDictionary<int, TenantCeilingBits>> GetCeilingAsync(

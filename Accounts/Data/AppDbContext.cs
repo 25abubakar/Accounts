@@ -47,6 +47,8 @@ namespace Accounts.Data
         public DbSet<GeneratedInvoiceLine>     GeneratedInvoiceLines    => Set<GeneratedInvoiceLine>();
         public DbSet<PayrollBenefitDefinition> PayrollBenefitDefinitions => Set<PayrollBenefitDefinition>();
         public DbSet<PayrollBenefitRule>       PayrollBenefitRules      => Set<PayrollBenefitRule>();
+        public DbSet<PayrollBenefitRuleOrganization> PayrollBenefitRuleOrganizations => Set<PayrollBenefitRuleOrganization>();
+        public DbSet<PayrollBenefitRuleContract> PayrollBenefitRuleContracts => Set<PayrollBenefitRuleContract>();
         public DbSet<PayrollBenefitParameter>  PayrollBenefitParameters => Set<PayrollBenefitParameter>();
         public DbSet<PayrollBonusDistribution> PayrollBonusDistributions => Set<PayrollBonusDistribution>();
         public DbSet<PayrollBonusDefinition>   PayrollBonusDefinitions => Set<PayrollBonusDefinition>();
@@ -257,6 +259,10 @@ namespace Accounts.Data
             builder.Entity<PayrollBenefitDefinition>().HasQueryFilter(row =>
                 _tenantService != null && !_tenantService.IsSuperAdmin && _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
             builder.Entity<PayrollBenefitRule>().HasQueryFilter(row =>
+                _tenantService != null && !_tenantService.IsSuperAdmin && _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
+            builder.Entity<PayrollBenefitRuleOrganization>().HasQueryFilter(row =>
+                _tenantService != null && !_tenantService.IsSuperAdmin && _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
+            builder.Entity<PayrollBenefitRuleContract>().HasQueryFilter(row =>
                 _tenantService != null && !_tenantService.IsSuperAdmin && _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
             builder.Entity<PayrollBenefitParameter>().HasQueryFilter(row =>
                 _tenantService != null && !_tenantService.IsSuperAdmin && _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
@@ -1557,6 +1563,22 @@ namespace Accounts.Data
             {
                 e.HasIndex(x => new { x.TenantId, x.BenefitReference });
                 e.HasIndex(x => new { x.TenantId, x.Name }).IsUnique();
+                e.HasOne<Tenant>().WithMany().HasForeignKey(x => x.TenantId).OnDelete(DeleteBehavior.Restrict);
+            });
+            builder.Entity<PayrollBenefitRuleOrganization>(e =>
+            {
+                e.HasIndex(x => new { x.TenantId, x.BenefitRuleId, x.OrganizationId }).IsUnique();
+                e.HasIndex(x => x.BenefitRuleId);
+                e.HasOne(x => x.BenefitRule).WithMany(x => x.OrganizationScopes)
+                    .HasForeignKey(x => x.BenefitRuleId).OnDelete(DeleteBehavior.Cascade);
+                e.HasOne<Tenant>().WithMany().HasForeignKey(x => x.TenantId).OnDelete(DeleteBehavior.Restrict);
+            });
+            builder.Entity<PayrollBenefitRuleContract>(e =>
+            {
+                e.HasIndex(x => new { x.TenantId, x.BenefitRuleId, x.ContractName }).IsUnique();
+                e.HasIndex(x => x.BenefitRuleId);
+                e.HasOne(x => x.BenefitRule).WithMany(x => x.ContractScopes)
+                    .HasForeignKey(x => x.BenefitRuleId).OnDelete(DeleteBehavior.Cascade);
                 e.HasOne<Tenant>().WithMany().HasForeignKey(x => x.TenantId).OnDelete(DeleteBehavior.Restrict);
             });
             builder.Entity<PayrollBenefitParameter>(e =>

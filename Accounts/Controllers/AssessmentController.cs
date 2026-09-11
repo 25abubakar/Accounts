@@ -291,18 +291,6 @@ public sealed class AssessmentController : ControllerBase
 
     private async Task<HashSet<Guid>> ResolveDirectSubjectIdsAsync(string identityUserId, Guid assessorPersonId, string? assessorJobTitle, CancellationToken ct)
     {
-        // Explicit reporting assignments are authoritative. This lets a user who
-        // has been granted the Assessment tab work on the staff actually assigned
-        // to them, without requiring a hard-coded job-title name.
-        var assignedReports = await _db.Persons.AsNoTracking()
-            .Where(person => person.IsActive && person.PersonId != assessorPersonId &&
-                (person.ReportsToPersonId == assessorPersonId ||
-                 person.AlternativeReportsToPersonId == assessorPersonId))
-            .Select(person => person.PersonId)
-            .ToHashSetAsync(ct);
-        if (assignedReports.Count > 0) return assignedReports;
-
-        // Legacy fallback for tenants that have not yet configured Reports To.
         var callerRank = AttendanceRoleRank(assessorJobTitle);
         if (callerRank <= 100) return [];
         var scope = await _dataScope.ResolveAsync(identityUserId, ct);

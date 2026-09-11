@@ -84,7 +84,10 @@ public sealed class PayrollBonusController(
             existingRun.UpdatedOnUtc = DateTime.UtcNow;
         }
 
-        var rule = await db.PayrollBenefitRules.Include(x => x.Parameters).ThenInclude(x => x.BonusDistribution)
+        var rule = await db.PayrollBenefitRules
+            .Include(x => x.Parameters).ThenInclude(x => x.BonusDistribution)
+            .Include(x => x.OrganizationScopes)
+            .Include(x => x.ContractScopes)
             .SingleOrDefaultAsync(x => x.Id == request.BenefitRuleId && x.BenefitsType == "Bonus", ct);
         if (rule == null) return NotFound(new { message = "Selected bonus benefit rule was not found." });
         if (rule.IsIneligible) return BadRequest(new { message = "Selected bonus rule is marked ineligible." });
@@ -154,10 +157,39 @@ public sealed class PayrollBonusController(
             if (!string.IsNullOrWhiteSpace(rule.Scale)
                 && !string.Equals(rule.Scale.Trim(), profile?.Scale?.Trim(), StringComparison.OrdinalIgnoreCase))
                 reasons.Add($"Requires scale {rule.Scale}");
-            if (rule.OrganizationId.HasValue
-                && (!employee.OrganizationId.HasValue
-                    || !IsOrganizationDescendant(employee.OrganizationId.Value, rule.OrganizationId.Value, organizationNodes)))
-                reasons.Add("Organization / entitled scope does not match");
+
+            var orgScopeIds = rule.OrganizationScopes.Select(scope => scope.OrganizationId).Distinct().ToList();
+            if (orgScopeIds.Count == 0 && rule.OrganizationId.HasValue)
+                orgScopeIds.Add(rule.OrganizationId.Value);
+            if (orgScopeIds.Count > 0)
+            {
+                if (!employee.OrganizationId.HasValue
+                    || !orgScopeIds.Any(scopeId => IsOrganizationDescendant(employee.OrganizationId.Value, scopeId, organizationNodes)))
+                    reasons.Add("Organization / entitled scope does not match");
+            }
+
+            var contractNames = rule.ContractScopes.Select(scope => scope.ContractName.Trim())
+                .Where(name => name.Length > 0)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            if (contractNames.Count == 0 && !string.IsNullOrWhiteSpace(rule.Contract))
+            {
+                contractNames = rule.Contract.Split([',', ';'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                    .Where(name => name.Length > 0)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+            }
+            if (contractNames.Count > 0)
+            {
+                employmentByPerson.TryGetValue(employee.PersonId, out var employmentStatus);
+                var employeeContract = !string.IsNullOrWhiteSpace(employmentStatus)
+                    ? employmentStatus.Trim()
+                    : profile?.InductionType?.Trim();
+                if (string.IsNullOrWhiteSpace(employeeContract)
+                    || !contractNames.Contains(employeeContract, StringComparer.OrdinalIgnoreCase))
+                    reasons.Add($"Requires contract: {string.Join(", ", contractNames)}");
+            }
+
             if (joining.HasValue && joining.Value.Date > periodEnd.ToDateTime(TimeOnly.MinValue))
                 reasons.Add("Joined after this bonus period");
             if (serviceYears < rule.MinimumService)

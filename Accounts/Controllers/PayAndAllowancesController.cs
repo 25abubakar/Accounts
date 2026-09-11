@@ -55,34 +55,45 @@ public sealed class PayAndAllowancesController(
     public async Task<IActionResult> BenefitRules(CancellationToken ct)
     {
         var denied = await Guard("/pay-allowances/benefits", "VIEW", ct); if (denied != null) return denied;
-        var rows = await db.PayrollBenefitRules.AsNoTracking().OrderBy(x => x.Name)
-            .Select(x => new
-            {
-                x.Id,
-                BenRef = x.BenefitReference,
-                x.BenefitsType,
-                x.Name,
-                x.Company,
-                x.Entitled,
-                x.Contract,
-                x.Frequency,
-                x.ValidFrom,
-                x.ValidTo,
-                MaxExp = x.MaximumExpense,
-                SerStatus = x.ServiceStatus,
-                x.Scale,
-                x.Wef,
-                MinService = x.MinimumService,
-                MaxPh = x.MaximumPh,
-                MinPh = x.MinimumPh,
-                Ineligible = x.IsIneligible,
-                x.ShareType,
-                CovShare = x.CompanyShare,
-                x.StaffShare,
-                x.OrganizationId,
-                CompName = x.CompanyName
-            }).ToListAsync(ct);
-        return Ok(rows);
+        var rows = await db.PayrollBenefitRules.AsNoTracking()
+            .Include(x => x.OrganizationScopes)
+            .Include(x => x.ContractScopes)
+            .OrderBy(x => x.Name)
+            .ToListAsync(ct);
+        return Ok(rows.Select(x => new
+        {
+            x.Id,
+            BenRef = x.BenefitReference,
+            x.BenefitsType,
+            x.Name,
+            x.Company,
+            x.Entitled,
+            x.Contract,
+            x.Frequency,
+            x.ValidFrom,
+            x.ValidTo,
+            MaxExp = x.MaximumExpense,
+            SerStatus = x.ServiceStatus,
+            x.Scale,
+            x.Wef,
+            MinService = x.MinimumService,
+            MaxPh = x.MaximumPh,
+            MinPh = x.MinimumPh,
+            Ineligible = x.IsIneligible,
+            x.ShareType,
+            CovShare = x.CompanyShare,
+            x.StaffShare,
+            x.OrganizationId,
+            CompName = x.CompanyName,
+            organizationScopes = x.OrganizationScopes
+                .OrderBy(scope => scope.Id)
+                .Select(scope => new { scope.OrganizationId, scope.ScopeLabel })
+                .ToList(),
+            contractNames = x.ContractScopes
+                .OrderBy(scope => scope.ContractName)
+                .Select(scope => scope.ContractName)
+                .ToList()
+        }));
     }
 
     [HttpGet("benefit-lookups")]
@@ -119,6 +130,8 @@ public sealed class PayAndAllowancesController(
             shareTypes = await LookupNamesAsync("BENEFIT_SHARE_TYPE", ct),
             companies = companyNodes.Select(x => new { x.Id, x.Name, x.Label }).ToList(),
             departments = departmentNodes.Select(x => new { x.Id, x.ParentId, x.Name, x.Label }).ToList(),
+            branches = PreferActiveOrgNodes(scopedNodes.Where(x => IsBranchLikeLabel(x.Label)))
+                .Select(x => new { x.Id, x.ParentId, x.Name, x.Label }).ToList(),
             entitlements = scopedNodes.OrderBy(x => x.Name)
                 .Select(x => new { x.Id, x.ParentId, x.Name, x.Label }).ToList(),
             tenantCompany = defaultCompany == null ? null : new { defaultCompany.Id, defaultCompany.Name }
@@ -297,6 +310,7 @@ public sealed class PayAndAllowancesController(
         if (await db.PayrollBenefitRules.AnyAsync(x => x.Name == dto.Name.Trim(), ct))
             return Conflict(new { message = "A benefit rule with this name already exists." });
 
+        await using var tx = await db.Database.BeginTransactionAsync(ct);
         var row = new PayrollBenefitRule
         {
             TenantId = tenant.RequiredTenantId,
@@ -305,6 +319,9 @@ public sealed class PayAndAllowancesController(
         ApplyBenefitRule(row, dto);
         db.PayrollBenefitRules.Add(row);
         await db.SaveChangesAsync(ct);
+        await ReplaceBenefitRuleScopesAsync(row, dto, ct);
+        await db.SaveChangesAsync(ct);
+        await tx.CommitAsync(ct);
         return Ok(new { row.Id });
     }
 
@@ -312,14 +329,22 @@ public sealed class PayAndAllowancesController(
     public async Task<IActionResult> UpdateBenefitRule(int id, BenefitRuleSave dto, CancellationToken ct)
     {
         var denied = await Guard("/pay-allowances/benefits", "EDIT", ct); if (denied != null) return denied;
-        var row = await db.PayrollBenefitRules.SingleOrDefaultAsync(x => x.Id == id, ct); if (row == null) return NotFound();
+        var row = await db.PayrollBenefitRules
+            .Include(x => x.OrganizationScopes)
+            .Include(x => x.ContractScopes)
+            .SingleOrDefaultAsync(x => x.Id == id, ct);
+        if (row == null) return NotFound();
         var error = ValidateBenefitRule(dto); if (error != null) return BadRequest(new { message = error });
         var referenceError = await ValidateBenefitRuleReferences(dto, ct); if (referenceError != null) return BadRequest(new { message = referenceError });
         if (await db.PayrollBenefitRules.AnyAsync(x => x.Id != id && x.Name == dto.Name.Trim(), ct))
             return Conflict(new { message = "A benefit rule with this name already exists." });
+
+        await using var tx = await db.Database.BeginTransactionAsync(ct);
         ApplyBenefitRule(row, dto);
         row.UpdatedOnUtc = DateTime.UtcNow;
+        await ReplaceBenefitRuleScopesAsync(row, dto, ct);
         await db.SaveChangesAsync(ct);
+        await tx.CommitAsync(ct);
         return Ok(new { row.Id });
     }
 
@@ -1574,28 +1599,147 @@ public sealed class PayAndAllowancesController(
             return "Selected benefit type was not found.";
         if (!string.IsNullOrWhiteSpace(x.Scale) && !await db.SalaryScales.AsNoTracking().AnyAsync(scale => scale.IsActive && scale.ScaleName == x.Scale.Trim(), ct))
             return "Selected salary scale was not found.";
-        if (!string.IsNullOrWhiteSpace(x.Contract) && !await db.ContractTypes.AsNoTracking().AnyAsync(type => type.IsActive && type.Name == x.Contract.Trim(), ct))
-            return "Selected contract type was not found.";
         if (!string.IsNullOrWhiteSpace(x.Frequency) && !await db.FrequencyTypes.AsNoTracking().AnyAsync(type => type.IsActive && type.Name == x.Frequency.Trim(), ct))
             return "Selected frequency was not found.";
-        if (!x.OrganizationId.HasValue) return null;
+
+        var contractNames = NormalizeContractNames(x);
+        if (contractNames.Count > 0)
+        {
+            var activeContracts = await db.ContractTypes.AsNoTracking()
+                .Where(type => type.IsActive)
+                .Select(type => type.Name)
+                .ToListAsync(ct);
+            var activeSet = activeContracts.ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var missing = contractNames.FirstOrDefault(name => !activeSet.Contains(name));
+            if (missing != null)
+                return $"Selected contract type was not found: {missing}.";
+        }
+
+        var orgScopes = NormalizeOrganizationScopes(x);
+        if (orgScopes.Count == 0 && !x.OrganizationId.HasValue)
+            return null;
+
         var tenantRootId = await db.Tenants.IgnoreQueryFilters().AsNoTracking().Where(row => row.Id == tenant.RequiredTenantId)
             .Select(row => row.OrganizationTreeId).SingleAsync(ct);
         var nodes = await db.OrganizationTree.AsNoTracking().ToListAsync(ct);
         var companies = ResolveBenefitCompanyNodes(nodes, tenantRootId);
         var scope = CollectBenefitOrganizationScope(tenantRootId, nodes, companies);
-        return scope.Contains(x.OrganizationId.Value)
-            ? null
-            : "Selected entitlement is outside the current company.";
+        foreach (var org in orgScopes)
+        {
+            if (!scope.Contains(org.OrganizationId))
+                return "Selected entitlement is outside the current company.";
+        }
+
+        if (x.OrganizationId.HasValue && !scope.Contains(x.OrganizationId.Value) && orgScopes.Count == 0)
+            return "Selected entitlement is outside the current company.";
+
+        return null;
     }
+
+    private async Task ReplaceBenefitRuleScopesAsync(PayrollBenefitRule row, BenefitRuleSave dto, CancellationToken ct)
+    {
+        var orgScopes = NormalizeOrganizationScopes(dto);
+        var contractNames = NormalizeContractNames(dto);
+
+        if (row.OrganizationScopes.Count > 0)
+            db.PayrollBenefitRuleOrganizations.RemoveRange(row.OrganizationScopes);
+        if (row.ContractScopes.Count > 0)
+            db.PayrollBenefitRuleContracts.RemoveRange(row.ContractScopes);
+
+        // Ensure tracked collections are cleared when includes were empty on create.
+        var existingOrgs = await db.PayrollBenefitRuleOrganizations.Where(x => x.BenefitRuleId == row.Id).ToListAsync(ct);
+        if (existingOrgs.Count > 0) db.PayrollBenefitRuleOrganizations.RemoveRange(existingOrgs);
+        var existingContracts = await db.PayrollBenefitRuleContracts.Where(x => x.BenefitRuleId == row.Id).ToListAsync(ct);
+        if (existingContracts.Count > 0) db.PayrollBenefitRuleContracts.RemoveRange(existingContracts);
+
+        foreach (var org in orgScopes)
+        {
+            db.PayrollBenefitRuleOrganizations.Add(new PayrollBenefitRuleOrganization
+            {
+                TenantId = row.TenantId,
+                BenefitRuleId = row.Id,
+                OrganizationId = org.OrganizationId,
+                ScopeLabel = org.ScopeLabel
+            });
+        }
+
+        foreach (var name in contractNames)
+        {
+            db.PayrollBenefitRuleContracts.Add(new PayrollBenefitRuleContract
+            {
+                TenantId = row.TenantId,
+                BenefitRuleId = row.Id,
+                ContractName = name
+            });
+        }
+
+        // Keep legacy summary columns in sync.
+        row.OrganizationId = orgScopes.FirstOrDefault()?.OrganizationId ?? dto.OrganizationId;
+        row.Contract = contractNames.Count > 0 ? string.Join(", ", contractNames) : Clean(dto.Contract);
+    }
+
+    private static List<(int OrganizationId, string ScopeLabel)> NormalizeOrganizationScopes(BenefitRuleSave x)
+    {
+        var result = new List<(int, string)>();
+        var seen = new HashSet<int>();
+        if (x.OrganizationScopes is { Count: > 0 })
+        {
+            foreach (var scope in x.OrganizationScopes)
+            {
+                if (scope.OrganizationId <= 0 || !seen.Add(scope.OrganizationId)) continue;
+                var label = string.IsNullOrWhiteSpace(scope.ScopeLabel) ? "Department" : scope.ScopeLabel.Trim();
+                if (label.Length > 30) label = label[..30];
+                result.Add((scope.OrganizationId, label));
+            }
+        }
+        else if (x.OrganizationIds is { Count: > 0 })
+        {
+            foreach (var id in x.OrganizationIds.Where(id => id > 0).Distinct())
+                result.Add((id, "Department"));
+        }
+        else if (x.OrganizationId is > 0)
+        {
+            result.Add((x.OrganizationId.Value, "Department"));
+        }
+
+        return result;
+    }
+
+    private static List<string> NormalizeContractNames(BenefitRuleSave x)
+    {
+        var names = new List<string>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        if (x.ContractNames is { Count: > 0 })
+        {
+            foreach (var name in x.ContractNames)
+            {
+                var trimmed = name?.Trim();
+                if (string.IsNullOrWhiteSpace(trimmed) || !seen.Add(trimmed)) continue;
+                names.Add(trimmed);
+            }
+        }
+        else if (!string.IsNullOrWhiteSpace(x.Contract))
+        {
+            foreach (var part in x.Contract.Split([',', ';'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+            {
+                if (!seen.Add(part)) continue;
+                names.Add(part);
+            }
+        }
+
+        return names;
+    }
+
     private static void ApplyBenefitRule(PayrollBenefitRule row, BenefitRuleSave x)
     {
+        var orgScopes = NormalizeOrganizationScopes(x);
+        var contractNames = NormalizeContractNames(x);
         row.BenefitReference = BuildBenefitReference(x.Scale);
         row.BenefitsType = x.BenefitsType.Trim();
         row.Name = x.Name.Trim();
         row.Company = Clean(x.Company);
         row.Entitled = Clean(x.Entitled);
-        row.Contract = Clean(x.Contract);
+        row.Contract = contractNames.Count > 0 ? string.Join(", ", contractNames) : Clean(x.Contract);
         row.Frequency = Clean(x.Frequency);
         row.ValidFrom = x.ValidFrom;
         row.ValidTo = x.ValidTo;
@@ -1610,7 +1754,7 @@ public sealed class PayAndAllowancesController(
         row.ShareType = Clean(x.ShareType);
         row.CompanyShare = x.CompanyShare;
         row.StaffShare = x.StaffShare;
-        row.OrganizationId = x.OrganizationId;
+        row.OrganizationId = orgScopes.Count > 0 ? orgScopes[0].OrganizationId : x.OrganizationId;
         row.CompanyName = Clean(x.CompanyName);
     }
     private static void ApplyBenefitParameter(PayrollBenefitParameter row, BenefitParameterSave x, string benefitType)
@@ -1884,6 +2028,31 @@ public sealed record StaffTaxSyncSave(DateOnly? DateFrom, DateOnly? DateTo);
 public sealed record EobiEligibilitySave(Guid PersonId, string? EobiNumber, DateOnly EffectiveFrom, DateOnly? EffectiveTo, bool IsEligible, string? Remarks);
 public sealed record StaffMonthlyEobiCreateSave(int Year, int Month);
 public sealed record StaffMonthlyEobiUpdateSave(string? EobiRef);
-public sealed record BenefitRuleSave(string BenefitsType, string Name, string? Company, string? Entitled, string? Contract, string? Frequency, DateOnly? ValidFrom, DateOnly? ValidTo, decimal MaximumExpense, string? ServiceStatus, string? Scale, DateOnly? Wef, decimal MinimumService, decimal MaximumPh, decimal MinimumPh, bool IsIneligible, string? ShareType, decimal CompanyShare, decimal StaffShare, int? OrganizationId, string? CompanyName);
+public sealed record BenefitRuleOrganizationScopeDto(int OrganizationId, string? ScopeLabel);
+public sealed record BenefitRuleSave(
+    string BenefitsType,
+    string Name,
+    string? Company,
+    string? Entitled,
+    string? Contract,
+    string? Frequency,
+    DateOnly? ValidFrom,
+    DateOnly? ValidTo,
+    decimal MaximumExpense,
+    string? ServiceStatus,
+    string? Scale,
+    DateOnly? Wef,
+    decimal MinimumService,
+    decimal MaximumPh,
+    decimal MinimumPh,
+    bool IsIneligible,
+    string? ShareType,
+    decimal CompanyShare,
+    decimal StaffShare,
+    int? OrganizationId,
+    string? CompanyName,
+    IReadOnlyList<int>? OrganizationIds = null,
+    IReadOnlyList<BenefitRuleOrganizationScopeDto>? OrganizationScopes = null,
+    IReadOnlyList<string>? ContractNames = null);
 public sealed record BenefitParameterSave(int BenefitRuleId, string Name, DateOnly? PeriodFrom, DateOnly? PeriodTo, decimal MinimumService, string? AmountType, string? PayType, decimal Amount, decimal Percentage, decimal CompanyShare, decimal StaffShare, BonusDistributionSave? BonusDistribution);
 public sealed record BonusDistributionSave(int? Month, decimal BasicPercentage, decimal ServicePercentage, decimal ServiceYears, decimal AssessmentPercentage, decimal AttendancePercentage, decimal LeavePercentage, decimal DisciplinePercentage, int Installments);

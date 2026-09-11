@@ -55,6 +55,34 @@ public sealed class PayrollBenefitRule : ITenantEntity
     public DateTime CreatedOnUtc { get; set; } = DateTime.UtcNow;
     public DateTime? UpdatedOnUtc { get; set; }
     public ICollection<PayrollBenefitParameter> Parameters { get; set; } = new List<PayrollBenefitParameter>();
+    public ICollection<PayrollBenefitRuleOrganization> OrganizationScopes { get; set; } = new List<PayrollBenefitRuleOrganization>();
+    public ICollection<PayrollBenefitRuleContract> ContractScopes { get; set; } = new List<PayrollBenefitRuleContract>();
+}
+
+[Table("PayrollBenefitRuleOrganizations")]
+public sealed class PayrollBenefitRuleOrganization : ITenantEntity
+{
+    [Key, DatabaseGenerated(DatabaseGeneratedOption.Identity)]
+    public int Id { get; set; }
+    public int TenantId { get; set; }
+    public int BenefitRuleId { get; set; }
+    public int OrganizationId { get; set; }
+    /// <summary>Company | Entitled | Branch | Department — for form reload.</summary>
+    [Required, MaxLength(30)]
+    public string ScopeLabel { get; set; } = "Department";
+    public PayrollBenefitRule? BenefitRule { get; set; }
+}
+
+[Table("PayrollBenefitRuleContracts")]
+public sealed class PayrollBenefitRuleContract : ITenantEntity
+{
+    [Key, DatabaseGenerated(DatabaseGeneratedOption.Identity)]
+    public int Id { get; set; }
+    public int TenantId { get; set; }
+    public int BenefitRuleId { get; set; }
+    [Required, MaxLength(50)]
+    public string ContractName { get; set; } = string.Empty;
+    public PayrollBenefitRule? BenefitRule { get; set; }
 }
 
 [Table("PayrollBenefitParameters")]
