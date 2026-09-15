@@ -282,4 +282,35 @@ public class AccessServiceTests
         Assert.True(await service.HasFeatureAsync(user, "PERSON_EDIT"));
     }
 
+    [Fact]
+    public async Task TenantPermissionService_HasMenuRouteAsync_HonorsDelegatedStaffActions()
+    {
+        await using var db = TestDbFactory.Create();
+        const int tenantId = 2025;
+        var personId = Guid.NewGuid();
+        var staffId = Guid.NewGuid();
+        const string identityUserId = "delegated-assessor";
+        var menu = new Menu { Title = "Mark Assessment", Route = "/assessment/mark", IsActive = true };
+        db.Menus.Add(menu);
+        await db.SaveChangesAsync();
+        var edit = new Feature { FeatureKey = $"MENU_{menu.Id}_EDIT", FeatureName = "Edit Assessment", Module = "Assessment" };
+        db.Features.Add(edit);
+        db.Persons.Add(new Person { PersonId = personId, TenantId = tenantId, IdentityUserId = identityUserId, FullName = "Delegated Assessor", IsActive = true });
+        db.StaffVacancies.Add(new StaffVacancy { StaffId = staffId, PersonId = personId, TenantId = tenantId });
+        db.TenantMenuPermissions.Add(new TenantMenuPermission { TenantId = tenantId, MenuId = menu.Id, IsAllow = true, CanView = true, CanEdit = true });
+        var grant = new StaffMenuAccess { StaffId = staffId, MenuId = menu.Id, IsAllow = true };
+        grant.AccessFeatures.Add(new AccessFeature { PermissionId = edit.PermissionId, IsAllow = true });
+        db.StaffMenuAccesses.Add(grant);
+        await db.SaveChangesAsync();
+
+        var user = new ClaimsPrincipal(new ClaimsIdentity([
+            new Claim(ClaimTypes.NameIdentifier, identityUserId),
+            new Claim(ITenantService.ClaimTenantId, tenantId.ToString()),
+        ], "test"));
+        var service = new TenantPermissionService(db, new RbacService(db));
+
+        Assert.True(await service.HasMenuRouteAsync(user, ["/assessment/mark"], "VIEW"));
+        Assert.True(await service.HasMenuRouteAsync(user, ["/assessment/mark"], "EDIT"));
+        Assert.False(await service.HasMenuRouteAsync(user, ["/assessment/mark"], "DELETE"));
+    }
 }

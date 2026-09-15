@@ -63,6 +63,7 @@ namespace Accounts.Data
         public DbSet<EobiEligibility>          EobiEligibilities       => Set<EobiEligibility>();
         public DbSet<StaffMonthlyEobi>         StaffMonthlyEobis       => Set<StaffMonthlyEobi>();
         public DbSet<PayScaleRuleRegistration> PayScaleRuleRegistrations => Set<PayScaleRuleRegistration>();
+        public DbSet<PayrollGridStyleRule>     PayrollGridStyleRules    => Set<PayrollGridStyleRule>();
         public DbSet<PayScaleAllowance>        PayScaleAllowances      => Set<PayScaleAllowance>();
         public DbSet<PayScaleTada>             PayScaleTadas           => Set<PayScaleTada>();
         public DbSet<PayScaleLeave>            PayScaleLeaves          => Set<PayScaleLeave>();
@@ -133,7 +134,6 @@ namespace Accounts.Data
         public DbSet<TenantMenuPermission>     TenantMenuPermissions    => Set<TenantMenuPermission>();
         public DbSet<TenantRolePermission>     TenantRolePermissions    => Set<TenantRolePermission>();
         public DbSet<ProcessActionAuthority>   ProcessActionAuthorities => Set<ProcessActionAuthority>();
-        public DbSet<MenuAuthorityAction>      MenuAuthorityActions     => Set<MenuAuthorityAction>();
 
         // â”€â”€ Communication Center â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         public DbSet<AppLookupType>     AppLookupTypes     => Set<AppLookupType>();
@@ -289,6 +289,8 @@ namespace Accounts.Data
             builder.Entity<StaffMonthlyEobi>().HasQueryFilter(row =>
                 _tenantService != null && !_tenantService.IsSuperAdmin && _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
             builder.Entity<PayScaleRuleRegistration>().HasQueryFilter(row =>
+                _tenantService != null && !_tenantService.IsSuperAdmin && _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
+            builder.Entity<PayrollGridStyleRule>().HasQueryFilter(row =>
                 _tenantService != null && !_tenantService.IsSuperAdmin && _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
             builder.Entity<PayScaleAllowance>().HasQueryFilter(row =>
                 _tenantService != null && !_tenantService.IsSuperAdmin && _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
@@ -1630,11 +1632,6 @@ namespace Accounts.Data
                 e.HasOne<Tenant>().WithMany().HasForeignKey(x => x.TenantId).OnDelete(DeleteBehavior.Restrict);
                 e.HasOne<StaffVacancy>().WithMany().HasForeignKey(x => x.StaffId).OnDelete(DeleteBehavior.Restrict);
             });
-            builder.Entity<MenuAuthorityAction>(e =>
-            {
-                e.HasIndex(x => new { x.MenuId, x.ActionCode }).IsUnique();
-                e.HasOne(x => x.Menu).WithMany().HasForeignKey(x => x.MenuId).OnDelete(DeleteBehavior.Cascade);
-            });
             builder.Entity<PayrollLine>(e =>
             {
                 e.Property(x => x.IsAttendanceDeductionActive).HasDefaultValue(true);
@@ -1704,6 +1701,17 @@ namespace Accounts.Data
             {
                 e.HasIndex(x => new { x.TenantId, x.RuleType, x.Name }).IsUnique();
                 e.HasIndex(x => new { x.TenantId, x.DateFrom, x.DateTo });
+                e.HasOne<Tenant>().WithMany().HasForeignKey(x => x.TenantId).OnDelete(DeleteBehavior.Restrict);
+            });
+            builder.Entity<PayrollGridStyleRule>(e =>
+            {
+                e.HasIndex(x => new { x.TenantId, x.Category, x.ColumnKey }).IsUnique();
+                e.HasIndex(x => new { x.TenantId, x.Category, x.DisplayOrder });
+                e.Property(x => x.Category).HasMaxLength(40);
+                e.Property(x => x.ColumnKey).HasMaxLength(80);
+                e.Property(x => x.Caption).HasMaxLength(80);
+                e.Property(x => x.BackgroundColor).HasMaxLength(20);
+                e.Property(x => x.FontColor).HasMaxLength(20);
                 e.HasOne<Tenant>().WithMany().HasForeignKey(x => x.TenantId).OnDelete(DeleteBehavior.Restrict);
             });
             builder.Entity<PayScaleAllowance>(e =>

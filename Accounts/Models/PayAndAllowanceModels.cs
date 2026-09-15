@@ -41,9 +41,11 @@ public sealed class PayrollBenefitRule : ITenantEntity
     public DateOnly? ValidTo { get; set; }
     [Column(TypeName = "decimal(18,2)")] public decimal MaximumExpense { get; set; }
     [MaxLength(30)] public string? ServiceStatus { get; set; }
-    [MaxLength(50)] public string? Scale { get; set; }
+    [MaxLength(500)] public string? Scale { get; set; }
     public DateOnly? Wef { get; set; }
     [Column(TypeName = "decimal(9,2)")] public decimal MinimumService { get; set; }
+    /// <summary>Optional salary floor (e.g. 50000). 0 = no salary filter. Used with or without Scale CSV.</summary>
+    [Column(TypeName = "decimal(18,2)")] public decimal MinimumSalary { get; set; }
     [Column(TypeName = "decimal(18,2)")] public decimal MaximumPh { get; set; }
     [Column(TypeName = "decimal(18,2)")] public decimal MinimumPh { get; set; }
     public bool IsIneligible { get; set; }
@@ -93,8 +95,6 @@ public sealed class PayrollBenefitParameter : ITenantEntity
     public int BenefitRuleId { get; set; }
     [Required, MaxLength(30)] public string Reference { get; set; } = string.Empty;
     [Required, MaxLength(120)] public string Name { get; set; } = string.Empty;
-    public DateOnly? PeriodFrom { get; set; }
-    public DateOnly? PeriodTo { get; set; }
     [Column(TypeName = "decimal(9,2)")] public decimal MinimumService { get; set; }
     [Required, MaxLength(30)] public string AmountType { get; set; } = "PH";
     [Required, MaxLength(30)] public string PayType { get; set; } = "Basic";
@@ -115,6 +115,10 @@ public sealed class PayrollBonusDistribution : ITenantEntity
     public int TenantId { get; set; }
     public int BenefitParameterId { get; set; }
     public int? Month { get; set; }
+    /// <summary>First month installments begin (e.g. Oct 1). Current installment # = months from this date.</summary>
+    public DateOnly? InstallmentStart { get; set; }
+    /// <summary>Optional last month installments remain valid.</summary>
+    public DateOnly? InstallmentEnd { get; set; }
     [Column(TypeName = "decimal(9,4)")] public decimal BasicPercentage { get; set; }
     [Column(TypeName = "decimal(9,4)")] public decimal ServicePercentage { get; set; }
     [Column(TypeName = "decimal(9,2)")] public decimal ServiceYears { get; set; }
@@ -199,7 +203,10 @@ public sealed class PayrollBonusLine : ITenantEntity
     [Column(TypeName = "decimal(9,4)")] public decimal LeavePercent { get; set; }
     [Column(TypeName = "decimal(9,4)")] public decimal DisciplinePercent { get; set; }
     [Column(TypeName = "decimal(18,2)")] public decimal InstallmentAmount { get; set; }
+    /// <summary>Total planned installments (e.g. 2 → 500+500 of 1000).</summary>
     public int Installment { get; set; } = 1;
+    /// <summary>1-based installment sequence for this run month (Oct start + Nov run → 2).</summary>
+    public int CurrentInstallmentNo { get; set; }
     /// <summary>How many installments have already been paid via finalized payroll.</summary>
     public int PaidInstallmentCount { get; set; }
     public bool IsApproved { get; set; }
@@ -255,6 +262,7 @@ public sealed class PayrollLine : ITenantEntity
     public DateOnly? ScaleDate { get; set; }
     [MaxLength(80)] public string? Scale { get; set; }
     [MaxLength(50)] public string? ContractType { get; set; }
+    public int? ContractId { get; set; }
     public int Month { get; set; }
     public int Year { get; set; }
     /// <summary>Scale / HR basic (display). Pay basis uses CurrentPay priority into BasicSalary.</summary>
@@ -267,7 +275,13 @@ public sealed class PayrollLine : ITenantEntity
     [Column(TypeName = "decimal(18,2)")] public decimal GeneralAllowanceAmount { get; set; }
     [Column(TypeName = "decimal(18,2)")] public decimal ApptAllowanceAmount { get; set; }
     [Column(TypeName = "decimal(18,2)")] public decimal ShiftAllowanceAmount { get; set; }
+    [Column(TypeName = "decimal(18,2)")] public decimal MedicalAllowanceAmount { get; set; }
+    [Column(TypeName = "decimal(18,2)")] public decimal NightAllowanceAmount { get; set; }
+    [Column(TypeName = "decimal(18,2)")] public decimal TelephoneAllowanceAmount { get; set; }
+    [Column(TypeName = "decimal(18,2)")] public decimal TransportAllowanceAmount { get; set; }
     [Column(TypeName = "decimal(18,2)")] public decimal AllowanceAmount { get; set; }
+    /// <summary>Copied from PersonHrProfiles.SalaryAdjustment at generate time.</summary>
+    [Column(TypeName = "decimal(18,2)")] public decimal SalaryAdjustment { get; set; }
     [Column(TypeName = "decimal(18,2)")] public decimal AssessmentAmount { get; set; }
     [Column(TypeName = "decimal(18,2)")] public decimal EmployerBenefitAmount { get; set; }
     [Column(TypeName = "decimal(18,2)")] public decimal StaffBenefitDeduction { get; set; }
@@ -437,6 +451,28 @@ public sealed class PayScaleRuleRegistration : ITenantEntity
     [Required, MaxLength(120)] public string Name { get; set; } = string.Empty;
     public DateTime DateFrom { get; set; }
     public DateTime DateTo { get; set; }
+    public DateTime CreatedOnUtc { get; set; } = DateTime.UtcNow;
+    public DateTime? UpdatedOnUtc { get; set; }
+}
+
+/// <summary>
+/// Tenant payroll grid cell styles (legacy Current/Gross/Net/change highlights).
+/// Category ColumnHighlight = fixed column background; ChangeHighlight = value changed vs previous month.
+/// </summary>
+[Table("PayrollGridStyleRules")]
+public sealed class PayrollGridStyleRule : ITenantEntity
+{
+    [Key] public int Id { get; set; }
+    public int TenantId { get; set; }
+    /// <summary>ColumnHighlight | ChangeHighlight</summary>
+    [Required, MaxLength(40)] public string Category { get; set; } = "ColumnHighlight";
+    /// <summary>FE dataField e.g. currentPay, grossPay, netPay; or * for any-change yellow.</summary>
+    [Required, MaxLength(80)] public string ColumnKey { get; set; } = string.Empty;
+    [Required, MaxLength(80)] public string Caption { get; set; } = string.Empty;
+    [Required, MaxLength(20)] public string BackgroundColor { get; set; } = "#FFFFFF";
+    [Required, MaxLength(20)] public string FontColor { get; set; } = "#0F172A";
+    public int DisplayOrder { get; set; }
+    public bool IsActive { get; set; } = true;
     public DateTime CreatedOnUtc { get; set; } = DateTime.UtcNow;
     public DateTime? UpdatedOnUtc { get; set; }
 }

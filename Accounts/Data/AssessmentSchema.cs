@@ -42,8 +42,9 @@ public static class AssessmentSchema
                     ALTER TABLE dbo.StaffAssessments ALTER COLUMN Rating tinyint NULL;
                 """, CancellationToken.None);
             await db.Database.ExecuteSqlRawAsync("""
-                IF COL_LENGTH(N'dbo.StaffAssessments', N'Remarks') IS NOT NULL
-                    ALTER TABLE dbo.StaffAssessments DROP COLUMN Remarks;
+                IF OBJECT_ID(N'dbo.StaffAssessments', N'U') IS NOT NULL
+                   AND COL_LENGTH(N'dbo.StaffAssessments', N'Remarks') IS NULL
+                    ALTER TABLE dbo.StaffAssessments ADD Remarks nvarchar(500) NULL;
                 """, CancellationToken.None);
             await db.Database.ExecuteSqlRawAsync("""
                 IF OBJECT_ID(N'dbo.StaffAssessments', N'U') IS NOT NULL

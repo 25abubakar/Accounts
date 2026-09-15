@@ -1,6 +1,7 @@
 using Accounts.DTOs;
 using Accounts.Data;
 using Accounts.Models;
+using Accounts.Models.SpListRows;
 using Accounts.Services.Interfaces;
 using Accounts.Services.Services;
 using Accounts.Idempotency;
@@ -26,6 +27,7 @@ public sealed class AttendanceController : ControllerBase
     private readonly IOrganizationDataScopeService _dataScope;
     private readonly IRealtimePublisher _realtime;
     private readonly AttendanceFinalizationService _attendanceFinalization;
+    private readonly PayrollCalculationService _payroll;
 
     public AttendanceController(
         IAttendanceService service,
@@ -35,7 +37,8 @@ public sealed class AttendanceController : ControllerBase
         TenantPermissionService tenantPermissions,
         IOrganizationDataScopeService dataScope,
         IRealtimePublisher realtime,
-        AttendanceFinalizationService attendanceFinalization)
+        AttendanceFinalizationService attendanceFinalization,
+        PayrollCalculationService payroll)
     {
         _service = service;
         _db = db;
@@ -45,6 +48,7 @@ public sealed class AttendanceController : ControllerBase
         _dataScope = dataScope;
         _realtime = realtime;
         _attendanceFinalization = attendanceFinalization;
+        _payroll = payroll;
     }
 
     [HttpGet("me/today")]
@@ -76,25 +80,24 @@ public sealed class AttendanceController : ControllerBase
                 "VIEW", ct, "/attendance/rules/map-attendance", "/attendance/map-attendance"))
             return Forbid();
 
-        var rules = await _db.AttendanceMapRuleReadRows.AsNoTracking()
-            .Where(rule => rule.TenantId == _tenant.RequiredTenantId)
-            .OrderBy(rule => rule.Id)
-            .Select(rule => new AttendanceMapRuleDto
-            {
-                Id = rule.Id,
-                StaffId = rule.StaffId,
-                AttendanceEntryTypeId = rule.AttendanceEntryTypeId,
-                AttendanceTypeCode = rule.AttendanceTypeCode,
-                AttendanceTypeName = rule.AttendanceTypeName,
-                ShiftCode = rule.ShiftCode,
-                ShiftName = rule.ShiftName,
-                TimeFrom = rule.TimeFrom,
-                TimeTo = rule.TimeTo,
-                IsOpenAttendance = rule.IsOpenAttendance
-            })
-            .ToListAsync(ct);
-
-        return Ok(rules);
+        var rules = await SpListQuery.ExecAsync<AttendanceMapRuleListRow>(
+            _db,
+            "EXEC dbo.usp_Attendance_MapRules_List @TenantId",
+            ct,
+            SpListQuery.TenantId(_tenant.RequiredTenantId));
+        return Ok(rules.Select(rule => new AttendanceMapRuleDto
+        {
+            Id = rule.Id,
+            StaffId = rule.StaffId,
+            AttendanceEntryTypeId = rule.AttendanceEntryTypeId,
+            AttendanceTypeCode = rule.AttendanceTypeCode,
+            AttendanceTypeName = rule.AttendanceTypeName,
+            ShiftCode = rule.ShiftCode,
+            ShiftName = rule.ShiftName,
+            TimeFrom = rule.TimeFrom ?? string.Empty,
+            TimeTo = rule.TimeTo ?? string.Empty,
+            IsOpenAttendance = rule.IsOpenAttendance
+        }));
     }
 
     [HttpPost("map-attendance")]
@@ -203,45 +206,44 @@ public sealed class AttendanceController : ControllerBase
         if (!await HasAttendanceMenuActionAsync("VIEW", ct, "/attendance/rules/list", "/attendance/rules/rule", "/attendance/rules"))
             return Forbid();
 
-        var rules = await _db.AttendanceRuleSettingReadRows.AsNoTracking()
-            .Where(rule => rule.TenantId == _tenant.RequiredTenantId)
-            .OrderBy(rule => rule.Id)
-            .Select(rule => new AttendanceRuleSettingDto
-            {
-                Id = rule.Id,
-                AttendanceEntryTypeId = rule.AttendanceEntryTypeId,
-                AttendanceTypeCode = rule.AttendanceTypeCode,
-                AttendanceTypeName = rule.AttendanceTypeName,
-                Reference = rule.Reference,
-                RuleName = rule.RuleName,
-                WorkingMinutes = rule.WorkingMinutes,
-                BeforeCheckInMinutes = rule.BeforeCheckInMinutes,
-                AfterCheckOutMinutes = rule.AfterCheckOutMinutes,
-                CheckInAdjustMinutes = rule.CheckInAdjustMinutes,
-                CheckOutAdjustMinutes = rule.CheckOutAdjustMinutes,
-                AbsentAfterShiftStartMinutes = rule.AbsentAfterShiftStartMinutes,
-                EarlyCheckoutAbsentAfterMinutes = rule.EarlyCheckoutAbsentAfterMinutes,
-                MissingCheckoutAfterShiftEndMinutes = rule.MissingCheckoutAfterShiftEndMinutes,
-                CameraVerificationToleranceMinutes = rule.CameraVerificationToleranceMinutes,
-                AccountLockAbsentDays = rule.AccountLockAbsentDays,
-                WeekendChargeValue = rule.WeekendChargeValue,
-                AdjustAbsentDays = rule.AdjustAbsentDays,
-                ExtremeLateAfterMinutes = rule.ExtremeLateAfterMinutes,
-                PlatformLateStatusId = rule.PlatformLateStatusId,
-                PlatformExtremeLateStatusId = rule.PlatformExtremeLateStatusId,
-                ExtremeEarlyDepartureAfterMinutes = rule.ExtremeEarlyDepartureAfterMinutes,
-                PlatformEarlyDepartureStatusId = rule.PlatformEarlyDepartureStatusId,
-                PlatformExtremeEarlyDepartureStatusId = rule.PlatformExtremeEarlyDepartureStatusId,
-                IsApproved = rule.IsApproved,
-                IsActive = rule.IsActive,
-                IsOvertimeBonusActive = rule.IsOvertimeBonusActive,
-                IsCompletedLateDeductionActive = rule.IsCompletedLateDeductionActive,
-                CompletedLateDeductionPercentage = rule.CompletedLateDeductionPercentage,
-                Remarks = rule.Remarks
-            })
-            .ToListAsync(ct);
-
-        return Ok(rules);
+        var rules = await SpListQuery.ExecAsync<AttendanceRuleSettingListRow>(
+            _db,
+            "EXEC dbo.usp_Attendance_RuleSettings_List @TenantId",
+            ct,
+            SpListQuery.TenantId(_tenant.RequiredTenantId));
+        return Ok(rules.Select(rule => new AttendanceRuleSettingDto
+        {
+            Id = rule.Id,
+            AttendanceEntryTypeId = rule.AttendanceEntryTypeId,
+            AttendanceTypeCode = rule.AttendanceTypeCode,
+            AttendanceTypeName = rule.AttendanceTypeName,
+            Reference = rule.Reference,
+            RuleName = rule.RuleName,
+            WorkingMinutes = rule.WorkingMinutes,
+            BeforeCheckInMinutes = rule.BeforeCheckInMinutes,
+            AfterCheckOutMinutes = rule.AfterCheckOutMinutes,
+            CheckInAdjustMinutes = rule.CheckInAdjustMinutes,
+            CheckOutAdjustMinutes = rule.CheckOutAdjustMinutes,
+            AbsentAfterShiftStartMinutes = rule.AbsentAfterShiftStartMinutes,
+            EarlyCheckoutAbsentAfterMinutes = rule.EarlyCheckoutAbsentAfterMinutes,
+            MissingCheckoutAfterShiftEndMinutes = rule.MissingCheckoutAfterShiftEndMinutes,
+            CameraVerificationToleranceMinutes = rule.CameraVerificationToleranceMinutes,
+            AccountLockAbsentDays = rule.AccountLockAbsentDays,
+            WeekendChargeValue = rule.WeekendChargeValue,
+            AdjustAbsentDays = rule.AdjustAbsentDays,
+            ExtremeLateAfterMinutes = rule.ExtremeLateAfterMinutes,
+            PlatformLateStatusId = rule.PlatformLateStatusId,
+            PlatformExtremeLateStatusId = rule.PlatformExtremeLateStatusId,
+            ExtremeEarlyDepartureAfterMinutes = rule.ExtremeEarlyDepartureAfterMinutes,
+            PlatformEarlyDepartureStatusId = rule.PlatformEarlyDepartureStatusId,
+            PlatformExtremeEarlyDepartureStatusId = rule.PlatformExtremeEarlyDepartureStatusId,
+            IsApproved = rule.IsApproved,
+            IsActive = rule.IsActive,
+            IsOvertimeBonusActive = rule.IsOvertimeBonusActive,
+            IsCompletedLateDeductionActive = rule.IsCompletedLateDeductionActive,
+            CompletedLateDeductionPercentage = rule.CompletedLateDeductionPercentage,
+            Remarks = rule.Remarks
+        }));
     }
 
     [HttpPost("rules/settings")]
@@ -519,9 +521,11 @@ public sealed class AttendanceController : ControllerBase
             record.AdjustmentSubmittedDateUtc = DateTime.UtcNow;
         }
 
-        await SyncDraftPayrollAdjustmentAsync(dto.PersonId, dto.Year, dto.Month, dto.AdjustmentAmount.Value, false, record.AdjustmentRemarks, ct);
+        var affectedPayrollRuns = await SyncDraftPayrollAdjustmentAsync(dto.PersonId, dto.Year, dto.Month, dto.AdjustmentAmount.Value, false, record.AdjustmentRemarks, ct);
 
         await _db.SaveChangesAsync(ct);
+        foreach (var payrollRunId in affectedPayrollRuns)
+            await _payroll.RecalculateRunTotalsAsync(payrollRunId, ct);
         await PublishDeductionChangedAsync(
             dto.PersonId,
             dto.Year,
@@ -550,17 +554,26 @@ public sealed class AttendanceController : ControllerBase
             {
                 message = "You do not have permission to approve deduction adjustments. Grant Approve or Edit on Deduction or Payroll."
             });
+        if (!await HasProcessActionAuthorityAsync("DEDUCTION", "APPROVE", ct))
+            return StatusCode(StatusCodes.Status403Forbidden, new
+            {
+                message = "You are not assigned as a Deduction Adjustment approval authority. Configure the assignment in Workflow Authorities."
+            });
         if (await HasPendingAttendanceReviewAsync(dto.PersonId, dto.Year, dto.Month, ct))
             return Conflict(new { message = "Missing or invalid checkout attendance must be resolved before deduction approval." });
         if (await HasLockedPayrollAsync(dto.PersonId, dto.Year, dto.Month, ct))
             return Conflict(new { message = "This payroll is already in review or finalized. Reopen the payroll before approving its deduction adjustment." });
 
-        var validCode = await _db.ProcessApprovalCodes.FirstOrDefaultAsync(x => x.TenantId == _tenant.RequiredTenantId && x.ProcessName == "DeductionAdjustment", ct);
-        // PIN is optional: only enforce when a non-zero code is configured for this process.
-        if (validCode is { PinCode: > 0 } && validCode.PinCode != dto.PinCode)
-            return BadRequest(new { message = "Invalid approval code." });
-        if (validCode is { PinCode: > 0 } && dto.PinCode <= 0)
-            return BadRequest(new { message = "PIN code is required for this approval." });
+        var currentStaffId = await CurrentStaffIdAsync(ct);
+        var pinAuthority = currentStaffId.HasValue
+            ? await _db.ProcessActionAuthorities.AsNoTracking().SingleOrDefaultAsync(authority =>
+                authority.StaffId == currentStaffId.Value && authority.ProcessCode == "DEDUCTION" &&
+                authority.ActionCode == "APPROVE" && authority.IsActive, ct)
+            : null;
+        if (string.IsNullOrWhiteSpace(pinAuthority?.PinHash))
+            return Conflict(new { message = "Configure your Deduction Adjustment PIN in Workflow Authorities before approval." });
+        if (!ProcessAuthorityPinHasher.Verify(dto.PinCode?.Trim() ?? string.Empty, pinAuthority.PinHash))
+            return BadRequest(new { message = "Invalid Deduction Adjustment security PIN." });
 
         var record = await _db.AttendanceMonthlySettlements
             .FirstOrDefaultAsync(s => s.PersonId == dto.PersonId 
@@ -580,21 +593,22 @@ public sealed class AttendanceController : ControllerBase
         var approverUserId = UserId();
         var isSelfSubmitter = !string.IsNullOrWhiteSpace(record.AdjustmentSubmittedByUserId) &&
             string.Equals(record.AdjustmentSubmittedByUserId, approverUserId, StringComparison.Ordinal);
-        // Process → Approve Process → Deduction category authorities may correct and approve
-        // (including their own corrected line). Plain makers still cannot self-approve.
-        if (isSelfSubmitter && !await IsProcessCategoryApproverAsync("DEDUCTION", ct))
+        // Direct workflow authority is separate from report-resolution authority.
+        if (isSelfSubmitter && !await HasProcessActionAuthorityAsync("DEDUCTION", "APPROVE", ct))
             return Conflict(new
             {
-                message = "The person who submitted this adjustment cannot approve it. A Process Deduction approver (e.g. CEO) may correct the amount and then approve, or another authorized user must approve."
+                message = "The person who submitted this adjustment cannot approve it unless explicitly assigned as a Deduction Adjustment approval authority."
             });
 
         record.IsAdjustmentApproved = true;
         record.AdjustmentApprovedByUserId = approverUserId;
         record.AdjustmentApprovedDateUtc = DateTime.UtcNow;
 
-        await SyncDraftPayrollAdjustmentAsync(dto.PersonId, dto.Year, dto.Month, record.AdjustmentAmount.Value, true, record.AdjustmentRemarks, ct);
+        var affectedPayrollRuns = await SyncDraftPayrollAdjustmentAsync(dto.PersonId, dto.Year, dto.Month, record.AdjustmentAmount.Value, true, record.AdjustmentRemarks, ct);
 
         await _db.SaveChangesAsync(ct);
+        foreach (var payrollRunId in affectedPayrollRuns)
+            await _payroll.RecalculateRunTotalsAsync(payrollRunId, ct);
         await PublishDeductionChangedAsync(
             dto.PersonId,
             dto.Year,
@@ -1202,51 +1216,27 @@ public sealed class AttendanceController : ControllerBase
             cancellationToken);
 
     /// <summary>
-    /// True when the caller's staff is listed under Process → Approve Process for the given category
-    /// (e.g. DEDUCTION). Those authorities may correct adjustment amounts and approve.
+    /// Checks direct financial workflow authority independently of report resolution access.
     /// </summary>
-    private async Task<bool> IsProcessCategoryApproverAsync(string categoryCode, CancellationToken cancellationToken)
+    private async Task<bool> HasProcessActionAuthorityAsync(
+        string processCode,
+        string actionCode,
+        CancellationToken cancellationToken)
     {
         var staffId = await CurrentStaffIdAsync(cancellationToken);
-        if (!staffId.HasValue || !_tenant.TenantId.HasValue || string.IsNullOrWhiteSpace(categoryCode))
+        if (!staffId.HasValue || !_tenant.TenantId.HasValue)
             return false;
 
-        var connection = _db.Database.GetDbConnection();
-        if (connection.State != ConnectionState.Open)
-            await connection.OpenAsync(cancellationToken);
-
-        await using var command = connection.CreateCommand();
-        command.CommandText = """
-            SELECT CASE WHEN EXISTS (
-                SELECT 1
-                FROM dbo.ProcessCategoryApprovers pca
-                INNER JOIN dbo.ProcessWorkflowCategories cat ON cat.Id = pca.CategoryId
-                WHERE pca.TenantId = @tenantId
-                  AND pca.StaffId = @staffId
-                  AND cat.IsActive = 1
-                  AND UPPER(cat.Code) = UPPER(@categoryCode)
-            ) THEN 1 ELSE 0 END
-            """;
-        var tenantParam = command.CreateParameter();
-        tenantParam.ParameterName = "@tenantId";
-        tenantParam.Value = _tenant.RequiredTenantId;
-        command.Parameters.Add(tenantParam);
-        var staffParam = command.CreateParameter();
-        staffParam.ParameterName = "@staffId";
-        staffParam.Value = staffId.Value;
-        command.Parameters.Add(staffParam);
-        var codeParam = command.CreateParameter();
-        codeParam.ParameterName = "@categoryCode";
-        codeParam.Value = categoryCode.Trim();
-        command.Parameters.Add(codeParam);
-
-        var result = await command.ExecuteScalarAsync(cancellationToken);
-        return result is int i && i == 1
-            || result is long l && l == 1
-            || (result != null && result != DBNull.Value && Convert.ToInt32(result) == 1);
+        return await _db.ProcessActionAuthorities.AsNoTracking().AnyAsync(authority =>
+            authority.TenantId == _tenant.RequiredTenantId &&
+            authority.StaffId == staffId.Value &&
+            authority.ProcessCode == processCode &&
+            authority.ActionCode == actionCode &&
+            authority.IsActive,
+            cancellationToken);
     }
 
-    private async Task SyncDraftPayrollAdjustmentAsync(
+    private async Task<long[]> SyncDraftPayrollAdjustmentAsync(
         Guid personId,
         int year,
         int month,
@@ -1273,6 +1263,8 @@ public sealed class AttendanceController : ControllerBase
             line.UpdatedOnUtc = DateTime.UtcNow;
             PayrollCalculationService.Recalculate(line);
         }
+
+        return lines.Select(line => line.PayrollRunId).Distinct().ToArray();
     }
 
     private Task PublishDeductionConfigurationChangedAsync(int tenantId, string entityId) =>

@@ -304,6 +304,34 @@ namespace Accounts.Controllers
             return Ok(staff);
         }
 
+        [HttpPost("{id:guid}/terminate")]
+        [Idempotent]
+        public async Task<IActionResult> Terminate(Guid id, [FromBody] EmploymentEndDto? dto, CancellationToken ct)
+        {
+            if (await CallerIsSuperAdminAsync()) return Forbid();
+            if (!await HasStaffActionAsync("DELETE", "EMPLOYEE_DELETE", "PERSON_DELETE")) return Forbid();
+            var (success, message) = await _service.EndEmploymentAsync(id, "Fired", dto?.Reason, ct);
+            if (!success)
+                return message.Contains("not found", StringComparison.OrdinalIgnoreCase)
+                    ? NotFound(new { message })
+                    : BadRequest(new { message });
+            return Ok(new { message });
+        }
+
+        [HttpPost("{id:guid}/retire")]
+        [Idempotent]
+        public async Task<IActionResult> Retire(Guid id, [FromBody] EmploymentEndDto? dto, CancellationToken ct)
+        {
+            if (await CallerIsSuperAdminAsync()) return Forbid();
+            if (!await HasStaffActionAsync("DELETE", "EMPLOYEE_DELETE", "PERSON_DELETE")) return Forbid();
+            var (success, message) = await _service.EndEmploymentAsync(id, "Retired", dto?.Reason, ct);
+            if (!success)
+                return message.Contains("not found", StringComparison.OrdinalIgnoreCase)
+                    ? NotFound(new { message })
+                    : BadRequest(new { message });
+            return Ok(new { message });
+        }
+
         [HttpDelete("{id:guid}")]
         public async Task<IActionResult> Delete(Guid id)
         {

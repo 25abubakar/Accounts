@@ -92,10 +92,7 @@ public sealed class StaffMonthlyEobiService(
             .ThenByDescending(x => x.Id)
             .FirstOrDefaultAsync(cancellationToken);
         var eobiParameter = eobiBenefit?.Parameters
-            .Where(x => (!x.PeriodFrom.HasValue || x.PeriodFrom <= periodEnd)
-                && (!x.PeriodTo.HasValue || x.PeriodTo >= periodStart))
-            .OrderByDescending(x => x.PeriodFrom)
-            .ThenByDescending(x => x.Id)
+            .OrderByDescending(x => x.Id)
             .FirstOrDefault();
         var fixedCompanyShare = Money(eobiParameter?.CompanyShare ?? eobiBenefit?.CompanyShare ?? 0);
         var fixedStaffShare = Money(eobiParameter?.StaffShare ?? eobiBenefit?.StaffShare ?? 0);

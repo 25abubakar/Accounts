@@ -66,6 +66,7 @@ public class PersonHrProfileReadRow
     public decimal? IncrementSalary { get; set; }
     public decimal? MaxSalary { get; set; }
     public decimal? CurrentPay { get; set; }
+    public decimal? SalaryAdjustment { get; set; }
     public decimal? AccountsPerDay { get; set; }
     public decimal? AccountsPerHour { get; set; }
     public DateTime? LeaveFrom { get; set; }

@@ -71,9 +71,8 @@ public sealed class AssessmentRulesController(
         return NoContent();
     }
 
-    private async Task<bool> CanManageAsync(string action, CancellationToken ct) =>
-        TenantPermissionService.IsTenantAdmin(User) ||
-        await tenantPermissions.HasMenuRouteAsync(User, ["/assessment/rules"], action, ct);
+    private Task<bool> CanManageAsync(string action, CancellationToken ct) =>
+        tenantPermissions.HasMenuRouteAsync(User, ["/assessment/rules"], action, ct);
     private static string? Validate(RuleDto dto) => dto.BonusAmount < 0 ? "Base bonus cannot be negative."
         : dto.DecrementAmount < 0 ? "Decrement cannot be negative."
         : dto.MinimumBonusAmount < 0 ? "Minimum bonus cannot be negative."

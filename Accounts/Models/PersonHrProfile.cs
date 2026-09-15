@@ -63,6 +63,11 @@ public class PersonHrProfile : ITenantEntity
     [Column(TypeName = "decimal(18,2)")] public decimal? IncrementSalary { get; set; }
     [Column(TypeName = "decimal(18,2)")] public decimal? MaxSalary { get; set; }
     [Column(TypeName = "decimal(18,2)")] public decimal? CurrentPay { get; set; }
+    /// <summary>
+    /// Manual monthly add-on (Staff Accounts). Persists until edited; payroll Generate includes it in gross.
+    /// Use to top scale+allowances up to a contracted package (e.g. +3000 → 50k). Not auto-calculated.
+    /// </summary>
+    [Column(TypeName = "decimal(18,2)")] public decimal? SalaryAdjustment { get; set; }
     [Column(TypeName = "decimal(18,2)")] public decimal? AccountsPerDay { get; set; }
     [Column(TypeName = "decimal(18,2)")] public decimal? AccountsPerHour { get; set; }
 

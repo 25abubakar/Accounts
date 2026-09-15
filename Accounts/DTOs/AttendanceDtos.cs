@@ -413,7 +413,7 @@ public sealed class ApproveOvertimeRequestDto
     public bool IsApproved { get; set; }
 }
 
-public sealed class ApproveAdjustmentRequestDto { public Guid PersonId { get; set; } public int Month { get; set; } public int Year { get; set; } public int PinCode { get; set; } }
+public sealed class ApproveAdjustmentRequestDto { public Guid PersonId { get; set; } public int Month { get; set; } public int Year { get; set; } public string PinCode { get; set; } = string.Empty; }
 
 public sealed class SaveAdjustmentRequestDto
 {

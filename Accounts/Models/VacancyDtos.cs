@@ -170,6 +170,12 @@ namespace Accounts.Models
         public Guid NewVacancyId { get; set; }
     }
 
+    public class EmploymentEndDto
+    {
+        [MaxLength(500)]
+        public string? Reason { get; set; }
+    }
+
     public class OrgVacancyReportDto
     {
         public string Country { get; set; } = string.Empty;

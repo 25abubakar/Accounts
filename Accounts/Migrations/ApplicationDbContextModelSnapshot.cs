@@ -3368,6 +3368,9 @@ namespace Accounts.Migrations
                         .HasMaxLength(50)
                         .HasColumnType("nvarchar(50)");
 
+                    b.Property<int?>("ContractId")
+                        .HasColumnType("int");
+
                     b.Property<DateTime>("CreatedOnUtc")
                         .HasColumnType("datetime2");
 
@@ -3720,12 +3723,6 @@ namespace Accounts.Migrations
                     b.Property<decimal>("Percentage")
                         .HasColumnType("decimal(9,4)");
 
-                    b.Property<DateOnly?>("PeriodFrom")
-                        .HasColumnType("date");
-
-                    b.Property<DateOnly?>("PeriodTo")
-                        .HasColumnType("date");
-
                     b.Property<string>("Reference")
                         .IsRequired()
                         .HasMaxLength(30)
@@ -3812,6 +3809,9 @@ namespace Accounts.Migrations
                     b.Property<decimal>("MinimumService")
                         .HasColumnType("decimal(9,2)");
 
+                    b.Property<decimal>("MinimumSalary")
+                        .HasColumnType("decimal(18,2)");
+
                     b.Property<string>("Name")
                         .IsRequired()
                         .HasMaxLength(120)
@@ -3821,8 +3821,8 @@ namespace Accounts.Migrations
                         .HasColumnType("int");
 
                     b.Property<string>("Scale")
-                        .HasMaxLength(50)
-                        .HasColumnType("nvarchar(50)");
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)");
 
                     b.Property<string>("ServiceStatus")
                         .HasMaxLength(30)
@@ -3953,6 +3953,12 @@ namespace Accounts.Migrations
                     b.Property<int>("Installments")
                         .HasColumnType("int");
 
+                    b.Property<DateOnly?>("InstallmentEnd")
+                        .HasColumnType("date");
+
+                    b.Property<DateOnly?>("InstallmentStart")
+                        .HasColumnType("date");
+
                     b.Property<decimal>("LeavePercentage")
                         .HasColumnType("decimal(9,4)");
 
@@ -4052,6 +4058,9 @@ namespace Accounts.Migrations
 
                     b.Property<decimal>("InstallmentAmount")
                         .HasColumnType("decimal(18,2)");
+
+                    b.Property<int>("CurrentInstallmentNo")
+                        .HasColumnType("int");
 
                     b.Property<bool>("IsApproved")
                         .HasColumnType("bit");
@@ -4271,6 +4280,9 @@ namespace Accounts.Migrations
                         .HasMaxLength(50)
                         .HasColumnType("nvarchar(50)");
 
+                    b.Property<int?>("ContractId")
+                        .HasColumnType("int");
+
                     b.Property<DateTime>("CreatedOnUtc")
                         .HasColumnType("datetime2");
 
@@ -4336,10 +4348,16 @@ namespace Accounts.Migrations
                     b.Property<decimal>("MaxSalary")
                         .HasColumnType("decimal(18,2)");
 
+                    b.Property<decimal>("MedicalAllowanceAmount")
+                        .HasColumnType("decimal(18,2)");
+
                     b.Property<int>("Month")
                         .HasColumnType("int");
 
                     b.Property<decimal>("NetPay")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<decimal>("NightAllowanceAmount")
                         .HasColumnType("decimal(18,2)");
 
                     b.Property<decimal>("OtherDeduction")
@@ -4389,10 +4407,16 @@ namespace Accounts.Migrations
                     b.Property<decimal>("TaxableIncome")
                         .HasColumnType("decimal(18,2)");
 
+                    b.Property<decimal>("TelephoneAllowanceAmount")
+                        .HasColumnType("decimal(18,2)");
+
                     b.Property<int>("TenantId")
                         .HasColumnType("int");
 
                     b.Property<decimal>("TotalDeduction")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<decimal>("TransportAllowanceAmount")
                         .HasColumnType("decimal(18,2)");
 
                     b.Property<DateTime?>("UpdatedOnUtc")
@@ -5884,6 +5908,13 @@ namespace Accounts.Migrations
                     b.Property<bool>("IsActive")
                         .HasColumnType("bit");
 
+                    b.Property<string>("PinHash")
+                        .HasMaxLength(400)
+                        .HasColumnType("nvarchar(400)");
+
+                    b.Property<DateTime?>("PinUpdatedOnUtc")
+                        .HasColumnType("datetime2");
+
                     b.Property<string>("ProcessCode")
                         .IsRequired()
                         .HasMaxLength(50)
@@ -6304,7 +6335,24 @@ namespace Accounts.Migrations
                     b.Property<DateTime>("CreatedDateUtc")
                         .HasColumnType("datetime2");
 
+                    b.Property<DateTime?>("FinalApprovedDateUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("FinalApprovedByName")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<string>("FinalApprovedByUserId")
+                        .HasMaxLength(450)
+                        .HasColumnType("nvarchar(450)");
+
+                    b.Property<bool>("IsFinalApproved")
+                        .HasColumnType("bit");
+
                     b.Property<bool>("IsLocked")
+                        .HasColumnType("bit");
+
+                    b.Property<bool>("IsPostedToPayroll")
                         .HasColumnType("bit");
 
                     b.Property<DateTime?>("ModifiedDateUtc")
@@ -6312,6 +6360,16 @@ namespace Accounts.Migrations
 
                     b.Property<byte?>("Rating")
                         .HasColumnType("tinyint");
+
+                    b.Property<string>("Remarks")
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)");
+
+                    b.Property<long?>("PostedPayrollRunId")
+                        .HasColumnType("bigint");
+
+                    b.Property<DateTime?>("PostedToPayrollDateUtc")
+                        .HasColumnType("datetime2");
 
                     b.Property<Guid>("SubjectPersonId")
                         .HasColumnType("uniqueidentifier");

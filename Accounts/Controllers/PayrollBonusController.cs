@@ -2,6 +2,7 @@
 using Accounts.Data;
 using Accounts.Idempotency;
 using Accounts.Models;
+using Accounts.Models.SpListRows;
 using Accounts.Services.Interfaces;
 using Accounts.Services.Services;
 using Microsoft.AspNetCore.Authorization;
@@ -15,7 +16,8 @@ public sealed class PayrollBonusController(
     ApplicationDbContext db,
     ITenantService tenant,
     RbacService rbac,
-    TenantPermissionService tenantPermissions) : ControllerBase
+    TenantPermissionService tenantPermissions,
+    PayrollCalculationService payroll) : ControllerBase
 {
     private const string MenuRoute = "/pay-allowances/bonus";
 
@@ -23,34 +25,43 @@ public sealed class PayrollBonusController(
     public async Task<IActionResult> Rules(CancellationToken ct)
     {
         var denied = await Guard("VIEW", ct); if (denied != null) return denied;
-        var rows = await db.PayrollBenefitRules.AsNoTracking()
-            .Where(x => x.BenefitsType == "Bonus" && !x.IsIneligible)
-            .OrderByDescending(x => x.ValidFrom).ThenBy(x => x.Name)
-            .Select(x => new
-            {
-                x.Id,
-                reference = x.BenefitReference,
-                x.Name,
-                x.ValidFrom,
-                x.ValidTo,
-                x.Scale,
-                x.Frequency,
-                maximumExpense = x.MaximumExpense,
-                x.MinimumService,
-                x.OrganizationId,
-                x.Company,
-                x.Entitled
-            })
-            .ToListAsync(ct);
+        var rows = await SpListQuery.ExecAsync<PayBonusRuleListRow>(
+            db,
+            "EXEC dbo.usp_Pay_BonusRules_List @TenantId",
+            ct,
+            SpListQuery.TenantId(tenant.RequiredTenantId));
         return Ok(rows);
     }
 
     [HttpGet("run")]
-    public async Task<IActionResult> Run([FromQuery] int benefitRuleId, [FromQuery] int year, [FromQuery] int month, CancellationToken ct)
+    public async Task<IActionResult> Run(
+        [FromQuery] int benefitRuleId,
+        [FromQuery] int? year,
+        [FromQuery] int? month,
+        CancellationToken ct)
     {
         var denied = await Guard("VIEW", ct); if (denied != null) return denied;
-        if (!ValidPeriod(year, month)) return BadRequest(new { message = "Enter a valid bonus month." });
-        return await RunResponse(benefitRuleId, year, month, ct);
+        if (benefitRuleId <= 0) return BadRequest(new { message = "Select a Benefit Rule." });
+
+        // Legacy StaffBonus: load by BenefitRuleId only. Period is resolved from Bonus Distribution
+        // (InstallmentStart / Dist Month + ValidFrom). Optional year/month still accepted for API clients.
+        int resolvedYear;
+        int resolvedMonth;
+        if (year is > 0 && month is >= 1 and <= 12)
+        {
+            resolvedYear = year.Value;
+            resolvedMonth = month.Value;
+        }
+        else
+        {
+            var period = await ResolveBonusPeriodAsync(benefitRuleId, ct);
+            if (period == null)
+                return BadRequest(new { message = "Configure Bonus Distribution (Month / Inst Start) on this Benefit Rule before loading." });
+            resolvedYear = period.Value.Year;
+            resolvedMonth = period.Value.Month;
+        }
+
+        return await RunResponse(benefitRuleId, resolvedYear, resolvedMonth, ct);
     }
 
     [HttpPost("generate")]
@@ -58,19 +69,39 @@ public sealed class PayrollBonusController(
     public async Task<IActionResult> Generate(GenerateBonusRequest request, CancellationToken ct)
     {
         var denied = await Guard("ADD", ct); if (denied != null) return denied;
-        if (!ValidPeriod(request.Year, request.Month)) return BadRequest(new { message = "Enter a valid bonus month." });
+
+        var rule = await db.PayrollBenefitRules.Include(x => x.Parameters).ThenInclude(x => x.BonusDistribution)
+            .SingleOrDefaultAsync(x => x.Id == request.BenefitRuleId && x.BenefitsType == "Bonus", ct);
+        if (rule == null) return NotFound(new { message = "Selected bonus benefit rule was not found." });
+        if (rule.IsIneligible) return BadRequest(new { message = "Selected bonus rule is marked ineligible." });
+
+        var hasDistribution = rule.Parameters.Any(parameter => parameter.BonusDistribution != null);
+        if (!hasDistribution)
+            return BadRequest(new { message = "Configure Bonus Distribution under Benefits Parameter before generating." });
+
+        // Year/Month optional — default from rule distribution (legacy Generate used BenefitRuleId only).
+        var year = request.Year;
+        var month = request.Month;
+        if (!ValidPeriod(year, month))
+        {
+            var period = ResolveBonusPeriodFromRule(rule);
+            if (period == null)
+                return BadRequest(new { message = "Configure Bonus Distribution (Month / Inst Start) before generating." });
+            year = period.Value.Year;
+            month = period.Value.Month;
+        }
 
         var existingRun = await db.PayrollBonusRuns
             .Include(x => x.Lines)
             .SingleOrDefaultAsync(x =>
-                x.BenefitRuleId == request.BenefitRuleId && x.Year == request.Year && x.Month == request.Month, ct);
+                x.BenefitRuleId == request.BenefitRuleId && x.Year == year && x.Month == month, ct);
 
         if (existingRun != null)
         {
             if (!string.Equals(existingRun.Status, "Generated", StringComparison.OrdinalIgnoreCase))
-                return Conflict(new { message = "Verified or approved bonus cannot be regenerated. Select another month or reverse approval first." });
+                return Conflict(new { message = "Verified or approved bonus cannot be regenerated. Reverse approval first or select another Benefit Rule." });
             if (!request.Regenerate)
-                return await RunResponse(request.BenefitRuleId, request.Year, request.Month, ct);
+                return await RunResponse(request.BenefitRuleId, year, month, ct);
 
             db.PayrollBonusLines.RemoveRange(existingRun.Lines);
             existingRun.Lines.Clear();
@@ -84,43 +115,30 @@ public sealed class PayrollBonusController(
             existingRun.UpdatedOnUtc = DateTime.UtcNow;
         }
 
-        var rule = await db.PayrollBenefitRules
-            .Include(x => x.Parameters).ThenInclude(x => x.BonusDistribution)
-            .Include(x => x.OrganizationScopes)
-            .Include(x => x.ContractScopes)
-            .SingleOrDefaultAsync(x => x.Id == request.BenefitRuleId && x.BenefitsType == "Bonus", ct);
-        if (rule == null) return NotFound(new { message = "Selected bonus benefit rule was not found." });
-        if (rule.IsIneligible) return BadRequest(new { message = "Selected bonus rule is marked ineligible." });
-
-        var periodStart = new DateOnly(request.Year, request.Month, 1);
+        var periodStart = new DateOnly(year, month, 1);
         var periodEnd = periodStart.AddMonths(1).AddDays(-1);
         if (rule.ValidFrom.HasValue && periodEnd < rule.ValidFrom.Value || rule.ValidTo.HasValue && periodStart > rule.ValidTo.Value)
-            return BadRequest(new { message = "Selected rule is not effective for this month." });
+            return BadRequest(new { message = "Selected rule is not effective for its Bonus Distribution period." });
 
-        var hasDistribution = rule.Parameters.Any(parameter => parameter.BonusDistribution != null);
-        if (!hasDistribution)
-            return BadRequest(new { message = "Configure Bonus Distribution under Benefits Parameter before generating." });
+        var candidates = await SpListQuery.ExecAsync<PayBonusGenerateCandidateRow>(
+            db,
+            "EXEC dbo.usp_Pay_BonusGenerate_Candidates @TenantId, @BenefitRuleId, @Year, @Month",
+            ct,
+            SpListQuery.TenantId(tenant.RequiredTenantId),
+            SpListQuery.Int("@BenefitRuleId", request.BenefitRuleId),
+            SpListQuery.Int("@Year", year),
+            SpListQuery.Int("@Month", month));
 
-        var staff = await db.StaffDirectoryRows.AsNoTracking().Where(x => x.IsPersonActive).OrderBy(x => x.FullName).ToListAsync(ct);
-        var personIds = staff.Select(x => x.PersonId).Distinct().ToArray();
-        var profiles = await db.PersonHrProfiles.AsNoTracking().Where(x => personIds.Contains(x.PersonId)).ToDictionaryAsync(x => x.PersonId, ct);
-        var employmentByPerson = await db.Persons.AsNoTracking()
-            .Where(x => personIds.Contains(x.PersonId))
-            .Select(x => new { x.PersonId, x.EmploymentStatus })
-            .ToDictionaryAsync(x => x.PersonId, x => x.EmploymentStatus, ct);
-        var defaultPercent = ResolveDefaultPercent(rule);
-        var organizationNodes = await db.OrganizationTree.AsNoTracking().ToDictionaryAsync(x => x.Id, ct);
         var now = DateTime.UtcNow;
-
         var run = existingRun ?? new PayrollBonusRun
         {
             TenantId = tenant.RequiredTenantId,
             BenefitRuleId = rule.Id,
-            RunNumber = $"BON-{request.Year}{request.Month:00}-{rule.Id}",
+            RunNumber = $"BON-{year}{month:00}-{rule.Id}",
             BenefitReference = rule.BenefitReference,
             RuleName = rule.Name,
-            Year = request.Year,
-            Month = request.Month,
+            Year = year,
+            Month = month,
             Status = "Generated",
             CreatedByUserId = User.FindFirstValue(ClaimTypes.NameIdentifier),
             CreatedByName = ActorName(),
@@ -137,111 +155,39 @@ public sealed class PayrollBonusController(
         {
             run.BenefitReference = rule.BenefitReference;
             run.RuleName = rule.Name;
-            run.RunNumber = $"BON-{request.Year}{request.Month:00}-{rule.Id}";
+            run.RunNumber = $"BON-{year}{month:00}-{rule.Id}";
         }
 
-        foreach (var employee in staff)
+        foreach (var candidate in candidates)
         {
-            profiles.TryGetValue(employee.PersonId, out var profile);
-            var reasons = new List<string>();
-            var salary = profile?.CurrentPay is > 0 ? profile.CurrentPay.Value : profile?.BasicSalary ?? 0;
-            var joining = profile?.JoiningDate;
-            var serviceYears = joining.HasValue
-                ? Math.Max(0, (decimal)(periodEnd.ToDateTime(TimeOnly.MinValue) - joining.Value.Date).TotalDays / 365.2425m)
-                : 0;
-            var parameter = ResolveBonusParameter(rule, request.Month, periodStart, periodEnd, serviceYears);
-            var distribution = parameter?.BonusDistribution;
-            var usesFigure = parameter != null && parameter.AmountType.Equals("Figure", StringComparison.OrdinalIgnoreCase);
-            if (profile == null) reasons.Add("HR profile is missing");
-            if (!usesFigure && salary <= 0) reasons.Add("Salary is missing");
-            if (!string.IsNullOrWhiteSpace(rule.Scale)
-                && !string.Equals(rule.Scale.Trim(), profile?.Scale?.Trim(), StringComparison.OrdinalIgnoreCase))
-                reasons.Add($"Requires scale {rule.Scale}");
-
-            var orgScopeIds = rule.OrganizationScopes.Select(scope => scope.OrganizationId).Distinct().ToList();
-            if (orgScopeIds.Count == 0 && rule.OrganizationId.HasValue)
-                orgScopeIds.Add(rule.OrganizationId.Value);
-            if (orgScopeIds.Count > 0)
-            {
-                if (!employee.OrganizationId.HasValue
-                    || !orgScopeIds.Any(scopeId => IsOrganizationDescendant(employee.OrganizationId.Value, scopeId, organizationNodes)))
-                    reasons.Add("Organization / entitled scope does not match");
-            }
-
-            var contractNames = rule.ContractScopes.Select(scope => scope.ContractName.Trim())
-                .Where(name => name.Length > 0)
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .ToList();
-            if (contractNames.Count == 0 && !string.IsNullOrWhiteSpace(rule.Contract))
-            {
-                contractNames = rule.Contract.Split([',', ';'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-                    .Where(name => name.Length > 0)
-                    .Distinct(StringComparer.OrdinalIgnoreCase)
-                    .ToList();
-            }
-            if (contractNames.Count > 0)
-            {
-                employmentByPerson.TryGetValue(employee.PersonId, out var employmentStatus);
-                var employeeContract = !string.IsNullOrWhiteSpace(employmentStatus)
-                    ? employmentStatus.Trim()
-                    : profile?.InductionType?.Trim();
-                if (string.IsNullOrWhiteSpace(employeeContract)
-                    || !contractNames.Contains(employeeContract, StringComparer.OrdinalIgnoreCase))
-                    reasons.Add($"Requires contract: {string.Join(", ", contractNames)}");
-            }
-
-            if (joining.HasValue && joining.Value.Date > periodEnd.ToDateTime(TimeOnly.MinValue))
-                reasons.Add("Joined after this bonus period");
-            if (serviceYears < rule.MinimumService)
-                reasons.Add($"Minimum service is {rule.MinimumService:0.##} year(s)");
-            if (rule.IsIneligible) reasons.Add("Rule is marked ineligible");
-            if (!string.IsNullOrWhiteSpace(rule.ServiceStatus)
-                && !rule.ServiceStatus.Equals("All", StringComparison.OrdinalIgnoreCase)
-                && !rule.ServiceStatus.Equals("Active", StringComparison.OrdinalIgnoreCase))
-            {
-                employmentByPerson.TryGetValue(employee.PersonId, out var employmentStatus);
-                if (string.IsNullOrWhiteSpace(employmentStatus)
-                    || !string.Equals(rule.ServiceStatus.Trim(), employmentStatus.Trim(), StringComparison.OrdinalIgnoreCase))
-                    reasons.Add($"Requires service status {rule.ServiceStatus}");
-            }
-
-            var valid = reasons.Count == 0;
-            var bonusAmount = ResolveBonusAmount(parameter, profile, salary);
-            if (distribution == null) reasons.Add("No matching bonus distribution for this month/service");
-            if (bonusAmount <= 0) reasons.Add("Bonus Figure / Pay Ref amount is not configured");
-            valid = reasons.Count == 0;
-            var completedServiceYears = Math.Floor(serviceYears);
-            var effectiveServicePercent = distribution == null
-                ? 0
-                : distribution.ServiceYears > 0
-                    ? distribution.ServicePercentage * Math.Min(1m, completedServiceYears / distribution.ServiceYears)
-                    : distribution.ServicePercentage;
-
             var line = new PayrollBonusLine
             {
                 TenantId = tenant.RequiredTenantId,
-                PersonId = employee.PersonId,
-                StaffId = employee.StaffId,
-                EmployeeNumber = employee.EmployeeId,
-                FullName = employee.FullName,
-                Designation = employee.Designation,
-                Department = employee.Department,
-                DateOfJoining = joining.HasValue ? DateOnly.FromDateTime(joining.Value) : null,
-                Scale = profile?.Scale,
-                IsValid = valid,
-                ValidationMessage = valid ? "Eligible" : string.Join("; ", reasons),
-                BaseSalary = salary,
-                BonusAmount = bonusAmount,
-                BasicPercent = distribution?.BasicPercentage ?? defaultPercent,
-                ServicePercent = effectiveServicePercent,
-                AttendancePercent = distribution?.AttendancePercentage ?? 0,
-                AssessmentPercent = distribution?.AssessmentPercentage ?? 0,
-                LeavePercent = distribution?.LeavePercentage ?? 0,
-                DisciplinePercent = distribution?.DisciplinePercentage ?? 0,
-                ServiceYears = completedServiceYears,
-                Month = request.Month,
-                Year = request.Year,
-                Installment = Math.Max(1, distribution?.Installments ?? 1),
+                PersonId = candidate.PersonId,
+                StaffId = candidate.StaffId,
+                EmployeeNumber = candidate.EmployeeNumber,
+                FullName = candidate.FullName,
+                Designation = candidate.Designation,
+                Department = candidate.Department,
+                DateOfJoining = candidate.DateOfJoining,
+                Scale = candidate.Scale,
+                IsValid = candidate.IsValid,
+                ValidationMessage = string.IsNullOrWhiteSpace(candidate.ValidationMessage)
+                    ? (candidate.IsValid ? "Eligible" : "Not eligible")
+                    : candidate.ValidationMessage,
+                BaseSalary = candidate.BaseSalary,
+                BonusAmount = candidate.BonusAmount,
+                BasicPercent = candidate.BasicPercent,
+                ServicePercent = candidate.ServicePercent,
+                AttendancePercent = candidate.AttendancePercent,
+                AssessmentPercent = candidate.AssessmentPercent,
+                LeavePercent = candidate.LeavePercent,
+                DisciplinePercent = candidate.DisciplinePercent,
+                ServiceYears = candidate.ServiceYears,
+                Month = month,
+                Year = year,
+                Installment = Math.Max(1, candidate.Installment),
+                CurrentInstallmentNo = Math.Max(1, Math.Min(Math.Max(1, candidate.Installment), Math.Max(0, candidate.CurrentInstallmentNo) > 0 ? candidate.CurrentInstallmentNo : 1)),
                 PaidInstallmentCount = 0,
                 CreatedOnUtc = now
             };
@@ -259,10 +205,10 @@ public sealed class PayrollBonusController(
         {
             db.ChangeTracker.Clear();
             var wasCreatedConcurrently = await db.PayrollBonusRuns.AsNoTracking().AnyAsync(x =>
-                x.BenefitRuleId == request.BenefitRuleId && x.Year == request.Year && x.Month == request.Month, ct);
+                x.BenefitRuleId == request.BenefitRuleId && x.Year == year && x.Month == month, ct);
             if (!wasCreatedConcurrently) throw;
         }
-        return await RunResponse(request.BenefitRuleId, request.Year, request.Month, ct);
+        return await RunResponse(request.BenefitRuleId, year, month, ct);
     }
 
     [HttpPut("lines/{id:long}")]
@@ -343,52 +289,232 @@ public sealed class PayrollBonusController(
         return await RunResponse(run.BenefitRuleId, run.Year, run.Month, ct);
     }
 
-    /// <summary>Pay alias = Approve for payroll eligibility (cash pay remains Payroll Pay).</summary>
-    [HttpPost("runs/{id:long}/pay")]
-    [Idempotent]
-    public Task<IActionResult> Pay(long id, CancellationToken ct) => Approve(id, ct);
-
-    [HttpPost("runs/{id:long}/approve")]
-    [Idempotent]
-    public async Task<IActionResult> Approve(long id, CancellationToken ct)
-    {
-        var denied = await GuardProcessOrApprove(ct); if (denied != null) return denied;
-        var run = await db.PayrollBonusRuns.Include(x => x.Lines).SingleOrDefaultAsync(x => x.Id == id, ct);
-        if (run == null) return NotFound();
-        if (run.Status != "Verified") return Conflict(new { message = "Process / verify the bonus before approval." });
-
-        var maxExpense = await db.PayrollBenefitRules.AsNoTracking()
-            .Where(x => x.Id == run.BenefitRuleId)
-            .Select(x => x.MaximumExpense)
-            .SingleAsync(ct);
-        RefreshTotals(run);
-        var expenseError = ValidateMaximumExpense(maxExpense, run);
-        if (expenseError != null) return BadRequest(new { message = expenseError });
-
-        var now = DateTime.UtcNow;
-        run.Status = "Approved";
-        run.ApprovedByUserId = User.FindFirstValue(ClaimTypes.NameIdentifier);
-        run.ApprovedByName = ActorName();
-        run.ApprovedOnUtc = now;
-        run.UpdatedOnUtc = now;
-        foreach (var line in run.Lines)
+        /// <summary>
+        /// Legacy StaffBonus Pay:
+        /// - Verified → one-time Approve (schedule eligible for payroll; no re-approval later).
+        /// - Approved → push the next due installment into that month's Draft Payroll.
+        /// Cash settlement / PaidInstallmentCount still advances when Payroll is Finalized Pay.
+        /// </summary>
+        [HttpPost("runs/{id:long}/pay")]
+        [Idempotent]
+        public async Task<IActionResult> Pay(long id, CancellationToken ct)
         {
-            var eligible = line.IsValid && !line.IsInactive;
-            line.IsApproved = eligible;
-            // Approval makes installments eligible for payroll. IsPaid / PaidInstallmentCount
-            // advance only when monthly payroll is finalized.
-            if (!eligible)
-            {
-                line.IsPaid = false;
-                line.PaidOnUtc = null;
-                line.PaidInstallmentCount = 0;
-            }
-            line.UpdatedOnUtc = now;
+            var denied = await GuardProcessOrApprove(ct); if (denied != null) return denied;
+            var status = await db.PayrollBonusRuns.AsNoTracking()
+                .Where(x => x.Id == id)
+                .Select(x => x.Status)
+                .FirstOrDefaultAsync(ct);
+            if (status == null) return NotFound();
+
+            if (string.Equals(status, "Verified", StringComparison.OrdinalIgnoreCase))
+                return await Approve(id, ct);
+
+            if (string.Equals(status, "Approved", StringComparison.OrdinalIgnoreCase))
+                return await PayDueInstallmentToPayrollAsync(id, ct);
+
+            return Conflict(new { message = "Process the bonus first, then Pay to approve. After approval, Pay pushes each due installment into Payroll." });
         }
-        RefreshTotals(run);
-        await db.SaveChangesAsync(ct);
-        return await RunResponse(run.BenefitRuleId, run.Year, run.Month, ct);
-    }
+
+        [HttpPost("runs/{id:long}/approve")]
+        [Idempotent]
+        public async Task<IActionResult> Approve(long id, CancellationToken ct)
+        {
+            var denied = await GuardProcessOrApprove(ct); if (denied != null) return denied;
+            var run = await db.PayrollBonusRuns.Include(x => x.Lines).SingleOrDefaultAsync(x => x.Id == id, ct);
+            if (run == null) return NotFound();
+            if (run.Status != "Verified") return Conflict(new { message = "Process / verify the bonus before approval." });
+
+            var maxExpense = await db.PayrollBenefitRules.AsNoTracking()
+                .Where(x => x.Id == run.BenefitRuleId)
+                .Select(x => x.MaximumExpense)
+                .SingleAsync(ct);
+            RefreshTotals(run);
+            var expenseError = ValidateMaximumExpense(maxExpense, run);
+            if (expenseError != null) return BadRequest(new { message = expenseError });
+
+            var now = DateTime.UtcNow;
+            run.Status = "Approved";
+            run.ApprovedByUserId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+            run.ApprovedByName = ActorName();
+            run.ApprovedOnUtc = now;
+            run.UpdatedOnUtc = now;
+            foreach (var line in run.Lines)
+            {
+                var eligible = line.IsValid && !line.IsInactive;
+                line.IsApproved = eligible;
+                // IsPaid / PaidInstallmentCount advance immediately below after Draft sync (first Pay).
+                if (!eligible)
+                {
+                    line.IsPaid = false;
+                    line.PaidOnUtc = null;
+                    line.PaidInstallmentCount = 0;
+                }
+                else
+                {
+                    var installments = Math.Max(1, line.Installment);
+                    line.CurrentInstallmentNo = Math.Min(installments, Math.Max(1, line.PaidInstallmentCount + 1));
+                }
+                line.UpdatedOnUtc = now;
+            }
+            RefreshTotals(run);
+            await db.SaveChangesAsync(ct);
+
+            // First Pay after Process = approve + pay installment #1 (Inst_Amt → Draft Payroll).
+            // Sync while PaidInstallmentCount is still 0, then advance so IS PAID / PAID INST update.
+            await SyncCurrentDraftPayrollAsync(run.Year, run.Month, ct);
+
+            var toPay = run.Lines.Where(x => x.IsApproved && !x.IsInactive && !x.IsPaid).ToList();
+            AdvancePaidInstallmentOnce(toPay, DateTime.UtcNow);
+            run.UpdatedOnUtc = DateTime.UtcNow;
+            RefreshTotals(run);
+            await db.SaveChangesAsync(ct);
+
+            return await RunResponse(run.BenefitRuleId, run.Year, run.Month, ct);
+        }
+
+        /// <summary>
+        /// After one-time approval: pay the next unpaid installment (PAID INST +1), push Inst_Amt
+        /// into that month's Draft Payroll. No re-approval. Calendar months alone do not auto-count —
+        /// each Pay (or Payroll Finalize Pay) advances one installment.
+        /// </summary>
+        private async Task<IActionResult> PayDueInstallmentToPayrollAsync(long runId, CancellationToken ct)
+        {
+            var run = await db.PayrollBonusRuns.Include(x => x.Lines).SingleOrDefaultAsync(x => x.Id == runId, ct);
+            if (run == null) return NotFound();
+            if (!string.Equals(run.Status, "Approved", StringComparison.OrdinalIgnoreCase))
+                return Conflict(new { message = "Approve the bonus once before monthly installment Pay." });
+
+            var unpaid = run.Lines.Where(x => x.IsApproved && !x.IsInactive && !x.IsPaid).ToList();
+            if (unpaid.Count == 0)
+                return Conflict(new { message = "All installments for this bonus are already paid. Nothing left on the active chart." });
+
+            var paidCount = unpaid.Min(x => Math.Max(0, x.PaidInstallmentCount));
+            var sample = unpaid[0];
+            var installments = Math.Max(1, sample.Installment);
+            if (paidCount >= installments)
+                return Conflict(new { message = "All installments for this bonus are already paid." });
+
+            var dueStart = new DateOnly(sample.Year, sample.Month, 1).AddMonths(paidCount);
+            var installmentNo = paidCount + 1;
+
+            // Sync while this installment is still due, then mark it paid on the bonus chart.
+            await SyncCurrentDraftPayrollAsync(dueStart.Year, dueStart.Month, ct);
+            AdvancePaidInstallmentOnce(unpaid, DateTime.UtcNow);
+            run.UpdatedOnUtc = DateTime.UtcNow;
+            await db.SaveChangesAsync(ct);
+
+            var draftExists = await db.PayrollRuns.AsNoTracking().AnyAsync(x =>
+                x.Year == dueStart.Year && x.Month == dueStart.Month &&
+                (x.Status == "Draft" || x.Status == "In Review" || x.Status == "Approved" || x.Status == "Finalized"), ct);
+
+            var maximumExpense = await db.PayrollBenefitRules.AsNoTracking()
+                .Where(x => x.Id == run.BenefitRuleId)
+                .Select(x => (decimal?)x.MaximumExpense)
+                .FirstOrDefaultAsync(ct) ?? 0;
+            var lines = await SpListQuery.ExecAsync<PayBonusLineListRow>(
+                db,
+                "EXEC dbo.usp_Pay_BonusLines_List @TenantId, @BenefitRuleId, @Year, @Month",
+                ct,
+                SpListQuery.TenantId(tenant.RequiredTenantId),
+                SpListQuery.Int("@BenefitRuleId", run.BenefitRuleId),
+                SpListQuery.Int("@Year", run.Year),
+                SpListQuery.Int("@Month", run.Month));
+            var totalInstallmentAmount = lines.Where(x => x.IsValid && !x.IsInactive).Sum(x => x.InstallmentAmount);
+            var freshRun = await db.PayrollBonusRuns.AsNoTracking()
+                .SingleAsync(x => x.Id == run.Id, ct);
+
+            return Ok(new
+            {
+                run = freshRun,
+                lines,
+                maximumExpense,
+                totalInstallmentAmount,
+                dueYear = dueStart.Year,
+                dueMonth = dueStart.Month,
+                draftPayrollSynced = draftExists,
+                message = $"Installment {installmentNo}/{installments} paid for {dueStart:MMM yyyy}. PAID INST is now {installmentNo}. Next month click Pay again (no re-approval)."
+                    + (draftExists ? "" : " Open Payroll for that month and Create/Recalculate if Draft was missing.")
+            });
+        }
+
+        /// <summary>Advance one paid installment on each line (after Draft sync). Prevents double-count with Payroll Pay via elapsed &lt; paid check.</summary>
+        private static void AdvancePaidInstallmentOnce(IEnumerable<PayrollBonusLine> lines, DateTime now)
+        {
+            foreach (var line in lines)
+            {
+                var installments = Math.Max(1, line.Installment);
+                var paid = Math.Max(0, line.PaidInstallmentCount);
+                if (paid >= installments) continue;
+
+                line.PaidInstallmentCount = paid + 1;
+                line.CurrentInstallmentNo = line.PaidInstallmentCount >= installments
+                    ? installments
+                    : line.PaidInstallmentCount + 1;
+                line.UpdatedOnUtc = now;
+                if (line.PaidInstallmentCount >= installments)
+                {
+                    line.IsPaid = true;
+                    line.PaidOnUtc = now;
+                }
+            }
+        }
+
+        /// <summary>
+        /// Bonus approval is a one-time action for the whole installment schedule. If the
+        /// matching monthly payroll already exists as Draft, update its read-only Bonus
+        /// amount immediately. Future payroll months resolve their due installment during
+        /// normal payroll generation; no repeat bonus approval is required.
+        /// </summary>
+        private async Task SyncCurrentDraftPayrollAsync(int year, int month, CancellationToken ct)
+        {
+            var payrollLines = await db.PayrollLines.Include(line => line.PayrollRun)
+                .Where(line => line.Year == year && line.Month == month &&
+                    line.PayrollRun != null && line.PayrollRun.Status == "Draft")
+                .ToListAsync(ct);
+            if (payrollLines.Count == 0) return;
+
+            var personIds = payrollLines.Select(line => line.PersonId).Distinct().ToArray();
+            var approvedBonusLines = await db.PayrollBonusLines.AsNoTracking()
+                .Include(line => line.BonusRun)
+                .Where(line => personIds.Contains(line.PersonId) && line.IsApproved &&
+                    !line.IsInactive && !line.IsPaid && line.BonusRun != null &&
+                    line.BonusRun.Status == "Approved")
+                .ToListAsync(ct);
+            var taxYear = month >= 7 ? $"{year}-{year + 1}" : $"{year - 1}-{year}";
+            var taxSlabs = await db.PayrollTaxSlabs.AsNoTracking()
+                .Where(slab => slab.IsActive && slab.TaxYear == taxYear)
+                .OrderBy(slab => slab.FromAmount)
+                .ToListAsync(ct);
+            var now = DateTime.UtcNow;
+
+            foreach (var payrollLine in payrollLines)
+            {
+                payrollLine.BonusAmount = Money(approvedBonusLines
+                    .Where(line => line.PersonId == payrollLine.PersonId && BonusInstallmentIsDue(line, year, month))
+                    .Sum(line => line.InstallmentAmount > 0 ? line.InstallmentAmount : line.TotalBonus));
+                PayrollCalculationService.Recalculate(payrollLine);
+                payrollLine.TaxAmount = PayrollTaxCalculator.CalculateMonthlyTax(payrollLine.TaxableIncome, taxSlabs);
+                PayrollCalculationService.Recalculate(payrollLine);
+                payrollLine.UpdatedOnUtc = now;
+                if (payrollLine.PayrollRun != null) payrollLine.PayrollRun.UpdatedOnUtc = now;
+            }
+
+            await db.SaveChangesAsync(ct);
+            foreach (var payrollRunId in payrollLines.Select(line => line.PayrollRunId).Distinct())
+                await payroll.RecalculateRunTotalsAsync(payrollRunId, ct);
+        }
+
+        /// <summary>
+        /// Next unpaid installment is due when payroll month is on/after that slot
+        /// (catch-up if a month was skipped). Still one installment amount per payroll pay.
+        /// </summary>
+        private static bool BonusInstallmentIsDue(PayrollBonusLine line, int year, int month)
+        {
+            var installments = Math.Max(1, line.Installment);
+            var elapsed = (year - line.Year) * 12 + month - line.Month;
+            var paid = Math.Max(0, line.PaidInstallmentCount);
+            return elapsed >= 0 && elapsed < installments && elapsed >= paid;
+        }
 
     private async Task<IActionResult> RunResponse(int benefitRuleId, int year, int month, CancellationToken ct)
     {
@@ -401,10 +527,14 @@ public sealed class PayrollBonusController(
         if (run == null)
             return Ok(new { run = (object?)null, lines = Array.Empty<object>(), maximumExpense, totalInstallmentAmount = 0m });
 
-        var lines = await db.PayrollBonusLines.AsNoTracking()
-            .Where(x => x.BonusRunId == run.Id)
-            .OrderBy(x => x.FullName)
-            .ToListAsync(ct);
+        var lines = await SpListQuery.ExecAsync<PayBonusLineListRow>(
+            db,
+            "EXEC dbo.usp_Pay_BonusLines_List @TenantId, @BenefitRuleId, @Year, @Month",
+            ct,
+            SpListQuery.TenantId(tenant.RequiredTenantId),
+            SpListQuery.Int("@BenefitRuleId", benefitRuleId),
+            SpListQuery.Int("@Year", year),
+            SpListQuery.Int("@Month", month));
         var totalInstallmentAmount = lines.Where(x => x.IsValid && !x.IsInactive).Sum(x => x.InstallmentAmount);
         return Ok(new { run, lines, maximumExpense, totalInstallmentAmount });
     }
@@ -439,8 +569,49 @@ public sealed class PayrollBonusController(
 
     private static void ApplyLineRule(PayrollBonusLine line, string? changedField)
     {
+        // Not eligible → keep staff on grid with zeros (do not mirror BASIC into BONUS AMT).
+        if (!line.IsValid || line.IsInactive)
+        {
+            line.BonusAmount = 0;
+            line.BasicBonus = 0;
+            line.ServiceBonus = 0;
+            line.AttendanceBonus = 0;
+            line.AssessmentBonus = 0;
+            line.LeaveBonus = 0;
+            line.DisciplineBonus = 0;
+            line.BasicPercent = 0;
+            line.ServicePercent = 0;
+            line.AttendancePercent = 0;
+            line.AssessmentPercent = 0;
+            line.LeavePercent = 0;
+            line.DisciplinePercent = 0;
+            line.TotalBonus = 0;
+            line.InstallmentAmount = 0;
+            return;
+        }
+
         var field = changedField?.Trim().ToLowerInvariant();
-        if (string.IsNullOrWhiteSpace(field) || field == "bonusamount" || PercentFields.Contains(field))
+        var percentTotal = line.BasicPercent + line.ServicePercent + line.AttendancePercent
+            + line.AssessmentPercent + line.LeavePercent + line.DisciplinePercent;
+
+        // Flat Figure bonus (Amount = 5000, all distribution % blank/0): T-Bonus must equal BONUS AMT.
+        // Component % mode: T-Bonus = sum of BASIC-B … DISCIPLINE-B from those percentages.
+        if (percentTotal <= 0 && line.BonusAmount > 0)
+        {
+            line.BasicPercent = 100m;
+            line.ServicePercent = 0;
+            line.AttendancePercent = 0;
+            line.AssessmentPercent = 0;
+            line.LeavePercent = 0;
+            line.DisciplinePercent = 0;
+            line.BasicBonus = Money(line.BonusAmount);
+            line.ServiceBonus = 0;
+            line.AttendanceBonus = 0;
+            line.AssessmentBonus = 0;
+            line.LeaveBonus = 0;
+            line.DisciplineBonus = 0;
+        }
+        else if (string.IsNullOrWhiteSpace(field) || field == "bonusamount" || PercentFields.Contains(field))
         {
             line.BasicBonus = Money(line.BonusAmount * line.BasicPercent / 100m);
             line.ServiceBonus = Money(line.BonusAmount * line.ServicePercent / 100m);
@@ -454,9 +625,9 @@ public sealed class PayrollBonusController(
             SyncPercentFromAmount(line, field);
         }
 
-        line.TotalBonus = line.IsValid && !line.IsInactive
-            ? Money(line.BasicBonus + line.ServiceBonus + line.AttendanceBonus + line.AssessmentBonus + line.LeaveBonus + line.DisciplineBonus)
-            : 0;
+        line.TotalBonus = Money(line.BasicBonus + line.ServiceBonus + line.AttendanceBonus + line.AssessmentBonus + line.LeaveBonus + line.DisciplineBonus);
+        if (line.TotalBonus <= 0 && line.BonusAmount > 0)
+            line.TotalBonus = Money(line.BonusAmount);
         line.InstallmentAmount = line.Installment > 0 ? Money(line.TotalBonus / line.Installment) : 0;
     }
 
@@ -485,58 +656,6 @@ public sealed class PayrollBonusController(
                 line.DisciplinePercent = Money(line.DisciplineBonus * percent);
                 break;
         }
-    }
-
-    private static decimal ResolveDefaultPercent(PayrollBenefitRule rule)
-    {
-        var value = rule.Parameters.Where(x => x.CompanyShare > 0 && x.CompanyShare <= 100).Select(x => x.CompanyShare).FirstOrDefault();
-        if (value <= 0 && rule.CompanyShare is > 0 and <= 100) value = rule.CompanyShare;
-        return value > 0 ? value : 100m;
-    }
-
-    private static PayrollBenefitParameter? ResolveBonusParameter(
-        PayrollBenefitRule rule,
-        int month,
-        DateOnly periodStart,
-        DateOnly periodEnd,
-        decimal serviceYears) =>
-        rule.Parameters
-            .Where(parameter => parameter.BonusDistribution != null
-                && (!parameter.PeriodFrom.HasValue || parameter.PeriodFrom <= periodEnd)
-                && (!parameter.PeriodTo.HasValue || parameter.PeriodTo >= periodStart)
-                && serviceYears * 12m >= parameter.MinimumService
-                && (!parameter.BonusDistribution!.Month.HasValue || parameter.BonusDistribution.Month == month))
-            .OrderByDescending(parameter => parameter.MinimumService)
-            .FirstOrDefault();
-
-    private static decimal ResolveBonusAmount(PayrollBenefitParameter? parameter, PersonHrProfile? profile, decimal salary)
-    {
-        if (parameter == null) return salary;
-        if (parameter.AmountType.Equals("Figure", StringComparison.OrdinalIgnoreCase))
-            return Money(parameter.Amount);
-
-        var payReference = parameter.PayType.Trim().ToLowerInvariant() switch
-        {
-            "basic" => profile?.BasicSalary ?? salary,
-            "current" or "currentpay" => profile?.CurrentPay is > 0 ? profile.CurrentPay.Value : salary,
-            // Gross and Net snapshots are not available while a bonus run is being generated.
-            // Current pay is the safe persisted salary fallback until payroll finalization.
-            "gross" or "net" => salary,
-            _ => salary
-        };
-        return Money(payReference * parameter.Percentage / 100m);
-    }
-
-    private static bool IsOrganizationDescendant(int candidateId, int ancestorId, IReadOnlyDictionary<int, OrganizationTree> nodes)
-    {
-        var currentId = (int?)candidateId;
-        var visited = new HashSet<int>();
-        while (currentId.HasValue && visited.Add(currentId.Value) && nodes.TryGetValue(currentId.Value, out var node))
-        {
-            if (node.Id == ancestorId) return true;
-            currentId = node.ParentId;
-        }
-        return false;
     }
 
     private string ActorName() => User.FindFirstValue(ClaimTypes.Name) ?? User.FindFirstValue(ClaimTypes.Email) ?? User.Identity?.Name ?? "User";
@@ -584,9 +703,42 @@ public sealed class PayrollBonusController(
         if (action == "VIEW" && await rbac.HasAccessAsync(staffId.Value, $"MENU_{menuId.Value}")) return null;
         return await rbac.HasAccessAsync(staffId.Value, $"MENU_{menuId.Value}_{action}") ? null : Forbid();
     }
+
+    /// <summary>
+    /// Same EffectiveStart as usp_Pay_BonusGenerate_Candidates DistReady:
+    /// InstallmentStart, else Dist Month + ValidFrom year (or UTC year).
+    /// </summary>
+    private async Task<(int Year, int Month)?> ResolveBonusPeriodAsync(int benefitRuleId, CancellationToken ct)
+    {
+        var rule = await db.PayrollBenefitRules.AsNoTracking()
+            .Include(x => x.Parameters).ThenInclude(x => x.BonusDistribution)
+            .SingleOrDefaultAsync(x => x.Id == benefitRuleId && x.BenefitsType == "Bonus", ct);
+        return rule == null ? null : ResolveBonusPeriodFromRule(rule);
+    }
+
+    private static (int Year, int Month)? ResolveBonusPeriodFromRule(PayrollBenefitRule rule)
+    {
+        var dist = rule.Parameters
+            .Where(p => p.BonusDistribution != null)
+            .OrderByDescending(p => p.MinimumService)
+            .ThenByDescending(p => p.Id)
+            .Select(p => p.BonusDistribution!)
+            .FirstOrDefault();
+        if (dist == null) return null;
+
+        DateOnly? start = dist.InstallmentStart;
+        if (start == null && dist.Month is >= 1 and <= 12)
+        {
+            var y = rule.ValidFrom?.Year ?? DateTime.UtcNow.Year;
+            start = new DateOnly(y, dist.Month.Value, 1);
+        }
+        if (start == null) return null;
+        return (start.Value.Year, start.Value.Month);
+    }
 }
 
-public sealed record GenerateBonusRequest(int BenefitRuleId, int Year, int Month, bool Regenerate = false);
+/// <summary>Year/Month optional — when omitted/0, server uses Bonus Distribution period for the rule.</summary>
+public sealed record GenerateBonusRequest(int BenefitRuleId, int Year = 0, int Month = 0, bool Regenerate = false);
 public sealed record UpdateBonusLineRequest(
     decimal BonusAmount,
     decimal BasicBonus,

@@ -1,5 +1,6 @@
 using Accounts.Data;
 using Accounts.Models;
+using Accounts.Models.SpListRows;
 using Accounts.Services.Interfaces;
 using Microsoft.EntityFrameworkCore;
 
@@ -24,11 +25,8 @@ namespace Accounts.Services.Services
             _tenantService = tenantService;
         }
 
-        public async Task<IEnumerable<VacancyDto>> GetAllAsync()
-        {
-            var list = await WithIncludes().OrderBy(v => v.VacancyCode).ToListAsync();
-            return list.Select(MapToDto);
-        }
+        public async Task<IEnumerable<VacancyDto>> GetAllAsync() =>
+            await LoadVacanciesAsync(filledFilter: null);
 
         public async Task<VacancyDto?> GetByIdAsync(Guid id)
         {
@@ -36,47 +34,78 @@ namespace Accounts.Services.Services
             return v == null ? null : MapToDto(v);
         }
 
-        public async Task<IEnumerable<VacancyDto>> GetVacantAsync()
-        {
-            var list = await WithIncludes().Where(v => !v.IsFilled).ToListAsync();
-            return list.Select(MapToDto);
-        }
+        public async Task<IEnumerable<VacancyDto>> GetVacantAsync() =>
+            await LoadVacanciesAsync(filledFilter: "0");
 
-        public async Task<IEnumerable<VacancyDto>> GetFilledAsync()
-        {
-            var list = await WithIncludes().Where(v => v.IsFilled).ToListAsync();
-            return list.Select(MapToDto);
-        }
+        public async Task<IEnumerable<VacancyDto>> GetFilledAsync() =>
+            await LoadVacanciesAsync(filledFilter: "1");
 
         public async Task<IEnumerable<VacancyDto>> GetByNodeAsync(int orgId)
         {
-            var list = await WithIncludes().Where(v => v.OrganizationId == orgId).ToListAsync();
-            return list.Select(MapToDto);
+            var all = await LoadVacanciesAsync(filledFilter: null);
+            return all.Where(v => v.OrganizationId == orgId);
         }
 
         public async Task<IEnumerable<OrgVacancyReportDto>> GetReportAsync()
         {
-            var list = await WithIncludes().OrderBy(v => v.Organization!.Name).ToListAsync();
-            return list.Select(v =>
+            var rows = await LoadVacanciesAsync(filledFilter: null);
+            return rows.Select(v => new OrgVacancyReportDto
             {
-                var node = v.Organization;
-                var p1 = node?.Parent;
-                var p2 = p1?.Parent;
-                return new OrgVacancyReportDto
-                {
-                    Country = p2?.Name ?? "-",
-                    Company = p1?.Name ?? "-",
-                    Branch = node?.Name ?? "-",
-                    VacancyCode = v.VacancyCode,
-                    Designation = v.ResolvedDesignation,
-                    Department = v.Department,
-                    IsFilled = v.IsFilled,
-                    EmployeeName = v.Staff?.Person?.FullName,
-                    EmployeeEmail = v.Staff?.Person?.Email,
-                    JoiningDate = null
-                };
+                Country = v.CountryName ?? "-",
+                Company = v.CompanyName ?? "-",
+                Branch = v.BranchName ?? "-",
+                VacancyCode = v.VacancyCode,
+                Designation = v.Designation,
+                Department = v.Department,
+                IsFilled = v.IsFilled,
+                EmployeeName = v.Employee?.FullName,
+                EmployeeEmail = v.Employee?.Email,
+                JoiningDate = null
             });
         }
+
+        private async Task<List<VacancyDto>> LoadVacanciesAsync(string? filledFilter)
+        {
+            var rows = await SpListQuery.ExecAsync<HrVacancyListRow>(
+                _db,
+                "EXEC dbo.usp_Hr_Vacancies_List @TenantId, @FilledFilter",
+                CancellationToken.None,
+                SpListQuery.TenantId(_tenantService.RequiredTenantId),
+                SpListQuery.NVarChar("@FilledFilter", filledFilter));
+            return rows.Select(MapVacancyRow).ToList();
+        }
+
+        private static VacancyDto MapVacancyRow(HrVacancyListRow row) => new()
+        {
+            VacancyId = row.VacancyId,
+            OrganizationId = row.OrganizationId,
+            BranchName = row.BranchName,
+            CompanyName = row.CompanyName,
+            CountryName = row.CountryName,
+            NodeLabel = row.NodeLabel,
+            VacancyCode = row.VacancyCode,
+            DesignationId = row.DesignationId,
+            Designation = row.Designation,
+            Department = row.Department,
+            IsFilled = row.IsFilled,
+            CreatedDate = row.CreatedDate,
+            Employee = row.EmployeeStaffId == null ? null : new StaffDto
+            {
+                StaffId = row.EmployeeStaffId.Value,
+                FullName = row.EmployeeFullName ?? "-",
+                Email = row.EmployeeEmail,
+                Phone = row.EmployeePhone,
+                PhotoUrl = row.EmployeePhotoUrl,
+                VacancyId = row.VacancyId,
+                VacancyCode = row.VacancyCode,
+                Designation = row.Designation,
+                Department = row.Department,
+                BranchName = row.BranchName,
+                CompanyName = row.CompanyName,
+                CountryName = row.CountryName,
+                JoiningDate = DateTime.UtcNow
+            }
+        };
 
         public async Task<string?> PreviewCodeAsync(int organizationId, string designation)
         {

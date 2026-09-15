@@ -1,6 +1,7 @@
 using System.Security.Claims;
 using Accounts.Data;
 using Accounts.Models;
+using Accounts.Models.SpListRows;
 using Accounts.Services.Interfaces;
 using Accounts.Services.Services;
 using Microsoft.AspNetCore.Authorization;
@@ -36,10 +37,11 @@ public sealed class SalaryScalesController : ControllerBase
         if (!_tenantService.TenantId.HasValue) return Forbid();
         if (!await HasScaleActionAsync("VIEW", ct)) return Forbid();
 
-        var rows = await _db.SalaryScales.AsNoTracking()
-            .OrderBy(scale => scale.DisplayOrder == 0 ? int.MaxValue : scale.DisplayOrder)
-            .ThenBy(scale => scale.ScaleName)
-            .ToListAsync(ct);
+        var rows = await SpListQuery.ExecAsync<PaySalaryScaleListRow>(
+            _db,
+            "EXEC dbo.usp_Pay_SalaryScales_List @TenantId",
+            ct,
+            SpListQuery.TenantId(_tenantService.RequiredTenantId));
         return Ok(rows.Select(ToDto).ToList());
     }
 
@@ -237,6 +239,39 @@ public sealed class SalaryScalesController : ControllerBase
     {
         var trimmed = string.IsNullOrWhiteSpace(value) ? fallback : value.Trim();
         return trimmed.Length <= maxLength ? trimmed : trimmed[..maxLength];
+    }
+
+    private static SalaryScaleDto ToDto(PaySalaryScaleListRow scale)
+    {
+        var months = PayrollCurrentPayCalculator.ParseMonthsCsv(scale.IncrementMonths);
+        if (months.Count == 0 && scale.IncrementMonth is >= 1 and <= 12)
+            months = new[] { scale.IncrementMonth.Value };
+
+        return new()
+        {
+            Id = scale.Id,
+            ScaleName = scale.ScaleName,
+            DisplayOrder = scale.DisplayOrder,
+            RuleRegistrationId = scale.RuleRegistrationId,
+            ApplicableType = scale.ApplicableType,
+            ApplyAfter = scale.ApplyAfter,
+            IncrementMonth = months.Count > 0 ? months[0] : scale.IncrementMonth,
+            IncrementMonths = months.ToList(),
+            ScaleType = scale.ScaleType,
+            PayMode = scale.PayMode,
+            FrequencyType = scale.FrequencyType,
+            ContractType = scale.ContractType,
+            RateType = scale.RateType,
+            BasicSalary = scale.BasicSalary,
+            MaximumSalary = scale.MaximumSalary,
+            YearlyIncrement = scale.YearlyIncrement,
+            GrossSalary = scale.GrossSalary,
+            CurrentPay = scale.CurrentPay,
+            MedicalAllowance = scale.MedicalAllowance,
+            TravellingAllowance = scale.TravellingAllowance,
+            Other = scale.Other,
+            IsActive = scale.IsActive
+        };
     }
 
     private static SalaryScaleDto ToDto(SalaryScale scale)

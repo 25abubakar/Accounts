@@ -1,6 +1,7 @@
 using System.Security.Claims;
 using Accounts.Data;
 using Accounts.Models;
+using Accounts.Models.SpListRows;
 using Accounts.Services.Interfaces;
 using Accounts.Services.Services;
 using Microsoft.AspNetCore.Authorization;
@@ -20,10 +21,12 @@ public sealed class PayScaleSetupController(
     public async Task<IActionResult> RuleRegistrations(CancellationToken ct)
     {
         var denied = await Guard("VIEW", ct); if (denied != null) return denied;
-        return Ok(await db.PayScaleRuleRegistrations.AsNoTracking()
-            .OrderByDescending(x => x.DateFrom).ThenBy(x => x.RuleType).ThenBy(x => x.Name)
-            .Select(x => new { x.Id, x.RuleType, x.Name, x.DateFrom, x.DateTo })
-            .ToListAsync(ct));
+        var rows = await SpListQuery.ExecAsync<PayRuleRegistrationListRow>(
+            db,
+            "EXEC dbo.usp_Pay_RuleRegistrations_List @TenantId",
+            ct,
+            SpListQuery.TenantId(tenant.RequiredTenantId));
+        return Ok(rows);
     }
 
     [HttpPost("rule-registrations")]
@@ -65,17 +68,17 @@ public sealed class PayScaleSetupController(
     {
         var denied = await Guard("VIEW", ct); if (denied != null) return denied;
         var category = NormalizeAllowanceCategory(allowanceCategory);
-        return Ok(await db.PayScaleAllowances.AsNoTracking()
-            .Where(x => x.AllowanceCategory == category)
-            .OrderBy(x => x.Id)
-            .Select(x => new AllowanceRowDto(
-                x.Id, x.AllowanceReference, x.Name, x.SalaryScaleId, x.SalaryScale != null ? x.SalaryScale.ScaleName : null,
-                x.AllowanceTypeId, x.AllowanceType!.Name, x.ContractType, x.FrequencyType,
-                x.RateType, x.PayType, x.PayValue, x.CalculatedValue, x.AllowanceCategory,
-                x.DesignationId, x.Designation != null ? x.Designation.Name : null,
-                x.ShiftLookupValueId, x.ShiftLookupValue != null ? x.ShiftLookupValue.ValueCode : null,
-                x.ShiftLookupValue != null ? x.ShiftLookupValue.DisplayText : null))
-            .ToListAsync(ct));
+        var rows = await SpListQuery.ExecAsync<PayAllowanceListRow>(
+            db,
+            "EXEC dbo.usp_Pay_Allowances_List @TenantId, @AllowanceCategory",
+            ct,
+            SpListQuery.TenantId(tenant.RequiredTenantId),
+            SpListQuery.NVarChar("@AllowanceCategory", category));
+        return Ok(rows.Select(x => new AllowanceRowDto(
+            x.Id, x.AllowanceRef, x.AllowName, x.SalaryScaleId, x.Scale,
+            x.AllowanceTypeId, x.AllowanceType ?? "", x.ContractType, x.FrequencyType,
+            x.RateType, x.PayType, x.PayValue, x.CalculatedValue, x.AllowanceCategory,
+            x.DesignationId, x.DesignationName, x.ShiftLookupValueId, x.ShiftCode, x.ShiftName)));
     }
 
     [HttpGet("allowance-lookups")]
@@ -181,12 +184,15 @@ public sealed class PayScaleSetupController(
     public async Task<IActionResult> Tadas(CancellationToken ct)
     {
         var denied = await Guard("VIEW", ct); if (denied != null) return denied;
-        return Ok(await db.PayScaleTadas.AsNoTracking().OrderBy(x => x.Id)
-            .Select(x => new TadaRowDto(
-                x.Id, x.TadaReference, x.Name, x.SalaryScaleId, x.SalaryScale!.ScaleName,
-                x.TadaTypeId, x.TadaType!.Name, x.ContractType, x.FrequencyType,
-                x.RateType, x.PayValue, x.CalculatedValue))
-            .ToListAsync(ct));
+        var rows = await SpListQuery.ExecAsync<PayTadaListRow>(
+            db,
+            "EXEC dbo.usp_Pay_Tadas_List @TenantId",
+            ct,
+            SpListQuery.TenantId(tenant.RequiredTenantId));
+        return Ok(rows.Select(x => new TadaRowDto(
+            x.Id, x.TadaRef, x.Name, x.SalaryScaleId, x.SalaryScaleName ?? "",
+            x.TadaTypeId, x.TadaType ?? "", x.ContractType, x.FrequencyType,
+            x.RateType, x.PayValue, x.CalculatedValue)));
     }
 
     [HttpPost("tadas")]
@@ -219,12 +225,15 @@ public sealed class PayScaleSetupController(
     public async Task<IActionResult> Leaves(CancellationToken ct)
     {
         var denied = await Guard("VIEW", ct); if (denied != null) return denied;
-        return Ok(await db.PayScaleLeaves.AsNoTracking().OrderBy(x => x.Id)
-            .Select(x => new LeaveRowDto(
-                x.Id, x.LeaveReference, x.Name, x.SalaryScaleId, x.SalaryScale!.ScaleName,
-                x.LeaveTypeId, x.LeaveType!.Name, x.ContractType, x.FrequencyType, x.RateType,
-                x.TotalLeave, x.ApplicableType, x.ApplicableAfter, x.ValueType, x.Type, x.ApplicableValue))
-            .ToListAsync(ct));
+        var rows = await SpListQuery.ExecAsync<PayLeaveListRow>(
+            db,
+            "EXEC dbo.usp_Pay_Leaves_List @TenantId",
+            ct,
+            SpListQuery.TenantId(tenant.RequiredTenantId));
+        return Ok(rows.Select(x => new LeaveRowDto(
+            x.Id, x.LeaveRef, x.Name, x.SalaryScaleId, x.SalaryScaleName ?? "",
+            x.LeaveTypeId, x.LeaveType ?? "", x.ContractType, x.FrequencyType, x.RateType,
+            x.TotalLeave, x.ApplicableType, x.ApplicableAfter, x.ValueType, x.Type, x.ApplicableValue)));
     }
 
     [HttpPost("leaves")]
@@ -322,12 +331,12 @@ public sealed class PayScaleSetupController(
     public async Task<IActionResult> Packages(CancellationToken ct)
     {
         var denied = await Guard("VIEW", ct); if (denied != null) return denied;
-        return Ok(await db.SalaryPackages.AsNoTracking().OrderBy(x => x.Name).Select(x => new
-        {
-            x.Id, x.Code, x.Name, x.SalaryScaleId, SalaryScaleName = x.SalaryScale!.ScaleName,
-            x.PayRuleId, PayRuleName = x.PayRule!.Name, x.IsActive, x.Description,
-            AllowanceRef = x.AllowanceReference, TadaRef = x.TadaReference, LeaveRef = x.LeaveReference
-        }).ToListAsync(ct));
+        var rows = await SpListQuery.ExecAsync<PayPackageListRow>(
+            db,
+            "EXEC dbo.usp_Pay_Packages_List @TenantId",
+            ct,
+            SpListQuery.TenantId(tenant.RequiredTenantId));
+        return Ok(rows);
     }
 
     [HttpGet("package-lookups")]

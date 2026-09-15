@@ -1,6 +1,7 @@
 using System.Security.Claims;
 using Accounts.Data;
 using Accounts.Models;
+using Accounts.Models.SpListRows;
 using Accounts.Services.Interfaces;
 using Accounts.Services.Services;
 using Microsoft.AspNetCore.Authorization;
@@ -268,10 +269,17 @@ public sealed class LibraryController : ControllerBase
         if (_tenant.IsSuperAdmin) return Ok(Array.Empty<LibraryDocumentDto>());
         if (!_tenant.TenantId.HasValue || !await HasActionAsync(DocumentsRoute, "VIEW", ct)) return Forbid();
 
-        var query = _db.LibraryDocuments.AsNoTracking().Include(x => x.LibraryType).Where(x => x.AssetKind == DocumentKind);
-        if (typeId.HasValue) query = query.Where(x => x.LibraryTypeId == typeId.Value);
-        var rows = await query.OrderByDescending(x => x.CreatedOnUtc).ToListAsync(ct);
-        return Ok(rows.Select(ToDocumentDto));
+        var rows = await SpListQuery.ExecAsync<LibraryDocumentListRow>(
+            _db,
+            "EXEC dbo.usp_Library_Documents_List @TenantId, @AssetKind, @TypeId",
+            ct,
+            SpListQuery.TenantId(_tenant.RequiredTenantId),
+            SpListQuery.NVarChar("@AssetKind", DocumentKind),
+            SpListQuery.IntNullable("@TypeId", typeId));
+        return Ok(rows.Select(row => new LibraryDocumentDto(
+            row.Id, row.LibraryTypeId, row.LibraryTypeName ?? string.Empty, row.Title, row.Description,
+            row.OriginalFileName, row.ContentType, row.FileExtension, row.FileSizeBytes, row.IsActive,
+            row.CreatedOnUtc, $"/api/library/documents/{row.Id}/download")));
     }
 
     [HttpPost("documents")]
@@ -387,10 +395,15 @@ public sealed class LibraryController : ControllerBase
     {
         if (_tenant.IsSuperAdmin) return Ok(Array.Empty<LibraryTemplateDto>());
         if (!_tenant.TenantId.HasValue || !await HasActionAsync(DocumentsRoute, "VIEW", ct)) return Forbid();
-        var query = _db.LibraryTemplates.AsNoTracking().Include(x => x.LibraryType).AsQueryable();
-        if (typeId.HasValue) query = query.Where(x => x.LibraryTypeId == typeId.Value);
-        var rows = await query.OrderByDescending(x => x.CreatedOnUtc).ToListAsync(ct);
-        return Ok(rows.Select(ToTemplateDto));
+        var rows = await SpListQuery.ExecAsync<LibraryTemplateListRow>(
+            _db,
+            "EXEC dbo.usp_Library_Templates_List @TenantId, @TypeId",
+            ct,
+            SpListQuery.TenantId(_tenant.RequiredTenantId),
+            SpListQuery.IntNullable("@TypeId", typeId));
+        return Ok(rows.Select(row => new LibraryTemplateDto(
+            row.Id, row.LibraryTypeId, row.LibraryTypeName ?? string.Empty, row.Name, row.Description,
+            row.Content, row.IsActive, row.CreatedOnUtc)));
     }
 
     [HttpPost("templates")]
@@ -451,10 +464,17 @@ public sealed class LibraryController : ControllerBase
     {
         if (_tenant.IsSuperAdmin) return Ok(Array.Empty<LibraryPictureDto>());
         if (!_tenant.TenantId.HasValue || !await HasActionAsync(DocumentsRoute, "VIEW", ct)) return Forbid();
-        var query = _db.LibraryDocuments.AsNoTracking().Include(x => x.LibraryType).Where(x => x.AssetKind == PictureKind);
-        if (typeId.HasValue) query = query.Where(x => x.LibraryTypeId == typeId.Value);
-        var rows = await query.OrderByDescending(x => x.CreatedOnUtc).ToListAsync(ct);
-        return Ok(rows.Select(ToPictureDto));
+        var rows = await SpListQuery.ExecAsync<LibraryDocumentListRow>(
+            _db,
+            "EXEC dbo.usp_Library_Documents_List @TenantId, @AssetKind, @TypeId",
+            ct,
+            SpListQuery.TenantId(_tenant.RequiredTenantId),
+            SpListQuery.NVarChar("@AssetKind", PictureKind),
+            SpListQuery.IntNullable("@TypeId", typeId));
+        return Ok(rows.Select(row => new LibraryPictureDto(
+            row.Id, row.LibraryTypeId, row.LibraryTypeName ?? string.Empty, row.Title, row.Description,
+            row.OriginalFileName, row.ContentType, row.FileExtension, row.FileSizeBytes, row.IsActive,
+            row.CreatedOnUtc, $"/api/library/pictures/{row.Id}/content", $"/api/library/pictures/{row.Id}/download")));
     }
 
     [HttpPost("pictures")]
@@ -574,10 +594,16 @@ public sealed class LibraryController : ControllerBase
     {
         if (_tenant.IsSuperAdmin) return Ok(Array.Empty<InvoiceDto>());
         if (!_tenant.TenantId.HasValue || !await HasActionAsync(InvoicesRoute, "VIEW", ct)) return Forbid();
-        var rows = await _db.GeneratedInvoices.AsNoTracking().Include(x => x.Lines)
-            .OrderByDescending(x => x.IssueDate).ThenByDescending(x => x.Id)
-            .ToListAsync(ct);
-        return Ok(rows.Select(ToInvoiceDto));
+        var rows = await SpListQuery.ExecAsync<LibraryInvoiceListRow>(
+            _db,
+            "EXEC dbo.usp_Library_Invoices_List @TenantId",
+            ct,
+            SpListQuery.TenantId(_tenant.RequiredTenantId));
+        return Ok(rows.Select(row => new InvoiceDto(
+            row.Id, row.InvoiceNumber, row.CustomerName, row.CustomerEmail, row.CustomerAddress,
+            row.IssueDate, row.DueDate, row.Currency, row.Subtotal, row.TaxRate, row.TaxAmount,
+            row.DiscountAmount, row.TotalAmount, row.Status, row.Notes, row.CreatedOnUtc,
+            new List<InvoiceLineDto>())));
     }
 
     [HttpGet("invoices/{id:long}")]

@@ -6,7 +6,7 @@ namespace Accounts.Services.Services;
 
 /// <summary>
 /// Resolves payroll-aligned monthly gross for attendance deduction rates.
-/// Gross = CurrentPay (basic + ScaleDate increments) + allowances/TADA + approved bonus installment.
+/// Gross = CurrentPay (DOJ years + Max→next-scale) + allowances/TADA + SalaryAdjustment + approved bonus installment.
 /// Does not include overtime or attendance adjustment (those are deduction outputs).
 /// </summary>
 public sealed class PayrollGrossSalaryResolver(ApplicationDbContext db)
@@ -15,7 +15,8 @@ public sealed class PayrollGrossSalaryResolver(ApplicationDbContext db)
         decimal CurrentPay,
         decimal AllowanceAmount,
         decimal BonusAmount,
-        decimal GrossSalary);
+        decimal GrossSalary,
+        decimal SalaryAdjustment = 0);
 
     public async Task<IReadOnlyDictionary<Guid, SalaryBasis>> ResolveAsync(
         int year,
@@ -94,6 +95,16 @@ public sealed class PayrollGrossSalaryResolver(ApplicationDbContext db)
             else if (!string.IsNullOrWhiteSpace(profile?.Scale))
                 scaleByName.TryGetValue(profile.Scale.Trim(), out scale);
 
+            var progression = PayrollScaleProgression.Resolve(
+                scale,
+                scales,
+                profile?.ScaleDate ?? profile?.JoiningDate,
+                periodEnd,
+                profile?.BasicSalary,
+                profile?.IncrementSalary,
+                profile?.MaxSalary);
+            scale = progression.EffectiveScale ?? scale;
+
             designationByStaff.TryGetValue(employee.StaffId, out var designationId);
             shiftByStaff.TryGetValue(employee.StaffId, out var shiftCode);
             var packageAllowanceRefs = ParsePackageRefs(package?.AllowanceReference);
@@ -132,25 +143,15 @@ public sealed class PayrollGrossSalaryResolver(ApplicationDbContext db)
             }
 
             var allowanceAmount = Money(generalAllowance + apptAllowance + shiftAllowance);
-            var scaleBasic = Money(profile?.BasicSalary is > 0 ? profile.BasicSalary.Value : scale?.BasicSalary ?? 0);
-            var incrementSalary = Money(profile?.IncrementSalary is > 0 ? profile.IncrementSalary.Value : scale?.YearlyIncrement ?? 0);
-            var maxSalary = Money(profile?.MaxSalary is > 0 ? profile.MaxSalary.Value : scale?.MaximumSalary ?? 0);
-            var currentPay = PayrollCurrentPayCalculator.Compute(
-                scaleBasic,
-                incrementSalary,
-                maxSalary,
-                profile?.ScaleDate,
-                periodEnd,
-                scale?.ApplyAfter,
-                PayrollCurrentPayCalculator.ParseMonthsCsv(scale?.IncrementMonths));
-            var pay = Money(currentPay > 0 ? currentPay : scaleBasic);
+            var pay = Money(progression.CurrentPay > 0 ? progression.CurrentPay : progression.ScaleBasic);
+            var salaryAdjustment = Money(Math.Max(0, profile?.SalaryAdjustment ?? 0));
 
             var bonusAmount = Money(bonusLines
                 .Where(x => x.PersonId == employee.PersonId && IsBonusInstallmentDue(x, year, month))
                 .Sum(x => x.InstallmentAmount > 0 ? x.InstallmentAmount : x.TotalBonus));
 
-            var gross = Money(pay + allowanceAmount + bonusAmount);
-            result[employee.PersonId] = new SalaryBasis(pay, allowanceAmount, bonusAmount, gross);
+            var gross = Money(pay + allowanceAmount + salaryAdjustment + bonusAmount);
+            result[employee.PersonId] = new SalaryBasis(pay, allowanceAmount, bonusAmount, gross, salaryAdjustment);
         }
 
         foreach (var missing in idSet.Where(id => !result.ContainsKey(id)))
@@ -165,7 +166,7 @@ public sealed class PayrollGrossSalaryResolver(ApplicationDbContext db)
         var elapsed = (year - line.Year) * 12 + month - line.Month;
         return elapsed >= 0
             && elapsed < installments
-            && elapsed == Math.Max(0, line.PaidInstallmentCount);
+            && elapsed >= Math.Max(0, line.PaidInstallmentCount);
     }
 
     private static bool IsAllowanceApplicable(PayScaleAllowance allowance, int? designationId, string? shiftCode)

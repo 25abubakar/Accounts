@@ -14,8 +14,16 @@ public sealed class StaffAssessment : ITenantEntity
     public byte AssessmentMonth { get; set; }
     public byte? Rating { get; set; }
     [Column(TypeName = "decimal(18,2)")] public decimal? Amount { get; set; }
+    [MaxLength(500)] public string? Remarks { get; set; }
     public bool IsLocked { get; set; }
     public DateTime? SubmittedDateUtc { get; set; }
+    public bool IsFinalApproved { get; set; }
+    [MaxLength(450)] public string? FinalApprovedByUserId { get; set; }
+    [MaxLength(200)] public string? FinalApprovedByName { get; set; }
+    public DateTime? FinalApprovedDateUtc { get; set; }
+    public bool IsPostedToPayroll { get; set; }
+    public long? PostedPayrollRunId { get; set; }
+    public DateTime? PostedToPayrollDateUtc { get; set; }
     public DateTime CreatedDateUtc { get; set; }
     public DateTime? ModifiedDateUtc { get; set; }
 }

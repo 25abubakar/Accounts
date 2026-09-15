@@ -1,5 +1,6 @@
 using Accounts.Data;
 using Accounts.Models;
+using Accounts.Models.SpListRows;
 using Accounts.Services.Interfaces;
 using Accounts.Services.Services;
 using Microsoft.AspNetCore.Authorization;
@@ -33,36 +34,35 @@ namespace Accounts.Controllers
                 ? null
                 : await ResolveVisibleReportToPersonIdsAsync(includeSelf: true, ct);
 
-            var rows = await _db.Persons.AsNoTracking()
-                .Where(p => p.Staff != null)
-                .Where(p => fullAccess || visiblePersonIds!.Contains(p.PersonId))
-                .Select(p => new
-                {
-                    p.PersonId, p.FullName, p.ProfilePhotoUrl, p.IsActive,
-                    StaffId = p.Staff!.StaffId,
-                    EmployeeId = p.Staff.LoginId,
-                    Department = p.Staff.Vacancy != null
-                        ? (p.Staff.Vacancy.Organization != null && p.Staff.Vacancy.Organization.Label == "Department"
-                            ? p.Staff.Vacancy.Organization.Name : p.Staff.Vacancy.Department) : null,
-                    Designation = p.Staff.Vacancy != null
-                        ? (p.Staff.Vacancy.DesignationNav != null ? p.Staff.Vacancy.DesignationNav.Name : p.Staff.Vacancy.JobTitle) : null,
-                    p.ReportsToPersonId,
-                    ReportsToName = p.ReportsToPerson != null ? p.ReportsToPerson.FullName : null,
-                    ReportsToDepartment = p.ReportsToPerson != null && p.ReportsToPerson.Staff != null && p.ReportsToPerson.Staff.Vacancy != null
-                        ? (p.ReportsToPerson.Staff.Vacancy.Organization != null && p.ReportsToPerson.Staff.Vacancy.Organization.Label == "Department"
-                            ? p.ReportsToPerson.Staff.Vacancy.Organization.Name : p.ReportsToPerson.Staff.Vacancy.Department) : null,
-                    ReportsToDesignation = p.ReportsToPerson != null && p.ReportsToPerson.Staff != null && p.ReportsToPerson.Staff.Vacancy != null
-                        ? (p.ReportsToPerson.Staff.Vacancy.DesignationNav != null ? p.ReportsToPerson.Staff.Vacancy.DesignationNav.Name : p.ReportsToPerson.Staff.Vacancy.JobTitle) : null,
-                    p.AlternativeReportsToPersonId,
-                    AlternativeReportsToName = p.AlternativeReportsToPerson != null ? p.AlternativeReportsToPerson.FullName : null,
-                    AlternativeReportsToDepartment = p.AlternativeReportsToPerson != null && p.AlternativeReportsToPerson.Staff != null && p.AlternativeReportsToPerson.Staff.Vacancy != null
-                        ? (p.AlternativeReportsToPerson.Staff.Vacancy.Organization != null && p.AlternativeReportsToPerson.Staff.Vacancy.Organization.Label == "Department"
-                            ? p.AlternativeReportsToPerson.Staff.Vacancy.Organization.Name : p.AlternativeReportsToPerson.Staff.Vacancy.Department) : null,
-                    AlternativeReportsToDesignation = p.AlternativeReportsToPerson != null && p.AlternativeReportsToPerson.Staff != null && p.AlternativeReportsToPerson.Staff.Vacancy != null
-                        ? (p.AlternativeReportsToPerson.Staff.Vacancy.DesignationNav != null ? p.AlternativeReportsToPerson.Staff.Vacancy.DesignationNav.Name : p.AlternativeReportsToPerson.Staff.Vacancy.JobTitle) : null
-                }).OrderBy(x => x.FullName).ToListAsync(ct);
-            return Ok(rows);
-        }
+        var rows = await SpListQuery.ExecAsync<HrReportToListRow>(
+            _db,
+            "EXEC dbo.usp_Hr_ReportTo_List @TenantId, @VisiblePersonIds",
+            ct,
+            SpListQuery.TenantId(_tenant.RequiredTenantId),
+            SpListQuery.NVarChar(
+                "@VisiblePersonIds",
+                fullAccess ? null : System.Text.Json.JsonSerializer.Serialize(visiblePersonIds)));
+
+        return Ok(rows.Select(row => new
+        {
+            row.PersonId,
+            row.FullName,
+            row.ProfilePhotoUrl,
+            row.IsActive,
+            row.StaffId,
+            row.EmployeeId,
+            row.Department,
+            row.Designation,
+            row.ReportsToPersonId,
+            row.ReportsToName,
+            row.ReportsToDepartment,
+            row.ReportsToDesignation,
+            row.AlternativeReportsToPersonId,
+            row.AlternativeReportsToName,
+            row.AlternativeReportsToDepartment,
+            row.AlternativeReportsToDesignation
+        }));
+    }
 
         [HttpPut("{personId:guid}")]
         public async Task<IActionResult> Update(Guid personId, [FromBody] UpdateReportToDto dto, CancellationToken ct)
@@ -91,13 +91,46 @@ namespace Accounts.Controllers
             if (dto.ReportsToPersonId.HasValue && dto.ReportsToPersonId == dto.AlternativeReportsToPersonId)
                 return BadRequest(new { message = "Primary and alternative reporting managers must be different people." });
 
-            var people = await _db.Persons.Where(p => p.Staff != null).ToListAsync(ct);
+            var people = await _db.Persons
+                .Where(p => p.Staff != null && (
+                    p.PersonId == personId ||
+                    p.PersonId == dto.ReportsToPersonId ||
+                    p.PersonId == dto.AlternativeReportsToPersonId ||
+                    p.ReportsToPersonId == personId ||
+                    p.ReportsToPersonId == dto.ReportsToPersonId ||
+                    p.ReportsToPersonId == dto.AlternativeReportsToPersonId))
+                .ToListAsync(ct);
+            // Cycle check needs manager chain; load managers of selected managers if missing.
+            var needed = new HashSet<Guid> { personId };
+            if (dto.ReportsToPersonId.HasValue) needed.Add(dto.ReportsToPersonId.Value);
+            if (dto.AlternativeReportsToPersonId.HasValue) needed.Add(dto.AlternativeReportsToPersonId.Value);
+            for (var hop = 0; hop < 20; hop++)
+            {
+                var missingParents = people
+                    .Where(p => needed.Contains(p.PersonId) && p.ReportsToPersonId.HasValue && people.All(x => x.PersonId != p.ReportsToPersonId.Value))
+                    .Select(p => p.ReportsToPersonId!.Value)
+                    .Distinct()
+                    .ToList();
+                if (missingParents.Count == 0) break;
+                var extra = await _db.Persons.Where(p => missingParents.Contains(p.PersonId)).ToListAsync(ct);
+                if (extra.Count == 0) break;
+                people.AddRange(extra);
+                foreach (var id in missingParents) needed.Add(id);
+            }
             var person = people.SingleOrDefault(p => p.PersonId == personId);
             if (person == null) return NotFound(new { message = "Staff member not found." });
             if (dto.ReportsToPersonId.HasValue && people.All(p => p.PersonId != dto.ReportsToPersonId.Value))
-                return BadRequest(new { message = "The selected reporting manager is not available in this tenant." });
+            {
+                var mgr = await _db.Persons.SingleOrDefaultAsync(p => p.PersonId == dto.ReportsToPersonId.Value && p.Staff != null, ct);
+                if (mgr == null) return BadRequest(new { message = "The selected reporting manager is not available in this tenant." });
+                people.Add(mgr);
+            }
             if (dto.AlternativeReportsToPersonId.HasValue && people.All(p => p.PersonId != dto.AlternativeReportsToPersonId.Value))
-                return BadRequest(new { message = "The selected alternative reporting manager is not available in this tenant." });
+            {
+                var alt = await _db.Persons.SingleOrDefaultAsync(p => p.PersonId == dto.AlternativeReportsToPersonId.Value && p.Staff != null, ct);
+                if (alt == null) return BadRequest(new { message = "The selected alternative reporting manager is not available in this tenant." });
+                people.Add(alt);
+            }
             if (dto.AlternativeReportsToPersonId.HasValue)
             {
                 var eligibleCandidates = await ResolveEligibleAlternativeReporterIdsAsync(personId, ct);

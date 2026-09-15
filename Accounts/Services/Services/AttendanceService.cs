@@ -1,6 +1,7 @@
 using Accounts.Data;
 using Accounts.DTOs;
 using Accounts.Models;
+using Accounts.Models.SpListRows;
 using Accounts.Services.Interfaces;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Data.SqlClient;
@@ -294,61 +295,29 @@ public sealed class AttendanceService : IAttendanceService
         var scope = ResolveEmployeeScopeFlags(access, organizationWide, forceSelfOnly: false);
         var visibility = await ResolveAttendanceVisibilityAsync(
             identityUserId, scope.OrganizationWide, scope.SelfOnly, cancellationToken);
-        var visiblePersonIds = visibility.VisiblePersonIds;
-        var callerPersonId = visibility.CallerPersonId;
 
-        var staffRows = await _db.StaffDirectoryRows.AsNoTracking()
-            .Where(staff =>
-                visiblePersonIds.Contains(staff.PersonId) &&
-                staff.IsPersonActive)
-            .OrderBy(staff => staff.FullName)
-            .Select(staff => new
-            {
-                Dto = new AttendanceReportStaffDto
-                {
-                    PersonId = staff.PersonId,
-                    StaffId = staff.StaffId,
-                    EmployeeId = staff.EmployeeId,
-                    FullName = staff.FullName,
-                    BranchName = string.Empty,
-                    Department = staff.Department,
-                    Designation = staff.Designation,
-                    PhotoUrl = staff.PhotoUrl,
-                    IsCurrentUser = staff.PersonId == callerPersonId,
-                    CanEditTiming = organizationWide || staff.PersonId != callerPersonId
-                },
-                staff.OrganizationId
-            })
-            .ToListAsync(cancellationToken);
+        var rows = await SpListQuery.ExecAsync<AttendanceTimingChartStaffRow>(
+            _db,
+            "EXEC dbo.usp_Attendance_TimingChart_Staff @TenantId, @VisiblePersonIds, @CallerPersonId, @OrganizationWide",
+            cancellationToken,
+            SpListQuery.TenantId(visibility.TenantId),
+            SpListQuery.NVarChar("@VisiblePersonIds", JsonSerializer.Serialize(visibility.VisiblePersonIds)),
+            SpListQuery.Guid("@CallerPersonId", visibility.CallerPersonId),
+            SpListQuery.Bit("@OrganizationWide", organizationWide));
 
-        var organizationNodes = await _db.OrganizationTree.AsNoTracking()
-            .Select(node => new { node.Id, node.ParentId, node.Name, node.Label })
-            .ToListAsync(cancellationToken);
-        var nodesById = organizationNodes.ToDictionary(node => node.Id);
-
-        foreach (var staffRow in staffRows)
+        return rows.Select(staff => new AttendanceReportStaffDto
         {
-            var organizationId = (int?)staffRow.OrganizationId;
-            for (var depth = 0; organizationId.HasValue && depth < 20; depth++)
-            {
-                if (!nodesById.TryGetValue(organizationId.Value, out var node)) break;
-                if (string.Equals(node.Label, "Branch", StringComparison.OrdinalIgnoreCase) ||
-                    string.Equals(node.Label, "Office", StringComparison.OrdinalIgnoreCase))
-                {
-                    staffRow.Dto.BranchName = node.Name;
-                    break;
-                }
-                organizationId = node.ParentId;
-            }
-
-            if (string.IsNullOrWhiteSpace(staffRow.Dto.BranchName))
-                staffRow.Dto.BranchName = staffRow.OrganizationId.HasValue
-                    ? (nodesById.GetValueOrDefault(staffRow.OrganizationId.Value)?.Name
-                        ?? staffRow.Dto.Department)
-                    : staffRow.Dto.Department;
-        }
-
-        return staffRows.Select(staffRow => staffRow.Dto).ToList();
+            PersonId = staff.PersonId,
+            StaffId = staff.StaffId,
+            EmployeeId = staff.EmployeeId,
+            FullName = staff.FullName,
+            BranchName = staff.BranchName,
+            Department = staff.Department,
+            Designation = staff.Designation,
+            PhotoUrl = staff.PhotoUrl,
+            IsCurrentUser = staff.IsCurrentUser,
+            CanEditTiming = staff.CanEditTiming
+        }).ToList();
     }
 
     public async Task<TimingChartScheduleMonthDto> GetTimingChartSchedulesAsync(
@@ -419,92 +388,105 @@ public sealed class AttendanceService : IAttendanceService
         var scope = ResolveEmployeeScopeFlags(access, organizationWide, forceSelfOnly: false);
         var visibility = await ResolveAttendanceVisibilityAsync(
             identityUserId, scope.OrganizationWide, scope.SelfOnly, cancellationToken);
-        var visiblePersonIds = visibility.VisiblePersonIds;
         var dateFrom = new DateOnly(year, month, 1);
         var dateTo = new DateOnly(year, month, DateTime.DaysInMonth(year, month));
 
-        var employees = await _db.StaffDirectoryRows.AsNoTracking()
-            .Where(staff =>
-                visiblePersonIds.Contains(staff.PersonId) &&
-                staff.IsPersonActive)
-            .OrderBy(staff => staff.FullName)
-            .Select(staff => new
-            {
-                staff.TenantId,
-                staff.StaffId,
-                staff.PersonId,
-                staff.EmployeeId,
-                staff.FullName,
-                staff.Department,
-                staff.Designation,
-                staff.PhotoUrl,
-                staff.ShiftStartTime,
-                staff.ShiftEndTime
-            })
-            .ToListAsync(cancellationToken);
+        var flat = await SpListQuery.ExecAsync<AttendanceTimingChartScheduleRow>(
+            _db,
+            "EXEC dbo.usp_Attendance_TimingChart_StaffSchedule @TenantId, @Year, @Month, @VisiblePersonIds",
+            cancellationToken,
+            SpListQuery.TenantId(visibility.TenantId),
+            SpListQuery.Int("@Year", year),
+            SpListQuery.Int("@Month", month),
+            SpListQuery.NVarChar("@VisiblePersonIds", JsonSerializer.Serialize(visibility.VisiblePersonIds)));
 
-        var employeeStaffIds = employees.Select(employee => employee.StaffId).ToList();
-        var savedSchedules = await _db.EmployeeTimingSchedules.AsNoTracking()
-            .Include(schedule => schedule.HolidayType)
-            .Where(schedule =>
-                employeeStaffIds.Contains(schedule.StaffId) &&
-                schedule.ScheduleYear == year &&
-                schedule.ScheduleMonth == month)
-            .ToListAsync(cancellationToken);
-        var schedulesByEmployee = savedSchedules.ToLookup(schedule => schedule.StaffId);
         var holidayTypes = await GetTimingHolidayTypesAsync(cancellationToken);
         var holidayTypesByCode = holidayTypes.ToDictionary(type => type.Code, StringComparer.OrdinalIgnoreCase);
 
-        var rows = employees.Select(employee =>
-        {
-            var employeeContext = new TimingChartEmployeeContext
+        var rows = flat
+            .GroupBy(row => row.PersonId)
+            .Select(group =>
             {
-                TenantId = employee.TenantId,
-                StaffId = employee.StaffId,
-                PersonId = employee.PersonId,
-                FullName = employee.FullName,
-                EmployeeId = employee.EmployeeId,
-                Department = employee.Department,
-                DefaultTimeFrom = employee.ShiftStartTime,
-                DefaultTimeTo = employee.ShiftEndTime
-            };
-            var employeeSchedules = schedulesByEmployee[employee.StaffId]
-                .ToDictionary(schedule => schedule.ScheduleDate);
-            var days = new List<TimingChartStaffScheduleDayDto>(dateTo.Day);
-            for (var date = dateFrom; date <= dateTo; date = date.AddDays(1))
-            {
-                employeeSchedules.TryGetValue(date, out var schedule);
-                var mapped = MapTimingChartSchedule(employeeContext, schedule, date, holidayTypesByCode);
-                days.Add(new TimingChartStaffScheduleDayDto
+                var employee = group.First();
+                var employeeContext = new TimingChartEmployeeContext
                 {
-                    Id = mapped.Id,
-                    Date = mapped.HolidayDate,
-                    Day = mapped.Day,
-                    HolidayTypeId = mapped.HolidayTypeId,
-                    HolidayType = mapped.HolidayType,
-                    HolidayTypeName = mapped.HolidayTypeName,
-                    TimeFrom = mapped.TimeFrom,
-                    TimeTo = mapped.TimeTo,
-                    WorkingMinutes = mapped.WorkingMinutes,
-                    IsOn = mapped.IsOn,
-                    IsOverride = mapped.IsOverride
-                });
-            }
+                    TenantId = visibility.TenantId,
+                    StaffId = employee.StaffId,
+                    PersonId = employee.PersonId,
+                    FullName = employee.FullName,
+                    EmployeeId = employee.EmployeeId,
+                    Department = employee.Department,
+                    DefaultTimeFrom = employee.ShiftStartTime ?? "09:00",
+                    DefaultTimeTo = employee.ShiftEndTime ?? "18:00"
+                };
+                var employeeSchedules = group
+                    .Where(row => row.ScheduleId.HasValue && row.ScheduleDate.HasValue)
+                    .GroupBy(row => row.ScheduleDate!.Value)
+                    .ToDictionary(
+                        g => g.Key,
+                        g =>
+                        {
+                            var row = g.First();
+                            return new EmployeeTimingSchedule
+                            {
+                                Id = row.ScheduleId!.Value,
+                                TenantId = visibility.TenantId,
+                                StaffId = row.StaffId,
+                                ScheduleDate = row.ScheduleDate!.Value,
+                                ScheduleYear = year,
+                                ScheduleMonth = month,
+                                HolidayTypeId = row.HolidayTypeId ?? 0,
+                                HolidayType = row.HolidayTypeId == null
+                                    ? null
+                                    : new AppLookupValue
+                                    {
+                                        LookupValueId = row.HolidayTypeId.Value,
+                                        ValueCode = row.HolidayTypeCode ?? "",
+                                        DisplayText = row.HolidayTypeName ?? ""
+                                    },
+                                TimeFrom = row.TimeFrom,
+                                TimeTo = row.TimeTo,
+                                WorkingMinutes = row.WorkingMinutes ?? 0,
+                                IsOn = row.IsOn ?? true
+                            };
+                        });
+                var days = new List<TimingChartStaffScheduleDayDto>(dateTo.Day);
+                for (var date = dateFrom; date <= dateTo; date = date.AddDays(1))
+                {
+                    employeeSchedules.TryGetValue(date, out var schedule);
+                    var mapped = MapTimingChartSchedule(employeeContext, schedule, date, holidayTypesByCode);
+                    days.Add(new TimingChartStaffScheduleDayDto
+                    {
+                        Id = mapped.Id,
+                        Date = mapped.HolidayDate,
+                        Day = mapped.Day,
+                        HolidayTypeId = mapped.HolidayTypeId,
+                        HolidayType = mapped.HolidayType,
+                        HolidayTypeName = mapped.HolidayTypeName,
+                        TimeFrom = mapped.TimeFrom,
+                        TimeTo = mapped.TimeTo,
+                        WorkingMinutes = mapped.WorkingMinutes,
+                        IsOn = mapped.IsOn,
+                        IsOverride = mapped.IsOverride
+                    });
+                }
 
-            return new TimingChartStaffScheduleEmployeeDto
-            {
-                PersonId = employee.PersonId,
-                StaffId = employee.StaffId,
-                EmployeeId = employee.EmployeeId,
-                FullName = employee.FullName,
-                Department = employee.Department,
-                Designation = employee.Designation,
-                PhotoUrl = employee.PhotoUrl,
-                IsCurrentUser = employee.PersonId == visibility.CallerPersonId,
-                CanEditTiming = organizationWide || employee.PersonId != visibility.CallerPersonId,
-                Days = days
-            };
-        }).ToList();
+                return new TimingChartStaffScheduleEmployeeDto
+                {
+                    PersonId = employee.PersonId,
+                    StaffId = employee.StaffId,
+                    EmployeeId = employee.EmployeeId,
+                    FullName = employee.FullName,
+                    Department = employee.Department,
+                    Designation = employee.Designation,
+                    PhotoUrl = employee.PhotoUrl,
+                    IsCurrentUser = employee.PersonId == visibility.CallerPersonId,
+                    CanEditTiming = organizationWide || employee.PersonId != visibility.CallerPersonId,
+                    Days = days
+                };
+            })
+            .OrderBy(row => row.FullName)
+            .ToList();
 
         return new TimingChartStaffScheduleMonthDto
         {
@@ -824,74 +806,32 @@ public sealed class AttendanceService : IAttendanceService
             scope.OrganizationWide,
             scope.SelfOnly,
             cancellationToken);
-        var visiblePersonIds = visibility.VisiblePersonIds;
 
-        var rows = await _db.ApplicationLoginSessions
-            .AsNoTracking()
-            .Include(session => session.Person)
-            .ThenInclude(person => person!.Staff)
-            .ThenInclude(staff => staff!.Vacancy)
-            .ThenInclude(vacancy => vacancy!.DesignationNav)
-            .Where(session =>
-                session.SessionDate >= dateFrom &&
-                session.SessionDate <= dateTo &&
-                session.PersonId.HasValue &&
-                visiblePersonIds.Contains(session.PersonId.Value) &&
-                !_db.Users.Any(user =>
-                    user.Id == session.IdentityUserId &&
-                    (user.IsTenantAdmin || user.IsSuperAdmin)))
-            .OrderByDescending(session => session.LoginUtc)
-            .ThenBy(session => session.Person != null ? session.Person.FullName : session.IdentityUserId)
-            .Select(session => new
-            {
-                session.Id,
-                session.StaffId,
-                session.PersonId,
-                session.SessionDate,
-                session.LoginUtc,
-                session.LogoutUtc,
-                session.WorkingMinutes,
-                session.IdentityUserId,
-                session.Source,
-                session.IpAddress,
-                session.Remarks,
-                PersonName = session.Person != null ? session.Person.FullName : string.Empty,
-                TimeZoneId = session.Person != null ? session.Person.TimeZoneId : null,
-                StaffNumber = session.Person != null && session.Person.Staff != null ? session.Person.Staff.LoginId : null,
-                Department = session.Person != null && session.Person.Staff != null && session.Person.Staff.Vacancy != null
-                    ? session.Person.Staff.Vacancy.Department
-                    : string.Empty,
-                Designation = session.Person != null && session.Person.Staff != null && session.Person.Staff.Vacancy != null
-                    ? (session.Person.Staff.Vacancy.DesignationNav != null
-                        ? session.Person.Staff.Vacancy.DesignationNav.Name
-                        : session.Person.Staff.Vacancy.JobTitle)
-                    : string.Empty,
-            })
-            .ToListAsync(cancellationToken);
+        var rows = await SpListQuery.ExecAsync<AttendanceLoginReportRow>(
+            _db,
+            "EXEC dbo.usp_Attendance_LoginReport @TenantId, @DateFrom, @DateTo, @VisiblePersonIds",
+            cancellationToken,
+            SpListQuery.TenantId(visibility.TenantId),
+            SpListQuery.Date("@DateFrom", dateFrom),
+            SpListQuery.Date("@DateTo", dateTo),
+            SpListQuery.NVarChar("@VisiblePersonIds", JsonSerializer.Serialize(visibility.VisiblePersonIds)));
 
-        var result = rows.Select(row =>
+        var result = rows.Select(row => new LoginAttendanceSessionDto
         {
-            return new LoginAttendanceSessionDto
-            {
-                Id = row.Id,
-                StaffId = row.StaffId,
-                PersonId = row.PersonId,
-                EmployeeNumber = row.StaffNumber ?? string.Empty,
-                EmployeeName = string.IsNullOrWhiteSpace(row.PersonName) ? row.IdentityUserId : row.PersonName,
-                Department = row.Department ?? string.Empty,
-                Designation = row.Designation ?? string.Empty,
-                Date = row.SessionDate,
-                LoginTime = row.LoginUtc.ToString("HH:mm", CultureInfo.InvariantCulture),
-                LogoutTime = row.LogoutUtc.HasValue
-                    ? row.LogoutUtc.Value.ToString("HH:mm", CultureInfo.InvariantCulture)
-                    : null,
-                WorkingMinutes = row.LogoutUtc.HasValue
-                    ? Math.Max(0, (int)Math.Floor((row.LogoutUtc.Value - row.LoginUtc).TotalMinutes))
-                    : Math.Max(0, (int)Math.Floor((PakistanClock.Now() - row.LoginUtc).TotalMinutes)),
-                Source = row.Source,
-                IpAddress = row.IpAddress,
-                Remarks = row.Remarks,
-            };
+            Id = row.Id,
+            StaffId = row.StaffId,
+            PersonId = row.PersonId,
+            EmployeeNumber = row.EmployeeNumber,
+            EmployeeName = row.EmployeeName,
+            Department = row.Department,
+            Designation = row.Designation,
+            Date = row.Date,
+            LoginTime = row.LoginTime,
+            LogoutTime = row.LogoutTime,
+            WorkingMinutes = Math.Max(0, row.WorkingMinutes),
+            Source = row.Source ?? string.Empty,
+            IpAddress = row.IpAddress,
+            Remarks = row.Remarks,
         }).ToList();
 
         return new LoginAttendanceReportDto

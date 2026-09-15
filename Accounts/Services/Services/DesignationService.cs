@@ -1,5 +1,6 @@
 using Accounts.Data;
 using Accounts.Models;
+using Accounts.Models.SpListRows;
 using Accounts.Services.Interfaces;
 using Microsoft.EntityFrameworkCore;
 
@@ -21,17 +22,23 @@ namespace Accounts.Services.Services
                 .OrderBy(d => d.Name)
                 .ToListAsync();
 
-        public async Task<IReadOnlyList<DesignationResponseDto>> GetAllWithCountAsync() =>
-            await _db.Designations.AsNoTracking()
-                .Select(d => new DesignationResponseDto
-                {
-                    Id = d.Id,
-                    Name = d.Name,
-                    AttendanceVisibilityScope = d.AttendanceVisibilityScope,
-                    Count = _db.Vacancies.Count(v => v.DesignationId == d.Id)
-                })
-                .OrderBy(d => d.Name)
-                .ToListAsync();
+        public async Task<IReadOnlyList<DesignationResponseDto>> GetAllWithCountAsync()
+        {
+            var tenantId = _tenantService.RequiredTenantId;
+            var rows = await SpListQuery.ExecAsync<HrDesignationListRow>(
+                _db,
+                "EXEC dbo.usp_Hr_Designations_List @TenantId",
+                CancellationToken.None,
+                SpListQuery.TenantId(tenantId));
+
+            return rows.Select(row => new DesignationResponseDto
+            {
+                Id = row.Id,
+                Name = row.Name,
+                AttendanceVisibilityScope = (AttendanceVisibilityScope)row.AttendanceVisibilityScope,
+                Count = row.Count
+            }).ToList();
+        }
 
         public async Task<Designation?> GetByIdAsync(int id) =>
             await _db.Designations.AsNoTracking()

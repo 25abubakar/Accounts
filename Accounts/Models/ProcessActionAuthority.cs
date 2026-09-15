@@ -13,6 +13,8 @@ public sealed class ProcessActionAuthority : ITenantEntity
     [Required, MaxLength(30)] public string ActionCode { get; set; } = string.Empty;
     public Guid StaffId { get; set; }
     public bool IsActive { get; set; } = true;
+    [MaxLength(400)] public string? PinHash { get; set; }
+    public DateTime? PinUpdatedOnUtc { get; set; }
     [MaxLength(450)] public string? CreatedByUserId { get; set; }
     public DateTime CreatedDateUtc { get; set; } = DateTime.UtcNow;
 }

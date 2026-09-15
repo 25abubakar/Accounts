@@ -11,6 +11,7 @@ namespace Accounts.Services.Interfaces
         Task<(StaffDto? Staff, string? Error)> HirePersonAsync(Guid vacancyId, Guid personId);
         Task<(StaffDto? Staff, string? Error)> UpdateAsync(Guid id, UpdateStaffDto dto);
         Task<(StaffDto? Staff, string? Error)> TransferAsync(Guid id, TransferStaffDto dto);
+        Task<(bool Success, string Message)> EndEmploymentAsync(Guid id, string status, string? reason, CancellationToken cancellationToken);
         Task<(bool Success, string Message)> DeleteAsync(Guid id);
         Task<(string? PhotoUrl, string? FullUrl, string? Error)> UploadPhotoAsync(Guid id, IFormFile photo, string baseUrl);
         Task<(bool Success, string Message)> DeletePhotoAsync(Guid id);

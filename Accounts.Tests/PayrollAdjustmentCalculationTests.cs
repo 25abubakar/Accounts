@@ -122,6 +122,25 @@ public sealed class PayrollAdjustmentCalculationTests
         Assert.Equal(118_000m, line.NetPay);
     }
 
+    [Fact]
+    public void Recalculate_LegacyAllowanceBreakdown_IsPersistedInAllowanceAndGrossTotalsOnce()
+    {
+        var line = BaseLine();
+        line.GeneralAllowanceAmount = 1_000m;
+        line.ApptAllowanceAmount = 2_000m;
+        line.ShiftAllowanceAmount = 3_000m;
+        line.MedicalAllowanceAmount = 4_000m;
+        line.NightAllowanceAmount = 5_000m;
+        line.TelephoneAllowanceAmount = 6_000m;
+        line.TransportAllowanceAmount = 7_000m;
+
+        PayrollCalculationService.Recalculate(line);
+
+        Assert.Equal(28_000m, line.AllowanceAmount);
+        Assert.Equal(128_000m, line.GrossPay);
+        Assert.Equal(128_000m, line.NetPay);
+    }
+
     private static PayrollLine BaseLine() => new()
     {
         BasicSalary = 100_000m

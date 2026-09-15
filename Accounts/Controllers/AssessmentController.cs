@@ -1,5 +1,7 @@
 using Accounts.Data;
+using Accounts.Idempotency;
 using Accounts.Models;
+using Accounts.Models.SpListRows;
 using Accounts.Services.Interfaces;
 using Accounts.Services.Services;
 using Accounts.Services;
@@ -22,6 +24,7 @@ public sealed class AssessmentController : ControllerBase
     private readonly ITenantService _tenant;
     private readonly TenantPermissionService _tenantPermissions;
     private readonly AssessmentSchedulerService _assessmentScheduler;
+    private readonly PayrollCalculationService _payroll;
 
     public AssessmentController(
         ApplicationDbContext db,
@@ -29,7 +32,8 @@ public sealed class AssessmentController : ControllerBase
         IOrganizationDataScopeService dataScope,
         ITenantService tenant,
         TenantPermissionService tenantPermissions,
-        AssessmentSchedulerService assessmentScheduler)
+        AssessmentSchedulerService assessmentScheduler,
+        PayrollCalculationService payroll)
     {
         _db = db;
         _rbac = rbac;
@@ -37,6 +41,330 @@ public sealed class AssessmentController : ControllerBase
         _tenant = tenant;
         _tenantPermissions = tenantPermissions;
         _assessmentScheduler = assessmentScheduler;
+        _payroll = payroll;
+    }
+
+    [HttpGet("final")]
+    public async Task<IActionResult> GetFinalList([FromQuery] int? year, [FromQuery] int? month, CancellationToken ct)
+    {
+        var identityUserId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+        if (string.IsNullOrWhiteSpace(identityUserId)) return Unauthorized();
+
+        var isSuperAdmin = User.IsInRole("SuperAdmin") || string.Equals(
+            User.FindFirstValue(ITenantService.ClaimIsSuperAdmin), "true", StringComparison.OrdinalIgnoreCase);
+        var isTenantAdmin = User.IsInRole("TenantAdmin") || string.Equals(
+            User.FindFirstValue(ITenantService.ClaimIsTenantAdmin), "true", StringComparison.OrdinalIgnoreCase);
+
+        if (isSuperAdmin)
+            return StatusCode(StatusCodes.Status403Forbidden, new
+            {
+                message = "Final Assessment contains tenant staff data. Open it with a tenant-scoped authorized account."
+            });
+        if (!_tenant.TenantId.HasValue) return Forbid();
+
+        if (isTenantAdmin)
+        {
+            if (!await _tenantPermissions.HasMenuRouteAsync(User, ["/assessment/final"], "VIEW", ct))
+                return Forbid();
+        }
+        else
+        {
+            var staffId = await _db.Persons.AsNoTracking()
+                .Where(person => person.IdentityUserId == identityUserId && person.Staff != null)
+                .Select(person => (Guid?)person.Staff!.StaffId)
+                .FirstOrDefaultAsync(ct);
+            if (!staffId.HasValue ||
+                !await HasStaffMenuActionAsync(staffId.Value, "/assessment/final", "VIEW", ct))
+                return Forbid();
+        }
+
+        var assessmentYear = year is >= 2000 and <= 2100 ? year.Value : DateTime.Today.Year;
+        var assessmentMonth = month is >= 1 and <= 12 ? month.Value : DateTime.Today.Month;
+        await AssessmentSchema.EnsureCurrentAsync(_db);
+
+        var tenantId = _tenant.TenantId.Value;
+        var people = await _db.Persons.AsNoTracking()
+            .Where(person => person.TenantId == tenantId && person.IsActive && person.Staff != null)
+            .Select(person => new
+            {
+                person.PersonId,
+                StaffGuid = person.Staff!.StaffId,
+                StaffId = person.Staff.LoginId ?? person.Staff.StaffId.ToString(),
+                person.FullName,
+                Department = person.Staff.Vacancy != null
+                    ? (person.Staff.Vacancy.Organization != null && person.Staff.Vacancy.Organization.Label == "Department"
+                        ? person.Staff.Vacancy.Organization.Name
+                        : person.Staff.Vacancy.Department)
+                    : null,
+                JobTitle = person.Staff.Vacancy != null
+                    ? (person.Staff.Vacancy.DesignationNav != null
+                        ? person.Staff.Vacancy.DesignationNav.Name
+                        : person.Staff.Vacancy.JobTitle)
+                    : null
+            })
+            .ToListAsync(ct);
+
+        var assessments = await _db.StaffAssessments.AsNoTracking()
+            .Where(item => item.TenantId == tenantId &&
+                           item.AssessmentYear == assessmentYear &&
+                           item.AssessmentMonth == assessmentMonth)
+            .ToListAsync(ct);
+        var latestByPerson = assessments
+            .GroupBy(item => item.SubjectPersonId)
+            .ToDictionary(
+                group => group.Key,
+                group => group
+                    .OrderByDescending(item => item.IsLocked || item.Rating != null)
+                    .ThenByDescending(item => item.SubmittedDateUtc ?? item.ModifiedDateUtc ?? item.CreatedDateUtc)
+                    .ThenByDescending(item => item.Id)
+                    .First());
+
+        var assessorIds = latestByPerson.Values.Select(item => item.AssessorPersonId).Distinct().ToList();
+        var assessorNames = await _db.Persons.AsNoTracking()
+            .Where(person => person.TenantId == tenantId && assessorIds.Contains(person.PersonId))
+            .ToDictionaryAsync(person => person.PersonId, person => person.FullName, ct);
+
+        var orderedPeople = people
+            .OrderBy(person => person.Department ?? string.Empty)
+            .ThenBy(person => person.FullName)
+            .ToList();
+        var rows = orderedPeople.Select((person, index) =>
+        {
+            latestByPerson.TryGetValue(person.PersonId, out var assessment);
+            var submitted = assessment != null && (assessment.IsLocked || assessment.Rating.HasValue);
+            var posted = assessment?.IsFinalApproved == true && assessment.IsPostedToPayroll;
+            return new AssessmentFinalListRow
+            {
+                Id = index + 1,
+                AssessmentId = assessment?.Id,
+                PersonId = person.PersonId,
+                StaffGuid = person.StaffGuid,
+                StaffId = person.StaffId,
+                FullName = person.FullName,
+                Department = person.Department ?? "-",
+                JobTitle = person.JobTitle ?? "-",
+                AssessmentYear = assessmentYear,
+                AssessmentMonth = assessmentMonth,
+                Rating = assessment?.Rating,
+                Amount = assessment?.Amount,
+                Remarks = assessment?.Remarks,
+                IsLocked = submitted,
+                SubmittedDateUtc = assessment?.SubmittedDateUtc,
+                AssessorPersonId = assessment?.AssessorPersonId,
+                AssessorName = assessment != null && assessorNames.TryGetValue(assessment.AssessorPersonId, out var assessorName)
+                    ? assessorName
+                    : "-",
+                IsFinalApproved = assessment?.IsFinalApproved ?? false,
+                FinalApprovedByName = assessment?.FinalApprovedByName,
+                FinalApprovedDateUtc = assessment?.FinalApprovedDateUtc,
+                IsPostedToPayroll = assessment?.IsPostedToPayroll ?? false,
+                PostedPayrollRunId = assessment?.PostedPayrollRunId,
+                PostedToPayrollDateUtc = assessment?.PostedToPayrollDateUtc,
+                Status = assessment == null
+                    ? "Pending"
+                    : posted
+                        ? "Approved & Posted"
+                        : submitted ? "Submitted" : "Open"
+            };
+        }).ToList();
+
+        return Ok(rows);
+    }
+
+    [HttpPut("final/{subjectPersonId:guid}")]
+    public async Task<IActionResult> AdjustFinalAmount(
+        Guid subjectPersonId,
+        [FromBody] AdjustFinalAssessmentDto dto,
+        CancellationToken ct)
+    {
+        if (dto.Year is < 2000 or > 2100 || dto.Month is < 1 or > 12)
+            return BadRequest(new { message = "Valid month and year are required." });
+        if (dto.Amount < 0)
+            return BadRequest(new { message = "Amount cannot be negative." });
+
+        var remarks = string.IsNullOrWhiteSpace(dto.Remarks) ? null : dto.Remarks.Trim();
+        if (remarks is { Length: > 500 })
+            return BadRequest(new { message = "Remarks cannot exceed 500 characters." });
+
+        var access = await EnsureFinalEditAccessAsync(ct);
+        if (access.Result != null) return access.Result;
+        var tenantId = access.Context!.Value.TenantId;
+        await AssessmentSchema.EnsureCurrentAsync(_db);
+        var amount = Math.Round(dto.Amount, 2, MidpointRounding.AwayFromZero);
+        var now = DateTime.UtcNow;
+
+        var assessment = await _db.StaffAssessments
+            .Where(item => item.TenantId == tenantId &&
+                           item.SubjectPersonId == subjectPersonId &&
+                           item.AssessmentYear == dto.Year &&
+                           item.AssessmentMonth == dto.Month)
+            .OrderByDescending(item => item.IsLocked || item.Rating != null)
+            .ThenByDescending(item => item.SubmittedDateUtc ?? item.ModifiedDateUtc ?? item.CreatedDateUtc)
+            .ThenByDescending(item => item.Id)
+            .FirstOrDefaultAsync(ct);
+
+        if (assessment == null || !assessment.IsLocked || !assessment.Rating.HasValue || !assessment.Amount.HasValue)
+            return Conflict(new { message = "This employee has not submitted a marked assessment for the selected month." });
+        if (assessment.IsFinalApproved || assessment.IsPostedToPayroll)
+            return Conflict(new { message = "This assessment is already finally approved and posted to payroll; it can no longer be changed." });
+        if (assessment.Amount.Value != amount && string.IsNullOrWhiteSpace(remarks))
+            return BadRequest(new { message = "Remarks are required when changing the assessment amount." });
+
+        assessment.Amount = amount;
+        assessment.Remarks = remarks;
+        assessment.ModifiedDateUtc = now;
+
+        await _db.SaveChangesAsync(ct);
+        return Ok(new
+        {
+            message = "Assessment amount updated.",
+            personId = subjectPersonId,
+            amount,
+            remarks
+        });
+    }
+
+    [HttpPost("final/pay")]
+    [Idempotent]
+    public async Task<IActionResult> PayFinalToPayroll([FromBody] PayFinalAssessmentDto dto, CancellationToken ct)
+    {
+        if (dto.Year is < 2000 or > 2100 || dto.Month is < 1 or > 12)
+            return BadRequest(new { message = "Valid month and year are required." });
+
+        var access = await EnsureFinalApproveAccessAsync(ct);
+        if (access.Result != null) return access.Result;
+        var tenantId = access.Context!.Value.TenantId;
+        var approverUserId = access.Context.Value.UserId;
+
+        var approverStaffId = await _db.Persons.AsNoTracking()
+            .Where(person => person.IdentityUserId == approverUserId && person.Staff != null)
+            .Select(person => (Guid?)person.Staff!.StaffId)
+            .FirstOrDefaultAsync(ct);
+        var pinAuthority = approverStaffId.HasValue
+            ? await _db.ProcessActionAuthorities.AsNoTracking().SingleOrDefaultAsync(authority =>
+                authority.StaffId == approverStaffId.Value && authority.ProcessCode == "ASSESSMENT" &&
+                authority.ActionCode == "PAY" && authority.IsActive, ct)
+            : null;
+        if (string.IsNullOrWhiteSpace(pinAuthority?.PinHash))
+            return Conflict(new { message = "Configure your Final Assessment Pay PIN in Workflow Authorities before approval." });
+        if (!ProcessAuthorityPinHasher.Verify(dto.PinCode?.Trim() ?? string.Empty, pinAuthority.PinHash))
+            return BadRequest(new { message = "Invalid Final Assessment security PIN." });
+
+        await AssessmentSchema.EnsureCurrentAsync(_db);
+
+        var draftRun = await _db.PayrollRuns
+            .FirstOrDefaultAsync(run => run.TenantId == tenantId &&
+                                        run.Year == dto.Year &&
+                                        run.Month == dto.Month &&
+                                        run.Status == "Draft", ct);
+        if (draftRun == null)
+            return Conflict(new
+            {
+                message = $"No Draft payroll exists for {dto.Month:D2}/{dto.Year}. Open Payroll and Create/Recalculate Draft first, then Pay again."
+            });
+
+        var assessments = await _db.StaffAssessments
+            .Where(item => item.TenantId == tenantId &&
+                           item.AssessmentYear == dto.Year &&
+                           item.AssessmentMonth == dto.Month &&
+                           item.IsLocked &&
+                           item.Rating != null &&
+                           item.Amount != null)
+            .ToListAsync(ct);
+
+        var finalAssessments = assessments
+            .GroupBy(item => item.SubjectPersonId)
+            .Select(group => group
+                .OrderByDescending(item => item.SubmittedDateUtc ?? item.ModifiedDateUtc ?? item.CreatedDateUtc)
+                .First())
+            .ToList();
+        if (finalAssessments.Count == 0)
+            return Conflict(new { message = "No submitted assessments are available for final approval in the selected month." });
+
+        var approverName = await _db.Persons.AsNoTracking()
+            .Where(person => person.IdentityUserId == approverUserId)
+            .Select(person => person.FullName)
+            .FirstOrDefaultAsync(ct) ?? User.Identity?.Name ?? approverUserId;
+        var lines = await _db.PayrollLines
+            .Include(line => line.PayrollRun)
+            .Where(line => line.PayrollRunId == draftRun.Id)
+            .ToListAsync(ct);
+
+        if (lines.Count == 0)
+        {
+            draftRun = await _payroll.GenerateAsync(
+                approverUserId,
+                approverName,
+                dto.Year,
+                dto.Month,
+                draftRun.PayDate,
+                ct);
+            lines = draftRun.Lines.ToList();
+        }
+        if (lines.Count == 0)
+            return Conflict(new { message = "No active employee payroll lines could be generated for this month." });
+
+        var taxYear = dto.Month >= 7 ? $"{dto.Year}-{dto.Year + 1}" : $"{dto.Year - 1}-{dto.Year}";
+        var taxSlabs = await _db.PayrollTaxSlabs.AsNoTracking()
+            .Where(slab => slab.IsActive && slab.TaxYear == taxYear)
+            .OrderBy(slab => slab.FromAmount)
+            .ToListAsync(ct);
+
+        var lineByPerson = lines.ToDictionary(line => line.PersonId);
+        var approvedAt = DateTime.UtcNow;
+        var approved = 0;
+        foreach (var assessment in finalAssessments)
+        {
+            if (!lineByPerson.ContainsKey(assessment.SubjectPersonId)) continue;
+            if (!assessment.IsFinalApproved)
+            {
+                approved++;
+                assessment.IsFinalApproved = true;
+                assessment.FinalApprovedByUserId = approverUserId;
+                assessment.FinalApprovedByName = approverName;
+                assessment.FinalApprovedDateUtc = approvedAt;
+            }
+            if (!assessment.IsPostedToPayroll)
+            {
+                assessment.IsPostedToPayroll = true;
+                assessment.PostedPayrollRunId = draftRun.Id;
+                assessment.PostedToPayrollDateUtc = approvedAt;
+            }
+            assessment.ModifiedDateUtc = approvedAt;
+        }
+
+        var approvedAmountByPerson = finalAssessments
+            .Where(assessment => assessment.IsFinalApproved && assessment.IsPostedToPayroll &&
+                                 lineByPerson.ContainsKey(assessment.SubjectPersonId))
+            .ToDictionary(assessment => assessment.SubjectPersonId, assessment => assessment.Amount!.Value);
+
+        var updated = 0;
+        foreach (var line in lines)
+        {
+            approvedAmountByPerson.TryGetValue(line.PersonId, out var assessmentAmount);
+            if (line.AssessmentAmount == assessmentAmount) continue;
+            line.AssessmentAmount = assessmentAmount;
+            PayrollCalculationService.Recalculate(line);
+            line.TaxAmount = PayrollTaxCalculator.CalculateMonthlyTax(line.TaxableIncome, taxSlabs);
+            PayrollCalculationService.Recalculate(line);
+            updated++;
+        }
+
+        draftRun.UpdatedOnUtc = DateTime.UtcNow;
+        await _db.SaveChangesAsync(ct);
+        await _payroll.RecalculateRunTotalsAsync(draftRun.Id, ct);
+
+        return Ok(new
+        {
+            message = updated == 0
+                ? "Final Assessment is approved; Draft payroll already has the approved amounts."
+                : $"Finally approved and posted {updated} assessment amount(s) into Draft payroll for {dto.Month:D2}/{dto.Year}.",
+            updatedLines = updated,
+            assessmentCount = approvedAmountByPerson.Count,
+            approvedCount = approved,
+            year = dto.Year,
+            month = dto.Month
+        });
     }
 
     [HttpGet("staff-hierarchy")]
@@ -89,8 +417,17 @@ public sealed class AssessmentController : ControllerBase
                 return Forbid();
         }
 
-        var people = await _db.Persons.AsNoTracking()
-            .Where(person => person.IsActive && person.Staff != null)
+        if (!isTenantAdmin && current == null) return Ok(Array.Empty<object>());
+        var directSubjectIds = isTenantAdmin
+            ? null
+            : await ResolveDirectSubjectIdsAsync(identityUserId, current!.PersonId, current.JobTitle, ct);
+
+        var peopleQuery = _db.Persons.AsNoTracking()
+            .Where(person => person.IsActive && person.Staff != null);
+        if (!isTenantAdmin)
+            peopleQuery = peopleQuery.Where(person => directSubjectIds!.Contains(person.PersonId));
+
+        var people = await peopleQuery
             .Select(person => new HierarchyStaffRow
             {
                 PersonId = person.PersonId,
@@ -114,10 +451,7 @@ public sealed class AssessmentController : ControllerBase
             })
             .ToListAsync(ct);
 
-        if (!isTenantAdmin && current == null) return Ok(Array.Empty<object>());
-        var directSubjectIds = isTenantAdmin ? people.Select(person => person.PersonId).ToHashSet()
-            : await ResolveDirectSubjectIdsAsync(identityUserId, current!.PersonId, current.JobTitle, ct);
-        var visible = people.Where(person => directSubjectIds.Contains(person.PersonId))
+        var visible = people
             .OrderBy(person => person.Department).ThenBy(person => person.FullName).ToList();
         var assessmentYear = year is >= 2000 and <= 2100 ? year.Value : DateTime.Today.Year;
         var assessmentMonth = month is >= 1 and <= 12 ? month.Value : DateTime.Today.Month;
@@ -244,30 +578,6 @@ public sealed class AssessmentController : ControllerBase
             return Conflict(new { message = $"Position {dto.Rating} is already assigned or this assessment was submitted by another request." });
         }
 
-        // Keep an already-generated Draft payroll synchronized immediately. Approved
-        // or paid payroll is immutable and must never be changed by a later assessment.
-        var draftPayrollLines = await _db.PayrollLines.Include(line => line.PayrollRun)
-            .Where(line => line.PersonId == subjectPersonId && line.Year == dto.Year &&
-                line.Month == dto.Month && line.PayrollRun != null && line.PayrollRun.Status == "Draft")
-            .ToListAsync(ct);
-        if (draftPayrollLines.Count > 0)
-        {
-            var taxYear = dto.Month >= 7 ? $"{dto.Year}-{dto.Year + 1}" : $"{dto.Year - 1}-{dto.Year}";
-            var taxSlabs = await _db.PayrollTaxSlabs.AsNoTracking()
-                .Where(slab => slab.IsActive && slab.TaxYear == taxYear)
-                .OrderBy(slab => slab.FromAmount)
-                .ToListAsync(ct);
-            foreach (var line in draftPayrollLines)
-            {
-                line.AssessmentAmount = amount;
-                PayrollCalculationService.Recalculate(line);
-                line.TaxAmount = PayrollTaxCalculator.CalculateMonthlyTax(line.TaxableIncome, taxSlabs);
-                PayrollCalculationService.Recalculate(line);
-                if (line.PayrollRun != null) line.PayrollRun.UpdatedOnUtc = DateTime.UtcNow;
-            }
-            await _db.SaveChangesAsync(ct);
-        }
-
         var incomplete = await _db.StaffAssessments.AsNoTracking().AnyAsync(item =>
             item.AssessorPersonId == assessor.PersonId && item.AssessmentYear == dto.Year &&
             item.AssessmentMonth == dto.Month && item.Rating == null && !item.IsLocked, ct);
@@ -291,6 +601,18 @@ public sealed class AssessmentController : ControllerBase
 
     private async Task<HashSet<Guid>> ResolveDirectSubjectIdsAsync(string identityUserId, Guid assessorPersonId, string? assessorJobTitle, CancellationToken ct)
     {
+        // Explicit reporting assignments are authoritative. This lets a user who
+        // has been granted the Assessment tab work on the staff actually assigned
+        // to them, without requiring a hard-coded job-title name.
+        var assignedReports = await _db.Persons.AsNoTracking()
+            .Where(person => person.IsActive && person.PersonId != assessorPersonId &&
+                (person.ReportsToPersonId == assessorPersonId ||
+                 person.AlternativeReportsToPersonId == assessorPersonId))
+            .Select(person => person.PersonId)
+            .ToHashSetAsync(ct);
+        if (assignedReports.Count > 0) return assignedReports;
+
+        // Legacy fallback for tenants that have not yet configured Reports To.
         var callerRank = AttendanceRoleRank(assessorJobTitle);
         if (callerRank <= 100) return [];
         var scope = await _dataScope.ResolveAsync(identityUserId, ct);
@@ -310,7 +632,7 @@ public sealed class AssessmentController : ControllerBase
     {
         if (!_tenant.TenantId.HasValue || _tenant.IsSuperAdmin) return Forbid();
         if (TenantPermissionService.IsTenantAdmin(User) &&
-            !await _tenantPermissions.HasMenuRouteAsync(User, ["/assessment/mark"], "VIEW", ct))
+            !await _tenantPermissions.HasMenuRouteAsync(User, ["/assessment/mark", "/assessment/final"], "VIEW", ct))
             return Forbid();
         await AssessmentSchema.EnsureCurrentAsync(_db);
         var today = DateOnly.FromDateTime(PakistanClock.Now());
@@ -383,11 +705,108 @@ public sealed class AssessmentController : ControllerBase
         if (!menuId.HasValue) return false;
 
         var normalizedAction = action.Trim().ToUpperInvariant();
+        if (normalizedAction == "VIEW" && await _rbac.HasAccessAsync(staffId, $"MENU_{menuId.Value}"))
+            return true;
         return await _rbac.HasAccessAsync(staffId, $"MENU_{menuId.Value}_{normalizedAction}");
     }
 
     public sealed class SaveAssessmentDto { public int Year { get; set; } public int Month { get; set; } public int Rating { get; set; } }
     public sealed class SetScheduleDto { public DateOnly OpenDate { get; set; } }
+    public sealed class AdjustFinalAssessmentDto
+    {
+        public int Year { get; set; }
+        public int Month { get; set; }
+        public decimal Amount { get; set; }
+        public string? Remarks { get; set; }
+    }
+    public sealed class PayFinalAssessmentDto { public int Year { get; set; } public int Month { get; set; } public string PinCode { get; set; } = string.Empty; }
+
+    private async Task<(IActionResult? Result, (int TenantId, Guid ActorPersonId)? Context)> EnsureFinalEditAccessAsync(
+        CancellationToken ct)
+    {
+        var identityUserId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+        if (string.IsNullOrWhiteSpace(identityUserId)) return (Unauthorized(), null);
+        if (!_tenant.TenantId.HasValue) return (Forbid(), null);
+
+        var isSuperAdmin = User.IsInRole("SuperAdmin") || string.Equals(
+            User.FindFirstValue(ITenantService.ClaimIsSuperAdmin), "true", StringComparison.OrdinalIgnoreCase);
+        if (isSuperAdmin) return (Forbid(), null);
+
+        var isTenantAdmin = User.IsInRole("TenantAdmin") || string.Equals(
+            User.FindFirstValue(ITenantService.ClaimIsTenantAdmin), "true", StringComparison.OrdinalIgnoreCase);
+
+        if (isTenantAdmin)
+        {
+            if (!await _tenantPermissions.HasMenuRouteAsync(User, ["/assessment/final"], "EDIT", ct))
+                return (Forbid(), null);
+
+            var adminPersonId = await _db.Persons.AsNoTracking()
+                .Where(person => person.IdentityUserId == identityUserId)
+                .Select(person => (Guid?)person.PersonId)
+                .FirstOrDefaultAsync(ct);
+            return (null, (_tenant.TenantId.Value, adminPersonId ?? Guid.Empty));
+        }
+
+        var actor = await _db.Persons.AsNoTracking()
+            .Where(person => person.IdentityUserId == identityUserId && person.Staff != null)
+            .Select(person => new { person.PersonId, StaffId = person.Staff!.StaffId })
+            .FirstOrDefaultAsync(ct);
+        if (actor == null ||
+            !await HasStaffMenuActionAsync(actor.StaffId, "/assessment/final", "EDIT", ct))
+            return (Forbid(), null);
+
+        return (null, (_tenant.TenantId.Value, actor.PersonId));
+    }
+
+    private async Task<(IActionResult? Result, (int TenantId, string UserId)? Context)> EnsureFinalApproveAccessAsync(
+        CancellationToken ct)
+    {
+        var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+        if (string.IsNullOrWhiteSpace(userId)) return (Unauthorized(), null);
+        if (!_tenant.TenantId.HasValue || TenantPermissionService.IsSuperAdmin(User)) return (Forbid(), null);
+
+        if (TenantPermissionService.IsTenantAdmin(User))
+        {
+            var hasMenuPermission =
+                await _tenantPermissions.HasMenuRouteAsync(User, ["/assessment/final"], "APPROVE", ct) ||
+                await _tenantPermissions.HasMenuRouteAsync(User, ["/assessment/final"], "EDIT", ct);
+            var adminStaffId = await _db.Persons.AsNoTracking()
+                .Where(person => person.IdentityUserId == userId && person.Staff != null)
+                .Select(person => (Guid?)person.Staff!.StaffId)
+                .FirstOrDefaultAsync(ct);
+            return hasMenuPermission && adminStaffId.HasValue &&
+                   await HasProcessActionAuthorityAsync(adminStaffId.Value, "ASSESSMENT", "PAY", ct)
+                ? (null, (_tenant.TenantId.Value, userId))
+                : (StatusCode(StatusCodes.Status403Forbidden, new
+                {
+                    message = "You are not assigned as the Final Assessment Pay authority. Configure the assignment in Workflow Authorities."
+                }), null);
+        }
+
+        var staffId = await _db.Persons.AsNoTracking()
+            .Where(person => person.IdentityUserId == userId && person.Staff != null)
+            .Select(person => (Guid?)person.Staff!.StaffId)
+            .FirstOrDefaultAsync(ct);
+        if (!staffId.HasValue ||
+            (!await HasStaffMenuActionAsync(staffId.Value, "/assessment/final", "APPROVE", ct) &&
+             !await HasStaffMenuActionAsync(staffId.Value, "/assessment/final", "EDIT", ct)) ||
+            !await HasProcessActionAuthorityAsync(staffId.Value, "ASSESSMENT", "PAY", ct))
+            return (Forbid(), null);
+        return (null, (_tenant.TenantId.Value, userId));
+    }
+
+    private Task<bool> HasProcessActionAuthorityAsync(
+        Guid staffId,
+        string processCode,
+        string actionCode,
+        CancellationToken ct) =>
+        _db.ProcessActionAuthorities.AsNoTracking().AnyAsync(authority =>
+            authority.TenantId == _tenant.RequiredTenantId &&
+            authority.StaffId == staffId &&
+            authority.ProcessCode == processCode &&
+            authority.ActionCode == actionCode &&
+            authority.IsActive,
+            ct);
 
     private sealed class HierarchyStaffRow
     {

@@ -2,6 +2,7 @@ using System.Security.Claims;
 using Accounts.Data;
 using Accounts.Idempotency;
 using Accounts.Models;
+using Accounts.Models.SpListRows;
 using Accounts.Services.Interfaces;
 using Accounts.Services.Services;
 using Microsoft.AspNetCore.Authorization;
@@ -18,8 +19,7 @@ public sealed class PayAndAllowancesController(
     TenantPermissionService tenantPermissions,
     PayrollCalculationService payroll,
     StaffMonthlyEobiService staffMonthlyEobi,
-    StaffTaxService staffTax,
-    MenuAuthorityService menuAuthority) : ControllerBase
+    StaffTaxService staffTax) : ControllerBase
 {
     [HttpGet("benefits")]
     public async Task<IActionResult> Benefits(CancellationToken ct) =>
@@ -55,45 +55,12 @@ public sealed class PayAndAllowancesController(
     public async Task<IActionResult> BenefitRules(CancellationToken ct)
     {
         var denied = await Guard("/pay-allowances/benefits", "VIEW", ct); if (denied != null) return denied;
-        var rows = await db.PayrollBenefitRules.AsNoTracking()
-            .Include(x => x.OrganizationScopes)
-            .Include(x => x.ContractScopes)
-            .OrderBy(x => x.Name)
-            .ToListAsync(ct);
-        return Ok(rows.Select(x => new
-        {
-            x.Id,
-            BenRef = x.BenefitReference,
-            x.BenefitsType,
-            x.Name,
-            x.Company,
-            x.Entitled,
-            x.Contract,
-            x.Frequency,
-            x.ValidFrom,
-            x.ValidTo,
-            MaxExp = x.MaximumExpense,
-            SerStatus = x.ServiceStatus,
-            x.Scale,
-            x.Wef,
-            MinService = x.MinimumService,
-            MaxPh = x.MaximumPh,
-            MinPh = x.MinimumPh,
-            Ineligible = x.IsIneligible,
-            x.ShareType,
-            CovShare = x.CompanyShare,
-            x.StaffShare,
-            x.OrganizationId,
-            CompName = x.CompanyName,
-            organizationScopes = x.OrganizationScopes
-                .OrderBy(scope => scope.Id)
-                .Select(scope => new { scope.OrganizationId, scope.ScopeLabel })
-                .ToList(),
-            contractNames = x.ContractScopes
-                .OrderBy(scope => scope.ContractName)
-                .Select(scope => scope.ContractName)
-                .ToList()
-        }));
+        var rows = await SpListQuery.ExecAsync<PayBenefitRuleListRow>(
+            db,
+            "EXEC dbo.usp_Pay_BenefitRules_List @TenantId",
+            ct,
+            SpListQuery.TenantId(tenant.RequiredTenantId));
+        return Ok(rows);
     }
 
     [HttpGet("benefit-lookups")]
@@ -130,8 +97,6 @@ public sealed class PayAndAllowancesController(
             shareTypes = await LookupNamesAsync("BENEFIT_SHARE_TYPE", ct),
             companies = companyNodes.Select(x => new { x.Id, x.Name, x.Label }).ToList(),
             departments = departmentNodes.Select(x => new { x.Id, x.ParentId, x.Name, x.Label }).ToList(),
-            branches = PreferActiveOrgNodes(scopedNodes.Where(x => IsBranchLikeLabel(x.Label)))
-                .Select(x => new { x.Id, x.ParentId, x.Name, x.Label }).ToList(),
             entitlements = scopedNodes.OrderBy(x => x.Name)
                 .Select(x => new { x.Id, x.ParentId, x.Name, x.Label }).ToList(),
             tenantCompany = defaultCompany == null ? null : new { defaultCompany.Id, defaultCompany.Name }
@@ -310,7 +275,6 @@ public sealed class PayAndAllowancesController(
         if (await db.PayrollBenefitRules.AnyAsync(x => x.Name == dto.Name.Trim(), ct))
             return Conflict(new { message = "A benefit rule with this name already exists." });
 
-        await using var tx = await db.Database.BeginTransactionAsync(ct);
         var row = new PayrollBenefitRule
         {
             TenantId = tenant.RequiredTenantId,
@@ -319,9 +283,6 @@ public sealed class PayAndAllowancesController(
         ApplyBenefitRule(row, dto);
         db.PayrollBenefitRules.Add(row);
         await db.SaveChangesAsync(ct);
-        await ReplaceBenefitRuleScopesAsync(row, dto, ct);
-        await db.SaveChangesAsync(ct);
-        await tx.CommitAsync(ct);
         return Ok(new { row.Id });
     }
 
@@ -329,22 +290,14 @@ public sealed class PayAndAllowancesController(
     public async Task<IActionResult> UpdateBenefitRule(int id, BenefitRuleSave dto, CancellationToken ct)
     {
         var denied = await Guard("/pay-allowances/benefits", "EDIT", ct); if (denied != null) return denied;
-        var row = await db.PayrollBenefitRules
-            .Include(x => x.OrganizationScopes)
-            .Include(x => x.ContractScopes)
-            .SingleOrDefaultAsync(x => x.Id == id, ct);
-        if (row == null) return NotFound();
+        var row = await db.PayrollBenefitRules.SingleOrDefaultAsync(x => x.Id == id, ct); if (row == null) return NotFound();
         var error = ValidateBenefitRule(dto); if (error != null) return BadRequest(new { message = error });
         var referenceError = await ValidateBenefitRuleReferences(dto, ct); if (referenceError != null) return BadRequest(new { message = referenceError });
         if (await db.PayrollBenefitRules.AnyAsync(x => x.Id != id && x.Name == dto.Name.Trim(), ct))
             return Conflict(new { message = "A benefit rule with this name already exists." });
-
-        await using var tx = await db.Database.BeginTransactionAsync(ct);
         ApplyBenefitRule(row, dto);
         row.UpdatedOnUtc = DateTime.UtcNow;
-        await ReplaceBenefitRuleScopesAsync(row, dto, ct);
         await db.SaveChangesAsync(ct);
-        await tx.CommitAsync(ct);
         return Ok(new { row.Id });
     }
 
@@ -366,38 +319,11 @@ public sealed class PayAndAllowancesController(
     public async Task<IActionResult> BenefitParameters(CancellationToken ct)
     {
         var denied = await Guard("/pay-allowances/benefits", "VIEW", ct); if (denied != null) return denied;
-        var rows = await db.PayrollBenefitParameters.AsNoTracking().OrderBy(x => x.Name)
-            .Select(x => new
-            {
-                x.Id,
-                RuleName = x.BenefitRule!.Name,
-                x.Name,
-                Ref = x.Reference,
-                Entitled = x.BenefitRule.Entitled ?? x.BenefitRule.CompanyName,
-                PdFrom = x.PeriodFrom,
-                PdTo = x.PeriodTo,
-                BenefitId = x.BenefitRuleId,
-                FreqId = x.BenefitRule.Frequency,
-                MinSer = x.MinimumService,
-                AmtType = x.AmountType,
-                PayTypeId = x.PayType,
-                x.Amount,
-                x.Percentage,
-                MaxPh = x.BenefitRule.MaximumPh,
-                MinPh = x.BenefitRule.MinimumPh,
-                CoyShare = x.CompanyShare,
-                x.StaffShare,
-                x.BenefitRule.BenefitsType,
-                BonusMonth = x.BonusDistribution == null ? null : x.BonusDistribution.Month,
-                BasicPercentage = x.BonusDistribution == null ? 0 : x.BonusDistribution.BasicPercentage,
-                ServicePercentage = x.BonusDistribution == null ? 0 : x.BonusDistribution.ServicePercentage,
-                ServiceYears = x.BonusDistribution == null ? 0 : x.BonusDistribution.ServiceYears,
-                AssessmentPercentage = x.BonusDistribution == null ? 0 : x.BonusDistribution.AssessmentPercentage,
-                AttendancePercentage = x.BonusDistribution == null ? 0 : x.BonusDistribution.AttendancePercentage,
-                LeavePercentage = x.BonusDistribution == null ? 0 : x.BonusDistribution.LeavePercentage,
-                DisciplinePercentage = x.BonusDistribution == null ? 0 : x.BonusDistribution.DisciplinePercentage,
-                Installments = x.BonusDistribution == null ? 1 : x.BonusDistribution.Installments
-            }).ToListAsync(ct);
+        var rows = await SpListQuery.ExecAsync<PayBenefitParameterListRow>(
+            db,
+            "EXEC dbo.usp_Pay_BenefitParameters_List @TenantId",
+            ct,
+            SpListQuery.TenantId(tenant.RequiredTenantId));
         return Ok(rows);
     }
 
@@ -425,7 +351,7 @@ public sealed class PayAndAllowancesController(
         await db.SaveChangesAsync(ct);
         row.Reference = BuildReference("P", "BEN", row.Id);
         if (benefitRule.BenefitsType.Equals("Bonus", StringComparison.OrdinalIgnoreCase) && dto.BonusDistribution != null)
-            db.PayrollBonusDistributions.Add(CreateBonusDistribution(row.Id, dto.BonusDistribution));
+            db.PayrollBonusDistributions.Add(CreateBonusDistribution(row.Id, dto.BonusDistribution, benefitRule.ValidFrom));
         await db.SaveChangesAsync(ct);
         return Ok(new { row.Id });
     }
@@ -447,8 +373,8 @@ public sealed class PayAndAllowancesController(
         ApplyBenefitParameter(row, dto, benefitRule.BenefitsType);
         if (benefitRule.BenefitsType.Equals("Bonus", StringComparison.OrdinalIgnoreCase) && dto.BonusDistribution != null)
         {
-            row.BonusDistribution ??= CreateBonusDistribution(row.Id, dto.BonusDistribution);
-            ApplyBonusDistribution(row.BonusDistribution, dto.BonusDistribution);
+            row.BonusDistribution ??= CreateBonusDistribution(row.Id, dto.BonusDistribution, benefitRule.ValidFrom);
+            ApplyBonusDistribution(row.BonusDistribution, dto.BonusDistribution, benefitRule.ValidFrom);
         }
         else if (row.BonusDistribution != null)
         {
@@ -611,6 +537,7 @@ public sealed class PayAndAllowancesController(
         line.UpdatedOnUtc = DateTime.UtcNow;
         PayrollCalculationService.Recalculate(line);
         await db.SaveChangesAsync(ct);
+        await payroll.RecalculateRunTotalsAsync(line.PayrollRunId, ct);
         return Ok(new
         {
             line.Id,
@@ -624,6 +551,7 @@ public sealed class PayAndAllowancesController(
             line.ScaleDate,
             line.Scale,
             line.ContractType,
+            line.ContractId,
             line.Month,
             line.Year,
             line.ScaleBasicSalary,
@@ -634,7 +562,12 @@ public sealed class PayAndAllowancesController(
             line.GeneralAllowanceAmount,
             line.ApptAllowanceAmount,
             line.ShiftAllowanceAmount,
+            line.MedicalAllowanceAmount,
+            line.NightAllowanceAmount,
+            line.TelephoneAllowanceAmount,
+            line.TransportAllowanceAmount,
             line.AllowanceAmount,
+            line.SalaryAdjustment,
             line.EmployerBenefitAmount,
             line.StaffBenefitDeduction,
             line.AssessmentAmount,
@@ -673,6 +606,12 @@ public sealed class PayAndAllowancesController(
         if (!run.Status.Equals("Draft", StringComparison.OrdinalIgnoreCase))
             return Conflict(new { message = "Only a Draft payroll can be processed." });
         if (run.Lines.Count == 0) return BadRequest(new { message = "Generate payroll lines before processing." });
+        var pendingFinalAssessments = await db.StaffAssessments.AsNoTracking().CountAsync(assessment =>
+            assessment.AssessmentYear == run.Year && assessment.AssessmentMonth == run.Month &&
+            assessment.IsLocked && assessment.Rating != null && assessment.Amount != null &&
+            (!assessment.IsFinalApproved || !assessment.IsPostedToPayroll), ct);
+        if (pendingFinalAssessments > 0)
+            return Conflict(new { message = $"Payroll cannot be processed: {pendingFinalAssessments} submitted assessment(s) still require Final Assessment approval and Pay." });
         var pendingAdjustments = run.Lines.Count(x => x.AttendanceAdjustment != 0 && !x.IsAttendanceAdjustmentApproved);
         if (pendingAdjustments > 0)
             return Conflict(new { message = $"Payroll cannot be processed: {pendingAdjustments} monthly adjustment(s) still require approval." });
@@ -683,6 +622,8 @@ public sealed class PayAndAllowancesController(
         var pending = await payroll.CountPendingReviewEmployeesAsync(userId, run.Year, run.Month, ct);
         if (pending > 0)
             return Conflict(new { message = $"Payroll cannot be processed: {pending} employee(s) still have Pending Review attendance for this month." });
+        // Final database-authoritative arithmetic before the Draft becomes read-only.
+        await payroll.RecalculateRunTotalsAsync(run.Id, ct);
         run.Status = "In Review";
         run.VerifiedByUserId = User.FindFirstValue(ClaimTypes.NameIdentifier);
         run.VerifiedByName = await ActorNameAsync(ct);
@@ -694,14 +635,17 @@ public sealed class PayAndAllowancesController(
 
     [HttpPost("payroll-runs/{id:long}/approve")]
     [Idempotent]
-    public async Task<IActionResult> ApprovePayroll(long id, CancellationToken ct)
+    public async Task<IActionResult> ApprovePayroll(long id, [FromBody] PayrollApprovalPinDto dto, CancellationToken ct)
     {
         var denied = await Guard("/pay-allowances/payroll", "VIEW", ct); if (denied != null) return denied;
         var authorityDenied = await GuardPayrollAuthority("APPROVE", ct); if (authorityDenied != null) return authorityDenied;
+        var pinDenied = await GuardPayrollPin("APPROVE", dto.PinCode, ct); if (pinDenied != null) return pinDenied;
         var run = await db.PayrollRuns.Include(x => x.Lines).SingleOrDefaultAsync(x => x.Id == id, ct);
         if (run == null) return NotFound();
         if (!run.Status.Equals("In Review", StringComparison.OrdinalIgnoreCase))
             return Conflict(new { message = "Only an In Review payroll can be approved." });
+        if (run.Lines.Count == 0)
+            return BadRequest(new { message = "This payroll has no employee lines. Regenerate the Draft before approving." });
 
         var approverUserId = User.FindFirstValue(ClaimTypes.NameIdentifier);
         if (string.IsNullOrWhiteSpace(approverUserId)) return Forbid();
@@ -728,14 +672,17 @@ public sealed class PayAndAllowancesController(
 
     [HttpPost("payroll-runs/{id:long}/pay")]
     [Idempotent]
-    public async Task<IActionResult> PayPayroll(long id, CancellationToken ct)
+    public async Task<IActionResult> PayPayroll(long id, [FromBody] PayrollApprovalPinDto dto, CancellationToken ct)
     {
         var denied = await Guard("/pay-allowances/payroll", "VIEW", ct); if (denied != null) return denied;
         var authorityDenied = await GuardPayrollAuthority("PAY", ct); if (authorityDenied != null) return authorityDenied;
+        var pinDenied = await GuardPayrollPin("PAY", dto.PinCode, ct); if (pinDenied != null) return pinDenied;
         var run = await db.PayrollRuns.Include(x => x.Lines).SingleOrDefaultAsync(x => x.Id == id, ct);
         if (run == null) return NotFound();
         if (!run.Status.Equals("Approved", StringComparison.OrdinalIgnoreCase))
             return Conflict(new { message = "Payroll must be approved by an authorized higher authority before payment." });
+        if (run.Lines.Count == 0)
+            return BadRequest(new { message = "This payroll has no employee lines to pay. Contact admin to reopen the month as Draft and regenerate." });
         var payUserId = User.FindFirstValue(ClaimTypes.NameIdentifier);
         if (string.IsNullOrWhiteSpace(payUserId)) return Forbid();
         if (string.Equals(run.ApprovedByUserId, payUserId, StringComparison.Ordinal))
@@ -765,10 +712,15 @@ public sealed class PayAndAllowancesController(
         {
             var installments = Math.Max(1, bonus.Installment);
             var elapsed = (run.Year - bonus.Year) * 12 + run.Month - bonus.Month;
-            if (elapsed < 0 || elapsed >= installments || elapsed != Math.Max(0, bonus.PaidInstallmentCount))
+            var paid = Math.Max(0, bonus.PaidInstallmentCount);
+            // Catch-up: advance one installment when payroll month is on/after the next unpaid slot.
+            if (elapsed < 0 || elapsed >= installments || elapsed < paid)
                 continue;
 
-            bonus.PaidInstallmentCount = Math.Min(installments, bonus.PaidInstallmentCount + 1);
+            bonus.PaidInstallmentCount = Math.Min(installments, paid + 1);
+            bonus.CurrentInstallmentNo = bonus.PaidInstallmentCount >= installments
+                ? installments
+                : bonus.PaidInstallmentCount + 1;
             bonus.UpdatedOnUtc = now;
             if (bonus.PaidInstallmentCount >= installments)
             {
@@ -776,6 +728,38 @@ public sealed class PayAndAllowancesController(
                 bonus.PaidOnUtc = now;
             }
         }
+        await db.SaveChangesAsync(ct);
+        return Ok(await PayrollResponseAsync(run, run.Lines, ct));
+    }
+
+    /// <summary>
+    /// Reopen an empty Finalized/Approved shell so finance can regenerate lines.
+    /// Only allowed when the run has zero saved employee lines (data missing — not a paid ledger rewrite).
+    /// </summary>
+    [HttpPost("payroll-runs/{id:long}/reopen-empty")]
+    [Idempotent]
+    public async Task<IActionResult> ReopenEmptyPayroll(long id, CancellationToken ct)
+    {
+        var denied = await Guard("/pay-allowances/payroll", "EDIT", ct); if (denied != null) return denied;
+        var authorityDenied = await GuardPayrollAuthority("CREATE", ct); if (authorityDenied != null) return authorityDenied;
+        var run = await db.PayrollRuns.Include(x => x.Lines).SingleOrDefaultAsync(x => x.Id == id, ct);
+        if (run == null) return NotFound();
+        if (run.Lines.Count > 0)
+            return Conflict(new { message = "This payroll still has employee lines. Finalized paid runs cannot be reopened for rewrite — use an adjustment workflow instead." });
+        if (run.Status.Equals("Draft", StringComparison.OrdinalIgnoreCase))
+            return Ok(await PayrollResponseAsync(run, run.Lines, ct));
+
+        run.Status = "Draft";
+        run.VerifiedByUserId = null;
+        run.VerifiedByName = null;
+        run.VerifiedOnUtc = null;
+        run.ApprovedByUserId = null;
+        run.ApprovedByName = null;
+        run.ApprovedOnUtc = null;
+        run.PaidByUserId = null;
+        run.PaidByName = null;
+        run.PaidOnUtc = null;
+        run.UpdatedOnUtc = DateTime.UtcNow;
         await db.SaveChangesAsync(ct);
         return Ok(await PayrollResponseAsync(run, run.Lines, ct));
     }
@@ -795,9 +779,129 @@ public sealed class PayAndAllowancesController(
         return Ok(new { message = "Draft payroll cleared." });
     }
 
+    [HttpGet("payroll-grid-style-rules")]
+    public async Task<IActionResult> PayrollGridStyleRules(CancellationToken ct)
+    {
+        var denied = await Guard("/pay-allowances/payroll", "VIEW", ct); if (denied != null) return denied;
+        await EnsurePayrollGridStyleDefaultsAsync(ct);
+        var rows = await db.PayrollGridStyleRules.AsNoTracking()
+            .OrderBy(x => x.Category).ThenBy(x => x.DisplayOrder).ThenBy(x => x.Id)
+            .Select(x => new PayrollGridStyleRuleDto(
+                x.Id, x.Category, x.ColumnKey, x.Caption, x.BackgroundColor, x.FontColor, x.DisplayOrder, x.IsActive))
+            .ToListAsync(ct);
+        return Ok(rows);
+    }
+
+    [HttpPut("payroll-grid-style-rules/{id:int}")]
+    public async Task<IActionResult> UpdatePayrollGridStyleRule(int id, PayrollGridStyleRuleSave dto, CancellationToken ct)
+    {
+        var denied = await Guard("/pay-allowances/payroll", "EDIT", ct); if (denied != null) return denied;
+        var row = await db.PayrollGridStyleRules.SingleOrDefaultAsync(x => x.Id == id, ct);
+        if (row == null) return NotFound();
+        var bg = NormalizeHex(dto.BackgroundColor);
+        var fg = NormalizeHex(dto.FontColor);
+        if (bg == null || fg == null)
+            return BadRequest(new { message = "Background and font colors must be valid hex values (e.g. #e4bcf5)." });
+        if (!string.IsNullOrWhiteSpace(dto.Caption))
+            row.Caption = dto.Caption.Trim();
+        row.BackgroundColor = bg;
+        row.FontColor = fg;
+        row.DisplayOrder = dto.DisplayOrder;
+        row.IsActive = dto.IsActive;
+        row.UpdatedOnUtc = DateTime.UtcNow;
+        await db.SaveChangesAsync(ct);
+        return Ok(new PayrollGridStyleRuleDto(
+            row.Id, row.Category, row.ColumnKey, row.Caption, row.BackgroundColor, row.FontColor, row.DisplayOrder, row.IsActive));
+    }
+
+    [HttpPost("payroll-grid-style-rules")]
+    public async Task<IActionResult> CreatePayrollGridStyleRule(PayrollGridStyleRuleCreate dto, CancellationToken ct)
+    {
+        var denied = await Guard("/pay-allowances/payroll", "ADD", ct); if (denied != null) return denied;
+        var category = (dto.Category ?? "ColumnHighlight").Trim();
+        if (category is not ("ColumnHighlight" or "ChangeHighlight"))
+            return BadRequest(new { message = "Category must be ColumnHighlight or ChangeHighlight." });
+        var columnKey = (dto.ColumnKey ?? "").Trim();
+        if (string.IsNullOrWhiteSpace(columnKey))
+            return BadRequest(new { message = "Column key is required." });
+        var bg = NormalizeHex(dto.BackgroundColor);
+        var fg = NormalizeHex(dto.FontColor);
+        if (bg == null || fg == null)
+            return BadRequest(new { message = "Background and font colors must be valid hex values (e.g. #e4bcf5)." });
+        if (await db.PayrollGridStyleRules.AnyAsync(x => x.Category == category && x.ColumnKey == columnKey, ct))
+            return Conflict(new { message = "A style rule already exists for this category and column." });
+        var row = new PayrollGridStyleRule
+        {
+            TenantId = tenant.RequiredTenantId,
+            Category = category,
+            ColumnKey = columnKey,
+            Caption = string.IsNullOrWhiteSpace(dto.Caption) ? columnKey : dto.Caption.Trim(),
+            BackgroundColor = bg,
+            FontColor = fg,
+            DisplayOrder = dto.DisplayOrder,
+            IsActive = dto.IsActive,
+        };
+        db.PayrollGridStyleRules.Add(row);
+        await db.SaveChangesAsync(ct);
+        return Ok(new PayrollGridStyleRuleDto(
+            row.Id, row.Category, row.ColumnKey, row.Caption, row.BackgroundColor, row.FontColor, row.DisplayOrder, row.IsActive));
+    }
+
+    private async Task EnsurePayrollGridStyleDefaultsAsync(CancellationToken ct)
+    {
+        if (await db.PayrollGridStyleRules.AnyAsync(ct)) return;
+        var tenantId = tenant.RequiredTenantId;
+        var defaults = new (string Category, string ColumnKey, string Caption, string Bg, string Fg, int Order)[]
+        {
+            ("ColumnHighlight", "currentPay", "CURRENT", "#e4bcf5", "#0F172A", 10),
+            ("ColumnHighlight", "grossPay", "GROSS", "#2BFA06", "#0F172A", 20),
+            ("ColumnHighlight", "netPay", "NET", "#05F8F3", "#0F172A", 30),
+            ("ColumnHighlight", "attendanceDeduction", "DEDUCTION", "#fff1f2", "#be123c", 40),
+            ("ColumnHighlight", "effectiveAttendanceDeduction", "NET ATT DED", "#fff1f2", "#be123c", 50),
+            ("ColumnHighlight", "totalDeduction", "TOTAL DED", "#fff1f2", "#be123c", 60),
+            ("ChangeHighlight", "*", "Changed vs previous month", "#e5fc72", "#0F172A", 10),
+        };
+        foreach (var d in defaults)
+        {
+            db.PayrollGridStyleRules.Add(new PayrollGridStyleRule
+            {
+                TenantId = tenantId,
+                Category = d.Category,
+                ColumnKey = d.ColumnKey,
+                Caption = d.Caption,
+                BackgroundColor = d.Bg,
+                FontColor = d.Fg,
+                DisplayOrder = d.Order,
+                IsActive = true,
+            });
+        }
+        await db.SaveChangesAsync(ct);
+    }
+
+    private static string? NormalizeHex(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return null;
+        var hex = value.Trim();
+        if (!hex.StartsWith('#')) hex = "#" + hex;
+        if (hex.Length is not (4 or 7 or 9)) return null;
+        foreach (var ch in hex.AsSpan(1))
+        {
+            if (!char.IsAsciiHexDigit(ch)) return null;
+        }
+        return hex.ToLowerInvariant();
+    }
+
     [HttpGet("eobi-settings")]
-    public async Task<IActionResult> EobiSettings(CancellationToken ct) =>
-        await Read("/pay-allowances/eobi-settings", db.EobiSettings.OrderByDescending(x => x.EffectiveFrom), ct);
+    public async Task<IActionResult> EobiSettings(CancellationToken ct)
+    {
+        var denied = await Guard("/pay-allowances/eobi-settings", "VIEW", ct); if (denied != null) return denied;
+        var rows = await SpListQuery.ExecAsync<PayEobiSettingListRow>(
+            db,
+            "EXEC dbo.usp_Pay_EobiSettings_List @TenantId",
+            ct,
+            SpListQuery.TenantId(tenant.RequiredTenantId));
+        return Ok(rows);
+    }
 
     [HttpPost("eobi-settings")]
     public async Task<IActionResult> CreateEobi(EobiSettingSave dto, CancellationToken ct)
@@ -828,8 +932,14 @@ public sealed class PayAndAllowancesController(
         var denied = await Guard("/pay-allowances/eobi", "VIEW", ct); if (denied != null) return denied;
         if (year is < 2000 or > 2200 || month is < 1 or > 12)
             return BadRequest(new { message = "Enter a valid EOBI month and year." });
-        var rows = await staffMonthlyEobi.ListAsync(year, month, ct);
-        return Ok(rows.Select(MapStaffMonthlyEobi));
+        var rows = await SpListQuery.ExecAsync<PayStaffMonthlyEobiListRow>(
+            db,
+            "EXEC dbo.usp_Pay_StaffMonthlyEobi_List @TenantId, @Year, @Month",
+            ct,
+            SpListQuery.TenantId(tenant.RequiredTenantId),
+            SpListQuery.Int("@Year", year),
+            SpListQuery.Int("@Month", month));
+        return Ok(rows);
     }
 
     [HttpPost("staff-monthly-eobi/create")]
@@ -981,15 +1091,25 @@ public sealed class PayAndAllowancesController(
     public async Task<IActionResult> StaffTaxes(CancellationToken ct)
     {
         var denied = await Guard("/pay-allowances/tax", "VIEW", ct); if (denied != null) return denied;
-        var rows = await staffTax.ListAsync(ct);
-        return Ok(rows.Select(MapStaffTax));
+        var rows = await SpListQuery.ExecAsync<PayStaffTaxListRow>(
+            db,
+            "EXEC dbo.usp_Pay_StaffTaxes_List @TenantId",
+            ct,
+            SpListQuery.TenantId(tenant.RequiredTenantId));
+        return Ok(rows);
     }
 
     [HttpGet("staff-taxes/candidates")]
     public async Task<IActionResult> StaffTaxCandidates(CancellationToken ct)
     {
         var denied = await Guard("/pay-allowances/tax", "VIEW", ct); if (denied != null) return denied;
-        return Ok(await staffTax.CandidatesAsync(ct));
+        var rows = await SpListQuery.ExecAsync<PayStaffTaxCandidateListRow>(
+            db,
+            "EXEC dbo.usp_Pay_StaffTaxCandidates_List @TenantId",
+            ct,
+            SpListQuery.TenantId(tenant.RequiredTenantId));
+        return Ok(rows.Select(x => new StaffTaxCandidateDto(
+            x.PersonId, x.StaffGuid, x.StaffId, x.FullName, x.Department, x.Designation, x.MonthlyPay)));
     }
 
     [HttpPost("staff-taxes/sync")]
@@ -1095,8 +1215,12 @@ public sealed class PayAndAllowancesController(
     public async Task<IActionResult> TaxParameters(CancellationToken ct)
     {
         var denied = await Guard("/pay-allowances/tax", "VIEW", ct); if (denied != null) return denied;
-        var rows = await staffTax.ListParametersAsync(ct);
-        return Ok(rows.Select(MapTaxParameter));
+        var rows = await SpListQuery.ExecAsync<PayTaxParameterListRow>(
+            db,
+            "EXEC dbo.usp_Pay_TaxParameters_List @TenantId",
+            ct,
+            SpListQuery.TenantId(tenant.RequiredTenantId));
+        return Ok(rows);
     }
 
     [HttpPost("tax-parameters")]
@@ -1176,8 +1300,16 @@ public sealed class PayAndAllowancesController(
     }
 
     [HttpGet("tax-slabs")]
-    public async Task<IActionResult> TaxSlabs(CancellationToken ct) =>
-        await Read("/pay-allowances/tax", db.PayrollTaxSlabs.OrderByDescending(x => x.TaxYear).ThenBy(x => x.FromAmount), ct);
+    public async Task<IActionResult> TaxSlabs(CancellationToken ct)
+    {
+        var denied = await Guard("/pay-allowances/tax", "VIEW", ct); if (denied != null) return denied;
+        var rows = await SpListQuery.ExecAsync<PayTaxSlabListRow>(
+            db,
+            "EXEC dbo.usp_Pay_TaxSlabs_List @TenantId",
+            ct,
+            SpListQuery.TenantId(tenant.RequiredTenantId));
+        return Ok(rows);
+    }
 
     [HttpGet("tax-lookups")]
     public async Task<IActionResult> TaxLookups(CancellationToken ct)
@@ -1298,30 +1430,11 @@ public sealed class PayAndAllowancesController(
     public async Task<IActionResult> Eligibility(CancellationToken ct)
     {
         var denied = await Guard("/pay-allowances/eobi-eligibility", "VIEW", ct); if (denied != null) return denied;
-        var rows = await (
-            from dir in db.StaffDirectoryRows.AsNoTracking()
-            where dir.IsPersonActive
-            join e0 in db.EobiEligibilities.AsNoTracking() on dir.PersonId equals e0.PersonId into eligibilityJoin
-            from e in eligibilityJoin.DefaultIfEmpty()
-            join hr in db.PersonHrProfiles.AsNoTracking() on dir.PersonId equals hr.PersonId into hrJoin
-            from hr in hrJoin.DefaultIfEmpty()
-            orderby dir.FullName
-            select new
-            {
-                id = e != null ? e.Id : 0,
-                personId = dir.PersonId,
-                staffId = dir.EmployeeId,
-                fullName = dir.FullName,
-                eobiNo = e != null ? e.EobiNumber : null,
-                eobiNumber = e != null ? e.EobiNumber : null,
-                department = dir.Department,
-                doj = hr != null && hr.JoiningDate != null ? DateOnly.FromDateTime(hr.JoiningDate.Value) : (DateOnly?)null,
-                isOn = e != null && e.IsEligible,
-                isEligible = e != null && e.IsEligible,
-                effectiveFrom = e != null ? e.EffectiveFrom : (hr != null && hr.JoiningDate != null ? DateOnly.FromDateTime(hr.JoiningDate.Value) : DateOnly.FromDateTime(DateTime.UtcNow)),
-                effectiveTo = e != null ? e.EffectiveTo : null,
-                remarks = e != null ? e.Remarks : null,
-            }).ToListAsync(ct);
+        var rows = await SpListQuery.ExecAsync<PayEobiEligibilityListRow>(
+            db,
+            "EXEC dbo.usp_Pay_EobiEligibility_List @TenantId",
+            ct,
+            SpListQuery.TenantId(tenant.RequiredTenantId));
         return Ok(rows);
     }
 
@@ -1443,24 +1556,38 @@ public sealed class PayAndAllowancesController(
         if (!staffId.HasValue)
             return StatusCode(StatusCodes.Status403Forbidden, new { message = "No active staff profile is linked to this account." });
 
-        var normalizedAction = MenuAuthorityService.NormalizeActionCode(actionCode);
-        if (normalizedAction == null)
-            return StatusCode(StatusCodes.Status403Forbidden, new { message = "Invalid payroll workflow stage." });
-
-        var assigned = await db.ProcessActionAuthorities.AsNoTracking()
-            .Where(authority =>
-                authority.ProcessCode == "PAYROLL" &&
-                authority.StaffId == staffId.Value &&
-                authority.IsActive)
-            .Select(authority => authority.ActionCode)
-            .ToListAsync(ct);
-        var expanded = await menuAuthority.ExpandAuthoritiesAsync("PAYROLL", assigned, ct);
-        return expanded.Contains(normalizedAction, StringComparer.OrdinalIgnoreCase)
+        var normalizedAction = actionCode.Trim().ToUpperInvariant();
+        var assigned = await db.ProcessActionAuthorities.AsNoTracking().AnyAsync(authority =>
+            authority.ProcessCode == "PAYROLL" &&
+            authority.ActionCode == normalizedAction &&
+            authority.StaffId == staffId.Value &&
+            authority.IsActive, ct);
+        return assigned
             ? null
             : StatusCode(StatusCodes.Status403Forbidden, new
             {
-                message = $"You are not assigned to the Payroll {normalizedAction} stage. Configure this person in HR Management > Process > Approve Process."
+                message = $"You are not assigned to the Payroll {normalizedAction} stage. Configure this person in HR Management > Process > Reports > Workflow Authorities."
             });
+    }
+
+    private async Task<IActionResult?> GuardPayrollPin(string actionCode, string? pinCode, CancellationToken ct)
+    {
+        var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+        if (string.IsNullOrWhiteSpace(userId)) return Forbid();
+        var staffId = await db.Persons.AsNoTracking()
+            .Where(person => person.IdentityUserId == userId && person.Staff != null)
+            .Select(person => (Guid?)person.Staff!.StaffId)
+            .FirstOrDefaultAsync(ct);
+        var authority = staffId.HasValue
+            ? await db.ProcessActionAuthorities.AsNoTracking().SingleOrDefaultAsync(row =>
+                row.ProcessCode == "PAYROLL" && row.ActionCode == actionCode &&
+                row.StaffId == staffId.Value && row.IsActive, ct)
+            : null;
+        if (string.IsNullOrWhiteSpace(authority?.PinHash))
+            return Conflict(new { message = $"Configure your Payroll {actionCode} PIN in Workflow Authorities before continuing." });
+        return ProcessAuthorityPinHasher.Verify(pinCode?.Trim() ?? string.Empty, authority.PinHash)
+            ? null
+            : BadRequest(new { message = $"Invalid Payroll {actionCode} security PIN." });
     }
 
     private async Task<bool> TaxOverlap(TaxSlabSave dto, int? id, CancellationToken ct)
@@ -1557,14 +1684,13 @@ public sealed class PayAndAllowancesController(
     {
         if (string.IsNullOrWhiteSpace(x.BenefitsType) || string.IsNullOrWhiteSpace(x.Name)) return "Benefits Type and Name are required.";
         if (x.ValidTo < x.ValidFrom) return "Valid To cannot be before Valid From.";
-        if (x.MaximumExpense < 0 || x.MinimumService < 0 || x.MaximumPh < 0 || x.MinimumPh < 0 || x.CompanyShare < 0 || x.StaffShare < 0)
+        if (x.MaximumExpense < 0 || x.MinimumService < 0 || x.MinimumSalary < 0 || x.MaximumPh < 0 || x.MinimumPh < 0 || x.CompanyShare < 0 || x.StaffShare < 0)
             return "Benefit amounts and service values cannot be negative.";
         return null;
     }
     private static string? ValidateBenefitParameter(BenefitParameterSave x)
     {
         if (x.BenefitRuleId <= 0 || string.IsNullOrWhiteSpace(x.Name)) return "Benefits Rule and Name are required.";
-        if (x.PeriodTo < x.PeriodFrom) return "Pd_To cannot be before Pd_From.";
         if (x.MinimumService < 0 || x.Amount < 0 || x.Percentage < 0 || x.CompanyShare < 0 || x.StaffShare < 0) return "Parameter values cannot be negative.";
         if (x.Percentage > 100) return "Percentage cannot be greater than 100.";
         return null;
@@ -1575,6 +1701,10 @@ public sealed class PayAndAllowancesController(
             return x == null ? null : "Bonus Distribution can only be saved against a Bonus benefit rule.";
         if (x == null) return "Bonus Distribution is required when Benefits Type is Bonus.";
         if (x.Month is null or < 1 or > 12) return "Bonus month must be between 1 and 12.";
+        if (x.InstallmentStart is null && x.Month is null)
+            return "Installment start date or Month is required for Bonus Distribution.";
+        if (x.InstallmentStart.HasValue && x.InstallmentEnd.HasValue && x.InstallmentEnd.Value < x.InstallmentStart.Value)
+            return "Installment end cannot be before installment start.";
         if (x.ServiceYears < 0) return "Service years cannot be negative.";
         if (x.Installments is < 1 or > 120) return "Installments must be between 1 and 120.";
         var percentages = new[] { x.BasicPercentage, x.ServicePercentage, x.AssessmentPercentage, x.AttendancePercentage, x.LeavePercentage, x.DisciplinePercentage };
@@ -1597,171 +1727,66 @@ public sealed class PayAndAllowancesController(
     {
         if (!await db.BenefitTypes.AsNoTracking().AnyAsync(type => type.IsActive && type.Name == x.BenefitsType.Trim(), ct))
             return "Selected benefit type was not found.";
-        if (!string.IsNullOrWhiteSpace(x.Scale) && !await db.SalaryScales.AsNoTracking().AnyAsync(scale => scale.IsActive && scale.ScaleName == x.Scale.Trim(), ct))
-            return "Selected salary scale was not found.";
+        if (!string.IsNullOrWhiteSpace(x.Scale))
+        {
+            var selectedScales = x.Scale.Split([',', ';'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Where(name => name.Length > 0)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            if (selectedScales.Length == 0) return "Selected salary scale was not found.";
+            var activeScales = await db.SalaryScales.AsNoTracking()
+                .Where(scale => scale.IsActive)
+                .Select(scale => scale.ScaleName)
+                .ToListAsync(ct);
+            var missing = selectedScales.Where(name => !activeScales.Any(active => active.Equals(name, StringComparison.OrdinalIgnoreCase))).ToArray();
+            if (missing.Length > 0) return $"Selected salary scale was not found: {string.Join(", ", missing)}";
+        }
+        if (!string.IsNullOrWhiteSpace(x.Contract) && !await db.ContractTypes.AsNoTracking().AnyAsync(type => type.IsActive && type.Name == x.Contract.Trim(), ct))
+            return "Selected contract type was not found.";
         if (!string.IsNullOrWhiteSpace(x.Frequency) && !await db.FrequencyTypes.AsNoTracking().AnyAsync(type => type.IsActive && type.Name == x.Frequency.Trim(), ct))
             return "Selected frequency was not found.";
-
-        var contractNames = NormalizeContractNames(x);
-        if (contractNames.Count > 0)
-        {
-            var activeContracts = await db.ContractTypes.AsNoTracking()
-                .Where(type => type.IsActive)
-                .Select(type => type.Name)
-                .ToListAsync(ct);
-            var activeSet = activeContracts.ToHashSet(StringComparer.OrdinalIgnoreCase);
-            var missing = contractNames.FirstOrDefault(name => !activeSet.Contains(name));
-            if (missing != null)
-                return $"Selected contract type was not found: {missing}.";
-        }
-
-        var orgScopes = NormalizeOrganizationScopes(x);
-        if (orgScopes.Count == 0 && !x.OrganizationId.HasValue)
-            return null;
-
+        if (!x.OrganizationId.HasValue) return null;
         var tenantRootId = await db.Tenants.IgnoreQueryFilters().AsNoTracking().Where(row => row.Id == tenant.RequiredTenantId)
             .Select(row => row.OrganizationTreeId).SingleAsync(ct);
         var nodes = await db.OrganizationTree.AsNoTracking().ToListAsync(ct);
         var companies = ResolveBenefitCompanyNodes(nodes, tenantRootId);
         var scope = CollectBenefitOrganizationScope(tenantRootId, nodes, companies);
-        foreach (var org in orgScopes)
-        {
-            if (!scope.Contains(org.OrganizationId))
-                return "Selected entitlement is outside the current company.";
-        }
-
-        if (x.OrganizationId.HasValue && !scope.Contains(x.OrganizationId.Value) && orgScopes.Count == 0)
-            return "Selected entitlement is outside the current company.";
-
-        return null;
+        return scope.Contains(x.OrganizationId.Value)
+            ? null
+            : "Selected entitlement is outside the current company.";
     }
-
-    private async Task ReplaceBenefitRuleScopesAsync(PayrollBenefitRule row, BenefitRuleSave dto, CancellationToken ct)
-    {
-        var orgScopes = NormalizeOrganizationScopes(dto);
-        var contractNames = NormalizeContractNames(dto);
-
-        if (row.OrganizationScopes.Count > 0)
-            db.PayrollBenefitRuleOrganizations.RemoveRange(row.OrganizationScopes);
-        if (row.ContractScopes.Count > 0)
-            db.PayrollBenefitRuleContracts.RemoveRange(row.ContractScopes);
-
-        // Ensure tracked collections are cleared when includes were empty on create.
-        var existingOrgs = await db.PayrollBenefitRuleOrganizations.Where(x => x.BenefitRuleId == row.Id).ToListAsync(ct);
-        if (existingOrgs.Count > 0) db.PayrollBenefitRuleOrganizations.RemoveRange(existingOrgs);
-        var existingContracts = await db.PayrollBenefitRuleContracts.Where(x => x.BenefitRuleId == row.Id).ToListAsync(ct);
-        if (existingContracts.Count > 0) db.PayrollBenefitRuleContracts.RemoveRange(existingContracts);
-
-        foreach (var org in orgScopes)
-        {
-            db.PayrollBenefitRuleOrganizations.Add(new PayrollBenefitRuleOrganization
-            {
-                TenantId = row.TenantId,
-                BenefitRuleId = row.Id,
-                OrganizationId = org.OrganizationId,
-                ScopeLabel = org.ScopeLabel
-            });
-        }
-
-        foreach (var name in contractNames)
-        {
-            db.PayrollBenefitRuleContracts.Add(new PayrollBenefitRuleContract
-            {
-                TenantId = row.TenantId,
-                BenefitRuleId = row.Id,
-                ContractName = name
-            });
-        }
-
-        // Keep legacy summary columns in sync.
-        row.OrganizationId = orgScopes.FirstOrDefault()?.OrganizationId ?? dto.OrganizationId;
-        row.Contract = contractNames.Count > 0 ? string.Join(", ", contractNames) : Clean(dto.Contract);
-    }
-
-    private static List<(int OrganizationId, string ScopeLabel)> NormalizeOrganizationScopes(BenefitRuleSave x)
-    {
-        var result = new List<(int, string)>();
-        var seen = new HashSet<int>();
-        if (x.OrganizationScopes is { Count: > 0 })
-        {
-            foreach (var scope in x.OrganizationScopes)
-            {
-                if (scope.OrganizationId <= 0 || !seen.Add(scope.OrganizationId)) continue;
-                var label = string.IsNullOrWhiteSpace(scope.ScopeLabel) ? "Department" : scope.ScopeLabel.Trim();
-                if (label.Length > 30) label = label[..30];
-                result.Add((scope.OrganizationId, label));
-            }
-        }
-        else if (x.OrganizationIds is { Count: > 0 })
-        {
-            foreach (var id in x.OrganizationIds.Where(id => id > 0).Distinct())
-                result.Add((id, "Department"));
-        }
-        else if (x.OrganizationId is > 0)
-        {
-            result.Add((x.OrganizationId.Value, "Department"));
-        }
-
-        return result;
-    }
-
-    private static List<string> NormalizeContractNames(BenefitRuleSave x)
-    {
-        var names = new List<string>();
-        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        if (x.ContractNames is { Count: > 0 })
-        {
-            foreach (var name in x.ContractNames)
-            {
-                var trimmed = name?.Trim();
-                if (string.IsNullOrWhiteSpace(trimmed) || !seen.Add(trimmed)) continue;
-                names.Add(trimmed);
-            }
-        }
-        else if (!string.IsNullOrWhiteSpace(x.Contract))
-        {
-            foreach (var part in x.Contract.Split([',', ';'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
-            {
-                if (!seen.Add(part)) continue;
-                names.Add(part);
-            }
-        }
-
-        return names;
-    }
-
     private static void ApplyBenefitRule(PayrollBenefitRule row, BenefitRuleSave x)
     {
-        var orgScopes = NormalizeOrganizationScopes(x);
-        var contractNames = NormalizeContractNames(x);
+        var isBonus = x.BenefitsType.Equals("Bonus", StringComparison.OrdinalIgnoreCase);
         row.BenefitReference = BuildBenefitReference(x.Scale);
         row.BenefitsType = x.BenefitsType.Trim();
         row.Name = x.Name.Trim();
         row.Company = Clean(x.Company);
         row.Entitled = Clean(x.Entitled);
-        row.Contract = contractNames.Count > 0 ? string.Join(", ", contractNames) : Clean(x.Contract);
+        row.Contract = Clean(x.Contract);
         row.Frequency = Clean(x.Frequency);
         row.ValidFrom = x.ValidFrom;
         row.ValidTo = x.ValidTo;
         row.MaximumExpense = x.MaximumExpense;
         row.ServiceStatus = Clean(x.ServiceStatus);
-        row.Scale = Clean(x.Scale);
+        row.Scale = NormalizeScaleCsv(x.Scale);
         row.Wef = x.Wef;
         row.MinimumService = x.MinimumService;
+        row.MinimumSalary = x.MinimumSalary;
         row.MaximumPh = x.MaximumPh;
         row.MinimumPh = x.MinimumPh;
         row.IsIneligible = x.IsIneligible;
         row.ShareType = Clean(x.ShareType);
-        row.CompanyShare = x.CompanyShare;
-        row.StaffShare = x.StaffShare;
-        row.OrganizationId = orgScopes.Count > 0 ? orgScopes[0].OrganizationId : x.OrganizationId;
+        // Bonus uses Bonus Distribution on parameters — company/staff share fields do not apply.
+        row.CompanyShare = isBonus ? 0 : x.CompanyShare;
+        row.StaffShare = isBonus ? 0 : x.StaffShare;
+        row.OrganizationId = x.OrganizationId;
         row.CompanyName = Clean(x.CompanyName);
     }
     private static void ApplyBenefitParameter(PayrollBenefitParameter row, BenefitParameterSave x, string benefitType)
     {
+        var isBonus = benefitType.Equals("Bonus", StringComparison.OrdinalIgnoreCase);
         row.Name = x.Name.Trim();
-        row.PeriodFrom = x.PeriodFrom;
-        row.PeriodTo = x.PeriodTo;
         row.MinimumService = x.MinimumService;
         var isEobi = benefitType.Equals("EOBI", StringComparison.OrdinalIgnoreCase);
         // EOBI shares are fixed values and do not use the generic Amount Type or
@@ -1773,22 +1798,27 @@ public sealed class PayAndAllowancesController(
         row.Amount = !isEobi && isFigure ? x.Amount : 0;
         row.Percentage = !isEobi && isPayReference ? x.Percentage : 0;
         row.PayType = !isEobi && isPayReference ? x.PayType?.Trim() ?? string.Empty : string.Empty;
-        row.CompanyShare = x.CompanyShare;
-        row.StaffShare = x.StaffShare;
+        row.CompanyShare = isBonus ? 0 : x.CompanyShare;
+        row.StaffShare = isBonus ? 0 : x.StaffShare;
     }
-    private PayrollBonusDistribution CreateBonusDistribution(int benefitParameterId, BonusDistributionSave source)
+    private PayrollBonusDistribution CreateBonusDistribution(int benefitParameterId, BonusDistributionSave source, DateOnly? ruleValidFrom = null)
     {
         var row = new PayrollBonusDistribution
         {
             TenantId = tenant.RequiredTenantId,
             BenefitParameterId = benefitParameterId
         };
-        ApplyBonusDistribution(row, source);
+        ApplyBonusDistribution(row, source, ruleValidFrom);
         return row;
     }
-    private static void ApplyBonusDistribution(PayrollBonusDistribution row, BonusDistributionSave source)
+    private static void ApplyBonusDistribution(PayrollBonusDistribution row, BonusDistributionSave source, DateOnly? ruleValidFrom = null)
     {
         row.Month = source.Month;
+        row.InstallmentStart = source.InstallmentStart
+            ?? (source.Month is >= 1 and <= 12
+                ? new DateOnly(ruleValidFrom?.Year ?? DateTime.UtcNow.Year, source.Month.Value, 1)
+                : null);
+        row.InstallmentEnd = source.InstallmentEnd;
         row.BasicPercentage = source.BasicPercentage;
         row.ServicePercentage = source.ServicePercentage;
         row.ServiceYears = source.ServiceYears;
@@ -1821,13 +1851,29 @@ public sealed class PayAndAllowancesController(
     }
     private static string BuildBenefitReference(string? scale)
     {
-        var normalizedScale = new string((scale ?? string.Empty)
-            .Trim()
-            .Where(character => char.IsLetterOrDigit(character) || character is '-' or '_')
-            .ToArray())
-            .ToUpperInvariant();
-        var reference = $"B-{(normalizedScale.Length == 0 ? "UNASSIGNED" : normalizedScale)}";
+        var scales = (scale ?? string.Empty)
+            .Split([',', ';'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Where(name => name.Length > 0)
+            .ToArray();
+        var token = scales.Length switch
+        {
+            0 => "UNASSIGNED",
+            1 => new string(scales[0].Where(character => char.IsLetterOrDigit(character) || character is '-' or '_').ToArray()).ToUpperInvariant(),
+            _ => "MULTI"
+        };
+        if (string.IsNullOrWhiteSpace(token)) token = "UNASSIGNED";
+        var reference = $"B-{token}";
         return reference[..Math.Min(reference.Length, 30)];
+    }
+
+    private static string? NormalizeScaleCsv(string? scale)
+    {
+        if (string.IsNullOrWhiteSpace(scale)) return null;
+        var parts = scale.Split([',', ';'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Where(name => name.Length > 0)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        return parts.Length == 0 ? null : string.Join(", ", parts);
     }
     private async Task<string?> NormalizeCalculationAsync(string? x, CancellationToken ct)
     {
@@ -1950,6 +1996,7 @@ public sealed class PayAndAllowancesController(
             x.ScaleDate,
             x.Scale,
             x.ContractType,
+            x.ContractId,
             Month = x.Month > 0 ? x.Month : run?.Month ?? 0,
             Year = x.Year > 0 ? x.Year : run?.Year ?? 0,
             Ref = run?.RunNumber,
@@ -1961,7 +2008,12 @@ public sealed class PayAndAllowancesController(
             x.GeneralAllowanceAmount,
             x.ApptAllowanceAmount,
             x.ShiftAllowanceAmount,
+            x.MedicalAllowanceAmount,
+            x.NightAllowanceAmount,
+            x.TelephoneAllowanceAmount,
+            x.TransportAllowanceAmount,
             x.AllowanceAmount,
+            x.SalaryAdjustment,
             x.EmployerBenefitAmount,
             x.StaffBenefitDeduction,
             x.AssessmentAmount,
@@ -1993,7 +2045,11 @@ public sealed class PayAndAllowancesController(
 public sealed record PayBenefitSave(string Code, string Name, string CalculationType, decimal Amount, decimal Percentage, bool IsTaxable, bool IsEobiContributory, bool IsActive, string? Description);
 public sealed record PayBonusSave(string Code, string Name, string CalculationType, decimal Amount, decimal Percentage, string Frequency, bool IsTaxable, bool IsActive, string? Description);
 public sealed record PayrollRunSave(int Year, int Month, string? RunNumber, DateOnly PayDate, string Status, string? Notes);
+public sealed record PayrollApprovalPinDto(string PinCode);
 public sealed record PayrollLineSave(decimal AllowanceAmount, decimal EmployerBenefitAmount, decimal StaffBenefitDeduction, decimal BonusAmount, decimal OvertimeAmount, decimal AttendanceDeduction, decimal AttendanceAdjustment, string? AttendanceAdjustmentRemarks, decimal TaxAmount, decimal EmployeeEobiAmount, decimal EmployerEobiAmount, decimal OtherDeduction, string? Remarks);
+public sealed record PayrollGridStyleRuleDto(int Id, string Category, string ColumnKey, string Caption, string BackgroundColor, string FontColor, int DisplayOrder, bool IsActive);
+public sealed record PayrollGridStyleRuleSave(string? Caption, string BackgroundColor, string FontColor, int DisplayOrder, bool IsActive);
+public sealed record PayrollGridStyleRuleCreate(string Category, string ColumnKey, string? Caption, string BackgroundColor, string FontColor, int DisplayOrder = 0, bool IsActive = true);
 public sealed record EobiSettingSave(decimal EmployeeRatePercentage, decimal EmployerRatePercentage, decimal MinimumWage, decimal MaximumContributionBase, DateOnly EffectiveFrom, DateOnly? EffectiveTo, bool IsActive);
 public sealed class TaxSlabSave
 {
@@ -2028,31 +2084,6 @@ public sealed record StaffTaxSyncSave(DateOnly? DateFrom, DateOnly? DateTo);
 public sealed record EobiEligibilitySave(Guid PersonId, string? EobiNumber, DateOnly EffectiveFrom, DateOnly? EffectiveTo, bool IsEligible, string? Remarks);
 public sealed record StaffMonthlyEobiCreateSave(int Year, int Month);
 public sealed record StaffMonthlyEobiUpdateSave(string? EobiRef);
-public sealed record BenefitRuleOrganizationScopeDto(int OrganizationId, string? ScopeLabel);
-public sealed record BenefitRuleSave(
-    string BenefitsType,
-    string Name,
-    string? Company,
-    string? Entitled,
-    string? Contract,
-    string? Frequency,
-    DateOnly? ValidFrom,
-    DateOnly? ValidTo,
-    decimal MaximumExpense,
-    string? ServiceStatus,
-    string? Scale,
-    DateOnly? Wef,
-    decimal MinimumService,
-    decimal MaximumPh,
-    decimal MinimumPh,
-    bool IsIneligible,
-    string? ShareType,
-    decimal CompanyShare,
-    decimal StaffShare,
-    int? OrganizationId,
-    string? CompanyName,
-    IReadOnlyList<int>? OrganizationIds = null,
-    IReadOnlyList<BenefitRuleOrganizationScopeDto>? OrganizationScopes = null,
-    IReadOnlyList<string>? ContractNames = null);
-public sealed record BenefitParameterSave(int BenefitRuleId, string Name, DateOnly? PeriodFrom, DateOnly? PeriodTo, decimal MinimumService, string? AmountType, string? PayType, decimal Amount, decimal Percentage, decimal CompanyShare, decimal StaffShare, BonusDistributionSave? BonusDistribution);
-public sealed record BonusDistributionSave(int? Month, decimal BasicPercentage, decimal ServicePercentage, decimal ServiceYears, decimal AssessmentPercentage, decimal AttendancePercentage, decimal LeavePercentage, decimal DisciplinePercentage, int Installments);
+public sealed record BenefitRuleSave(string BenefitsType, string Name, string? Company, string? Entitled, string? Contract, string? Frequency, DateOnly? ValidFrom, DateOnly? ValidTo, decimal MaximumExpense, string? ServiceStatus, string? Scale, DateOnly? Wef, decimal MinimumService, decimal MinimumSalary, decimal MaximumPh, decimal MinimumPh, bool IsIneligible, string? ShareType, decimal CompanyShare, decimal StaffShare, int? OrganizationId, string? CompanyName);
+public sealed record BenefitParameterSave(int BenefitRuleId, string Name, decimal MinimumService, string? AmountType, string? PayType, decimal Amount, decimal Percentage, decimal CompanyShare, decimal StaffShare, BonusDistributionSave? BonusDistribution);
+public sealed record BonusDistributionSave(int? Month, DateOnly? InstallmentStart, DateOnly? InstallmentEnd, decimal BasicPercentage, decimal ServicePercentage, decimal ServiceYears, decimal AssessmentPercentage, decimal AttendancePercentage, decimal LeavePercentage, decimal DisciplinePercentage, int Installments);

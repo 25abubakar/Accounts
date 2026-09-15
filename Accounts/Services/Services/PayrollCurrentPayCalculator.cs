@@ -1,12 +1,9 @@
 namespace Accounts.Services.Services;
 
 /// <summary>
-/// Server-authoritative CurrentPay from Basic + ScaleDate increments, capped at Max.
-/// <list type="bullet">
-/// <item>No Inc Months → Basic + completedYearsAfterApplyAfter × YearlyIncrement (legacy).</item>
-/// <item>Inc Months set (e.g. 1,6) → YearlyIncrement is split equally; each configured calendar month
-/// after ApplyAfter earns one installment (1000 / 2 = 500 in Jan and 500 in June).</item>
-/// </list>
+/// Server-authoritative CurrentPay helpers. Prefer <see cref="PayrollScaleProgression"/> for
+/// DOJ service years (first year = 1× INC) and Max → next-scale upgrades.
+/// This type remains for installment-month splitting and simple Cap math.
 /// </summary>
 public static class PayrollCurrentPayCalculator
 {
@@ -14,7 +11,7 @@ public static class PayrollCurrentPayCalculator
         decimal basicSalary,
         decimal yearlyIncrement,
         decimal maximumSalary,
-        DateTime? scaleDate,
+        DateTime? incrementAnchorDate,
         DateOnly asOfDate,
         int? applyAfterYears = null,
         IReadOnlyList<int>? incrementMonths = null)
@@ -22,28 +19,22 @@ public static class PayrollCurrentPayCalculator
         if (basicSalary < 0) basicSalary = 0;
         if (yearlyIncrement < 0) yearlyIncrement = 0;
 
-        if (!scaleDate.HasValue || yearlyIncrement == 0)
+        if (!incrementAnchorDate.HasValue || yearlyIncrement == 0)
             return Cap(basicSalary, maximumSalary);
 
-        var scaleStart = DateOnly.FromDateTime(scaleDate.Value.Date);
-        if (scaleStart > asOfDate)
+        var anchorStart = DateOnly.FromDateTime(incrementAnchorDate.Value.Date);
+        if (anchorStart > asOfDate)
             return Cap(basicSalary, maximumSalary);
 
         var months = NormalizeMonths(incrementMonths);
         if (months.Count == 0)
         {
-            var completedYears = asOfDate.Year - scaleStart.Year;
-            if (asOfDate < scaleStart.AddYears(completedYears))
-                completedYears--;
-            if (completedYears < 0) completedYears = 0;
-
-            var applyAfter = Math.Max(0, applyAfterYears ?? 0);
-            var incrementCount = Math.Max(0, completedYears - applyAfter);
-            return Cap(basicSalary + incrementCount * yearlyIncrement, maximumSalary);
+            var years = PayrollScaleProgression.CountServiceYears(incrementAnchorDate, asOfDate, applyAfterYears);
+            return Cap(basicSalary + years * yearlyIncrement, maximumSalary);
         }
 
         var installment = decimal.Round(yearlyIncrement / months.Count, 2, MidpointRounding.AwayFromZero);
-        var eligibleFrom = scaleStart.AddYears(Math.Max(0, applyAfterYears ?? 0));
+        var eligibleFrom = anchorStart.AddYears(Math.Max(0, applyAfterYears ?? 0));
         if (eligibleFrom > asOfDate)
             return Cap(basicSalary, maximumSalary);
 

@@ -170,7 +170,6 @@ builder.Services.AddScoped<IMenuService, MenuService>();
 builder.Services.AddScoped<IAccessService, AccessService>();
 builder.Services.AddScoped<IPermissionFilterService, PermissionFilterService>();
 builder.Services.AddScoped<RbacService>();
-builder.Services.AddScoped<MenuAuthorityService>();
 builder.Services.AddScoped<TenantPermissionService>();
 builder.Services.AddScoped<OptimizedMenuService>();
 builder.Services.AddHostedService<ProcessReportAutoTransferService>();

@@ -1,6 +1,7 @@
 using Accounts.Data;
 using Accounts.DTOs;
 using Accounts.Models;
+using Accounts.Models.SpListRows;
 using Accounts.Services.Interfaces;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
@@ -27,36 +28,84 @@ namespace Accounts.Services.Services
             _tenantService = tenantService;
         }
 
-        public async Task<IEnumerable<PersonDto>> GetAllAsync()
-        {
-            var persons  = await _db.Persons.Include(p => p.Addresses)
-                .Include(p => p.Staff).ThenInclude(s => s!.Vacancy).ThenInclude(v => v!.DesignationNav)
-                .OrderByDescending(p => p.CreatedDate).ToListAsync();
-            var orgNodes = await _db.OrganizationTree.ToListAsync();
-            return persons.Select(p => MapToDto(p, orgNodes));
-        }
+        public async Task<IEnumerable<PersonDto>> GetAllAsync() =>
+            await LoadPersonsAsync("ALL");
 
         public async Task<IEnumerable<PersonDto>> GetFormerAsync(bool tenantWide, IReadOnlySet<int> visibleOrganizationIds)
         {
-            var visibleIds = visibleOrganizationIds.ToArray();
-            var persons = await _db.Persons.AsNoTracking()
-                .Include(p => p.Addresses)
-                .Where(p => (p.EmploymentStatus == "Fired" || p.EmploymentStatus == "Retired") &&
-                    (tenantWide || (p.LastOrganizationId.HasValue && visibleIds.Contains(p.LastOrganizationId.Value))))
-                .OrderByDescending(p => p.TerminationDateUtc)
-                .ThenBy(p => p.FullName)
-                .ToListAsync();
-            var orgNodes = await _db.OrganizationTree.AsNoTracking().ToListAsync();
-            return persons.Select(p => MapToDto(p, orgNodes));
+            var rows = await LoadPersonsAsync("FORMER");
+            if (tenantWide) return rows;
+            // Former rows without org scope still return Last* names; keep previous filter when LastOrganizationId is unavailable in SP.
+            // Fall back to name/org-less rows only when tenantWide is false and BranchId is in scope.
+            var visibleIds = visibleOrganizationIds.ToHashSet();
+            return rows.Where(p => !p.BranchId.HasValue || visibleIds.Contains(p.BranchId.Value));
         }
 
-        public async Task<IEnumerable<PersonDto>> GetUnassignedAsync()
+        public async Task<IEnumerable<PersonDto>> GetUnassignedAsync() =>
+            await LoadPersonsAsync("UNASSIGNED");
+
+        private async Task<List<PersonDto>> LoadPersonsAsync(string mode)
         {
-            var persons  = await _db.Persons.Include(p => p.Addresses)
-                .Include(p => p.Staff).ThenInclude(s => s!.Vacancy).ThenInclude(v => v!.DesignationNav)
-                .Where(p => p.Staff == null).OrderByDescending(p => p.CreatedDate).ToListAsync();
-            var orgNodes = await _db.OrganizationTree.ToListAsync();
-            return persons.Select(p => MapToDto(p, orgNodes));
+            var rows = await SpListQuery.ExecAsync<HrPersonListRow>(
+                _db,
+                "EXEC dbo.usp_Hr_Persons_List @TenantId, @Mode",
+                CancellationToken.None,
+                SpListQuery.TenantId(_tenantService.RequiredTenantId),
+                SpListQuery.NVarChar("@Mode", mode));
+            return rows.Select(MapPersonRow).ToList();
+        }
+
+        private static PersonDto MapPersonRow(HrPersonListRow row)
+        {
+            var current = new AddressResponseDto
+            {
+                AddressLine = row.CurrentAddressLine,
+                Country = row.CurrentCountry,
+                City = row.CurrentCity
+            };
+            var permanent = new AddressResponseDto
+            {
+                AddressLine = row.PermanentAddressLine ?? row.CurrentAddressLine,
+                Country = row.PermanentCountry ?? row.CurrentCountry,
+                City = row.PermanentCity ?? row.CurrentCity
+            };
+            var same = string.Equals(current.AddressLine, permanent.AddressLine, StringComparison.OrdinalIgnoreCase)
+                && string.Equals(current.Country, permanent.Country, StringComparison.OrdinalIgnoreCase)
+                && string.Equals(current.City, permanent.City, StringComparison.OrdinalIgnoreCase);
+
+            return new PersonDto
+            {
+                PersonId = row.PersonId,
+                LoginId = row.LoginId,
+                FullName = row.FullName,
+                Gender = row.Gender,
+                DateOfBirth = row.DateOfBirth,
+                MaritalStatus = row.MaritalStatus,
+                Phone = row.Phone,
+                Email = row.Email,
+                PersonalEmail = row.PersonalEmail,
+                ShiftStartTime = row.ShiftStartTime,
+                ShiftEndTime = row.ShiftEndTime,
+                TimeZoneId = row.TimeZoneId,
+                PhotoUrl = row.PhotoUrl,
+                IsHired = row.IsHired,
+                IsActive = row.IsActive,
+                EmploymentStatus = row.EmploymentStatus,
+                TerminationDateUtc = row.TerminationDateUtc,
+                TerminationReason = row.TerminationReason,
+                RegisteredAt = row.RegisteredAt,
+                JoiningDate = row.JoiningDate,
+                BranchId = row.BranchId,
+                BranchName = row.BranchName,
+                CompanyName = row.CompanyName,
+                CountryName = row.CountryName,
+                VacancyCode = row.VacancyCode,
+                JobTitle = row.JobTitle,
+                Department = row.Department,
+                CurrentAddress = current,
+                PermanentAddress = permanent,
+                SameAddress = same
+            };
         }
 
         public async Task<PersonDto?> GetByIdAsync(Guid id)
@@ -224,31 +273,44 @@ namespace Accounts.Services.Services
 
             var workingDays = decimal.TryParse(dto.WorkingDays, NumberStyles.Number, CultureInfo.InvariantCulture, out var parsedDays) && parsedDays > 0 ? parsedDays : 26m;
             var workingHours = decimal.TryParse(dto.WorkingHours, NumberStyles.Number, CultureInfo.InvariantCulture, out var parsedHours) && parsedHours > 0 ? parsedHours : ResolveWorkingHours(dto.TimingFrom, dto.TimingTo);
-            var basicSalary = selectedScale?.BasicSalary ?? dto.BasicSalary;
-            var incrementSalary = selectedScale?.YearlyIncrement ?? dto.IncrementSalary;
-            var maxSalary = selectedScale?.MaximumSalary ?? dto.MaxSalary;
             var scaleDate = dto.ScaleDate;
+            var joiningDate = dto.JoiningDate ?? profile.JoiningDate;
+            var incrementAnchor = PayrollScaleProgression.ResolveIncrementAnchor(scaleDate, joiningDate);
             var asOf = DateOnly.FromDateTime(DateTime.UtcNow.Date);
-            var currentPay = basicSalary.HasValue
-                ? PayrollCurrentPayCalculator.Compute(
-                    basicSalary.Value,
-                    incrementSalary ?? 0,
-                    maxSalary ?? 0,
-                    scaleDate,
-                    asOf,
-                    selectedScale?.ApplyAfter,
-                    PayrollCurrentPayCalculator.ParseMonthsCsv(selectedScale?.IncrementMonths))
-                : dto.CurrentPay;
-            var perDay = currentPay.HasValue ? decimal.Round(currentPay.Value / workingDays, 2, MidpointRounding.AwayFromZero) : dto.AccountsPerDay;
-            var perHour = perDay.HasValue ? decimal.Round(perDay.Value / workingHours, 2, MidpointRounding.AwayFromZero) : dto.AccountsPerHour;
+            var tenantScales = await _db.SalaryScales.AsNoTracking()
+                .Where(scale => scale.TenantId == person.TenantId && scale.IsActive)
+                .ToListAsync();
+            var progression = PayrollScaleProgression.Resolve(
+                selectedScale,
+                tenantScales,
+                incrementAnchor,
+                asOf,
+                selectedScale?.BasicSalary ?? dto.BasicSalary,
+                selectedScale?.YearlyIncrement ?? dto.IncrementSalary,
+                selectedScale?.MaximumSalary ?? dto.MaxSalary);
+            var effectiveScale = progression.EffectiveScale ?? selectedScale;
+            var basicSalary = effectiveScale?.BasicSalary ?? progression.ScaleBasic;
+            var incrementSalary = effectiveScale?.YearlyIncrement ?? progression.YearlyIncrement;
+            var maxSalary = effectiveScale?.MaximumSalary ?? progression.MaxSalary;
+            var currentPay = progression.CurrentPay;
+            var perDay = currentPay > 0 || basicSalary > 0
+                ? decimal.Round((currentPay > 0 ? currentPay : basicSalary) / workingDays, 2, MidpointRounding.AwayFromZero)
+                : dto.AccountsPerDay;
+            var perHour = perDay.HasValue
+                ? decimal.Round(perDay.Value / workingHours, 2, MidpointRounding.AwayFromZero)
+                : dto.AccountsPerHour;
 
             profile.SalaryPackageId = selectedPackage?.Id;
-            profile.Scale = scaleName;
-            profile.ScaleDate = scaleDate;
+            profile.Scale = effectiveScale?.ScaleName ?? scaleName;
+            // When ladder auto-upgrades, persist the new scale + the date that scale started.
+            profile.ScaleDate = progression.Upgraded && progression.EffectiveScaleDate.HasValue
+                ? progression.EffectiveScaleDate.Value.ToDateTime(TimeOnly.MinValue)
+                : scaleDate;
             profile.BasicSalary = basicSalary;
             profile.IncrementSalary = incrementSalary;
             profile.MaxSalary = maxSalary;
             profile.CurrentPay = currentPay;
+            profile.SalaryAdjustment = dto.SalaryAdjustment is < 0 ? 0 : dto.SalaryAdjustment;
             profile.AccountsPerDay = perDay;
             profile.AccountsPerHour = perHour;
             profile.LeaveFrom = dto.LeaveFrom;
@@ -1311,6 +1373,7 @@ namespace Accounts.Services.Services
                 IncrementSalary = profile.IncrementSalary,
                 MaxSalary = profile.MaxSalary,
                 CurrentPay = profile.CurrentPay,
+                SalaryAdjustment = profile.SalaryAdjustment,
                 AccountsPerDay = profile.AccountsPerDay,
                 AccountsPerHour = profile.AccountsPerHour,
                 LeaveFrom = profile.LeaveFrom,
@@ -1406,6 +1469,7 @@ namespace Accounts.Services.Services
                 IncrementSalary = profile?.IncrementSalary,
                 MaxSalary = profile?.MaxSalary,
                 CurrentPay = profile?.CurrentPay,
+                SalaryAdjustment = profile?.SalaryAdjustment,
                 AccountsPerDay = profile?.AccountsPerDay,
                 AccountsPerHour = profile?.AccountsPerHour,
                 LeaveFrom = profile?.LeaveFrom,

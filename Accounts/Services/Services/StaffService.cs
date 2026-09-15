@@ -1,5 +1,6 @@
 using Accounts.Data;
 using Accounts.Models;
+using Accounts.Models.SpListRows;
 using Accounts.Services.Interfaces;
 using Microsoft.EntityFrameworkCore;
 
@@ -23,8 +24,12 @@ namespace Accounts.Services.Services
 
         public async Task<IEnumerable<StaffDto>> GetAllAsync()
         {
-            var list = await WithIncludes().ToListAsync();
-            return list.Select(MapToDto);
+            var rows = await SpListQuery.ExecAsync<HrStaffListRow>(
+                _db,
+                "EXEC dbo.usp_Hr_Staff_List @TenantId",
+                CancellationToken.None,
+                SpListQuery.TenantId(_tenantService.RequiredTenantId));
+            return rows.Select(MapStaffRow);
         }
 
         public async Task<StaffDto?> GetByIdAsync(Guid id)
@@ -35,12 +40,12 @@ namespace Accounts.Services.Services
 
         public async Task<IEnumerable<StaffDto>> SearchAsync(string q)
         {
-            var list = await WithIncludes()
-                .Where(s =>
-                    (s.Person != null && s.Person.FullName.Contains(q)) ||
-                    (s.Person != null && s.Person.Email != null && s.Person.Email.Contains(q)))
-                .ToListAsync();
-            return list.Select(MapToDto);
+            var needle = (q ?? string.Empty).Trim();
+            var all = await GetAllAsync();
+            if (string.IsNullOrWhiteSpace(needle)) return all;
+            return all.Where(s =>
+                (!string.IsNullOrWhiteSpace(s.FullName) && s.FullName.Contains(needle, StringComparison.OrdinalIgnoreCase)) ||
+                (!string.IsNullOrWhiteSpace(s.Email) && s.Email.Contains(needle, StringComparison.OrdinalIgnoreCase)));
         }
 
         public Task<(StaffDto? Staff, string? Error)> HireAsync(Guid vacancyId, HireStaffDto dto)
@@ -142,6 +147,89 @@ namespace Accounts.Services.Services
             return (MapToDto(updated!), null);
         }
 
+        public async Task<(bool Success, string Message)> EndEmploymentAsync(
+            Guid id,
+            string status,
+            string? reason,
+            CancellationToken cancellationToken)
+        {
+            if (!status.Equals("Fired", StringComparison.OrdinalIgnoreCase) &&
+                !status.Equals("Retired", StringComparison.OrdinalIgnoreCase))
+                return (false, "Employment status must be Fired or Retired.");
+
+            var normalizedStatus = status.Equals("Retired", StringComparison.OrdinalIgnoreCase)
+                ? "Retired"
+                : "Fired";
+            var normalizedReason = string.IsNullOrWhiteSpace(reason) ? null : reason.Trim();
+            if (normalizedReason?.Length > 500)
+                return (false, "Termination reason cannot exceed 500 characters.");
+
+            var staff = await _db.StaffVacancies
+                .Include(x => x.Person)
+                .Include(x => x.Vacancy).ThenInclude(x => x!.DesignationNav)
+                .Include(x => x.Vacancy).ThenInclude(x => x!.Organization)
+                .SingleOrDefaultAsync(x => x.StaffId == id, cancellationToken);
+            if (staff?.Person == null) return (false, $"Staff {id} not found.");
+            if (!staff.Person.IsActive &&
+                (staff.Person.EmploymentStatus.Equals("Fired", StringComparison.OrdinalIgnoreCase) ||
+                 staff.Person.EmploymentStatus.Equals("Retired", StringComparison.OrdinalIgnoreCase)))
+                return (false, $"{staff.Person.FullName} is already marked as {staff.Person.EmploymentStatus}.");
+
+            var identityUser = await _db.Users.SingleOrDefaultAsync(
+                x => x.Id == staff.Person.IdentityUserId,
+                cancellationToken);
+            if (identityUser?.IsSuperAdmin == true || identityUser?.IsTenantAdmin == true)
+                return (false, "A Super Admin or Tenant Admin account cannot be ended from the employee screen.");
+
+            var vacancy = staff.Vacancy;
+            if (vacancy != null)
+            {
+                var chain = new List<OrganizationTree>();
+                for (var node = vacancy.Organization; node != null && chain.Count < 20;)
+                {
+                    chain.Add(node);
+                    node = node.ParentId.HasValue
+                        ? await _db.OrganizationTree.SingleOrDefaultAsync(x => x.Id == node.ParentId.Value, cancellationToken)
+                        : null;
+                }
+
+                OrganizationTree? Find(params string[] labels) => chain.FirstOrDefault(node =>
+                    labels.Any(label => string.Equals(node.Label, label, StringComparison.OrdinalIgnoreCase)));
+
+                staff.Person.LastOrganizationId = vacancy.OrganizationId;
+                staff.Person.LastVacancyCode = vacancy.VacancyCode;
+                staff.Person.LastJobTitle = vacancy.ResolvedJobTitle;
+                staff.Person.LastDepartment = vacancy.Department ?? Find("Department", "Sub Department", "SubDepartment", "Unit", "Team", "Section")?.Name;
+                staff.Person.LastBranchName = Find("Branch", "Sub Branch", "SubBranch", "Office")?.Name;
+                staff.Person.LastCompanyName = Find("Company")?.Name;
+                staff.Person.LastCountryName = Find("Country")?.Name;
+                vacancy.IsFilled = false;
+                staff.VacancyId = null;
+            }
+
+            staff.Person.LastLoginId = staff.LoginId;
+            staff.Person.LastJoiningDate = await _db.PersonHrProfiles
+                .Where(x => x.PersonId == staff.PersonId)
+                .Select(x => x.JoiningDate)
+                .FirstOrDefaultAsync(cancellationToken);
+            staff.Person.EmploymentStatus = normalizedStatus;
+            staff.Person.TerminationDateUtc = DateTime.UtcNow;
+            staff.Person.TerminationReason = normalizedReason;
+            staff.Person.IsActive = false;
+
+            // Prevent a former employee from creating new authenticated sessions and
+            // invalidate existing cookies at the next security-stamp validation.
+            if (identityUser != null)
+            {
+                identityUser.LockoutEnabled = true;
+                identityUser.LockoutEnd = DateTimeOffset.MaxValue;
+                identityUser.SecurityStamp = Guid.NewGuid().ToString();
+            }
+
+            await _db.SaveChangesAsync(cancellationToken);
+            return (true, $"{staff.Person.FullName} marked as {normalizedStatus}. The position is now vacant.");
+        }
+
         public async Task<(bool Success, string Message)> DeleteAsync(Guid id)
         {
             var staff = await _db.StaffVacancies.FindAsync(id);
@@ -183,6 +271,29 @@ namespace Accounts.Services.Services
                        .ThenInclude(o => o!.Parent)
                            .ThenInclude(p => p!.Parent)
                                .ThenInclude(p => p!.Parent);
+
+        private static StaffDto MapStaffRow(HrStaffListRow row) => new()
+        {
+            StaffId = row.StaffId,
+            PersonId = row.PersonId,
+            FullName = row.FullName,
+            Email = row.Email,
+            Phone = row.Phone,
+            PhotoUrl = row.PhotoUrl,
+            IsActive = row.IsActive,
+            LoginId = row.LoginId,
+            VacancyId = row.VacancyId,
+            VacancyCode = row.VacancyCode,
+            JobTitle = row.Designation,
+            Department = row.Department,
+            BranchName = row.BranchName,
+            CompanyName = row.CompanyName,
+            CountryName = row.CountryName,
+            GroupName = row.GroupName,
+            ShiftStartTime = row.ShiftStartTime,
+            ShiftEndTime = row.ShiftEndTime,
+            JoiningDate = row.JoiningDate
+        };
 
         private static StaffDto MapToDto(StaffVacancy s)
         {
