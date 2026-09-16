@@ -75,7 +75,14 @@ public sealed class AssessmentSchedulerService(IServiceScopeFactory scopeFactory
                         db.StaffAssessments.Add(new StaffAssessment { TenantId = tenantId, AssessorPersonId = assessor.PersonId, SubjectPersonId = subject.PersonId, AssessmentYear = cycle.Value.Year, AssessmentMonth = (byte)cycle.Value.Month, CreatedDateUtc = DateTime.UtcNow });
                     await db.SaveChangesAsync(ct);
 
-                    var incomplete = await db.StaffAssessments.IgnoreQueryFilters().AnyAsync(x => x.TenantId == tenantId && x.AssessorPersonId == assessor.PersonId && x.AssessmentYear == cycle.Value.Year && x.AssessmentMonth == cycle.Value.Month && x.Rating == null && !x.IsLocked, ct);
+                    var submittedSubjectIds = await db.StaffAssessments.IgnoreQueryFilters().AsNoTracking()
+                        .Where(x => x.TenantId == tenantId && x.AssessmentYear == cycle.Value.Year &&
+                            x.AssessmentMonth == cycle.Value.Month && x.Rating.HasValue)
+                        .Select(x => x.SubjectPersonId).ToHashSetAsync(ct);
+                    var incomplete = await db.StaffAssessments.IgnoreQueryFilters().AnyAsync(x =>
+                        x.TenantId == tenantId && x.AssessorPersonId == assessor.PersonId &&
+                        x.AssessmentYear == cycle.Value.Year && x.AssessmentMonth == cycle.Value.Month &&
+                        x.Rating == null && !x.IsLocked && !submittedSubjectIds.Contains(x.SubjectPersonId), ct);
                     var entityId = ReminderEntityId(cycle.Value.Year, cycle.Value.Month, assessor.PersonId);
                     var activeReminders = await db.AppNotes.IgnoreQueryFilters().Include(x => x.Targets)
                         .Where(x => x.TenantId == tenantId && x.EntityType == "ASSESSMENT_REMINDER" && x.IsActive &&

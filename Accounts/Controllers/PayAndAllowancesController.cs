@@ -448,12 +448,11 @@ public sealed class PayAndAllowancesController(
     public async Task<IActionResult> CreatePayrollRun(PayrollRunSave dto, CancellationToken ct)
     {
         var denied = await Guard("/pay-allowances/payroll", "VIEW", ct); if (denied != null) return denied;
-        var authorityDenied = await GuardPayrollAuthority("CREATE", ct); if (authorityDenied != null) return authorityDenied;
         var error = await ValidatePayrollAsync(dto, ct); if (error != null) return BadRequest(new { message = error });
         var userId = User.FindFirstValue(ClaimTypes.NameIdentifier); if (string.IsNullOrWhiteSpace(userId)) return Forbid();
         try
         {
-            var run = await payroll.GenerateAsync(userId, await ActorNameAsync(ct), dto.Year, dto.Month, dto.PayDate, ct);
+            var run = await PreparePayrollDraftAsync(dto, userId, ct);
             return Ok(await PayrollResponseAsync(run, run.Lines, ct));
         }
         catch (InvalidOperationException ex) { return Conflict(new { message = ex.Message }); }
@@ -464,7 +463,6 @@ public sealed class PayAndAllowancesController(
     public async Task<IActionResult> UpdatePayrollRun(long id, PayrollRunSave dto, CancellationToken ct)
     {
         var denied = await Guard("/pay-allowances/payroll", "VIEW", ct); if (denied != null) return denied;
-        var authorityDenied = await GuardPayrollAuthority("CREATE", ct); if (authorityDenied != null) return authorityDenied;
         var row = await db.PayrollRuns.SingleOrDefaultAsync(x => x.Id == id, ct); if (row == null) return NotFound();
         if (!row.Status.Equals("Draft", StringComparison.OrdinalIgnoreCase)) return Conflict(new { message = "Only a Draft payroll run can be edited." });
         var error = await ValidatePayrollAsync(dto, ct); if (error != null) return BadRequest(new { message = error });
@@ -472,7 +470,7 @@ public sealed class PayAndAllowancesController(
         var userId = User.FindFirstValue(ClaimTypes.NameIdentifier); if (string.IsNullOrWhiteSpace(userId)) return Forbid();
         try
         {
-            var run = await payroll.GenerateAsync(userId, await ActorNameAsync(ct), dto.Year, dto.Month, dto.PayDate, ct);
+            var run = await PreparePayrollDraftAsync(dto, userId, ct);
             return Ok(await PayrollResponseAsync(run, run.Lines, ct));
         }
         catch (InvalidOperationException ex) { return Conflict(new { message = ex.Message }); }
@@ -605,6 +603,8 @@ public sealed class PayAndAllowancesController(
         if (run == null) return NotFound();
         if (!run.Status.Equals("Draft", StringComparison.OrdinalIgnoreCase))
             return Conflict(new { message = "Only a Draft payroll can be processed." });
+        if (string.IsNullOrWhiteSpace(run.CreatedByUserId))
+            return Conflict(new { message = "An authorized Payroll CREATE user must create/sign this Draft before it can be processed." });
         if (run.Lines.Count == 0) return BadRequest(new { message = "Generate payroll lines before processing." });
         var pendingFinalAssessments = await db.StaffAssessments.AsNoTracking().CountAsync(assessment =>
             assessment.AssessmentYear == run.Year && assessment.AssessmentMonth == run.Month &&
@@ -1568,6 +1568,53 @@ public sealed class PayAndAllowancesController(
             {
                 message = $"You are not assigned to the Payroll {normalizedAction} stage. Configure this person in HR Management > Process > Reports > Workflow Authorities."
             });
+    }
+
+    private async Task<PayrollRun> PreparePayrollDraftAsync(
+        PayrollRunSave dto,
+        string userId,
+        CancellationToken ct)
+    {
+        var canSignCreate = await GuardPayrollAuthority("CREATE", ct) == null;
+        var existing = await db.PayrollRuns
+            .Include(run => run.Lines)
+            .SingleOrDefaultAsync(run => run.Year == dto.Year && run.Month == dto.Month, ct);
+
+        // Legacy-compatible behavior: any user who can view Payroll may prepare or
+        // reload the monthly Draft. That does not advance the workflow. Once an
+        // assigned CREATE authority signs it, Created By becomes authoritative and
+        // VERIFY may continue. A non-creator cannot recalculate a signed Draft.
+        if (existing != null &&
+            !string.IsNullOrWhiteSpace(existing.CreatedByUserId) &&
+            !canSignCreate)
+        {
+            return existing;
+        }
+
+        string? creatorUserId = null;
+        string? creatorName = null;
+        if (canSignCreate)
+        {
+            creatorUserId = userId;
+            creatorName = await ActorNameAsync(ct);
+
+            if (existing != null && string.IsNullOrWhiteSpace(existing.CreatedByUserId))
+            {
+                existing.CreatedByUserId = creatorUserId;
+                existing.CreatedByName = creatorName;
+                existing.CreatedOnUtc = DateTime.UtcNow;
+                existing.UpdatedOnUtc = DateTime.UtcNow;
+                await db.SaveChangesAsync(ct);
+            }
+        }
+
+        return await payroll.GenerateAsync(
+            creatorUserId,
+            creatorName,
+            dto.Year,
+            dto.Month,
+            dto.PayDate,
+            ct);
     }
 
     private async Task<IActionResult?> GuardPayrollPin(string actionCode, string? pinCode, CancellationToken ct)

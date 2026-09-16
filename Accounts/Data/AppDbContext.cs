@@ -156,6 +156,22 @@ namespace Accounts.Data
         public DbSet<ChatRuleSetting> ChatRuleSettings => Set<ChatRuleSetting>();
         public DbSet<IdempotencyRecord> IdempotencyRecords => Set<IdempotencyRecord>();
 
+        // ── Accounts / ROZ billing ledger ──────────────────────────────────────
+        public DbSet<RoznamchaEntry> RoznamchaEntries => Set<RoznamchaEntry>();
+        public DbSet<AccountsChartAccount> AccountsChartAccounts => Set<AccountsChartAccount>();
+        public DbSet<AccountsCategory> AccountsCategories => Set<AccountsCategory>();
+        public DbSet<AccountsRoznamchaType> AccountsRoznamchaTypes => Set<AccountsRoznamchaType>();
+        public DbSet<AccountsEntryStatus> AccountsEntryStatuses => Set<AccountsEntryStatus>();
+        public DbSet<AccountsTransType> AccountsTransTypes => Set<AccountsTransType>();
+        public DbSet<AccountsTransMode> AccountsTransModes => Set<AccountsTransMode>();
+        public DbSet<AccountsCurrency> AccountsCurrencies => Set<AccountsCurrency>();
+        public DbSet<AccountsModuleSettings> AccountsModuleSettings => Set<AccountsModuleSettings>();
+        public DbSet<BillingRoznamchaImport> BillingRoznamchaImports => Set<BillingRoznamchaImport>();
+        public DbSet<BankStatement> BankStatements => Set<BankStatement>();
+        public DbSet<RoznamchaEntryProcessLog> RoznamchaEntryProcessLogs => Set<RoznamchaEntryProcessLog>();
+        public DbSet<RoznamchaEntryAccess> RoznamchaEntryAccesses => Set<RoznamchaEntryAccess>();
+        public DbSet<AccountsEntryDocument> AccountsEntryDocuments => Set<AccountsEntryDocument>();
+
         protected override void OnModelCreating(ModelBuilder builder)
         {
             base.OnModelCreating(builder);
@@ -324,6 +340,53 @@ namespace Accounts.Data
                 _tenantService != null && !_tenantService.IsSuperAdmin &&
                 _tenantService.TenantId != null && row.Invoice != null &&
                 row.Invoice.TenantId == _tenantService.TenantId);
+            builder.Entity<RoznamchaEntry>().HasQueryFilter(row =>
+                _tenantService != null && !_tenantService.IsSuperAdmin &&
+                _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
+            builder.Entity<AccountsChartAccount>().HasQueryFilter(row =>
+                _tenantService != null && !_tenantService.IsSuperAdmin &&
+                _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
+            builder.Entity<AccountsCategory>().HasQueryFilter(row =>
+                _tenantService != null && !_tenantService.IsSuperAdmin &&
+                _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
+            builder.Entity<AccountsRoznamchaType>().HasQueryFilter(row =>
+                _tenantService != null && !_tenantService.IsSuperAdmin &&
+                _tenantService.TenantId != null &&
+                (row.TenantId == null || row.TenantId == _tenantService.TenantId));
+            builder.Entity<AccountsEntryStatus>().HasQueryFilter(row =>
+                _tenantService != null && !_tenantService.IsSuperAdmin &&
+                _tenantService.TenantId != null &&
+                (row.TenantId == null || row.TenantId == _tenantService.TenantId));
+            builder.Entity<AccountsTransType>().HasQueryFilter(row =>
+                _tenantService != null && !_tenantService.IsSuperAdmin &&
+                _tenantService.TenantId != null &&
+                (row.TenantId == null || row.TenantId == _tenantService.TenantId));
+            builder.Entity<AccountsTransMode>().HasQueryFilter(row =>
+                _tenantService != null && !_tenantService.IsSuperAdmin &&
+                _tenantService.TenantId != null &&
+                (row.TenantId == null || row.TenantId == _tenantService.TenantId));
+            builder.Entity<AccountsCurrency>().HasQueryFilter(row =>
+                _tenantService != null && !_tenantService.IsSuperAdmin &&
+                _tenantService.TenantId != null &&
+                (row.TenantId == null || row.TenantId == _tenantService.TenantId));
+            builder.Entity<AccountsModuleSettings>().HasQueryFilter(row =>
+                _tenantService != null && !_tenantService.IsSuperAdmin &&
+                _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
+            builder.Entity<BillingRoznamchaImport>().HasQueryFilter(row =>
+                _tenantService != null && !_tenantService.IsSuperAdmin &&
+                _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
+            builder.Entity<BankStatement>().HasQueryFilter(row =>
+                _tenantService != null && !_tenantService.IsSuperAdmin &&
+                _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
+            builder.Entity<RoznamchaEntryProcessLog>().HasQueryFilter(row =>
+                _tenantService != null && !_tenantService.IsSuperAdmin &&
+                _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
+            builder.Entity<RoznamchaEntryAccess>().HasQueryFilter(row =>
+                _tenantService != null && !_tenantService.IsSuperAdmin &&
+                _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
+            builder.Entity<AccountsEntryDocument>().HasQueryFilter(row =>
+                _tenantService != null && !_tenantService.IsSuperAdmin &&
+                _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
             builder.Entity<PlatformTypeValue>().HasQueryFilter(row =>
                 _tenantService != null && !_tenantService.IsSuperAdmin &&
                 _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
@@ -1849,6 +1912,100 @@ namespace Accounts.Data
                 e.HasIndex(x => new { x.ScopeHash, x.IdempotencyKey }).IsUnique();
                 e.HasIndex(x => x.ExpiresUtc);
                 e.HasIndex(x => new { x.Status, x.LeaseExpiresUtc });
+            });
+
+            // ── Accounts / ROZ module ───────────────────────────────────────────
+            builder.Entity<RoznamchaEntry>(e =>
+            {
+                e.HasIndex(x => new { x.TenantId, x.TransDate });
+                e.HasIndex(x => new { x.TenantId, x.Ref }).IsUnique().HasFilter("[Ref] IS NOT NULL");
+                e.HasIndex(x => new { x.TenantId, x.CategoryId, x.TransDate });
+                e.HasIndex(x => new { x.TenantId, x.RoznamchaTypeId, x.TransDate });
+                e.HasOne<Tenant>().WithMany().HasForeignKey(x => x.TenantId).OnDelete(DeleteBehavior.Restrict);
+                e.HasOne<AccountsCategory>().WithMany().HasForeignKey(x => x.CategoryId).OnDelete(DeleteBehavior.Restrict);
+                e.HasOne<AccountsChartAccount>().WithMany().HasForeignKey(x => x.FromAccountId).OnDelete(DeleteBehavior.Restrict);
+                e.HasOne<AccountsChartAccount>().WithMany().HasForeignKey(x => x.ToAccountId).OnDelete(DeleteBehavior.Restrict);
+                e.HasOne<StaffVacancy>().WithMany().HasForeignKey(x => x.StaffId).OnDelete(DeleteBehavior.Restrict);
+            });
+            builder.Entity<AccountsChartAccount>(e =>
+            {
+                e.HasIndex(x => new { x.TenantId, x.AccountNumber }).IsUnique();
+                e.HasIndex(x => new { x.TenantId, x.CategoryId });
+                e.HasOne<Tenant>().WithMany().HasForeignKey(x => x.TenantId).OnDelete(DeleteBehavior.Restrict);
+                e.HasOne<AccountsCategory>().WithMany().HasForeignKey(x => x.CategoryId).OnDelete(DeleteBehavior.Restrict);
+            });
+            builder.Entity<AccountsCategory>(e =>
+            {
+                e.HasIndex(x => new { x.TenantId, x.Code }).IsUnique();
+                e.HasOne<Tenant>().WithMany().HasForeignKey(x => x.TenantId).OnDelete(DeleteBehavior.Restrict);
+            });
+            builder.Entity<AccountsRoznamchaType>(e =>
+            {
+                e.HasIndex(x => new { x.TenantId, x.Code }).IsUnique();
+                e.HasOne<Tenant>().WithMany().HasForeignKey(x => x.TenantId).OnDelete(DeleteBehavior.Restrict);
+            });
+            builder.Entity<AccountsEntryStatus>(e =>
+            {
+                e.HasIndex(x => new { x.TenantId, x.Code }).IsUnique();
+                e.HasOne<Tenant>().WithMany().HasForeignKey(x => x.TenantId).OnDelete(DeleteBehavior.Restrict);
+            });
+            builder.Entity<AccountsTransType>(e =>
+            {
+                e.HasIndex(x => new { x.TenantId, x.Code }).IsUnique();
+                e.HasOne<Tenant>().WithMany().HasForeignKey(x => x.TenantId).OnDelete(DeleteBehavior.Restrict);
+            });
+            builder.Entity<AccountsTransMode>(e =>
+            {
+                e.HasIndex(x => new { x.TenantId, x.Code }).IsUnique();
+                e.HasOne<Tenant>().WithMany().HasForeignKey(x => x.TenantId).OnDelete(DeleteBehavior.Restrict);
+            });
+            builder.Entity<AccountsCurrency>(e =>
+            {
+                e.HasIndex(x => new { x.TenantId, x.Code }).IsUnique();
+                e.HasOne<Tenant>().WithMany().HasForeignKey(x => x.TenantId).OnDelete(DeleteBehavior.Restrict);
+            });
+            builder.Entity<AccountsModuleSettings>(e =>
+            {
+                e.HasKey(x => x.TenantId);
+                e.HasOne<Tenant>().WithMany().HasForeignKey(x => x.TenantId).OnDelete(DeleteBehavior.Cascade);
+                e.HasOne<AccountsCategory>().WithMany().HasForeignKey(x => x.BillingCategoryId).OnDelete(DeleteBehavior.Restrict);
+                e.HasOne<AccountsChartAccount>().WithMany().HasForeignKey(x => x.DefaultFromAccountId).OnDelete(DeleteBehavior.Restrict);
+                e.HasOne<AccountsChartAccount>().WithMany().HasForeignKey(x => x.DefaultToAccountId).OnDelete(DeleteBehavior.Restrict);
+                e.HasOne<AccountsCurrency>().WithMany().HasForeignKey(x => x.DefaultCurrencyId).OnDelete(DeleteBehavior.Restrict);
+                e.HasOne<AccountsRoznamchaType>().WithMany().HasForeignKey(x => x.PaymentRozTypeId).OnDelete(DeleteBehavior.Restrict);
+                e.HasOne<AccountsRoznamchaType>().WithMany().HasForeignKey(x => x.ReceiptRozTypeId).OnDelete(DeleteBehavior.Restrict);
+            });
+            builder.Entity<BillingRoznamchaImport>(e =>
+            {
+                e.HasIndex(x => new { x.TenantId, x.UploadedOnUtc });
+                e.HasOne<Tenant>().WithMany().HasForeignKey(x => x.TenantId).OnDelete(DeleteBehavior.Restrict);
+            });
+            builder.Entity<BankStatement>(e =>
+            {
+                e.HasIndex(x => new { x.TenantId, x.StatementDate });
+                e.HasIndex(x => new { x.TenantId, x.IsMatched });
+                e.HasOne<Tenant>().WithMany().HasForeignKey(x => x.TenantId).OnDelete(DeleteBehavior.Restrict);
+                e.HasOne<AccountsChartAccount>().WithMany().HasForeignKey(x => x.ChartAccountId).OnDelete(DeleteBehavior.Restrict);
+                e.HasOne<RoznamchaEntry>().WithMany().HasForeignKey(x => x.MatchedRoznamchaEntryId).OnDelete(DeleteBehavior.Restrict);
+            });
+            builder.Entity<RoznamchaEntryProcessLog>(e =>
+            {
+                e.HasIndex(x => new { x.TenantId, x.RoznamchaEntryId, x.ProcessedOnUtc });
+                e.HasOne<Tenant>().WithMany().HasForeignKey(x => x.TenantId).OnDelete(DeleteBehavior.Restrict);
+                e.HasOne<RoznamchaEntry>().WithMany().HasForeignKey(x => x.RoznamchaEntryId).OnDelete(DeleteBehavior.Cascade);
+            });
+            builder.Entity<RoznamchaEntryAccess>(e =>
+            {
+                e.HasIndex(x => new { x.TenantId, x.RoznamchaEntryId, x.DepartmentId }).IsUnique();
+                e.HasOne<Tenant>().WithMany().HasForeignKey(x => x.TenantId).OnDelete(DeleteBehavior.Restrict);
+                e.HasOne<RoznamchaEntry>().WithMany().HasForeignKey(x => x.RoznamchaEntryId).OnDelete(DeleteBehavior.Cascade);
+                e.HasOne<StaffVacancy>().WithMany().HasForeignKey(x => x.StaffId).OnDelete(DeleteBehavior.Restrict);
+            });
+            builder.Entity<AccountsEntryDocument>(e =>
+            {
+                e.HasIndex(x => new { x.TenantId, x.RoznamchaEntryId });
+                e.HasOne<Tenant>().WithMany().HasForeignKey(x => x.TenantId).OnDelete(DeleteBehavior.Restrict);
+                e.HasOne<RoznamchaEntry>().WithMany().HasForeignKey(x => x.RoznamchaEntryId).OnDelete(DeleteBehavior.SetNull);
             });
         }
 

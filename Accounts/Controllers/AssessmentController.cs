@@ -8,6 +8,7 @@ using Accounts.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using System.Data;
 using System.Security.Claims;
 
 namespace Accounts.Controllers;
@@ -451,6 +452,11 @@ public sealed class AssessmentController : ControllerBase
             })
             .ToListAsync(ct);
 
+        var alternativeSubjectIds = current == null ? new HashSet<Guid>() : await _db.Persons.AsNoTracking()
+            .Where(person => person.IsActive && person.AlternativeReportsToPersonId == current.PersonId &&
+                person.ReportsToPersonId != current.PersonId)
+            .Select(person => person.PersonId).ToHashSetAsync(ct);
+
         var visible = people
             .OrderBy(person => person.Department).ThenBy(person => person.FullName).ToList();
         var assessmentYear = year is >= 2000 and <= 2100 ? year.Value : DateTime.Today.Year;
@@ -466,14 +472,17 @@ public sealed class AssessmentController : ControllerBase
         var configuredCloseDay = schedule?.CloseDay ?? activeRule?.CloseDay ?? 8;
         var cycle = AssessmentCycleWindow.Create(assessmentYear, assessmentMonth, configuredOpenDay, configuredCloseDay);
         var windowOpen = activeRule != null && cycle.Contains(today);
+        var visibleIds = visible.Select(person => person.PersonId).ToHashSet();
         var saved = await _db.StaffAssessments.AsNoTracking()
             .Where(item => item.TenantId == tenantId.Value && item.AssessmentYear == assessmentYear &&
-                           item.AssessmentMonth == assessmentMonth &&
-                           (isTenantAdmin || item.AssessorPersonId == current!.PersonId))
-            .Select(item => new { item.SubjectPersonId, item.Rating, item.Amount, item.IsLocked, item.SubmittedDateUtc })
+                           item.AssessmentMonth == assessmentMonth && visibleIds.Contains(item.SubjectPersonId))
+            .Select(item => new { item.Id, item.SubjectPersonId, item.AssessorPersonId, item.Rating, item.Amount, item.IsLocked, item.SubmittedDateUtc })
             .ToListAsync(ct);
         var savedByPerson = saved.GroupBy(item => item.SubjectPersonId)
-            .ToDictionary(group => group.Key, group => group.First());
+            .ToDictionary(group => group.Key, group => group
+                .OrderByDescending(item => item.IsLocked || item.Rating.HasValue)
+                .ThenByDescending(item => item.SubmittedDateUtc)
+                .ThenByDescending(item => item.Id).First());
         var canEditAssessments = !isTenantAdmin && current != null &&
             await HasStaffMenuActionAsync(current.StaffId, "/assessment/mark", "EDIT", ct);
         return Ok(visible.Select((person, index) => new
@@ -484,8 +493,12 @@ public sealed class AssessmentController : ControllerBase
             person.StaffId,
             person.FullName,
             department = person.Department ?? "—",
+            departmentKey = AssessmentDepartmentKey(person.Department, person.OrganizationId),
             jobTitle = person.JobTitle ?? "—",
             person.HierarchyLevel,
+            reportingRole = alternativeSubjectIds.Contains(person.PersonId) ? "Alternative" : "Primary",
+            submittedByAnotherReporter = savedByPerson.GetValueOrDefault(person.PersonId)?.Rating != null &&
+                savedByPerson.GetValueOrDefault(person.PersonId)?.AssessorPersonId != current?.PersonId,
             rating = savedByPerson.GetValueOrDefault(person.PersonId)?.Rating,
             amount = savedByPerson.GetValueOrDefault(person.PersonId)?.Amount,
             bonusAmount = savedByPerson.GetValueOrDefault(person.PersonId)?.Amount,
@@ -501,12 +514,27 @@ public sealed class AssessmentController : ControllerBase
     }
 
     [HttpPut("staff/{subjectPersonId:guid}")]
-    public async Task<IActionResult> Save(Guid subjectPersonId, [FromBody] SaveAssessmentDto dto, CancellationToken ct)
+    public Task<IActionResult> Save(Guid subjectPersonId, [FromBody] SaveAssessmentDto dto, CancellationToken ct) =>
+        SaveAll(new SaveAssessmentsDto
+        {
+            Year = dto.Year,
+            Month = dto.Month,
+            Items = [new SaveAssessmentItemDto { SubjectPersonId = subjectPersonId, Rating = dto.Rating }]
+        }, ct);
+
+    [HttpPut("staff/bulk")]
+    [Idempotent]
+    public async Task<IActionResult> SaveAll([FromBody] SaveAssessmentsDto dto, CancellationToken ct)
     {
         var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
         if (string.IsNullOrWhiteSpace(userId)) return Unauthorized();
-        if (dto.Year is < 2000 or > 2100 || dto.Month is < 1 or > 12 || dto.Rating is < 1 or > 255)
-            return BadRequest(new { message = "Valid month, year and a position from 1 to 255 are required." });
+        if (dto.Year is < 2000 or > 2100 || dto.Month is < 1 or > 12 || dto.Items is null || dto.Items.Count is < 1 or > 500)
+            return BadRequest(new { message = "Valid month, year and between 1 and 500 assessment rows are required." });
+        if (dto.Items.Any(item => item.SubjectPersonId == Guid.Empty || item.Rating is < 1 or > 255))
+            return BadRequest(new { message = "Every assessment requires a staff member and a position from 1 to 255." });
+        if (dto.Items.Select(item => item.SubjectPersonId).Distinct().Count() != dto.Items.Count)
+            return BadRequest(new { message = "The same staff member cannot appear more than once in Save All." });
+
         await AssessmentSchema.EnsureCurrentAsync(_db);
         var today = DateOnly.FromDateTime(PakistanClock.Now());
         var rule = await _db.AssessmentBonusRules.AsNoTracking().FirstOrDefaultAsync(x => x.IsActive, ct);
@@ -516,6 +544,7 @@ public sealed class AssessmentController : ControllerBase
         var cycle = AssessmentCycleWindow.Create(dto.Year, dto.Month, schedule?.OpenDay ?? rule.OpenDay, schedule?.CloseDay ?? rule.CloseDay);
         if (!cycle.Contains(today))
             return Conflict(new { message = $"Assessment entry is available from {cycle.OpenDate:dd MMM yyyy} through {cycle.CloseDate:dd MMM yyyy}." });
+
         var assessor = await _db.Persons.AsNoTracking().Where(person => person.IdentityUserId == userId && person.IsActive)
             .Select(person => new { person.PersonId, person.TenantId, StaffId = person.Staff != null ? (Guid?)person.Staff.StaffId : null, JobTitle = person.Staff != null && person.Staff.Vacancy != null
                 ? (person.Staff.Vacancy.DesignationNav != null ? person.Staff.Vacancy.DesignationNav.Name : person.Staff.Vacancy.JobTitle) : null })
@@ -523,64 +552,106 @@ public sealed class AssessmentController : ControllerBase
         if (assessor == null || !assessor.StaffId.HasValue ||
             !await HasStaffMenuActionAsync(assessor.StaffId.Value, "/assessment/mark", "EDIT", ct))
             return Forbid();
-        var amount = Math.Max(rule.MinimumBonusAmount, rule.BonusAmount - ((dto.Rating - 1) * rule.DecrementAmount));
-        var allowed = await ResolveDirectSubjectIdsAsync(userId, assessor.PersonId, assessor.JobTitle, ct);
-        if (!allowed.Contains(subjectPersonId)) return Forbid();
-        var duplicateRank = await _db.StaffAssessments.AsNoTracking().AnyAsync(item =>
-            item.TenantId == assessor.TenantId && item.AssessorPersonId == assessor.PersonId &&
-            item.SubjectPersonId != subjectPersonId && item.AssessmentYear == dto.Year &&
-            item.AssessmentMonth == dto.Month && item.Rating == dto.Rating, ct);
-        if (duplicateRank) return Conflict(new { message = $"Position {dto.Rating} is already assigned to another team member for this month." });
 
-        var assessment = await _db.StaffAssessments.AsNoTracking().SingleOrDefaultAsync(item =>
-            item.TenantId == assessor.TenantId && item.AssessorPersonId == assessor.PersonId &&
-            item.SubjectPersonId == subjectPersonId && item.AssessmentYear == dto.Year &&
-            item.AssessmentMonth == dto.Month, ct);
-        if (assessment == null)
-        {
-            assessment = new StaffAssessment
+        var requestedSubjectIds = dto.Items.Select(item => item.SubjectPersonId).ToHashSet();
+        var allowed = await ResolveDirectSubjectIdsAsync(userId, assessor.PersonId, assessor.JobTitle, ct);
+        if (!requestedSubjectIds.IsSubsetOf(allowed)) return Forbid();
+
+        // Positions are ranked within the employee's department, not across every
+        // department visible to a primary or alternative reporter.
+        var departmentRows = await _db.Persons.AsNoTracking()
+            .Where(person => person.TenantId == assessor.TenantId && person.Staff != null)
+            .Select(person => new
             {
-                TenantId = assessor.TenantId,
-                AssessorPersonId = assessor.PersonId,
-                SubjectPersonId = subjectPersonId,
-                AssessmentYear = dto.Year,
-                AssessmentMonth = (byte)dto.Month,
-                Rating = (byte)dto.Rating,
-                Amount = amount,
-                IsLocked = true,
-                SubmittedDateUtc = DateTime.UtcNow,
-                CreatedDateUtc = DateTime.UtcNow
-            };
-            _db.StaffAssessments.Add(assessment);
-        }
-        else
-        {
-            if (assessment.IsLocked || assessment.Rating.HasValue)
-                return Conflict(new { message = "This assessment has already been submitted and is permanently locked." });
-            var submittedAt = DateTime.UtcNow;
-            var updated = await _db.StaffAssessments
-                .Where(item => item.Id == assessment.Id && !item.IsLocked && item.Rating == null)
-                .ExecuteUpdateAsync(setters => setters
-                    .SetProperty(item => item.Rating, (byte?)dto.Rating)
-                    .SetProperty(item => item.Amount, (decimal?)amount)
-                    .SetProperty(item => item.IsLocked, true)
-                    .SetProperty(item => item.SubmittedDateUtc, submittedAt)
-                    .SetProperty(item => item.ModifiedDateUtc, submittedAt), ct);
-            if (updated == 0)
-                return Conflict(new { message = "This assessment has already been submitted and is permanently locked." });
-        }
+                person.PersonId,
+                OrganizationId = person.Staff!.Vacancy != null ? (int?)person.Staff.Vacancy.OrganizationId : null,
+                Department = person.Staff.Vacancy != null
+                    ? (person.Staff.Vacancy.Organization != null && person.Staff.Vacancy.Organization.Label == "Department"
+                        ? person.Staff.Vacancy.Organization.Name : person.Staff.Vacancy.Department)
+                    : null
+            }).ToListAsync(ct);
+        var departmentByPerson = departmentRows.ToDictionary(
+            person => person.PersonId,
+            person => AssessmentDepartmentKey(person.Department, person.OrganizationId));
+        if (requestedSubjectIds.Any(id => !departmentByPerson.ContainsKey(id))) return Forbid();
+        var duplicateInRequest = dto.Items.GroupBy(item =>
+            (Department: departmentByPerson[item.SubjectPersonId], item.Rating))
+            .FirstOrDefault(group => group.Count() > 1);
+        if (duplicateInRequest != null)
+            return Conflict(new { message = $"Position {duplicateInRequest.Key.Rating} is repeated in {duplicateInRequest.Key.Department}. Give each employee in that department a unique position." });
+
+        IActionResult result;
         try
         {
-            await _db.SaveChangesAsync(ct);
+            var strategy = _db.Database.CreateExecutionStrategy();
+            result = await strategy.ExecuteAsync(async () =>
+            {
+                await using var transaction = await _db.Database.BeginTransactionAsync(IsolationLevel.Serializable, ct);
+                var periodAssessments = await _db.StaffAssessments
+                    .Where(item => item.TenantId == assessor.TenantId && item.AssessmentYear == dto.Year &&
+                        item.AssessmentMonth == dto.Month)
+                    .ToListAsync(ct);
+
+                if (periodAssessments.Any(item => requestedSubjectIds.Contains(item.SubjectPersonId) &&
+                    (item.IsLocked || item.Rating.HasValue)))
+                    return Conflict(new { message = "One or more employees were already assessed by their primary or alternative reporter. Refresh the grid; no rows were saved." });
+
+                var requestedPositions = dto.Items.Select(item => item.Rating).ToHashSet();
+                var conflictingPosition = periodAssessments.FirstOrDefault(item =>
+                    item.Rating.HasValue && requestedPositions.Contains(item.Rating.Value) &&
+                    departmentByPerson.TryGetValue(item.SubjectPersonId, out var department) &&
+                    dto.Items.Any(request => request.Rating == item.Rating.Value &&
+                        departmentByPerson[request.SubjectPersonId] == department));
+                if (conflictingPosition != null)
+                    return Conflict(new { message = $"Position {conflictingPosition.Rating} is already assigned in {departmentByPerson[conflictingPosition.SubjectPersonId]}. No rows were saved." });
+
+                var ownPending = periodAssessments
+                    .Where(item => item.AssessorPersonId == assessor.PersonId &&
+                        requestedSubjectIds.Contains(item.SubjectPersonId))
+                    .ToDictionary(item => item.SubjectPersonId);
+                var submittedAt = DateTime.UtcNow;
+                foreach (var item in dto.Items)
+                {
+                    var amount = Math.Max(rule.MinimumBonusAmount, rule.BonusAmount - ((item.Rating - 1) * rule.DecrementAmount));
+                    if (!ownPending.TryGetValue(item.SubjectPersonId, out var assessment))
+                    {
+                        assessment = new StaffAssessment
+                        {
+                            TenantId = assessor.TenantId,
+                            AssessorPersonId = assessor.PersonId,
+                            SubjectPersonId = item.SubjectPersonId,
+                            AssessmentYear = dto.Year,
+                            AssessmentMonth = (byte)dto.Month,
+                            CreatedDateUtc = submittedAt
+                        };
+                        _db.StaffAssessments.Add(assessment);
+                    }
+                    assessment.Rating = (byte)item.Rating;
+                    assessment.Amount = amount;
+                    assessment.IsLocked = true;
+                    assessment.SubmittedDateUtc = submittedAt;
+                    assessment.ModifiedDateUtc = submittedAt;
+                }
+
+                await _db.SaveChangesAsync(ct);
+                await transaction.CommitAsync(ct);
+                return Ok(new { message = $"{dto.Items.Count} monthly assessment(s) saved and locked.", savedCount = dto.Items.Count });
+            });
         }
         catch (DbUpdateException)
         {
-            return Conflict(new { message = $"Position {dto.Rating} is already assigned or this assessment was submitted by another request." });
+            return Conflict(new { message = "An employee or department position was submitted by another request. Refresh the grid; no rows were saved." });
         }
+        if (result is not OkObjectResult) return result;
 
+        var submittedSubjects = await _db.StaffAssessments.AsNoTracking()
+            .Where(item => item.TenantId == assessor.TenantId && item.AssessmentYear == dto.Year &&
+                item.AssessmentMonth == dto.Month && item.Rating.HasValue)
+            .Select(item => item.SubjectPersonId).ToHashSetAsync(ct);
         var incomplete = await _db.StaffAssessments.AsNoTracking().AnyAsync(item =>
-            item.AssessorPersonId == assessor.PersonId && item.AssessmentYear == dto.Year &&
-            item.AssessmentMonth == dto.Month && item.Rating == null && !item.IsLocked, ct);
+            item.TenantId == assessor.TenantId && item.AssessorPersonId == assessor.PersonId &&
+            item.AssessmentYear == dto.Year && item.AssessmentMonth == dto.Month &&
+            item.Rating == null && !item.IsLocked && !submittedSubjects.Contains(item.SubjectPersonId), ct);
         if (!incomplete)
         {
             var cycleEntityId = AssessmentReminderEntityId(dto.Year, dto.Month, assessor.PersonId);
@@ -596,8 +667,14 @@ public sealed class AssessmentController : ControllerBase
             }
             if (reminders.Count > 0) await _db.SaveChangesAsync(ct);
         }
-        return Ok(new { message = "Monthly assessment saved." });
+
+        return result;
     }
+
+    private static string AssessmentDepartmentKey(string? department, int? organizationId) =>
+        !string.IsNullOrWhiteSpace(department)
+            ? department.Trim().ToUpperInvariant()
+            : $"ORG:{organizationId?.ToString() ?? "UNASSIGNED"}";
 
     private async Task<HashSet<Guid>> ResolveDirectSubjectIdsAsync(string identityUserId, Guid assessorPersonId, string? assessorJobTitle, CancellationToken ct)
     {
@@ -711,6 +788,13 @@ public sealed class AssessmentController : ControllerBase
     }
 
     public sealed class SaveAssessmentDto { public int Year { get; set; } public int Month { get; set; } public int Rating { get; set; } }
+    public sealed class SaveAssessmentsDto
+    {
+        public int Year { get; set; }
+        public int Month { get; set; }
+        public List<SaveAssessmentItemDto> Items { get; set; } = [];
+    }
+    public sealed class SaveAssessmentItemDto { public Guid SubjectPersonId { get; set; } public int Rating { get; set; } }
     public sealed class SetScheduleDto { public DateOnly OpenDate { get; set; } }
     public sealed class AdjustFinalAssessmentDto
     {

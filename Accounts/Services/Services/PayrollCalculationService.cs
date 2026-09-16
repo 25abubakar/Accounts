@@ -1,3 +1,4 @@
+using System.Data;
 using Accounts.Data;
 using Accounts.DTOs;
 using Accounts.Models;
@@ -25,6 +26,7 @@ public sealed class PayrollCalculationService(
             year,
             month,
             cancellationToken);
+        // Preview must never persist HR scale upgrades — display-only reconstruction.
         return await BuildLinesAsync(year, month, attendance, cancellationToken);
     }
 
@@ -45,93 +47,78 @@ public sealed class PayrollCalculationService(
     }
 
     public async Task<PayrollRun> GenerateAsync(
-        string identityUserId,
-        string actorName,
+        string? identityUserId,
+        string? actorName,
         int year,
         int month,
         DateOnly payDate,
         CancellationToken cancellationToken)
     {
         ValidatePeriod(year, month);
-        var attendance = await attendanceService.GetDeductionReportAsync(
-            identityUserId,
-            organizationWide: true,
-            year,
-            month,
-            cancellationToken);
-        var lines = await BuildLinesAsync(year, month, attendance, cancellationToken);
-        var run = await db.PayrollRuns.Include(x => x.Lines)
-            .SingleOrDefaultAsync(x => x.Year == year && x.Month == month, cancellationToken);
+        var tenantId = tenant.RequiredTenantId;
 
-        if (run != null && !run.Status.Equals("Draft", StringComparison.OrdinalIgnoreCase))
-            throw new InvalidOperationException("Only a Draft payroll can be regenerated.");
-
-        var now = DateTime.UtcNow;
-        if (run == null)
+        // Phase 1: persist + resolve components in dbo.usp_Payroll_GenerateMonthly
+        // (RunNumber PayRoll-{month}-{year}, identity PayrollLines.Id like old tblStaffPayRoll).
+        // PreviewAsync still uses BuildLinesAsync (no persist). Scale auto-upgrade / HR write
+        // remains C#-only in Preview reconstruction for now — Generate SP uses stored CurrentPay.
+        var runIdParam = new SqlParameter("@PayrollRunId", SqlDbType.BigInt)
         {
-            run = new PayrollRun
+            Direction = ParameterDirection.Output
+        };
+
+        try
+        {
+            await db.Database.ExecuteSqlRawAsync(
+                """
+                EXEC dbo.usp_Payroll_GenerateMonthly
+                    @TenantId,
+                    @Year,
+                    @Month,
+                    @PayDate,
+                    @CreatedByUserId,
+                    @CreatedByName,
+                    @PayrollRunId OUTPUT
+                """,
+                [
+                    new SqlParameter("@TenantId", tenantId),
+                    new SqlParameter("@Year", year),
+                    new SqlParameter("@Month", month),
+                    new SqlParameter("@PayDate", SqlDbType.Date) { Value = payDate.ToDateTime(TimeOnly.MinValue) },
+                    new SqlParameter("@CreatedByUserId", (object?)identityUserId ?? DBNull.Value),
+                    new SqlParameter("@CreatedByName", (object?)actorName ?? DBNull.Value),
+                    runIdParam
+                ],
+                cancellationToken);
+        }
+        catch (SqlException ex) when (ex.Number is 51010 or 51011 or 2812)
+        {
+            if (ex.Number == 2812)
             {
-                TenantId = tenant.RequiredTenantId,
-                Year = year,
-                Month = month,
-                RunNumber = $"PAY-{year}{month:00}",
-                PayDate = payDate,
-                Status = "Draft",
-                CreatedByUserId = identityUserId,
-                CreatedByName = actorName,
-                CreatedOnUtc = now
-            };
-            db.PayrollRuns.Add(run);
-        }
-        else
-        {
-            db.PayrollLines.RemoveRange(run.Lines);
-            run.PayDate = payDate;
-            run.UpdatedOnUtc = now;
-            run.VerifiedByUserId = null;
-            run.VerifiedByName = null;
-            run.VerifiedOnUtc = null;
-            run.ApprovedByUserId = null;
-            run.ApprovedByName = null;
-            run.ApprovedOnUtc = null;
-        }
-
-        foreach (var line in lines)
-        {
-            line.TenantId = tenant.RequiredTenantId;
-            run.Lines.Add(line);
-        }
-
-        // Persist Max→next-scale upgrades onto HR profile so allowances/tax stay aligned next time.
-        var upgradedByPerson = lines
-            .Where(x => !string.IsNullOrWhiteSpace(x.Scale))
-            .GroupBy(x => x.PersonId)
-            .ToDictionary(g => g.Key, g => g.First());
-        if (upgradedByPerson.Count > 0)
-        {
-            var personIds = upgradedByPerson.Keys.ToArray();
-            var hrProfiles = await db.PersonHrProfiles
-                .Where(x => personIds.Contains(x.PersonId))
-                .ToListAsync(cancellationToken);
-            foreach (var hr in hrProfiles)
-            {
-                if (!upgradedByPerson.TryGetValue(hr.PersonId, out var line))
-                    continue;
-                if (string.Equals(hr.Scale, line.Scale, StringComparison.OrdinalIgnoreCase)
-                    && hr.BasicSalary == line.ScaleBasicSalary
-                    && hr.CurrentPay == line.CurrentPay)
-                    continue;
-                hr.Scale = line.Scale;
-                hr.BasicSalary = line.ScaleBasicSalary;
-                hr.IncrementSalary = line.IncrementSalary;
-                hr.MaxSalary = line.MaxSalary;
-                hr.CurrentPay = line.CurrentPay;
-                hr.ModifiedDate = now;
+                throw new InvalidOperationException(
+                    "The payroll generate procedure is not installed. Apply pending database migrations before generating payroll.",
+                    ex);
             }
+
+            throw new InvalidOperationException(ex.Message, ex);
         }
 
-        await db.SaveChangesAsync(cancellationToken);
-        await RecalculateRunTotalsAsync(run.Id, cancellationToken);
+        var payrollRunId = runIdParam.Value is null or DBNull
+            ? 0L
+            : Convert.ToInt64(runIdParam.Value);
+
+        if (payrollRunId <= 0)
+            throw new InvalidOperationException("Payroll generate did not return a run id.");
+
+        // SP mutated rows outside the change tracker — detach stale payroll entities then reload.
+        foreach (var entry in db.ChangeTracker.Entries<PayrollLine>().ToArray())
+            entry.State = EntityState.Detached;
+        foreach (var entry in db.ChangeTracker.Entries<PayrollRun>().ToArray())
+            entry.State = EntityState.Detached;
+
+        var run = await db.PayrollRuns
+            .Include(x => x.Lines)
+            .AsNoTracking()
+            .SingleAsync(x => x.Id == payrollRunId && x.TenantId == tenantId, cancellationToken);
         return run;
     }
 
@@ -263,7 +250,10 @@ public sealed class PayrollCalculationService(
                     .FirstOrDefault()
             })
             .ToDictionaryAsync(x => x.StaffId, x => x.ShiftCode, cancellationToken);
-        var benefitRules = await db.PayrollBenefitRules.AsNoTracking().Include(x => x.Parameters)
+        var benefitRules = await db.PayrollBenefitRules.AsNoTracking()
+            .Include(x => x.Parameters)
+            .Include(x => x.OrganizationScopes)
+            .Include(x => x.ContractScopes)
             .Where(x => x.BenefitsType != "Bonus" && x.BenefitsType != "EOBI" && !x.IsIneligible)
             .ToListAsync(cancellationToken);
         var organizationNodes = await db.OrganizationTree.AsNoTracking().ToDictionaryAsync(x => x.Id, cancellationToken);
@@ -285,7 +275,7 @@ public sealed class PayrollCalculationService(
             .Where(x => x.IsActive && x.EffectiveFrom <= periodEnd && (x.EffectiveTo == null || x.EffectiveTo >= periodStart))
             .OrderByDescending(x => x.EffectiveFrom)
             .FirstOrDefaultAsync(cancellationToken);
-        var eobiBenefit = await db.PayrollBenefitRules.AsNoTracking()
+        var eobiBenefitRules = await db.PayrollBenefitRules.AsNoTracking()
             .Include(x => x.Parameters)
             .Where(x => x.BenefitsType == "EOBI"
                 && !x.IsIneligible
@@ -294,18 +284,13 @@ public sealed class PayrollCalculationService(
                 && (x.Wef == null || x.Wef <= periodEnd))
             .OrderByDescending(x => x.Wef ?? x.ValidFrom)
             .ThenByDescending(x => x.Id)
-            .FirstOrDefaultAsync(cancellationToken);
-        var eobiParameter = eobiBenefit?.Parameters
-            .OrderByDescending(x => x.Id)
-            .FirstOrDefault();
-        var fixedEmployerEobi = Money(eobiParameter?.CompanyShare ?? eobiBenefit?.CompanyShare ?? 0);
-        var fixedEmployeeEobi = Money(eobiParameter?.StaffShare ?? eobiBenefit?.StaffShare ?? 0);
-        var hasFixedEobi = fixedEmployerEobi > 0 || fixedEmployeeEobi > 0;
+            .ToListAsync(cancellationToken);
+        // Eligible staff only (IsEligible=1). Do not charge closed/off rows that still overlap by date.
         var eobiPeople = await db.EobiEligibilities.AsNoTracking()
             .Where(x => personIds.Contains(x.PersonId)
+                && x.IsEligible
                 && x.EffectiveFrom <= periodEnd
-                && ((x.IsEligible && x.EffectiveTo == null)
-                    || (x.EffectiveTo != null && x.EffectiveTo >= periodStart)))
+                && (x.EffectiveTo == null || x.EffectiveTo >= periodStart))
             .Select(x => x.PersonId)
             .ToHashSetAsync(cancellationToken);
         var payrollTaxYear = ResolveTaxYear(year, month);
@@ -316,7 +301,6 @@ public sealed class PayrollCalculationService(
         var attendanceByPerson = attendance.Rows.ToDictionary(x => x.PersonId);
         var now = DateTime.UtcNow;
         var result = new List<PayrollLine>(employees.Count);
-        var hrSync = new List<HrScaleSync>();
 
         foreach (var employee in employees)
         {
@@ -350,22 +334,12 @@ public sealed class PayrollCalculationService(
             var maxSalary = progression.MaxSalary;
             var currentPay = progression.CurrentPay;
             var basicSalary = Money(currentPay > 0 ? currentPay : scaleBasic);
+            var effectiveScaleName = scale?.ScaleName ?? profile?.Scale;
             var lineScaleDate = progression.Upgraded && progression.EffectiveScaleDate.HasValue
                 ? progression.EffectiveScaleDate
                 : profile?.ScaleDate is DateTime existingScaleDate
                     ? DateOnly.FromDateTime(existingScaleDate)
                     : null;
-            if (progression.Upgraded && scale != null)
-            {
-                hrSync.Add(new HrScaleSync(
-                    employee.PersonId,
-                    scale.ScaleName,
-                    scaleBasic,
-                    incrementSalary,
-                    maxSalary,
-                    currentPay,
-                    progression.EffectiveScaleDate));
-            }
             var contractName = !string.IsNullOrWhiteSpace(profile?.InductionType)
                 ? profile!.InductionType!.Trim()
                 : scale?.ContractType;
@@ -377,11 +351,13 @@ public sealed class PayrollCalculationService(
             shiftByStaff.TryGetValue(employee.StaffId, out var shiftCode);
             var packageAllowanceRefs = ParsePackageRefs(package?.AllowanceReference);
             var scaleAllowances = allowances.Where(x =>
+                IsPayrollCashAllowance(x) &&
                 IsAllowanceApplicable(x, designationId, shiftCode) &&
                 IsAllowanceScaleApplicable(x, scale?.Id) &&
                 IsPackageAllowanceAllowed(x, packageAllowanceRefs)).ToList();
             var hasScaleAllowanceConfiguration = scale != null && allowances.Any(x =>
                 x.SalaryScaleId == scale.Id &&
+                IsPayrollCashAllowance(x) &&
                 !x.AllowanceCategory.Equals("SHIFT", StringComparison.OrdinalIgnoreCase) &&
                 !x.AllowanceCategory.Equals("NIGHT", StringComparison.OrdinalIgnoreCase));
 
@@ -427,7 +403,7 @@ public sealed class PayrollCalculationService(
                 generalAllowance = Money(generalAllowance + (scale?.Other ?? 0));
             }
             // TADA is cash and joins Gross via General/Allowance total (Leave stays non-cash; package LeaveReference is metadata only).
-            // Phase-1 2C: attendance approved adjustment ≈ period adjustment; OtherDeduction ≈ manual; no Proficiency/Loan modules.
+            // PROFICIENCY is excluded from allowances — Final Assessment → AssessmentAmount is the payroll path.
             if (scale != null)
             {
                 var packageTadaRefs = ParsePackageRefs(package?.TadaReference);
@@ -440,7 +416,16 @@ public sealed class PayrollCalculationService(
                 medicalAllowance + nightAllowance + telephoneAllowance + transportAllowance);
 
             var serviceMonths = ServiceMonthsCompleted(profile?.JoiningDate, periodEnd);
-            var applicableBenefits = benefitRules.Where(rule => IsBenefitApplicable(rule, profile, employee.OrganizationId, organizationNodes, serviceMonths, periodStart, periodEnd));
+            var applicableBenefits = benefitRules.Where(rule => IsBenefitApplicable(
+                rule,
+                effectiveScaleName,
+                basicSalary,
+                contractName,
+                employee.OrganizationId,
+                organizationNodes,
+                serviceMonths,
+                periodStart,
+                periodEnd));
             decimal employerBenefits = 0;
             decimal staffBenefits = 0;
             foreach (var rule in applicableBenefits)
@@ -481,20 +466,9 @@ public sealed class PayrollCalculationService(
             decimal employerEobi = 0;
             if (eobiPeople.Contains(employee.PersonId))
             {
-                if (hasFixedEobi)
-                {
-                    employeeEobi = fixedEmployeeEobi;
-                    employerEobi = fixedEmployerEobi;
-                }
-                else if (eobiSetting != null)
-                {
-                    var wageBase = basicSalary <= 0 ? 0 : Math.Max(basicSalary, eobiSetting.MinimumWage);
-                    var contributionBase = eobiSetting.MaximumContributionBase > 0
-                        ? Math.Min(wageBase, eobiSetting.MaximumContributionBase)
-                        : wageBase;
-                    employeeEobi = contributionBase * eobiSetting.EmployeeRatePercentage / 100m;
-                    employerEobi = contributionBase * eobiSetting.EmployerRatePercentage / 100m;
-                }
+                var eobiShares = ResolveEobiShares(eobiBenefitRules, eobiSetting, effectiveScaleName, basicSalary);
+                employeeEobi = eobiShares.Employee;
+                employerEobi = eobiShares.Employer;
             }
 
             var remarks = new List<string>();
@@ -512,7 +486,7 @@ public sealed class PayrollCalculationService(
                 Department = employee.Department,
                 DateOfJoining = profile?.JoiningDate is DateTime joined ? DateOnly.FromDateTime(joined) : null,
                 ScaleDate = lineScaleDate,
-                Scale = scale?.ScaleName ?? profile?.Scale,
+                Scale = effectiveScaleName,
                 ContractType = contractName,
                 ContractId = contractId,
                 Month = month,
@@ -556,38 +530,63 @@ public sealed class PayrollCalculationService(
             result.Add(line);
         }
 
-        if (hrSync.Count > 0)
-        {
-            var syncIds = hrSync.Select(x => x.PersonId).Distinct().ToArray();
-            var trackedProfiles = await db.PersonHrProfiles
-                .Where(x => syncIds.Contains(x.PersonId))
-                .ToDictionaryAsync(x => x.PersonId, cancellationToken);
-            foreach (var sync in hrSync)
-            {
-                if (!trackedProfiles.TryGetValue(sync.PersonId, out var hr)) continue;
-                hr.Scale = sync.ScaleName;
-                hr.BasicSalary = sync.BasicSalary;
-                hr.IncrementSalary = sync.IncrementSalary;
-                hr.MaxSalary = sync.MaxSalary;
-                hr.CurrentPay = sync.CurrentPay;
-                if (sync.ScaleDate.HasValue)
-                    hr.ScaleDate = sync.ScaleDate.Value.ToDateTime(TimeOnly.MinValue);
-                hr.ModifiedDate = now;
-            }
-            await db.SaveChangesAsync(cancellationToken);
-        }
-
         return result;
     }
 
-    private sealed record HrScaleSync(
-        Guid PersonId,
-        string ScaleName,
-        decimal BasicSalary,
-        decimal IncrementSalary,
-        decimal MaxSalary,
-        decimal CurrentPay,
-        DateOnly? ScaleDate);
+    /// <summary>
+    /// PROFICIENCY is paid only via Final Assessment → AssessmentAmount.
+    /// COMMISSION and other typed allowances remain cash payroll components.
+    /// </summary>
+    public static bool IsPayrollCashAllowance(PayScaleAllowance allowance) =>
+        !IsAllowanceType(allowance, "PROFICIENCY");
+
+    private static (decimal Employee, decimal Employer) ResolveEobiShares(
+        IReadOnlyList<PayrollBenefitRule> eobiRules,
+        EobiSetting? eobiSetting,
+        string? effectiveScaleName,
+        decimal basicSalary)
+    {
+        var matching = eobiRules
+            .Where(rule => ScaleCsvMatches(rule.Scale, effectiveScaleName))
+            .ToList();
+        var scaleSpecific = matching
+            .Where(rule => !string.IsNullOrWhiteSpace(rule.Scale))
+            .ToList();
+        var chosen = (scaleSpecific.Count > 0 ? scaleSpecific : matching)
+            .OrderByDescending(rule => rule.Wef ?? rule.ValidFrom)
+            .ThenByDescending(rule => rule.Id)
+            .FirstOrDefault();
+
+        if (chosen != null)
+        {
+            var parameter = chosen.Parameters.OrderByDescending(x => x.Id).FirstOrDefault();
+            var employee = Money(parameter?.StaffShare ?? chosen.StaffShare);
+            var employer = Money(parameter?.CompanyShare ?? chosen.CompanyShare);
+            if (employee > 0 || employer > 0)
+                return (employee, employer);
+        }
+
+        if (eobiSetting == null || basicSalary <= 0)
+            return (0, 0);
+
+        var wageBase = Math.Max(basicSalary, eobiSetting.MinimumWage);
+        var contributionBase = eobiSetting.MaximumContributionBase > 0
+            ? Math.Min(wageBase, eobiSetting.MaximumContributionBase)
+            : wageBase;
+        return (
+            Money(contributionBase * eobiSetting.EmployeeRatePercentage / 100m),
+            Money(contributionBase * eobiSetting.EmployerRatePercentage / 100m));
+    }
+
+    private static bool ScaleCsvMatches(string? scaleCsv, string? effectiveScaleName)
+    {
+        if (string.IsNullOrWhiteSpace(scaleCsv))
+            return true;
+        if (string.IsNullOrWhiteSpace(effectiveScaleName))
+            return false;
+        return scaleCsv.Split([',', ';'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Any(name => name.Equals(effectiveScaleName.Trim(), StringComparison.OrdinalIgnoreCase));
+    }
 
     private static bool IsAllowanceApplicable(
         PayScaleAllowance allowance,
@@ -638,7 +637,9 @@ public sealed class PayrollCalculationService(
 
     private static bool IsBenefitApplicable(
         PayrollBenefitRule rule,
-        PersonHrProfile? profile,
+        string? effectiveScaleName,
+        decimal effectiveCurrentPay,
+        string? contractName,
         int? organizationId,
         IReadOnlyDictionary<int, OrganizationTree> organizationNodes,
         int serviceMonths,
@@ -647,20 +648,45 @@ public sealed class PayrollCalculationService(
     {
         if (rule.ValidFrom.HasValue && rule.ValidFrom > periodEnd || rule.ValidTo.HasValue && rule.ValidTo < periodStart) return false;
         if (rule.Wef.HasValue && rule.Wef > periodEnd) return false;
-        if (!string.IsNullOrWhiteSpace(rule.Scale))
+        if (!ScaleCsvMatches(rule.Scale, effectiveScaleName))
+            return false;
+
+        if (rule.OrganizationScopes.Count > 0)
         {
-            var allowed = rule.Scale.Split([',', ';'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-            if (!allowed.Any(name => name.Equals(profile?.Scale?.Trim(), StringComparison.OrdinalIgnoreCase)))
+            if (!organizationId.HasValue)
+                return false;
+            if (!rule.OrganizationScopes.Any(scope =>
+                    IsOrganizationDescendant(organizationId.Value, scope.OrganizationId, organizationNodes)))
                 return false;
         }
-        if (rule.OrganizationId.HasValue && (!organizationId.HasValue || !IsOrganizationDescendant(organizationId.Value, rule.OrganizationId.Value, organizationNodes))) return false;
+        else if (rule.OrganizationId.HasValue
+                 && (!organizationId.HasValue
+                     || !IsOrganizationDescendant(organizationId.Value, rule.OrganizationId.Value, organizationNodes)))
+        {
+            return false;
+        }
+
+        if (rule.ContractScopes.Count > 0)
+        {
+            if (string.IsNullOrWhiteSpace(contractName))
+                return false;
+            if (!rule.ContractScopes.Any(scope =>
+                    scope.ContractName.Equals(contractName.Trim(), StringComparison.OrdinalIgnoreCase)))
+                return false;
+        }
+        else if (!string.IsNullOrWhiteSpace(rule.Contract))
+        {
+            var allowedContracts = rule.Contract.Split([',', ';'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            if (string.IsNullOrWhiteSpace(contractName)
+                || !allowedContracts.Any(name => name.Equals(contractName.Trim(), StringComparison.OrdinalIgnoreCase)))
+                return false;
+        }
+
         // Min_Service is completed months from DOJ (e.g. 6 / 12 / 24).
         if (serviceMonths < rule.MinimumService) return false;
-        if (rule.MinimumSalary > 0)
-        {
-            var salary = profile?.CurrentPay is > 0 ? profile.CurrentPay.Value : profile?.BasicSalary ?? 0;
-            if (salary < rule.MinimumSalary) return false;
-        }
+        if (rule.MinimumSalary > 0 && effectiveCurrentPay < rule.MinimumSalary)
+            return false;
+
         var anchor = rule.Wef ?? rule.ValidFrom ?? periodStart;
         var elapsedMonths = (periodStart.Year - anchor.Year) * 12 + periodStart.Month - anchor.Month;
         if (elapsedMonths < 0) return false;

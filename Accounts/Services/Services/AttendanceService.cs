@@ -2333,11 +2333,18 @@ public sealed class AttendanceService : IAttendanceService
                  statusCode.Equals("HO", StringComparison.OrdinalIgnoreCase) ||
                  statusName.Equals("Holiday", StringComparison.OrdinalIgnoreCase) ||
                  statusName.Equals("Day Off", StringComparison.OrdinalIgnoreCase));
-            var required = isScheduledOff ? 0 :
+            // WHrs / RequiredMinutes follow the person's mapped (or scheduled) shift length.
+            // AttendanceRuleSettings.WorkingMinutes is only a fallback when map times are missing —
+            // do not force every staff onto the rule default (e.g. 9h) when their map is 6/7/8h.
+            var shiftRequiredMinutes = ShiftMinutes(source.ShiftStartTime, source.ShiftEndTime);
+            var ruleRequiredMinutes =
                 source.AttendanceEntryTypeId.HasValue &&
                 ruleSettingsByEntryType.TryGetValue(source.AttendanceEntryTypeId.Value, out var configuredRule)
                     ? configuredRule.WorkingMinutes
-                    : ShiftMinutes(source.ShiftStartTime, source.ShiftEndTime);
+                    : 0;
+            var required = isScheduledOff
+                ? 0
+                : ResolveRequiredWorkingMinutes(shiftRequiredMinutes, ruleRequiredMinutes);
             var late = !isScheduledOff && checkInLocal.HasValue
                 ? Math.Max(0, (int)Math.Floor((checkInLocal.Value - shiftWindow.Start).TotalMinutes))
                 : 0;
@@ -3394,9 +3401,9 @@ public sealed class AttendanceService : IAttendanceService
         var shiftStart = timing.TimeFrom ?? person.ShiftStartTime;
         var shiftEnd = timing.TimeTo ?? person.ShiftEndTime;
         var required = timing.IsOn && attendanceRule?.IsOpenAttendance != true
-            ? attendanceRule?.WorkingMinutes is > 0
-                ? attendanceRule.WorkingMinutes.Value
-                : ShiftMinutes(shiftStart, shiftEnd)
+            ? ResolveRequiredWorkingMinutes(
+                ShiftMinutes(shiftStart ?? string.Empty, shiftEnd ?? string.Empty),
+                attendanceRule?.WorkingMinutes)
             : 0;
         var openCheckoutExpired = record?.CheckInUtc.HasValue == true &&
             record.CheckOutUtc.HasValue == false &&
@@ -3513,10 +3520,26 @@ public sealed class AttendanceService : IAttendanceService
         return (startDateTime, endDateTime);
     }
 
+    /// <summary>
+    /// Person-specific required day length: mapped/scheduled shift duration first,
+    /// then the attendance-rule default (e.g. 540) only when shift times are absent.
+    /// </summary>
+    private static int ResolveRequiredWorkingMinutes(int shiftMinutes, int? ruleWorkingMinutes)
+    {
+        if (shiftMinutes > 0)
+            return shiftMinutes;
+        return Math.Max(0, ruleWorkingMinutes ?? 0);
+    }
+
     private static int ShiftMinutes(string start, string end)
     {
-        if (!TimeOnly.TryParseExact(start, "HH:mm", CultureInfo.InvariantCulture, DateTimeStyles.None, out var from) ||
-            !TimeOnly.TryParseExact(end, "HH:mm", CultureInfo.InvariantCulture, DateTimeStyles.None, out var to))
+        var startText = (start ?? string.Empty).Trim();
+        var endText = (end ?? string.Empty).Trim();
+        // Accept HH:mm or HH:mm:ss from map/schedule/SQL projections.
+        if (startText.Length >= 5) startText = startText[..5];
+        if (endText.Length >= 5) endText = endText[..5];
+        if (!TimeOnly.TryParseExact(startText, "HH:mm", CultureInfo.InvariantCulture, DateTimeStyles.None, out var from) ||
+            !TimeOnly.TryParseExact(endText, "HH:mm", CultureInfo.InvariantCulture, DateTimeStyles.None, out var to))
             return 0;
         var minutes = (int)(to.ToTimeSpan() - from.ToTimeSpan()).TotalMinutes;
         return minutes > 0 ? minutes : minutes + 1440;

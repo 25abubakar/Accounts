@@ -98,32 +98,48 @@ public sealed class ProcessCategoryApproversController : ControllerBase
                     ProfilePhotoUrl = GetNullableString(reader, "ProfilePhotoUrl")
                 }, ct);
 
-        var actionAuthorities = await (
-            from authority in _db.ProcessActionAuthorities.AsNoTracking()
-            join staff in _db.StaffVacancies.AsNoTracking() on authority.StaffId equals staff.StaffId
-            join person in _db.Persons.AsNoTracking() on staff.PersonId equals person.PersonId
-            join vacancy in _db.Vacancies.AsNoTracking() on staff.VacancyId equals vacancy.VacancyId into vacancyRows
-            from vacancy in vacancyRows.DefaultIfEmpty()
-            join organization in _db.OrganizationTree.AsNoTracking() on vacancy.OrganizationId equals organization.Id into organizationRows
-            from organization in organizationRows.DefaultIfEmpty()
-            join jobTitle in _db.JobTitles.AsNoTracking() on vacancy.JobTitleId equals jobTitle.Id into jobTitleRows
-            from jobTitle in jobTitleRows.DefaultIfEmpty()
-            where authority.TenantId == tenantId && authority.IsActive
-            orderby authority.ProcessCode, authority.ActionCode, person.FullName
-            select new
-            {
-                authority.Id,
-                authority.ProcessCode,
-                authority.ActionCode,
-                authority.StaffId,
-                StaffName = person.FullName,
-                StaffNumber = staff.LoginId,
-                person.ProfilePhotoUrl,
-                Department = organization != null ? organization.Name : null,
-                Designation = jobTitle != null ? jobTitle.TitleName : null,
-                PinConfigured = authority.PinHash != null,
-                IsCurrentUser = person.IdentityUserId == currentUserId
-            }).ToListAsync(ct);
+        var actionAuthorities = await QueryAsync(
+                """
+                SELECT
+                    paa.Id,
+                    paa.ProcessCode,
+                    paa.ActionCode,
+                    paa.StaffId,
+                    per.FullName AS StaffName,
+                    sv.LoginId AS StaffNumber,
+                    per.ProfilePhotoUrl,
+                    org.Name AS Department,
+                    jt.TitleName AS Designation,
+                    CAST(CASE WHEN paa.PinHash IS NOT NULL THEN 1 ELSE 0 END AS bit) AS PinConfigured,
+                    CAST(CASE WHEN per.IdentityUserId = @currentUserId THEN 1 ELSE 0 END AS bit) AS IsCurrentUser
+                FROM dbo.ProcessActionAuthorities paa
+                JOIN dbo.StaffVacancy sv ON sv.StaffId = paa.StaffId
+                JOIN dbo.Persons per ON per.PersonId = sv.PersonId
+                LEFT JOIN dbo.Vacancies v ON v.VacancyId = sv.VacancyId
+                LEFT JOIN dbo.OrganizationTree org ON org.Id = v.OrganizationId AND org.Label = N'Department'
+                LEFT JOIN dbo.JobTitles jt ON jt.Id = v.JobTitleId
+                WHERE paa.TenantId = @tenantId AND paa.IsActive = 1
+                ORDER BY paa.ProcessCode, paa.ActionCode, per.FullName
+                """,
+                command =>
+                {
+                    AddParameter(command, "@tenantId", tenantId);
+                    AddParameter(command, "@currentUserId", (object?)currentUserId ?? DBNull.Value);
+                },
+                reader => new ActionAuthorityRow
+                {
+                    Id = reader.GetInt32(reader.GetOrdinal("Id")),
+                    ProcessCode = reader.GetString(reader.GetOrdinal("ProcessCode")),
+                    ActionCode = reader.GetString(reader.GetOrdinal("ActionCode")),
+                    StaffId = reader.GetGuid(reader.GetOrdinal("StaffId")),
+                    StaffName = reader.GetString(reader.GetOrdinal("StaffName")),
+                    StaffNumber = GetNullableString(reader, "StaffNumber"),
+                    ProfilePhotoUrl = GetNullableString(reader, "ProfilePhotoUrl"),
+                    Department = GetNullableString(reader, "Department"),
+                    Designation = GetNullableString(reader, "Designation"),
+                    PinConfigured = reader.GetBoolean(reader.GetOrdinal("PinConfigured")),
+                    IsCurrentUser = reader.GetBoolean(reader.GetOrdinal("IsCurrentUser"))
+                }, ct);
 
         return Ok(new { categories, assignments, actionAuthorities });
     }
@@ -490,6 +506,21 @@ file sealed class StaffPickerRow
     public string? ProfilePhotoUrl { get; set; }
     public string? Department { get; set; }
     public string? Designation { get; set; }
+}
+
+file sealed class ActionAuthorityRow
+{
+    public int Id { get; set; }
+    public string ProcessCode { get; set; } = string.Empty;
+    public string ActionCode { get; set; } = string.Empty;
+    public Guid StaffId { get; set; }
+    public string StaffName { get; set; } = string.Empty;
+    public string? StaffNumber { get; set; }
+    public string? ProfilePhotoUrl { get; set; }
+    public string? Department { get; set; }
+    public string? Designation { get; set; }
+    public bool PinConfigured { get; set; }
+    public bool IsCurrentUser { get; set; }
 }
 
 public sealed class AssignApproverDto

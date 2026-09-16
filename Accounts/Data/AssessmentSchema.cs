@@ -47,19 +47,6 @@ public static class AssessmentSchema
                     ALTER TABLE dbo.StaffAssessments ADD Remarks nvarchar(500) NULL;
                 """, CancellationToken.None);
             await db.Database.ExecuteSqlRawAsync("""
-                IF OBJECT_ID(N'dbo.StaffAssessments', N'U') IS NOT NULL
-                   AND NOT EXISTS
-                   (
-                       SELECT 1
-                       FROM sys.indexes
-                       WHERE object_id = OBJECT_ID(N'dbo.StaffAssessments')
-                         AND name = N'UX_StaffAssessments_UniqueMonthlyRank'
-                   )
-                    CREATE UNIQUE INDEX UX_StaffAssessments_UniqueMonthlyRank
-                        ON dbo.StaffAssessments(TenantId,AssessorPersonId,AssessmentYear,AssessmentMonth,Rating)
-                        WHERE Rating IS NOT NULL;
-                """, CancellationToken.None);
-            await db.Database.ExecuteSqlRawAsync("""
                 IF OBJECT_ID(N'dbo.AssessmentSchedules',N'U') IS NULL
                 BEGIN
                     CREATE TABLE dbo.AssessmentSchedules
