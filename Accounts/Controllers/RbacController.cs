@@ -506,6 +506,79 @@ namespace Accounts.Controllers
             return Ok(new { message = result.Message, usersUpdated = result.UsersUpdated, saved = result.Saved, skipped = result.Skipped });
         }
 
+        /// <summary>
+        /// Additive grant for many users — keeps each user's other menus (Admin Access Grant mode).
+        /// </summary>
+        [HttpPost("staff/bulk-grants")]
+        public async Task<IActionResult> BulkGrantForStaff([FromBody] MultiStaffGrantsDto request)
+        {
+            if (!await HasAccessControlPermissionAsync("EDIT"))
+                return Forbid();
+
+            if (request.StaffIds == null || request.StaffIds.Count == 0)
+                return BadRequest(new { message = "Select at least one staff member." });
+            if (request.FeatureKeys == null || request.FeatureKeys.Count == 0)
+                return BadRequest(new { message = "Select at least one menu to grant." });
+
+            try
+            {
+                var (usersUpdated, grantsAdded) = await _rbac.BulkGrantToStaffAsync(
+                    request.StaffIds, request.FeatureKeys, CurrentUserId);
+                return Ok(new
+                {
+                    message = $"Granted access for {usersUpdated} user(s).",
+                    usersUpdated,
+                    grantsAdded
+                });
+            }
+            catch (ArgumentException ex)
+            {
+                return BadRequest(new { message = ex.Message });
+            }
+            catch (InvalidOperationException ex)
+            {
+                return BadRequest(new { message = ex.Message });
+            }
+        }
+
+        /// <summary>
+        /// Soft-revoke selected menus for many users — keeps each user's other menus.
+        /// </summary>
+        [HttpPost("staff/bulk-revoke-menus")]
+        public async Task<IActionResult> BulkRevokeMenusForStaff([FromBody] MultiStaffRevokeMenusDto request)
+        {
+            if (!await HasAccessControlPermissionAsync("EDIT") && !await HasAccessControlPermissionAsync("DELETE"))
+                return Forbid();
+
+            if (request.StaffIds == null || request.StaffIds.Count == 0)
+                return BadRequest(new { message = "Select at least one staff member." });
+            if (request.MenuIds == null || request.MenuIds.Count == 0)
+                return BadRequest(new { message = "Select at least one menu to revoke." });
+
+            try
+            {
+                var firstStaff = request.StaffIds[0];
+                var tenantId = await _db.StaffVacancies.IgnoreQueryFilters().AsNoTracking()
+                    .Where(s => s.StaffId == firstStaff)
+                    .Select(s => (int?)s.TenantId)
+                    .FirstOrDefaultAsync();
+                if (!tenantId.HasValue)
+                    return BadRequest(new { message = "Staff not found." });
+
+                var usersUpdated = await _rbac.BulkRemoveStaffMenusAsync(
+                    request.StaffIds, request.MenuIds, tenantId.Value);
+                return Ok(new
+                {
+                    message = $"Revoked selected menus for {usersUpdated} user(s).",
+                    usersUpdated
+                });
+            }
+            catch (ArgumentException ex)
+            {
+                return BadRequest(new { message = ex.Message });
+            }
+        }
+
         [HttpPost("staff/{staffId:guid}/clear-overrides")]
         public async Task<IActionResult> ClearStaffOverrides(Guid staffId)
         {
@@ -1030,6 +1103,18 @@ namespace Accounts.Controllers
     {
         public List<Guid> StaffIds { get; set; } = new();
         public Dictionary<string, string> Overrides { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+    }
+
+    public sealed class MultiStaffGrantsDto
+    {
+        public List<Guid> StaffIds { get; set; } = new();
+        public List<string> FeatureKeys { get; set; } = new();
+    }
+
+    public sealed class MultiStaffRevokeMenusDto
+    {
+        public List<Guid> StaffIds { get; set; } = new();
+        public List<int> MenuIds { get; set; } = new();
     }
 }
 

@@ -584,7 +584,7 @@ public sealed class AssessmentController : ControllerBase
         try
         {
             var strategy = _db.Database.CreateExecutionStrategy();
-            result = await strategy.ExecuteAsync(async () =>
+            result = await strategy.ExecuteAsync<IActionResult>(async () =>
             {
                 await using var transaction = await _db.Database.BeginTransactionAsync(IsolationLevel.Serializable, ct);
                 var periodAssessments = await _db.StaffAssessments

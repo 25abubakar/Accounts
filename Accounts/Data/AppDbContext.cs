@@ -171,6 +171,12 @@ namespace Accounts.Data
         public DbSet<RoznamchaEntryProcessLog> RoznamchaEntryProcessLogs => Set<RoznamchaEntryProcessLog>();
         public DbSet<RoznamchaEntryAccess> RoznamchaEntryAccesses => Set<RoznamchaEntryAccess>();
         public DbSet<AccountsEntryDocument> AccountsEntryDocuments => Set<AccountsEntryDocument>();
+        public DbSet<ReminderReceivable> ReminderReceivables => Set<ReminderReceivable>();
+        public DbSet<ReminderPayable> ReminderPayables => Set<ReminderPayable>();
+        public DbSet<AnnualReportType> AnnualReportTypes => Set<AnnualReportType>();
+        public DbSet<AnnualReportFilter> AnnualReportFilters => Set<AnnualReportFilter>();
+        public DbSet<AnnualReportHeader> AnnualReportHeaders => Set<AnnualReportHeader>();
+        public DbSet<AnnualReportLine> AnnualReportLines => Set<AnnualReportLine>();
 
         protected override void OnModelCreating(ModelBuilder builder)
         {
@@ -385,6 +391,18 @@ namespace Accounts.Data
                 _tenantService != null && !_tenantService.IsSuperAdmin &&
                 _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
             builder.Entity<AccountsEntryDocument>().HasQueryFilter(row =>
+                _tenantService != null && !_tenantService.IsSuperAdmin &&
+                _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
+            builder.Entity<ReminderReceivable>().HasQueryFilter(row =>
+                _tenantService != null && !_tenantService.IsSuperAdmin &&
+                _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
+            builder.Entity<ReminderPayable>().HasQueryFilter(row =>
+                _tenantService != null && !_tenantService.IsSuperAdmin &&
+                _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
+            builder.Entity<AnnualReportFilter>().HasQueryFilter(row =>
+                _tenantService != null && !_tenantService.IsSuperAdmin &&
+                _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
+            builder.Entity<AnnualReportHeader>().HasQueryFilter(row =>
                 _tenantService != null && !_tenantService.IsSuperAdmin &&
                 _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
             builder.Entity<PlatformTypeValue>().HasQueryFilter(row =>
@@ -2006,6 +2024,59 @@ namespace Accounts.Data
                 e.HasIndex(x => new { x.TenantId, x.RoznamchaEntryId });
                 e.HasOne<Tenant>().WithMany().HasForeignKey(x => x.TenantId).OnDelete(DeleteBehavior.Restrict);
                 e.HasOne<RoznamchaEntry>().WithMany().HasForeignKey(x => x.RoznamchaEntryId).OnDelete(DeleteBehavior.SetNull);
+            });
+            builder.Entity<ReminderReceivable>(e =>
+            {
+                e.HasIndex(x => new { x.TenantId, x.Ref }).IsUnique().HasFilter("[Ref] IS NOT NULL AND [Ref] <> N''");
+                e.HasIndex(x => new { x.TenantId, x.DueDate });
+                e.HasOne<Tenant>().WithMany().HasForeignKey(x => x.TenantId).OnDelete(DeleteBehavior.Restrict);
+                e.HasOne<AppLookupValue>().WithMany().HasForeignKey(x => x.AccountTypeId).OnDelete(DeleteBehavior.Restrict).HasConstraintName("FK_ReminderReceivables_AccountType");
+                e.HasOne<AppLookupValue>().WithMany().HasForeignKey(x => x.ReminderTypeId).OnDelete(DeleteBehavior.Restrict).HasConstraintName("FK_ReminderReceivables_ReminderType");
+                e.HasOne<AppLookupValue>().WithMany().HasForeignKey(x => x.InvoiceTypeId).OnDelete(DeleteBehavior.Restrict).HasConstraintName("FK_ReminderReceivables_InvoiceType");
+                e.HasOne<AccountsCategory>().WithMany().HasForeignKey(x => x.CategoryId).OnDelete(DeleteBehavior.Restrict).HasConstraintName("FK_ReminderReceivables_Category");
+                e.HasOne<AccountsChartAccount>().WithMany().HasForeignKey(x => x.FromAccountId).OnDelete(DeleteBehavior.Restrict);
+                e.HasOne<AccountsCategory>().WithMany().HasForeignKey(x => x.ToCategoryId).OnDelete(DeleteBehavior.Restrict).HasConstraintName("FK_ReminderReceivables_ToCategory");
+                e.HasOne<AccountsChartAccount>().WithMany().HasForeignKey(x => x.ToAccountId).OnDelete(DeleteBehavior.Restrict);
+                e.HasOne<FrequencyType>().WithMany().HasForeignKey(x => x.FrequencyTypeId).OnDelete(DeleteBehavior.Restrict);
+                e.HasOne<AccountsTransType>().WithMany().HasForeignKey(x => x.TransTypeId).OnDelete(DeleteBehavior.Restrict);
+            });
+            builder.Entity<ReminderPayable>(e =>
+            {
+                e.HasIndex(x => new { x.TenantId, x.Ref }).IsUnique().HasFilter("[Ref] IS NOT NULL AND [Ref] <> N''");
+                e.HasIndex(x => new { x.TenantId, x.DueDate });
+                e.HasOne<Tenant>().WithMany().HasForeignKey(x => x.TenantId).OnDelete(DeleteBehavior.Restrict);
+                e.HasOne<AppLookupValue>().WithMany().HasForeignKey(x => x.AccountTypeId).OnDelete(DeleteBehavior.Restrict).HasConstraintName("FK_ReminderPayables_AccountType");
+                e.HasOne<AppLookupValue>().WithMany().HasForeignKey(x => x.ReminderTypeId).OnDelete(DeleteBehavior.Restrict).HasConstraintName("FK_ReminderPayables_ReminderType");
+                e.HasOne<AppLookupValue>().WithMany().HasForeignKey(x => x.InvoiceTypeId).OnDelete(DeleteBehavior.Restrict).HasConstraintName("FK_ReminderPayables_InvoiceType");
+                e.HasOne<AccountsCategory>().WithMany().HasForeignKey(x => x.CategoryId).OnDelete(DeleteBehavior.Restrict).HasConstraintName("FK_ReminderPayables_Category");
+                e.HasOne<AccountsChartAccount>().WithMany().HasForeignKey(x => x.FromAccountId).OnDelete(DeleteBehavior.Restrict);
+                e.HasOne<AccountsCategory>().WithMany().HasForeignKey(x => x.ToCategoryId).OnDelete(DeleteBehavior.Restrict).HasConstraintName("FK_ReminderPayables_ToCategory");
+                e.HasOne<AccountsChartAccount>().WithMany().HasForeignKey(x => x.ToAccountId).OnDelete(DeleteBehavior.Restrict);
+                e.HasOne<FrequencyType>().WithMany().HasForeignKey(x => x.FrequencyTypeId).OnDelete(DeleteBehavior.Restrict);
+                e.HasOne<AccountsTransType>().WithMany().HasForeignKey(x => x.TransTypeId).OnDelete(DeleteBehavior.Restrict);
+            });
+            builder.Entity<AnnualReportType>(e =>
+            {
+                e.HasIndex(x => new { x.TenantId, x.Code }).IsUnique().HasFilter("[TenantId] IS NOT NULL");
+                e.HasIndex(x => x.Code).IsUnique().HasFilter("[TenantId] IS NULL");
+            });
+            builder.Entity<AnnualReportFilter>(e =>
+            {
+                e.HasIndex(x => new { x.TenantId, x.ReportTypeId, x.CategoryId }).IsUnique();
+                e.HasOne<Tenant>().WithMany().HasForeignKey(x => x.TenantId).OnDelete(DeleteBehavior.Restrict);
+                e.HasOne<AnnualReportType>().WithMany().HasForeignKey(x => x.ReportTypeId).OnDelete(DeleteBehavior.Restrict);
+                e.HasOne<AccountsCategory>().WithMany().HasForeignKey(x => x.CategoryId).OnDelete(DeleteBehavior.Restrict);
+            });
+            builder.Entity<AnnualReportHeader>(e =>
+            {
+                e.HasIndex(x => new { x.TenantId, x.ReportTypeCode, x.FiscalYear }).IsUnique();
+                e.HasOne<Tenant>().WithMany().HasForeignKey(x => x.TenantId).OnDelete(DeleteBehavior.Restrict);
+            });
+            builder.Entity<AnnualReportLine>(e =>
+            {
+                e.HasIndex(x => x.HeaderId);
+                e.HasOne<AnnualReportHeader>().WithMany().HasForeignKey(x => x.HeaderId).OnDelete(DeleteBehavior.Cascade);
+                e.HasOne<AccountsCategory>().WithMany().HasForeignKey(x => x.CategoryId).OnDelete(DeleteBehavior.Restrict);
             });
         }
 

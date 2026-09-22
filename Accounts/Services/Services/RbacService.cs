@@ -103,6 +103,11 @@ namespace Accounts.Services.Services
                 .Select(g => g.MenuId)
                 .ToHashSetAsync();
 
+            var deniedMenus = await _db.StaffMenuAccesses.IgnoreQueryFilters().AsNoTracking()
+                .Where(g => g.StaffId == staffId && !g.IsAllow)
+                .Select(g => g.MenuId)
+                .ToHashSetAsync();
+
             var roleIds = await LoadTenantRolePermissionIdsAsync(tenantId, jobTitle, deptId);
             var seedPermissionIds = effectivePermissionIds.Count > 0
                 ? effectivePermissionIds.Concat(roleIds).Distinct().ToList()
@@ -112,7 +117,10 @@ namespace Accounts.Services.Services
             {
                 if (!featureKeys.TryGetValue(permissionId, out var key)) continue;
                 if (TenantPermissionService.TryParseMenuFeature(key, out var menuId, out _))
+                {
+                    if (deniedMenus.Contains(menuId)) continue;
                     menus.Add(menuId);
+                }
             }
 
             if (seedPermissionIds.Count > 0)
@@ -122,10 +130,14 @@ namespace Accounts.Services.Services
                     .Select(mp => mp.MenuId)
                     .Distinct()
                     .ToListAsync();
-                foreach (var menuId in linked) menus.Add(menuId);
+                foreach (var menuId in linked)
+                {
+                    if (deniedMenus.Contains(menuId)) continue;
+                    menus.Add(menuId);
+                }
             }
 
-            menus.RemoveWhere(id => !ceiling.TryGetValue(id, out var bits) || !bits.View);
+            menus.RemoveWhere(id => deniedMenus.Contains(id) || !ceiling.TryGetValue(id, out var bits) || !bits.View);
             return menus;
         }
 
@@ -430,6 +442,21 @@ namespace Accounts.Services.Services
                 if (featureKeys.TryGetValue(permissionId, out var key) &&
                     IsAllowedByCeiling(key, ceiling, semanticMenus))
                     result.Add(permissionId);
+            }
+
+            var deniedMenuIds = await _db.StaffMenuAccesses
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .Where(ma => ma.StaffId == staffId && !ma.IsAllow)
+                .Select(ma => ma.MenuId)
+                .ToHashSetAsync();
+
+            if (deniedMenuIds.Count > 0)
+            {
+                result.RemoveWhere(permissionId =>
+                    featureKeys.TryGetValue(permissionId, out var key) &&
+                    TenantPermissionService.TryParseMenuFeature(key, out var menuId, out _) &&
+                    deniedMenuIds.Contains(menuId));
             }
 
             var menuGrants = await _db.StaffMenuAccesses
@@ -1246,6 +1273,171 @@ namespace Accounts.Services.Services
             _db.StaffMenuAccesses.RemoveRange(rows); // CASCADE deletes AccessFeatures
             await _db.SaveChangesAsync();
             return rows.Count;
+        }
+
+        /// <summary>
+        /// Additive multi-user grant: add selected MENU_* keys to each staff member
+        /// without wiping their existing access (Admin Access "Grant" mode).
+        /// </summary>
+        public async Task<(int UsersUpdated, int GrantsAdded)> BulkGrantToStaffAsync(
+            IReadOnlyCollection<Guid> requestedStaffIds,
+            IReadOnlyCollection<string> featureKeys,
+            string? setBy,
+            int? expectedTenantId = null)
+        {
+            var staffIds = requestedStaffIds.Where(id => id != Guid.Empty).Distinct().ToArray();
+            if (staffIds.Length == 0)
+                throw new ArgumentException("Select at least one staff member.");
+            if (featureKeys == null || featureKeys.Count == 0)
+                throw new ArgumentException("Select at least one menu to grant.");
+
+            var validStaff = await _db.StaffVacancies.IgnoreQueryFilters().AsNoTracking()
+                .Where(s => staffIds.Contains(s.StaffId))
+                .Select(s => new { s.StaffId, s.TenantId })
+                .ToArrayAsync();
+            if (validStaff.Length != staffIds.Length)
+                throw new ArgumentException("One or more selected staff members were not found.");
+
+            var tenantIds = validStaff.Select(s => s.TenantId).Distinct().ToArray();
+            if (tenantIds.Length != 1)
+                throw new ArgumentException("Staff access can only be updated for one tenant at a time.");
+            var tenantId = tenantIds[0];
+            if (expectedTenantId.HasValue && expectedTenantId.Value != tenantId)
+                throw new ArgumentException("Selected staff do not belong to the expected tenant.");
+
+            var ceiling = await _db.TenantMenuPermissions.AsNoTracking()
+                .Where(p => p.TenantId == tenantId && p.IsAllow)
+                .ToDictionaryAsync(p => p.MenuId,
+                    p => new TenantCeiling(p.CanView, p.CanAdd, p.CanEdit, p.CanDelete));
+            if (ceiling.Count == 0)
+                throw new InvalidOperationException("This tenant has no delegable menu access.");
+
+            var allowedKeys = featureKeys
+                .Where(k => !string.IsNullOrWhiteSpace(k))
+                .Select(k => k.Trim().ToUpperInvariant())
+                .Where(k => k.StartsWith("MENU_", StringComparison.Ordinal))
+                .Where(k => IsAllowedByCeiling(k, ceiling))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            if (allowedKeys.Length == 0)
+                throw new ArgumentException("None of the selected permissions are within the tenant ceiling.");
+
+            foreach (var key in allowedKeys)
+                await EnsureFeatureExistsAsync(key);
+
+            var featureLookup = await _db.Features.AsNoTracking()
+                .Where(f => allowedKeys.Contains(f.FeatureKey))
+                .ToDictionaryAsync(f => f.FeatureKey, f => f, StringComparer.OrdinalIgnoreCase);
+
+            var ceilingMenuIds = ceiling.Keys.ToList();
+            var validMenuIds = await _db.Menus.AsNoTracking()
+                .Where(m => m.IsActive && ceilingMenuIds.Contains(m.Id))
+                .Select(m => m.Id)
+                .ToHashSetAsync();
+
+            var grantsAdded = 0;
+            var now = DateTime.UtcNow;
+
+            foreach (var staffId in staffIds)
+            {
+                var existing = await _db.StaffMenuAccesses
+                    .IgnoreQueryFilters()
+                    .Include(ma => ma.AccessFeatures)
+                    .Where(ma => ma.StaffId == staffId)
+                    .ToListAsync();
+                var byMenu = existing.ToDictionary(ma => ma.MenuId);
+
+                foreach (var key in allowedKeys)
+                {
+                    if (!featureLookup.TryGetValue(key, out var feature)) continue;
+                    var parts = key.Split('_');
+                    if (parts.Length < 2 || !int.TryParse(parts[1], out var menuId) || !validMenuIds.Contains(menuId))
+                        continue;
+
+                    var isTopLevel = parts.Length == 2;
+                    if (!byMenu.TryGetValue(menuId, out var grant))
+                    {
+                        grant = new StaffMenuAccess
+                        {
+                            StaffId = staffId,
+                            MenuId = menuId,
+                            IsAllow = true,
+                            GrantedBy = setBy,
+                            GrantedDate = now
+                        };
+                        _db.StaffMenuAccesses.Add(grant);
+                        byMenu[menuId] = grant;
+                        grantsAdded++;
+                    }
+                    else if (!grant.IsAllow)
+                    {
+                        grant.IsAllow = true;
+                        grant.GrantedBy = setBy;
+                        grant.GrantedDate = now;
+                        grantsAdded++;
+                    }
+
+                    if (!isTopLevel)
+                    {
+                        var af = grant.AccessFeatures.FirstOrDefault(x => x.PermissionId == feature.PermissionId);
+                        if (af == null)
+                        {
+                            grant.AccessFeatures.Add(new AccessFeature
+                            {
+                                PermissionId = feature.PermissionId,
+                                IsAllow = true
+                            });
+                            grantsAdded++;
+                        }
+                        else if (!af.IsAllow)
+                        {
+                            af.IsAllow = true;
+                            grantsAdded++;
+                        }
+                    }
+                }
+            }
+
+            await _db.SaveChangesAsync();
+            return (staffIds.Length, grantsAdded);
+        }
+
+        /// <summary>
+        /// Soft-revoke selected menus for many staff (IsAllow = false). Keeps other menus intact.
+        /// </summary>
+        public async Task<int> BulkRemoveStaffMenusAsync(
+            IReadOnlyCollection<Guid> requestedStaffIds,
+            IReadOnlyCollection<int> menuIds,
+            int expectedTenantId)
+        {
+            var staffIds = requestedStaffIds.Where(id => id != Guid.Empty).Distinct().ToArray();
+            if (staffIds.Length == 0)
+                throw new ArgumentException("Select at least one staff member.");
+            if (menuIds == null || menuIds.Count == 0)
+                throw new ArgumentException("Select at least one menu to revoke.");
+
+            var validStaff = await _db.StaffVacancies.IgnoreQueryFilters().AsNoTracking()
+                .Where(s => staffIds.Contains(s.StaffId))
+                .Select(s => new { s.StaffId, s.TenantId })
+                .ToArrayAsync();
+            if (validStaff.Length != staffIds.Length)
+                throw new ArgumentException("One or more selected staff members were not found.");
+            if (validStaff.Any(s => s.TenantId != expectedTenantId))
+                throw new ArgumentException("Selected staff must all belong to the same tenant.");
+
+            var targetMenus = menuIds.Where(id => id > 0).Distinct().ToArray();
+            var rows = await _db.StaffMenuAccesses
+                .IgnoreQueryFilters()
+                .Where(ma => staffIds.Contains(ma.StaffId) && targetMenus.Contains(ma.MenuId) && ma.IsAllow)
+                .ToListAsync();
+
+            foreach (var row in rows)
+                row.IsAllow = false;
+
+            if (rows.Count > 0)
+                await _db.SaveChangesAsync();
+
+            return staffIds.Length;
         }
 
         /// <summary>

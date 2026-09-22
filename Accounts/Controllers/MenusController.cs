@@ -262,6 +262,17 @@ namespace Accounts.Controllers
                 new("Daily Updates",        "CalendarRange",      "/accounts/daily-updates",   "Accounts",            6, new()),
                 new("Bank Account Report",  "Files",              "/accounts/bank-account-report", "Accounts",         7, new()),
                 new("Show record",          "LayoutGrid",         "/accounts/show-record",     "Accounts",            8, new()),
+
+                // E-mail / Reminders / Annual Reports (DB-seeded; keep seed catalog aligned)
+                new("E-mail",               "Mail",               null,                          null,                 82, new()),
+                new("LT Email",             "MailOpen",           "/email/lt-email",             "E-mail",              1, new()),
+                new("Reminders",            "Bell",               null,                          null,                 83, new()),
+                new("Receivable",           "Wallet",             "/reminders/receivable",       "Reminders",           1, new()),
+                new("Payable",              "Banknote",           "/reminders/payable",          "Reminders",           2, new()),
+                new("Annual Reports",       "CalendarRange",      null,                              null,                 84, new()),
+                new("Annual Exp Report",    "DollarSign",         "/annual-reports/exp-report",      "Annual Reports",     1, new()),
+                new("Annual Income Report", "LineChart",          "/annual-reports/income-report",   "Annual Reports",     2, new()),
+                new("Annual report Filter", "SlidersHorizontal",  "/annual-reports/filter",          "Annual Reports",     3, new()),
             };
 
             var validKeys = await _db.Features.Select(f => f.FeatureKey).ToHashSetAsync();

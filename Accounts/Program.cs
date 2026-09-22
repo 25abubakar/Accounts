@@ -179,6 +179,9 @@ builder.Services.AddHostedService(serviceProvider =>
 builder.Services.AddScoped<IOrganizationDataScopeService, OrganizationDataScopeService>();
 builder.Services.AddScoped<IChatService, ChatService>();
 builder.Services.AddScoped<IChatRuleService, ChatRuleService>();
+builder.Services.AddScoped<IReminderReceivableService, ReminderReceivableService>();
+builder.Services.AddScoped<IReminderPayableService, ReminderPayableService>();
+builder.Services.AddScoped<IAnnualReportsService, AnnualReportsService>();
 builder.Services.AddHostedService<ChatViewOnceCleanupService>();
 builder.Services.AddSingleton<ChatPresenceTracker>();
 builder.Services.AddSingleton<IRealtimePublisher, SignalRRealtimePublisher>();

@@ -2,12 +2,72 @@ using Accounts.Models;
 using Accounts.Services.Interfaces;
 using Accounts.Services.Services;
 using Accounts.Tests.Helpers;
+using Microsoft.EntityFrameworkCore;
 using System.Security.Claims;
 
 namespace Accounts.Tests;
 
 public class AccessServiceTests
 {
+    [Fact]
+    public async Task BulkGrantAndRemove_PreserveEachStaffMembersOtherMenus()
+    {
+        await using var db = TestDbFactory.Create();
+        var firstStaff = Guid.NewGuid();
+        var secondStaff = Guid.NewGuid();
+        const int tenantId = 2007;
+        var firstMenu = new Menu { Title = "HR", Route = "/hr", IsActive = true };
+        var secondMenu = new Menu { Title = "Attendance", Route = "/attendance", IsActive = true };
+        var sharedMenu = new Menu { Title = "New Module", Route = "/new", IsActive = true };
+        db.Menus.AddRange(firstMenu, secondMenu, sharedMenu);
+        await db.SaveChangesAsync();
+        var roleFeature = new Feature { FeatureKey = $"MENU_{sharedMenu.Id}", FeatureName = "New Module", Module = "Menu" };
+        db.Features.Add(roleFeature);
+        var vacancy = new Vacancy { TenantId = tenantId, JobTitle = "Analyst", VacancyCode = "AN-1" };
+        db.Vacancies.Add(vacancy);
+        db.StaffVacancies.AddRange(
+            new StaffVacancy { StaffId = firstStaff, TenantId = tenantId, Vacancy = vacancy },
+            new StaffVacancy { StaffId = secondStaff, TenantId = tenantId });
+        await db.SaveChangesAsync();
+        db.TenantRolePermissions.Add(new TenantRolePermission
+        {
+            TenantId = tenantId, JobTitle = "Analyst", PermissionId = roleFeature.PermissionId, IsAllowed = true
+        });
+        foreach (var menu in new[] { firstMenu, secondMenu, sharedMenu })
+            db.TenantMenuPermissions.Add(new TenantMenuPermission
+            {
+                TenantId = tenantId, MenuId = menu.Id, IsAllow = true, CanView = true
+            });
+        db.StaffMenuAccesses.AddRange(
+            new StaffMenuAccess { StaffId = firstStaff, MenuId = firstMenu.Id, IsAllow = true },
+            new StaffMenuAccess { StaffId = secondStaff, MenuId = secondMenu.Id, IsAllow = true });
+        await db.SaveChangesAsync();
+
+        var service = new RbacService(db);
+        var selected = new[] { firstStaff, secondStaff };
+        await service.BulkGrantToStaffAsync(selected, new[] { $"MENU_{sharedMenu.Id}" }, null, tenantId);
+        Assert.Contains($"MENU_{sharedMenu.Id}", await service.GetEffectivePermissionsAsync(firstStaff));
+        Assert.Contains($"MENU_{sharedMenu.Id}", await service.GetEffectivePermissionsAsync(secondStaff));
+
+        var otherTenantStaff = Guid.NewGuid();
+        db.StaffVacancies.Add(new StaffVacancy { StaffId = otherTenantStaff, TenantId = tenantId + 1 });
+        await db.SaveChangesAsync();
+        await Assert.ThrowsAsync<ArgumentException>(() => service.BulkRemoveStaffMenusAsync(
+            new[] { firstStaff, otherTenantStaff }, new[] { sharedMenu.Id }, tenantId));
+
+        await service.BulkRemoveStaffMenusAsync(selected, new[] { sharedMenu.Id }, tenantId);
+        Assert.DoesNotContain($"MENU_{sharedMenu.Id}", await service.GetEffectivePermissionsAsync(firstStaff));
+        Assert.DoesNotContain($"MENU_{sharedMenu.Id}", await service.GetEffectivePermissionsAsync(secondStaff));
+        Assert.Contains($"MENU_{firstMenu.Id}", await service.GetEffectivePermissionsAsync(firstStaff));
+        Assert.Contains($"MENU_{secondMenu.Id}", await service.GetEffectivePermissionsAsync(secondStaff));
+        Assert.False((await db.StaffMenuAccesses.IgnoreQueryFilters()
+            .SingleAsync(row => row.StaffId == firstStaff && row.MenuId == sharedMenu.Id)).IsAllow);
+
+        await service.BulkGrantToStaffAsync(selected, new[] { $"MENU_{sharedMenu.Id}" }, null, tenantId);
+        Assert.Contains($"MENU_{sharedMenu.Id}", await service.GetEffectivePermissionsAsync(firstStaff));
+        Assert.Contains($"MENU_{sharedMenu.Id}", await service.GetEffectivePermissionsAsync(secondStaff));
+    }
+
     [Fact]
     public async Task RbacEffectivePermissions_NeverExceedTenantCrudCeiling()
     {
