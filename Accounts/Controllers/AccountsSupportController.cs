@@ -68,100 +68,98 @@ public sealed class AccountsProjectsController(ApplicationDbContext db, ICurrent
 [Authorize]
 [Produces("application/json")]
 [Route("api/bank-statements")]
-public sealed class BankStatementsController(ApplicationDbContext db, ICurrentUserService current) : ControllerBase
+public sealed class BankStatementsController(IBankStatementService service) : ControllerBase
 {
     [HttpGet]
-    public async Task<IActionResult> List([FromQuery] int? accountId, [FromQuery] DateOnly? dateFrom, [FromQuery] DateOnly? dateTo, CancellationToken ct)
-    {
-        var query = db.BankStatements.AsNoTracking();
-        if (accountId.HasValue) query = query.Where(x => x.ChartAccountId == accountId);
-        if (dateFrom.HasValue) query = query.Where(x => (x.PostingDate ?? x.ValueDate ?? x.StatementDate) >= dateFrom);
-        if (dateTo.HasValue) query = query.Where(x => (x.PostingDate ?? x.ValueDate ?? x.StatementDate) <= dateTo);
-        return Ok(ApiResponse<IReadOnlyList<BankStatementDto>>.Ok(await Map(query)
-            .OrderByDescending(x => x.PostingDate).ThenByDescending(x => x.Id).ToListAsync(ct)));
-    }
+    public async Task<IActionResult> List(
+        [FromQuery] int? accountId,
+        [FromQuery] DateOnly? dateFrom,
+        [FromQuery] DateOnly? dateTo,
+        CancellationToken ct) =>
+        Ok(ApiResponse<IReadOnlyList<BankStatementDto>>.Ok(await service.ListAsync(accountId, dateFrom, dateTo, ct)));
 
     [HttpGet("{id:long}")]
     public async Task<IActionResult> Get(long id, CancellationToken ct)
     {
-        var row = await Map(db.BankStatements.AsNoTracking()).FirstOrDefaultAsync(x => x.Id == id, ct);
-        return row == null ? NotFound(ApiResponse<object?>.Fail("Bank statement was not found.")) : Ok(ApiResponse<BankStatementDto>.Ok(row));
+        var row = await service.GetAsync(id, ct);
+        return row == null
+            ? NotFound(ApiResponse<object?>.Fail("Bank statement was not found."))
+            : Ok(ApiResponse<BankStatementDto>.Ok(row));
     }
 
     [HttpPost]
-    public Task<IActionResult> Create([FromBody] SaveBankStatementRequest request, CancellationToken ct) => Save(null, request, ct);
+    public Task<IActionResult> Create([FromBody] SaveBankStatementRequest request, CancellationToken ct) =>
+        Run(async () => ApiResponse<BankStatementDto>.Ok(await service.SaveAsync(null, request, ct), "Bank statement added successfully."));
 
     [HttpPut("{id:long}")]
-    public Task<IActionResult> Update(long id, [FromBody] SaveBankStatementRequest request, CancellationToken ct) => Save(id, request, ct);
+    public Task<IActionResult> Update(long id, [FromBody] SaveBankStatementRequest request, CancellationToken ct) =>
+        Run(async () => ApiResponse<BankStatementDto>.Ok(await service.SaveAsync(id, request, ct), "Bank statement updated successfully."));
 
     [HttpDelete("{id:long}")]
-    public async Task<IActionResult> Delete(long id, CancellationToken ct)
-    {
-        var row = await db.BankStatements.FirstOrDefaultAsync(x => x.Id == id, ct);
-        if (row == null) return NotFound(ApiResponse<object?>.Fail("Bank statement was not found."));
-        db.BankStatements.Remove(row);
-        await db.SaveChangesAsync(ct);
-        return Ok(ApiResponse<object?>.Ok(null, "Bank statement deleted successfully."));
-    }
-
-    private async Task<IActionResult> Save(long? id, SaveBankStatementRequest request, CancellationToken ct)
-    {
-        var account = await db.AccountsChartAccounts.AsNoTracking()
-            .Where(x => x.Id == request.AccountId && x.IsActive)
-            .Select(x => new { x.AccountReference, x.AccountNumber })
-            .FirstOrDefaultAsync(ct);
-        if (account == null)
-            return BadRequest(ApiResponse<object?>.Fail("Account was not found or is inactive."));
-        if (request.Debit < 0 || request.Credit < 0)
-            return BadRequest(ApiResponse<object?>.Fail("Debit and credit cannot be negative."));
-        if (request.Debit > 0 && request.Credit > 0)
-            return BadRequest(ApiResponse<object?>.Fail("A statement row cannot contain both debit and credit."));
-        BankStatement row;
-        if (id.HasValue)
+    public Task<IActionResult> Delete(long id, CancellationToken ct) =>
+        Run(async () =>
         {
-            var existing = await db.BankStatements.FirstOrDefaultAsync(x => x.Id == id.Value, ct);
-            if (existing == null) return NotFound(ApiResponse<object?>.Fail("Bank statement was not found."));
-            row = existing;
-        }
-        else
+            await service.DeleteAsync(id, ct);
+            return ApiResponse<object?>.Ok(null, "Bank statement deleted successfully.");
+        });
+
+    [HttpPost("preview-excel")]
+    [RequestSizeLimit(20_000_000)]
+    public Task<IActionResult> PreviewExcel(
+        [FromForm] int accountId,
+        [FromForm] string dateFormat,
+        [FromForm] int? yearId,
+        IFormFile? excelFile,
+        CancellationToken ct) =>
+        Run(async () =>
         {
-            row = new BankStatement { TenantId = current.TenantId, CreatedByUserId = current.UserId };
-            db.BankStatements.Add(row);
-        }
-        row.ChartAccountId = request.AccountId;
-        row.AccountNumber = Clean(account.AccountReference ?? account.AccountNumber, 50);
-        row.ValueDate = request.ValueDate;
-        row.PostingDate = request.PostingDate;
-        row.InstrumentNo = Clean(request.InstrumentNo, 100);
-        row.Description = Clean(request.TransactionDetails, 1000);
-        row.TransactionReferenceNumber = Clean(request.TransactionReferenceNo, 100);
-        row.Debit = decimal.Round(request.Debit, 2);
-        row.Credit = decimal.Round(request.Credit, 2);
-        row.Balance = decimal.Round(request.Balance, 2);
-        row.Remarks = Clean(request.Remarks, 2000);
-        row.ReferenceNumber = Clean(request.ReferenceNo, 80);
-        row.Attachment = Clean(request.Attachment, 500);
-        row.IsSettled = request.IsSettled;
-        row.IsReversal = request.IsReversal;
-        row.IsManual = request.IsManual;
-        row.StatusId = request.StatusId;
-        row.DateFormat = Clean(request.DateFormat, 40);
-        if (id.HasValue) { row.UpdatedByUserId = current.UserId; row.UpdatedOnUtc = DateTime.UtcNow; }
-        await db.SaveChangesAsync(ct);
-        var dto = await Map(db.BankStatements.AsNoTracking()).FirstAsync(x => x.Id == row.Id, ct);
-        return Ok(ApiResponse<BankStatementDto>.Ok(dto, id.HasValue ? "Bank statement updated successfully." : "Bank statement added successfully."));
-    }
+            if (excelFile == null) throw new InvalidOperationException("Excel statement file is required.");
+            var preview = await service.PreviewExcelAsync(accountId, dateFormat, yearId, excelFile, ct);
+            return ApiResponse<BankStatementPreviewResultDto>.Ok(preview, "Preview generated successfully.");
+        });
 
-    private static IQueryable<BankStatementDto> Map(IQueryable<BankStatement> query) => query.Select(x => new BankStatementDto
+    [HttpPost("upload-save")]
+    [RequestSizeLimit(30_000_000)]
+    public Task<IActionResult> UploadSave(
+        [FromForm] int accountId,
+        [FromForm] string dateFormat,
+        [FromForm] int? yearId,
+        [FromForm] string rowsJson,
+        IFormFile? attachment,
+        CancellationToken ct) =>
+        Run(async () =>
+        {
+            var rows = string.IsNullOrWhiteSpace(rowsJson)
+                ? new List<BankStatementPreviewRowDto>()
+                : System.Text.Json.JsonSerializer.Deserialize<List<BankStatementPreviewRowDto>>(
+                    rowsJson,
+                    new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true })
+                  ?? new List<BankStatementPreviewRowDto>();
+            var request = new BankStatementUploadSaveRequest
+            {
+                AccountId = accountId,
+                DateFormat = dateFormat,
+                YearId = yearId,
+                Rows = rows
+            };
+            var saved = await service.SaveUploadAsync(request, attachment, ct);
+            return ApiResponse<IReadOnlyList<BankStatementDto>>.Ok(saved, "File uploaded and data saved successfully.");
+        });
+
+    [HttpPost("transfer")]
+    public Task<IActionResult> Transfer([FromBody] BankStatementTransferRequest request, CancellationToken ct) =>
+        Run(async () =>
+        {
+            var result = await service.TransferToRoznamchaAsync(request, ct);
+            return ApiResponse<BankStatementTransferResultDto>.Ok(result, result.Message);
+        });
+
+    private async Task<IActionResult> Run<T>(Func<Task<ApiResponse<T>>> action)
     {
-        Id = x.Id, AccountId = x.ChartAccountId, AccountReference = x.AccountNumber,
-        ValueDate = x.ValueDate, PostingDate = x.PostingDate, InstrumentNo = x.InstrumentNo,
-        TransactionDetails = x.Description, TransactionReferenceNo = x.TransactionReferenceNumber,
-        Debit = x.Debit ?? 0, Credit = x.Credit ?? 0, Balance = x.Balance ?? 0, Remarks = x.Remarks,
-        ReferenceNo = x.ReferenceNumber, Attachment = x.Attachment, IsSettled = x.IsSettled,
-        IsReversal = x.IsReversal, IsManual = x.IsManual, StatusId = x.StatusId, DateFormat = x.DateFormat
-    });
-
-    private static string? Clean(string? value, int max) =>
-        string.IsNullOrWhiteSpace(value) ? null : value.Trim()[..Math.Min(value.Trim().Length, max)];
+        try { return Ok(await action()); }
+        catch (KeyNotFoundException ex) { return NotFound(ApiResponse<object?>.Fail(ex.Message)); }
+        catch (InvalidOperationException ex) { return BadRequest(ApiResponse<object?>.Fail(ex.Message)); }
+    }
 }
+
+

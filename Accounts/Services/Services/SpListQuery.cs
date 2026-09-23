@@ -23,6 +23,9 @@ public static class SpListQuery
     public static SqlParameter Date(string name, DateOnly value) =>
         new(name, SqlDbType.Date) { Value = value.ToDateTime(TimeOnly.MinValue) };
 
+    public static SqlParameter DateNullable(string name, DateOnly? value) =>
+        new(name, SqlDbType.Date) { Value = value.HasValue ? value.Value.ToDateTime(TimeOnly.MinValue) : DBNull.Value };
+
     public static SqlParameter Bit(string name, bool value) =>
         new(name, SqlDbType.Bit) { Value = value };
 

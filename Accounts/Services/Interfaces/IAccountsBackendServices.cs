@@ -87,6 +87,17 @@ public interface IPayableReceivableService
     Task<RecurringTransactionDto> GenerateNextAsync(int id, string kind, CancellationToken ct = default);
 }
 
+public interface IBankStatementService
+{
+    Task<IReadOnlyList<BankStatementDto>> ListAsync(int? accountId, DateOnly? dateFrom, DateOnly? dateTo, CancellationToken ct = default);
+    Task<BankStatementDto?> GetAsync(long id, CancellationToken ct = default);
+    Task<BankStatementDto> SaveAsync(long? id, SaveBankStatementRequest request, CancellationToken ct = default);
+    Task DeleteAsync(long id, CancellationToken ct = default);
+    Task<BankStatementPreviewResultDto> PreviewExcelAsync(int accountId, string dateFormat, int? year, IFormFile excelFile, CancellationToken ct = default);
+    Task<IReadOnlyList<BankStatementDto>> SaveUploadAsync(BankStatementUploadSaveRequest request, IFormFile? attachment, CancellationToken ct = default);
+    Task<BankStatementTransferResultDto> TransferToRoznamchaAsync(BankStatementTransferRequest request, CancellationToken ct = default);
+}
+
 public interface IReportService
 {
     Task<IReadOnlyList<ReportRowDto>> MonthlyAsync(string? name, DateOnly from, DateOnly to, int? typeId, int? projectId, IReadOnlyList<int>? categoryIds, IReadOnlyList<int>? accountIds, CancellationToken ct = default);

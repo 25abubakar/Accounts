@@ -188,6 +188,7 @@ builder.Services.AddScoped<IFileStorageService, AccountsFileStorageService>();
 builder.Services.AddScoped<IAccountCategoryService, AccountCategoryService>();
 builder.Services.AddScoped<IAccountTypeMasterService, AccountTypeMasterService>();
 builder.Services.AddScoped<IAccountService, AccountService>();
+builder.Services.AddScoped<IBankStatementService, BankStatementService>();
 builder.Services.AddScoped<IAccountsRoznamchaService, AccountsRoznamchaService>();
 builder.Services.AddScoped<IRoznamchaService, RoznamchaService>();
 builder.Services.AddScoped<IPayableReceivableService, PayableReceivableService>();

@@ -279,6 +279,10 @@ namespace Accounts.Controllers
                 new("Account Type",         "Tags",               "/create-accounts/account-type",   "Create Accounts",    1, new()),
                 new("Create Category",      "FolderTree",         "/create-accounts/create-category","Create Accounts",    2, new()),
                 new("Accounts List",        "LayoutGrid",         "/create-accounts/accounts-list",  "Create Accounts",    3, new()),
+
+                // Statements
+                new("Statements",           "Users",              null,                              null,                 86, new()),
+                new("Bank",                 "Landmark",           "/statements/bank",                "Statements",         1, new()),
             };
 
             var validKeys = await _db.Features.Select(f => f.FeatureKey).ToHashSetAsync();

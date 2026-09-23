@@ -397,6 +397,7 @@ public sealed class BankStatementDto
 {
     public long Id { get; set; }
     public int? AccountId { get; set; }
+    public string? AccountName { get; set; }
     public string? AccountReference { get; set; }
     public DateOnly? ValueDate { get; set; }
     public DateOnly? PostingDate { get; set; }
@@ -412,6 +413,7 @@ public sealed class BankStatementDto
     public bool IsSettled { get; set; }
     public bool IsReversal { get; set; }
     public bool IsManual { get; set; }
+    public bool IsMatched { get; set; }
     public int? StatusId { get; set; }
     public string? DateFormat { get; set; }
 }
@@ -435,6 +437,52 @@ public sealed class SaveBankStatementRequest
     public bool IsManual { get; set; }
     public int? StatusId { get; set; }
     public string? DateFormat { get; set; }
+}
+
+public sealed class BankStatementPreviewRowDto
+{
+    public int RowNumber { get; set; }
+    public DateOnly? ValueDate { get; set; }
+    public DateOnly? PostingDate { get; set; }
+    public string? InstrumentNo { get; set; }
+    public string? TransactionDetails { get; set; }
+    public string? TransactionReferenceNo { get; set; }
+    public decimal Debit { get; set; }
+    public decimal Credit { get; set; }
+    public decimal Balance { get; set; }
+    public string? Remarks { get; set; }
+    public bool IsValid { get; set; }
+    public string? ErrorMessage { get; set; }
+}
+
+public sealed class BankStatementPreviewResultDto
+{
+    public int TotalRows { get; set; }
+    public int ValidRows { get; set; }
+    public int InvalidRows { get; set; }
+    public List<BankStatementPreviewRowDto> Rows { get; set; } = [];
+}
+
+public sealed class BankStatementUploadSaveRequest
+{
+    public int AccountId { get; set; }
+    public string? DateFormat { get; set; }
+    public int? YearId { get; set; }
+    public List<BankStatementPreviewRowDto> Rows { get; set; } = [];
+}
+
+public sealed class BankStatementTransferRequest
+{
+    public int AccountId { get; set; }
+    public DateOnly DateFrom { get; set; }
+    public DateOnly DateTo { get; set; }
+}
+
+public sealed class BankStatementTransferResultDto
+{
+    public int TransferredCount { get; set; }
+    public int SkippedCount { get; set; }
+    public string Message { get; set; } = string.Empty;
 }
 
 public sealed class VerifyAnnualReportCodeRequest
