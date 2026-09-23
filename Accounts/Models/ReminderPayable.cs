@@ -31,6 +31,11 @@ public sealed class ReminderPayable : ITenantEntity
     [MaxLength(2000)] public string? Remarks { get; set; }
     public bool IsActive { get; set; } = true;
     public bool InAlertRoznamcha { get; set; }
+    public int? CurrencyId { get; set; }
+    public int? StatusId { get; set; }
+    [MaxLength(500)] public string? Attachment { get; set; }
+    public bool IsInactive { get; set; }
+    public bool IsNotRoznamcha { get; set; }
     [MaxLength(450)] public string? CreatedByUserId { get; set; }
     public DateTime CreatedOnUtc { get; set; } = DateTime.UtcNow;
     [MaxLength(450)] public string? UpdatedByUserId { get; set; }

@@ -9,4 +9,10 @@ public interface IAccountsRoznamchaService
         DateOnly dateFrom,
         DateOnly dateTo,
         CancellationToken cancellationToken = default);
+
+    Task<IReadOnlyList<PaymentRozListRow>> ListReceiptRozAsync(
+        int tenantId,
+        DateOnly dateFrom,
+        DateOnly dateTo,
+        CancellationToken cancellationToken = default);
 }

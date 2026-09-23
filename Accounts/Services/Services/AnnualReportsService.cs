@@ -272,7 +272,7 @@ public sealed class AnnualReportsService(ApplicationDbContext db) : IAnnualRepor
             .FirstOrDefaultAsync(x => x.ReportTypeCode == code && x.FiscalYear == fiscalYear, ct);
 
         if (header != null && header.IsApproved)
-            return "Please UnLock this report before updating.";
+            throw new InvalidOperationException("Approved annual report must be unlocked before it can be updated.");
 
         if (header == null)
         {

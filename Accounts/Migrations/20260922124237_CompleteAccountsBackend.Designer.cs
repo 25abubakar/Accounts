@@ -4,6 +4,7 @@ using Accounts.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 #nullable disable
@@ -11,9 +12,11 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace Accounts.Migrations
 {
     [DbContext(typeof(ApplicationDbContext))]
-    partial class ApplicationDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260922124237_CompleteAccountsBackend")]
+    partial class CompleteAccountsBackend
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -357,9 +360,6 @@ namespace Accounts.Migrations
 
                     SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<long>("Id"));
 
-                    b.Property<long?>("AnnualReportHeaderId")
-                        .HasColumnType("bigint");
-
                     b.Property<string>("ContentType")
                         .HasMaxLength(150)
                         .HasColumnType("nvarchar(150)");
@@ -400,11 +400,7 @@ namespace Accounts.Migrations
 
                     b.HasKey("Id");
 
-                    b.HasIndex("AnnualReportHeaderId");
-
                     b.HasIndex("RoznamchaEntryId");
-
-                    b.HasIndex("TenantId", "AnnualReportHeaderId");
 
                     b.HasIndex("TenantId", "RoznamchaEntryId");
 
@@ -9206,11 +9202,6 @@ namespace Accounts.Migrations
 
             modelBuilder.Entity("Accounts.Models.AccountsEntryDocument", b =>
                 {
-                    b.HasOne("Accounts.Models.AnnualReportHeader", null)
-                        .WithMany()
-                        .HasForeignKey("AnnualReportHeaderId")
-                        .OnDelete(DeleteBehavior.Cascade);
-
                     b.HasOne("Accounts.Models.RoznamchaEntry", null)
                         .WithMany()
                         .HasForeignKey("RoznamchaEntryId")

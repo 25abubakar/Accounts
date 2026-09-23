@@ -4,7 +4,8 @@
     <TargetFramework>net9.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
-    <DefaultItemExcludes>$(DefaultItemExcludes);obj_verify/**;.build-check/**;.codex-build/**;.tmp/**</DefaultItemExcludes>
+    <!-- Keep Solution Explorer clean: local build caches + scratch SQL stay out of the project tree -->
+    <DefaultItemExcludes>$(DefaultItemExcludes);obj_verify/**;bin_verify/**;.build-check/**;.codex-build/**;.codex-test-build/**;.tmp/**;scratch_sp.sql;alter_sp.sql;alter_sp2.sql;clean_eval.sql;current_sp.sql;eval.sql;out.sql;raw_sp.sql;usp.sql;fix_daily_report_sp.sql;deduction_log.txt</DefaultItemExcludes>
   </PropertyGroup>
 
   <ItemGroup>

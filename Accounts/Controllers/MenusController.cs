@@ -273,6 +273,12 @@ namespace Accounts.Controllers
                 new("Annual Exp Report",    "DollarSign",         "/annual-reports/exp-report",      "Annual Reports",     1, new()),
                 new("Annual Income Report", "LineChart",          "/annual-reports/income-report",   "Annual Reports",     2, new()),
                 new("Annual report Filter", "SlidersHorizontal",  "/annual-reports/filter",          "Annual Reports",     3, new()),
+
+                // Create Accounts (parent group)
+                new("Create Accounts",      "Users",              null,                              null,                 85, new()),
+                new("Account Type",         "Tags",               "/create-accounts/account-type",   "Create Accounts",    1, new()),
+                new("Create Category",      "FolderTree",         "/create-accounts/create-category","Create Accounts",    2, new()),
+                new("Accounts List",        "LayoutGrid",         "/create-accounts/accounts-list",  "Create Accounts",    3, new()),
             };
 
             var validKeys = await _db.Features.Select(f => f.FeatureKey).ToHashSetAsync();
