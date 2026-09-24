@@ -121,9 +121,14 @@ public sealed class BankStatementService(
         for (var i = 0; i < table.Rows.Count; i++)
         {
             var dataRow = table.Rows[i];
+            if (IsBlankStatementRow(dataRow, map))
+                continue;
             var preview = ParsePreviewRow(i + 2, dataRow, map, format, year);
             rows.Add(preview);
         }
+
+        if (rows.Count == 0)
+            throw new InvalidOperationException("The uploaded file has no statement data rows.");
 
         return new BankStatementPreviewResultDto
         {
@@ -391,6 +396,31 @@ public sealed class BankStatementService(
         };
     }
 
+    private static bool IsBlankStatementRow(DataRow dataRow, IReadOnlyDictionary<string, int> map)
+    {
+        static bool HasText(DataRow row, IReadOnlyDictionary<string, int> headers, string key)
+        {
+            if (!headers.TryGetValue(key, out var index)) return false;
+            var value = row[index];
+            if (value == null || value == DBNull.Value) return false;
+            if (value is DateTime) return true;
+            if (value is double or float or decimal or int or long)
+                return Convert.ToDecimal(value, CultureInfo.InvariantCulture) != 0;
+            return !string.IsNullOrWhiteSpace(Convert.ToString(value, CultureInfo.InvariantCulture));
+        }
+
+        return !(
+            HasText(dataRow, map, "valuedate")
+            || HasText(dataRow, map, "postingdate")
+            || HasText(dataRow, map, "debit")
+            || HasText(dataRow, map, "credit")
+            || HasText(dataRow, map, "balance")
+            || HasText(dataRow, map, "instrumentno")
+            || HasText(dataRow, map, "transactiondetails")
+            || HasText(dataRow, map, "transactionrefno")
+            || HasText(dataRow, map, "remarks"));
+    }
+
     private static BankStatementPreviewRowDto ParsePreviewRow(
         int rowNumber,
         DataRow dataRow,
@@ -404,6 +434,14 @@ public sealed class BankStatementService(
         var debit = ReadDecimal(dataRow, map, "debit", errors, "Debit");
         var credit = ReadDecimal(dataRow, map, "credit", errors, "Credit");
         var balance = ReadDecimal(dataRow, map, "balance", errors, "Balance");
+        var details = ReadString(dataRow, map, "transactiondetails");
+
+        // Opening Balance lines often carry amount only in Balance (Debit/Credit blank).
+        if (debit <= 0 && credit <= 0 && balance != 0 && IsOpeningBalanceDetails(details))
+        {
+            if (balance > 0) credit = Math.Abs(balance);
+            else debit = Math.Abs(balance);
+        }
 
         if (debit > 0 && credit > 0) errors.Add("Both debit and credit are present.");
         if (debit <= 0 && credit <= 0) errors.Add("Debit or Credit amount is required.");
@@ -415,7 +453,7 @@ public sealed class BankStatementService(
             ValueDate = valueDate,
             PostingDate = postingDate,
             InstrumentNo = ReadString(dataRow, map, "instrumentno"),
-            TransactionDetails = ReadString(dataRow, map, "transactiondetails"),
+            TransactionDetails = details,
             TransactionReferenceNo = ReadString(dataRow, map, "transactionrefno"),
             Debit = debit,
             Credit = credit,
@@ -424,6 +462,15 @@ public sealed class BankStatementService(
             IsValid = errors.Count == 0,
             ErrorMessage = errors.Count == 0 ? null : string.Join(" ", errors)
         };
+    }
+
+    private static bool IsOpeningBalanceDetails(string? details)
+    {
+        if (string.IsNullOrWhiteSpace(details)) return false;
+        var text = details.Trim().ToLowerInvariant();
+        return text.Contains("opening balance")
+            || text.Contains("opening bal")
+            || text is "opening" or "op. balance" or "op balance";
     }
 
     private static string? ReadString(DataRow row, IReadOnlyDictionary<string, int> map, string key)
