@@ -170,6 +170,7 @@ namespace Accounts.Data
         public DbSet<AccountsModuleSettings> AccountsModuleSettings => Set<AccountsModuleSettings>();
         public DbSet<BillingRoznamchaImport> BillingRoznamchaImports => Set<BillingRoznamchaImport>();
         public DbSet<BankStatement> BankStatements => Set<BankStatement>();
+        public DbSet<EMarketingSalesRozEntry> EMarketingSalesRozEntries => Set<EMarketingSalesRozEntry>();
         public DbSet<RoznamchaEntryProcessLog> RoznamchaEntryProcessLogs => Set<RoznamchaEntryProcessLog>();
         public DbSet<RoznamchaEntryAccess> RoznamchaEntryAccesses => Set<RoznamchaEntryAccess>();
         public DbSet<AccountsEntryDocument> AccountsEntryDocuments => Set<AccountsEntryDocument>();
@@ -398,6 +399,9 @@ namespace Accounts.Data
                 _tenantService != null && !_tenantService.IsSuperAdmin &&
                 _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
             builder.Entity<BankStatement>().HasQueryFilter(row =>
+                _tenantService != null && !_tenantService.IsSuperAdmin &&
+                _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
+            builder.Entity<EMarketingSalesRozEntry>().HasQueryFilter(row =>
                 _tenantService != null && !_tenantService.IsSuperAdmin &&
                 _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
             builder.Entity<RoznamchaEntryProcessLog>().HasQueryFilter(row =>
@@ -1979,7 +1983,9 @@ namespace Accounts.Data
                 e.HasIndex(x => new { x.TenantId, x.AccountNumber }).IsUnique();
                 e.HasIndex(x => new { x.TenantId, x.CategoryId });
                 e.HasIndex(x => new { x.TenantId, x.ParentId });
-                e.HasIndex(x => new { x.TenantId, x.AccountCode }).IsUnique().HasFilter("[AccountCode] IS NOT NULL");
+                // Legacy chart data can intentionally share a display code (for example BNK-10)
+                // while AccountNumber remains the tenant-scoped unique accounting key.
+                e.HasIndex(x => new { x.TenantId, x.AccountCode }).HasFilter("[AccountCode] IS NOT NULL");
                 e.HasIndex(x => new { x.TenantId, x.AccountReference }).IsUnique().HasFilter("[AccountReference] IS NOT NULL");
                 e.HasOne<Tenant>().WithMany().HasForeignKey(x => x.TenantId).OnDelete(DeleteBehavior.Restrict);
                 e.HasOne<AccountsCategory>().WithMany().HasForeignKey(x => x.CategoryId).OnDelete(DeleteBehavior.Restrict);
@@ -2050,6 +2056,13 @@ namespace Accounts.Data
                 e.HasOne<Tenant>().WithMany().HasForeignKey(x => x.TenantId).OnDelete(DeleteBehavior.Restrict);
                 e.HasOne<AccountsChartAccount>().WithMany().HasForeignKey(x => x.ChartAccountId).OnDelete(DeleteBehavior.Restrict);
                 e.HasOne<RoznamchaEntry>().WithMany().HasForeignKey(x => x.MatchedRoznamchaEntryId).OnDelete(DeleteBehavior.Restrict);
+            });
+            builder.Entity<EMarketingSalesRozEntry>(e =>
+            {
+                e.HasIndex(x => new { x.TenantId, x.AccountId, x.TransDate });
+                e.HasIndex(x => new { x.TenantId, x.TransDate });
+                e.HasOne<Tenant>().WithMany().HasForeignKey(x => x.TenantId).OnDelete(DeleteBehavior.Restrict);
+                e.HasOne<AccountsChartAccount>().WithMany().HasForeignKey(x => x.AccountId).OnDelete(DeleteBehavior.Restrict);
             });
             builder.Entity<RoznamchaEntryProcessLog>(e =>
             {

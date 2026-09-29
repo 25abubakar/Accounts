@@ -163,38 +163,50 @@ public sealed class BankStatementService(
             attachmentPath = stored.StoredPath;
         }
 
-        var createdIds = new List<long>();
-        await using var tx = await db.Database.BeginTransactionAsync(ct);
-        foreach (var item in valid)
+        var strategy = db.Database.CreateExecutionStrategy();
+        var createdIds = await strategy.ExecuteAsync(async () =>
         {
-            var row = new BankStatement
+            try
             {
-                TenantId = current.TenantId,
-                ChartAccountId = account.Id,
-                AccountNumber = Clean(account.AccountReference ?? account.AccountNumber, 50),
-                ValueDate = item.ValueDate,
-                PostingDate = item.PostingDate,
-                StatementDate = item.PostingDate ?? item.ValueDate,
-                InstrumentNo = Clean(item.InstrumentNo, 100),
-                Description = Clean(item.TransactionDetails, 1000),
-                TransactionReferenceNumber = Clean(item.TransactionReferenceNo, 100),
-                Debit = decimal.Round(item.Debit, 2),
-                Credit = decimal.Round(item.Credit, 2),
-                Balance = decimal.Round(item.Balance, 2),
-                Remarks = Clean(item.Remarks, 2000),
-                DateFormat = format,
-                YearId = request.YearId,
-                Attachment = attachmentPath,
-                IsManual = false,
-                CreatedByUserId = current.UserId
-            };
-            db.BankStatements.Add(row);
-            await db.SaveChangesAsync(ct);
-            row.ReferenceNumber = $"BS-{row.Id}";
-            createdIds.Add(row.Id);
-        }
-        await db.SaveChangesAsync(ct);
-        await tx.CommitAsync(ct);
+                await using var tx = await db.Database.BeginTransactionAsync(ct);
+                var createdRows = valid.Select(item => new BankStatement
+                {
+                    TenantId = current.TenantId,
+                    ChartAccountId = account.Id,
+                    AccountNumber = Clean(account.AccountReference ?? account.AccountNumber, 50),
+                    ValueDate = item.ValueDate,
+                    PostingDate = item.PostingDate,
+                    StatementDate = item.PostingDate ?? item.ValueDate,
+                    InstrumentNo = Clean(item.InstrumentNo, 100),
+                    Description = Clean(item.TransactionDetails, 1000),
+                    TransactionReferenceNumber = Clean(item.TransactionReferenceNo, 100),
+                    Debit = decimal.Round(item.Debit, 2),
+                    Credit = decimal.Round(item.Credit, 2),
+                    Balance = decimal.Round(item.Balance, 2),
+                    Remarks = Clean(item.Remarks, 2000),
+                    DateFormat = format,
+                    YearId = request.YearId,
+                    Attachment = attachmentPath,
+                    IsManual = false,
+                    CreatedByUserId = current.UserId
+                }).ToList();
+
+                db.BankStatements.AddRange(createdRows);
+                await db.SaveChangesAsync(ct);
+                foreach (var row in createdRows)
+                    row.ReferenceNumber = $"BS-{row.Id}";
+                await db.SaveChangesAsync(ct);
+                await tx.CommitAsync(ct);
+                return createdRows.Select(x => x.Id).ToList();
+            }
+            catch
+            {
+                // Retried attempts must not reuse entities left in a state
+                // produced by a rolled-back transaction.
+                db.ChangeTracker.Clear();
+                throw;
+            }
+        });
 
         return await Map(db.BankStatements.AsNoTracking())
             .Where(x => createdIds.Contains(x.Id))
@@ -218,9 +230,16 @@ public sealed class BankStatementService(
 
         var counterFrom = settings.DefaultFromAccountId.Value;
         var counterTo = settings.DefaultToAccountId.Value;
+        await ResolveAccountAsync(counterFrom, ct);
+        await ResolveAccountAsync(counterTo, ct);
         if (counterFrom == request.AccountId || counterTo == request.AccountId)
             throw new InvalidOperationException("Default From/To accounts must be different from the selected bank statement account.");
 
+        var strategy = db.Database.CreateExecutionStrategy();
+        return await strategy.ExecuteAsync(async () =>
+        {
+        try
+        {
         var lines = await db.BankStatements
             .Where(x => x.ChartAccountId == request.AccountId
                         && !x.IsMatched
@@ -286,6 +305,70 @@ public sealed class BankStatementService(
                 ? "No unmatched statement lines found for the selected account and date range."
                 : $"Transferred {transferred} statement line(s) to Roznamcha. Skipped {skipped}."
         };
+        }
+        catch
+        {
+            db.ChangeTracker.Clear();
+            throw;
+        }
+        });
+    }
+
+    public async Task<BankStatementTransferSettingsDto> GetTransferSettingsAsync(CancellationToken ct = default)
+    {
+        var settings = await db.AccountsModuleSettings.AsNoTracking()
+            .Where(x => x.TenantId == current.TenantId)
+            .Select(x => new { x.DefaultFromAccountId, x.DefaultToAccountId })
+            .FirstOrDefaultAsync(ct);
+
+        if (settings == null)
+            return new BankStatementTransferSettingsDto();
+
+        var accountIds = new[] { settings.DefaultFromAccountId, settings.DefaultToAccountId }
+            .Where(x => x.HasValue)
+            .Select(x => x!.Value)
+            .Distinct()
+            .ToArray();
+        var accounts = await db.AccountsChartAccounts.AsNoTracking()
+            .Where(x => accountIds.Contains(x.Id))
+            .Select(x => new { x.Id, x.AccountName, x.AccountNumber })
+            .ToDictionaryAsync(x => x.Id, ct);
+
+        accounts.TryGetValue(settings.DefaultFromAccountId ?? 0, out var fromAccount);
+        accounts.TryGetValue(settings.DefaultToAccountId ?? 0, out var toAccount);
+        return new BankStatementTransferSettingsDto
+        {
+            DefaultFromAccountId = settings.DefaultFromAccountId,
+            DefaultFromAccountName = fromAccount?.AccountName,
+            DefaultFromAccountNumber = fromAccount?.AccountNumber,
+            DefaultToAccountId = settings.DefaultToAccountId,
+            DefaultToAccountName = toAccount?.AccountName,
+            DefaultToAccountNumber = toAccount?.AccountNumber
+        };
+    }
+
+    public async Task<BankStatementTransferSettingsDto> SaveTransferSettingsAsync(
+        SaveBankStatementTransferSettingsRequest request,
+        CancellationToken ct = default)
+    {
+        if (request.DefaultFromAccountId <= 0 || request.DefaultToAccountId <= 0)
+            throw new InvalidOperationException("Default From Account and Default To Account are required.");
+
+        await ResolveAccountAsync(request.DefaultFromAccountId, ct);
+        await ResolveAccountAsync(request.DefaultToAccountId, ct);
+
+        var settings = await db.AccountsModuleSettings
+            .FirstOrDefaultAsync(x => x.TenantId == current.TenantId, ct);
+        if (settings == null)
+        {
+            settings = new AccountsModuleSettings { TenantId = current.TenantId };
+            db.AccountsModuleSettings.Add(settings);
+        }
+
+        settings.DefaultFromAccountId = request.DefaultFromAccountId;
+        settings.DefaultToAccountId = request.DefaultToAccountId;
+        await db.SaveChangesAsync(ct);
+        return await GetTransferSettingsAsync(ct);
     }
 
     private async Task<(int Id, string AccountNumber, string? AccountReference)> ResolveAccountAsync(int accountId, CancellationToken ct)
@@ -390,6 +473,9 @@ public sealed class BankStatementService(
             "transactionrefno" or "transactionref" or "refno" or "reference" or "bankref" => "transactionrefno",
             "debit" or "debitamount" or "withdrawal" or "dr" => "debit",
             "credit" or "creditamount" or "deposit" or "cr" => "credit",
+            "type" or "transactiontype" or "amounttype" or "debitcredit" or "drcr" or "entrytype" => "amounttype",
+            "amount" or "transactionamount" or "debitcreditamount" or "valueamount" => "amount",
+            "category" or "transactioncategory" => "category",
             "balance" or "runningbalance" => "balance",
             "remarks" or "remark" or "note" or "notes" => "remarks",
             _ => raw
@@ -414,10 +500,13 @@ public sealed class BankStatementService(
             || HasText(dataRow, map, "postingdate")
             || HasText(dataRow, map, "debit")
             || HasText(dataRow, map, "credit")
+            || HasText(dataRow, map, "amount")
+            || HasText(dataRow, map, "amounttype")
             || HasText(dataRow, map, "balance")
             || HasText(dataRow, map, "instrumentno")
             || HasText(dataRow, map, "transactiondetails")
             || HasText(dataRow, map, "transactionrefno")
+            || HasText(dataRow, map, "category")
             || HasText(dataRow, map, "remarks"));
     }
 
@@ -433,8 +522,25 @@ public sealed class BankStatementService(
         var postingDate = ReadDate(dataRow, map, "postingdate", dateFormat, year, errors, "Posting Date") ?? valueDate;
         var debit = ReadDecimal(dataRow, map, "debit", errors, "Debit");
         var credit = ReadDecimal(dataRow, map, "credit", errors, "Credit");
+        var amount = ReadDecimal(dataRow, map, "amount", errors, "Amount");
+        var amountType = ReadString(dataRow, map, "amounttype");
         var balance = ReadDecimal(dataRow, map, "balance", errors, "Balance");
         var details = ReadString(dataRow, map, "transactiondetails");
+
+        // Some bank exports use one Amount column plus a Type/DR-CR column.
+        // Convert that layout into the canonical Debit/Credit values used by
+        // preview, persistence, and Roznamcha transfer.
+        if (debit <= 0 && credit <= 0 && amount != 0)
+        {
+            if (IsDebitAmountType(amountType))
+                debit = Math.Abs(amount);
+            else if (IsCreditAmountType(amountType))
+                credit = Math.Abs(amount);
+            else if (string.IsNullOrWhiteSpace(amountType))
+                errors.Add("Type is required when the file uses a single Amount column.");
+            else
+                errors.Add($"Type '{amountType}' must identify Debit or Credit.");
+        }
 
         // Opening Balance lines often carry amount only in Balance (Debit/Credit blank).
         if (debit <= 0 && credit <= 0 && balance != 0 && IsOpeningBalanceDetails(details))
@@ -458,7 +564,7 @@ public sealed class BankStatementService(
             Debit = debit,
             Credit = credit,
             Balance = balance,
-            Remarks = ReadString(dataRow, map, "remarks"),
+            Remarks = ReadString(dataRow, map, "remarks") ?? ReadString(dataRow, map, "category"),
             IsValid = errors.Count == 0,
             ErrorMessage = errors.Count == 0 ? null : string.Join(" ", errors)
         };
@@ -472,6 +578,21 @@ public sealed class BankStatementService(
             || text.Contains("opening bal")
             || text is "opening" or "op. balance" or "op balance";
     }
+
+    private static bool IsDebitAmountType(string? value)
+    {
+        var type = NormalizeAmountType(value);
+        return type is "debit" or "dr" or "withdrawal" or "withdraw" or "payment" or "moneyout" or "out";
+    }
+
+    private static bool IsCreditAmountType(string? value)
+    {
+        var type = NormalizeAmountType(value);
+        return type is "credit" or "cr" or "deposit" or "receipt" or "moneyin" or "in";
+    }
+
+    private static string NormalizeAmountType(string? value) =>
+        Regex.Replace((value ?? string.Empty).Trim().ToLowerInvariant(), @"[^a-z0-9]+", string.Empty);
 
     private static string? ReadString(DataRow row, IReadOnlyDictionary<string, int> map, string key)
     {

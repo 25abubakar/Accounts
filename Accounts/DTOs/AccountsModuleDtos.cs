@@ -113,6 +113,7 @@ public class AccountDto
     public int? DesignationId { get; set; }
     public Guid? PersonId { get; set; }
     public string? Description { get; set; }
+    public string? Photo { get; set; }
     public string? Attachment { get; set; }
     public decimal BudgetAmount { get; set; }
     public decimal UsedAmount { get; set; }
@@ -478,6 +479,22 @@ public sealed class BankStatementTransferRequest
     public DateOnly DateTo { get; set; }
 }
 
+public sealed class BankStatementTransferSettingsDto
+{
+    public int? DefaultFromAccountId { get; set; }
+    public string? DefaultFromAccountName { get; set; }
+    public string? DefaultFromAccountNumber { get; set; }
+    public int? DefaultToAccountId { get; set; }
+    public string? DefaultToAccountName { get; set; }
+    public string? DefaultToAccountNumber { get; set; }
+}
+
+public sealed class SaveBankStatementTransferSettingsRequest
+{
+    public int DefaultFromAccountId { get; set; }
+    public int DefaultToAccountId { get; set; }
+}
+
 public sealed class BankStatementTransferResultDto
 {
     public int TransferredCount { get; set; }
@@ -488,4 +505,85 @@ public sealed class BankStatementTransferResultDto
 public sealed class VerifyAnnualReportCodeRequest
 {
     public string Code { get; set; } = string.Empty;
+}
+
+/// <summary>LT ShowSalesStock / SalesStockInfo grid row.</summary>
+public sealed class EMarketingStockInfoDto
+{
+    public long Id { get; set; }
+    public string? Ref { get; set; }
+    public string? AcctName { get; set; }
+    public string? RDiscriptions { get; set; }
+    public decimal PurchaseAmount { get; set; }
+    public decimal TotProCharges { get; set; }
+    public decimal SaleAmount { get; set; }
+    public decimal QtyPurchase { get; set; }
+    public decimal QtySale { get; set; }
+    public decimal Balance { get; set; }
+    public string? StatusName { get; set; }
+    public DateOnly TransDate { get; set; }
+}
+
+/// <summary>LT Sales Roznamcha / tblSalesRoznamcha list row.</summary>
+public sealed class EMarketingSalesRozDto
+{
+    public long Id { get; set; }
+    public string? Ref { get; set; }
+    public int AccountId { get; set; }
+    public string? AcctName { get; set; }
+    public string? PlatformName { get; set; }
+    public int? TransTypeId { get; set; }
+    public string? TransTypeName { get; set; }
+    public int? SalesTypeId { get; set; }
+    public string? SalesTypeName { get; set; }
+    public decimal Qty { get; set; }
+    public string? AmzProRef { get; set; }
+    public decimal TotProCharges { get; set; }
+    public decimal TotPromotion { get; set; }
+    public decimal TotProRebate { get; set; }
+    public decimal AmazonFee { get; set; }
+    public string? Descriptions { get; set; }
+    public string? OrderId { get; set; }
+    public decimal Other { get; set; }
+    public decimal Amount { get; set; }
+    public decimal PurchaseAmount { get; set; }
+    public decimal SaleAmount { get; set; }
+    public decimal QtyPurchase { get; set; }
+    public decimal QtySale { get; set; }
+    public int? StatusId { get; set; }
+    public string? StatusName { get; set; }
+    public DateOnly TransDate { get; set; }
+    public string? DocName { get; set; }
+    public string? AttachmentPath { get; set; }
+    public string? Remarks { get; set; }
+}
+
+public sealed class SaveEMarketingSalesRozRequest
+{
+    public int AccountId { get; set; }
+    public string? Ref { get; set; }
+    public string? PlatformName { get; set; }
+    public int? TransTypeId { get; set; }
+    public string? TransTypeName { get; set; }
+    public int? SalesTypeId { get; set; }
+    public string? SalesTypeName { get; set; }
+    public decimal Qty { get; set; }
+    public string? AmzProRef { get; set; }
+    public decimal TotProCharges { get; set; }
+    public decimal TotPromotion { get; set; }
+    public decimal TotProRebate { get; set; }
+    public decimal AmazonFee { get; set; }
+    public string? Descriptions { get; set; }
+    public string? OrderId { get; set; }
+    public decimal Other { get; set; }
+    public decimal Amount { get; set; }
+    public decimal? PurchaseAmount { get; set; }
+    public decimal? SaleAmount { get; set; }
+    public decimal? QtyPurchase { get; set; }
+    public decimal? QtySale { get; set; }
+    public int? StatusId { get; set; }
+    public string? StatusName { get; set; }
+    public DateOnly TransDate { get; set; }
+    public string? DocName { get; set; }
+    public string? Remarks { get; set; }
 }

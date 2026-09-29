@@ -283,6 +283,33 @@ namespace Accounts.Controllers
                 // Statements
                 new("Statements",           "Users",              null,                              null,                 86, new()),
                 new("Bank",                 "Landmark",           "/statements/bank",                "Statements",         1, new()),
+
+                // Billing
+                new("Billing",              "Users",              null,                              null,                 88, new()),
+                new("Receipt (Roz)",        "ReceiptText",        "/billing/receipt-roz",            "Billing",            1, new()),
+                new("Claims",               "ListChecks",         "/billing/claims",                 "Billing",            2, new()),
+                new("Patients",             "UserCheck",          "/billing/patients",               "Billing",            3, new()),
+                new("Billing (Roz) Excel",  "FileCog",            "/billing/roz-excel",              "Billing",            4, new()),
+
+                // Billing Services
+                new("Billing Services",     "Users",              null,                                    null,               89, new()),
+                new("Re Process",           "GitCompareArrows",   "/billing-services/re-process",          "Billing Services",  1, new()),
+                new("CPT's Processed",      "BadgeCheck",         "/billing-services/cpts-processed",      "Billing Services",  2, new()),
+                new("AR Report",            "BarChart3",          "/billing-services/ar-report",           "Billing Services",  3, new()),
+                new("Call List",            "List",               "/billing-services/call-list",           "Billing Services",  4, new()),
+                new("Closed List",          "ListChecks",         "/billing-services/closed-list",         "Billing Services",  5, new()),
+                new("Master List",          "Files",              "/billing-services/master-list",         "Billing Services",  6, new()),
+                new("Grp Codes",            "Tags",               "/billing-services/grp-codes",           "Billing Services",  7, new()),
+                new("Mics Report",          "BarChart3",          "/billing-services/mics-report",         "Billing Services",  8, new()),
+                new("Claim Master List",    "ReceiptText",        "/billing-services/claim-master-list",   "Billing Services",  9, new()),
+                new("Status Rules",         "SlidersHorizontal",  "/billing-services/status-rules",        "Billing Services", 10, new()),
+                new("Code Usage",           "FileCog",            "/billing-services/code-usage",          "Billing Services", 11, new()),
+
+                // Copay
+                new("Copay",                 "Users",              null,                              null,        90, new()),
+                new("Copay IMS - Excel",     "FileCog",            "/copay/ims-excel",                "Copay",     1, new()),
+                new("Copay IMS To Merchant", "GitCompareArrows",   "/copay/ims-to-merchant",          "Copay",     2, new()),
+                new("Merchant To Bank",      "Landmark",           "/copay/merchant-to-bank",         "Copay",     3, new()),
             };
 
             var validKeys = await _db.Features.Select(f => f.FeatureKey).ToHashSetAsync();

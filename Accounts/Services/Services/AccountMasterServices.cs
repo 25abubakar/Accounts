@@ -156,7 +156,8 @@ public sealed class AccountCategoryService(ApplicationDbContext db, ICurrentUser
 public sealed class AccountService(
     ApplicationDbContext db,
     ICurrentUserService current,
-    IReferenceGeneratorService references) : IAccountService
+    IReferenceGeneratorService references,
+    IFileStorageService files) : IAccountService
 {
     public Task<IReadOnlyList<AccountDto>> ListAsync(int? categoryId, int? parentId, bool activeOnly, CancellationToken ct = default) =>
         ExecChartListAsync(categoryId, parentId, activeOnly, mainOnly: false, ct);
@@ -246,6 +247,75 @@ public sealed class AccountService(
         row.UpdatedOnUtc = DateTime.UtcNow;
         await db.SaveChangesAsync(ct);
         return await GetAsync(row.Id, ct) ?? throw new InvalidOperationException("Updated account could not be reloaded.");
+    }
+
+    public async Task<AccountDto> SaveFilesAsync(
+        int id,
+        IFormFile? photo,
+        IFormFile? attachment,
+        CancellationToken ct = default)
+    {
+        if (photo == null && attachment == null)
+            throw new InvalidOperationException("Select a photo or attachment to upload.");
+
+        var row = await db.AccountsChartAccounts.FirstOrDefaultAsync(x => x.Id == id, ct)
+            ?? throw new KeyNotFoundException("Account was not found.");
+        var oldPhoto = row.Photo;
+        var oldAttachment = row.Attachment;
+        string? newPhoto = null;
+        string? newAttachment = null;
+
+        try
+        {
+            if (photo != null)
+            {
+                var extension = Path.GetExtension(photo.FileName);
+                if (!new[] { ".png", ".jpg", ".jpeg", ".webp" }.Contains(extension, StringComparer.OrdinalIgnoreCase))
+                    throw new InvalidOperationException("Photo must be an image file.");
+                newPhoto = (await files.SaveAccountsFileAsync(current.TenantId, photo, ct)).StoredPath;
+                row.Photo = newPhoto;
+            }
+
+            if (attachment != null)
+            {
+                newAttachment = (await files.SaveAccountsFileAsync(current.TenantId, attachment, ct)).StoredPath;
+                row.Attachment = newAttachment;
+            }
+
+            row.UpdatedByUserId = current.UserId;
+            row.UpdatedOnUtc = DateTime.UtcNow;
+            await db.SaveChangesAsync(ct);
+        }
+        catch
+        {
+            if (newPhoto != null) await files.DeleteAccountsFileAsync(newPhoto, CancellationToken.None);
+            if (newAttachment != null) await files.DeleteAccountsFileAsync(newAttachment, CancellationToken.None);
+            throw;
+        }
+
+        if (newPhoto != null && oldPhoto != null)
+            await files.DeleteAccountsFileAsync(oldPhoto, CancellationToken.None);
+        if (newAttachment != null && oldAttachment != null)
+            await files.DeleteAccountsFileAsync(oldAttachment, CancellationToken.None);
+
+        return await GetAsync(id, ct) ?? throw new InvalidOperationException("Updated account could not be reloaded.");
+    }
+
+    public async Task<(Stream Stream, string ContentType, string FileName)?> OpenFileAsync(
+        int id,
+        string kind,
+        CancellationToken ct = default)
+    {
+        var row = await db.AccountsChartAccounts.AsNoTracking().FirstOrDefaultAsync(x => x.Id == id, ct)
+            ?? throw new KeyNotFoundException("Account was not found.");
+        var normalized = kind.Trim().ToLowerInvariant();
+        var path = normalized switch
+        {
+            "photo" => row.Photo,
+            "attachment" => row.Attachment,
+            _ => throw new InvalidOperationException("File type must be photo or attachment.")
+        };
+        return string.IsNullOrWhiteSpace(path) ? null : await files.OpenAccountsFileAsync(path, ct);
     }
 
     public async Task DeleteAsync(int id, CancellationToken ct = default)
@@ -401,6 +471,7 @@ public sealed class AccountService(
             DesignationId = account.DesignationId,
             PersonId = account.PersonId,
             Description = account.Description,
+            Photo = account.Photo,
             Attachment = account.Attachment,
             BudgetAmount = account.BudgetAmount,
             UsedAmount = account.UsedAmount,
@@ -426,7 +497,10 @@ public sealed class AccountService(
         row.DesignationId = request.DesignationId;
         row.PersonId = request.PersonId;
         row.Description = Clean(request.Description, 2000);
-        row.Attachment = Clean(request.Attachment, 500);
+        // File uploads are handled separately. Preserve an existing attachment when
+        // JSON clients omit this optional legacy field during an account edit.
+        if (request.Attachment != null)
+            row.Attachment = Clean(request.Attachment, 500);
         if (!string.IsNullOrWhiteSpace(request.OldAccountNo))
             row.AccountReference = Clean(request.OldAccountNo, 80);
         row.BudgetAmount = decimal.Round(request.BudgetAmount, 2);

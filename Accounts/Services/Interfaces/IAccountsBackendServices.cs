@@ -55,6 +55,8 @@ public interface IAccountService
     Task<IReadOnlyList<AccountDto>> ListSubAccountsAsync(int id, CancellationToken ct = default);
     Task<AccountDto> CreateAsync(SaveAccountRequest request, CancellationToken ct = default);
     Task<AccountDto> UpdateAsync(int id, SaveAccountRequest request, CancellationToken ct = default);
+    Task<AccountDto> SaveFilesAsync(int id, IFormFile? photo, IFormFile? attachment, CancellationToken ct = default);
+    Task<(Stream Stream, string ContentType, string FileName)?> OpenFileAsync(int id, string kind, CancellationToken ct = default);
     Task DeleteAsync(int id, CancellationToken ct = default);
     Task<AccountDto> UpdateBudgetAsync(int id, UpdateAccountBudgetRequest request, CancellationToken ct = default);
     Task<IReadOnlyList<AccountLedgerDto>> LedgerAsync(int id, DateOnly? from, DateOnly? to, bool hidden, CancellationToken ct = default);
@@ -95,7 +97,18 @@ public interface IBankStatementService
     Task DeleteAsync(long id, CancellationToken ct = default);
     Task<BankStatementPreviewResultDto> PreviewExcelAsync(int accountId, string dateFormat, int? year, IFormFile excelFile, CancellationToken ct = default);
     Task<IReadOnlyList<BankStatementDto>> SaveUploadAsync(BankStatementUploadSaveRequest request, IFormFile? attachment, CancellationToken ct = default);
+    Task<BankStatementTransferSettingsDto> GetTransferSettingsAsync(CancellationToken ct = default);
+    Task<BankStatementTransferSettingsDto> SaveTransferSettingsAsync(SaveBankStatementTransferSettingsRequest request, CancellationToken ct = default);
     Task<BankStatementTransferResultDto> TransferToRoznamchaAsync(BankStatementTransferRequest request, CancellationToken ct = default);
+}
+
+public interface IEMarketingService
+{
+    Task<IReadOnlyList<EMarketingStockInfoDto>> ListStockInfoAsync(int accountId, DateOnly? dateFrom, DateOnly? dateTo, CancellationToken ct = default);
+    Task<IReadOnlyList<EMarketingSalesRozDto>> ListSalesRozAsync(int? accountId, DateOnly? dateFrom, DateOnly? dateTo, CancellationToken ct = default);
+    Task<EMarketingSalesRozDto?> GetSalesRozAsync(long id, CancellationToken ct = default);
+    Task<EMarketingSalesRozDto> SaveSalesRozAsync(long? id, SaveEMarketingSalesRozRequest request, CancellationToken ct = default);
+    Task DeleteSalesRozAsync(long id, CancellationToken ct = default);
 }
 
 public interface IReportService

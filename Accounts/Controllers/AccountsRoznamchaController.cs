@@ -172,6 +172,75 @@ public sealed class AccountsRoznamchaController : ControllerBase
         catch (InvalidOperationException ex) { return BadRequest(ApiResponse<object?>.Fail(ex.Message)); }
     }
 
+    [HttpPost("payment-roz/process-selected")]
+    [Idempotent]
+    public async Task<IActionResult> ProcessSelectedPayments([FromBody] ProcessReceiptRozRequest request, CancellationToken ct)
+    {
+        if (_tenant.IsSuperAdmin || !_tenant.TenantId.HasValue || !await HasActionAsync(PaymentRozRoute, "EDIT", ct))
+            return Forbid();
+
+        var ids = request.Ids.Where(id => id > 0).Distinct().ToArray();
+        if (ids.Length == 0)
+            return BadRequest(ApiResponse<object?>.Fail("Select at least one payment row first."));
+
+        var paymentTypeId = await ResolveRoznamchaTypeIdAsync("PAYMENT", ct);
+        var approvedStatusId = await ResolveEntryStatusIdAsync("APPROVED", ct);
+        if (!paymentTypeId.HasValue || !approvedStatusId.HasValue)
+            return BadRequest(ApiResponse<object?>.Fail("Payment or Approved status configuration is missing."));
+
+        var validIds = await _db.RoznamchaEntries.AsNoTracking()
+            .Where(x => ids.Contains(x.Id) && !x.IsDeleted && x.RoznamchaTypeId == paymentTypeId.Value)
+            .Select(x => x.Id)
+            .ToListAsync(ct);
+        if (validIds.Count != ids.Length)
+            return BadRequest(ApiResponse<object?>.Fail("One or more selected payments were not found."));
+
+        foreach (var id in validIds)
+        {
+            await _transactions.UpdateStatusAsync(id, new UpdateRoznamchaStatusRequest
+            {
+                EntryStatusId = approvedStatusId,
+                Remarks = request.Comments
+            }, ct);
+            await _transactions.ApproveAsync(id, ct);
+        }
+
+        return Ok(ApiResponse<object>.Ok(new { processedCount = validIds.Count }, $"{validIds.Count} payment(s) processed successfully."));
+    }
+
+    [HttpPost("payment-roz/settle")]
+    [Idempotent]
+    public async Task<IActionResult> SettlePayments([FromBody] SettleReceiptRozRequest request, CancellationToken ct)
+    {
+        if (_tenant.IsSuperAdmin || !_tenant.TenantId.HasValue || !await HasActionAsync(PaymentRozRoute, "EDIT", ct))
+            return Forbid();
+        if (request.DateTo < request.DateFrom)
+            return BadRequest(ApiResponse<object?>.Fail("Date To must be on or after Date From."));
+
+        var paymentTypeId = await ResolveRoznamchaTypeIdAsync("PAYMENT", ct);
+        var settledStatusId = await ResolveEntryStatusIdAsync("SETTLED", ct);
+        if (!paymentTypeId.HasValue || !settledStatusId.HasValue)
+            return BadRequest(ApiResponse<object?>.Fail("Payment or Settled status configuration is missing."));
+
+        var ids = await _db.RoznamchaEntries.AsNoTracking()
+            .Where(x => !x.IsDeleted && !x.IsSettled && x.RoznamchaTypeId == paymentTypeId.Value
+                && x.TransDate >= request.DateFrom && x.TransDate <= request.DateTo)
+            .Select(x => x.Id)
+            .ToListAsync(ct);
+
+        foreach (var id in ids)
+        {
+            await _transactions.UpdateStatusAsync(id, new UpdateRoznamchaStatusRequest
+            {
+                EntryStatusId = settledStatusId,
+                IsSettled = true,
+                Remarks = request.Comments
+            }, ct);
+        }
+
+        return Ok(ApiResponse<object>.Ok(new { settledCount = ids.Count }, $"{ids.Count} payment(s) settled successfully."));
+    }
+
     [HttpPost("receipt-roz")]
     [Idempotent]
     public async Task<IActionResult> CreateReceiptRoz([FromBody] CreateRoznamchaReceiptRequest request, CancellationToken ct)

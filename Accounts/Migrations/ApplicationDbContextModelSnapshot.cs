@@ -276,6 +276,10 @@ namespace Accounts.Migrations
                         .HasMaxLength(50)
                         .HasColumnType("nvarchar(50)");
 
+                    b.Property<string>("Photo")
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)");
+
                     b.Property<int>("StatusId")
                         .HasColumnType("int");
 
@@ -299,7 +303,6 @@ namespace Accounts.Migrations
                     b.HasIndex("ParentId");
 
                     b.HasIndex("TenantId", "AccountCode")
-                        .IsUnique()
                         .HasFilter("[AccountCode] IS NOT NULL");
 
                     b.HasIndex("TenantId", "AccountNumber")

@@ -126,6 +126,31 @@ public sealed class ChartAccountsController(IAccountService service) : Controlle
     public Task<IActionResult> Update(int id, [FromBody] SaveAccountRequest request, CancellationToken ct) =>
         Run(async () => ApiResponse<AccountDto>.Ok(await service.UpdateAsync(id, request, ct), "Account updated successfully."));
 
+    [HttpPost("{id:int}/files")]
+    [RequestSizeLimit(21 * 1024 * 1024)]
+    public Task<IActionResult> SaveFiles(
+        int id,
+        [FromForm] IFormFile? photo,
+        [FromForm] IFormFile? attachment,
+        CancellationToken ct) =>
+        Run(async () => ApiResponse<AccountDto>.Ok(
+            await service.SaveFilesAsync(id, photo, attachment, ct),
+            "Account files uploaded successfully."));
+
+    [HttpGet("{id:int}/files/{kind}")]
+    public async Task<IActionResult> OpenFile(int id, string kind, CancellationToken ct)
+    {
+        try
+        {
+            var stored = await service.OpenFileAsync(id, kind, ct);
+            return stored == null
+                ? NotFound(ApiResponse<object?>.Fail("Account file was not found."))
+                : File(stored.Value.Stream, stored.Value.ContentType, stored.Value.FileName);
+        }
+        catch (KeyNotFoundException ex) { return NotFound(ApiResponse<object?>.Fail(ex.Message)); }
+        catch (InvalidOperationException ex) { return BadRequest(ApiResponse<object?>.Fail(ex.Message)); }
+    }
+
     [HttpDelete("{id:int}")]
     public Task<IActionResult> Delete(int id, CancellationToken ct) =>
         Run(async () => { await service.DeleteAsync(id, ct); return ApiResponse<object?>.Ok(null, "Account deleted successfully."); });

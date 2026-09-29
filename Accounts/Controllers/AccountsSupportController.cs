@@ -154,6 +154,18 @@ public sealed class BankStatementsController(IBankStatementService service) : Co
             return ApiResponse<BankStatementTransferResultDto>.Ok(result, result.Message);
         });
 
+    [HttpGet("transfer-settings")]
+    public async Task<IActionResult> GetTransferSettings(CancellationToken ct) =>
+        Ok(ApiResponse<BankStatementTransferSettingsDto>.Ok(await service.GetTransferSettingsAsync(ct)));
+
+    [HttpPut("transfer-settings")]
+    public Task<IActionResult> SaveTransferSettings(
+        [FromBody] SaveBankStatementTransferSettingsRequest request,
+        CancellationToken ct) =>
+        Run(async () => ApiResponse<BankStatementTransferSettingsDto>.Ok(
+            await service.SaveTransferSettingsAsync(request, ct),
+            "Default transfer accounts saved successfully."));
+
     private async Task<IActionResult> Run<T>(Func<Task<ApiResponse<T>>> action)
     {
         try { return Ok(await action()); }
@@ -161,5 +173,4 @@ public sealed class BankStatementsController(IBankStatementService service) : Co
         catch (InvalidOperationException ex) { return BadRequest(ApiResponse<object?>.Fail(ex.Message)); }
     }
 }
-
 

@@ -1,9 +1,7 @@
 namespace Accounts.Models.SpListRows;
 
-/// <summary>
-/// Projection for dbo.usp_Accounts_PaymentRoz_List — must match SP column aliases exactly.
-/// </summary>
-public sealed class PaymentRozListRow
+/// <summary>Projection for dbo.usp_Accounts_Roznamcha_List — must match SP column aliases exactly.</summary>
+public sealed class RoznamchaListRow
 {
     public long Id { get; set; }
     public int? SNo { get; set; }
@@ -36,10 +34,10 @@ public sealed class PaymentRozListRow
     public bool IsDeleted { get; set; }
     public bool IsApproved { get; set; }
     public bool IsLocked { get; set; }
+    public bool IsSettled { get; set; }
     public string? Attachment { get; set; }
     public string? Image { get; set; }
     public string? LibRef { get; set; }
     public string? Remarks { get; set; }
-    /// <summary>Latest RoznamchaEntryProcessLog.ProcessedOnUtc (unified list SP only).</summary>
     public DateTime? ProcessDate { get; set; }
 }

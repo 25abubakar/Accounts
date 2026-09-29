@@ -86,6 +86,7 @@ public sealed class AccountsChartAccount : ITenantEntity
     public int? DesignationId { get; set; }
     public Guid? PersonId { get; set; }
     [MaxLength(2000)] public string? Description { get; set; }
+    [MaxLength(500)] public string? Photo { get; set; }
     [MaxLength(500)] public string? Attachment { get; set; }
     [Column(TypeName = "decimal(18,2)")] public decimal BudgetAmount { get; set; }
     [Column(TypeName = "decimal(18,2)")] public decimal UsedAmount { get; set; }
