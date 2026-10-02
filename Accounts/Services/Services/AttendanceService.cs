@@ -52,7 +52,7 @@ public sealed class AttendanceService : IAttendanceService
         var (person, localDate) = await ResolvePersonAsync(identityUserId, cancellationToken);
         var attendanceRule = await ResolveAttendanceRuleAsync(person, cancellationToken);
         var policy = await LoadPolicyAsync(person.TenantId, cancellationToken);
-        var localNow = PakistanClock.Now();
+        var localNow = BusinessClock.Now(person.TimeZoneId);
 
         await EvaluateStatusesAsync(person.TenantId, localDate.AddDays(-1), localDate, cancellationToken);
         var records = await _db.AttendanceRecords.AsNoTracking()
@@ -105,7 +105,7 @@ public sealed class AttendanceService : IAttendanceService
         EnsurePortalCheckInAllowed(attendanceRule);
 
         var policy = await LoadPolicyAsync(person.TenantId, cancellationToken);
-        var localNow = PakistanClock.Now();
+        var localNow = BusinessClock.Now(person.TimeZoneId);
         var beforeCheckInMinutes = attendanceRule.BeforeCheckInMinutes ?? policy.EarliestCheckInMinutesBefore;
         var checkInAdjustMinutes = attendanceRule.CheckInAdjustMinutes ?? policy.OnTimeGraceMinutesAfter;
         var absentAfterShiftStartMinutes = attendanceRule.AbsentAfterShiftStartMinutes ?? policy.AbsentAfterShiftStartMinutes;
@@ -159,7 +159,7 @@ public sealed class AttendanceService : IAttendanceService
             ?? throw new InvalidOperationException("Check in before starting a break.");
         var timing = await ResolveEffectiveTimingAsync(person, record.AttendanceDate, attendanceRule, cancellationToken);
         if (record.CheckOutUtc.HasValue) throw new InvalidOperationException("Attendance is already closed for today.");
-        var now = PakistanClock.Now();
+        var now = BusinessClock.Now(person.TimeZoneId);
         var policy = await LoadPolicyAsync(person.TenantId, cancellationToken);
         var checkoutExpiryMinutes = attendanceRule?.MissingCheckoutAfterShiftEndMinutes
             ?? policy.MissingCheckoutAfterShiftEndMinutes;
@@ -206,7 +206,7 @@ public sealed class AttendanceService : IAttendanceService
             ?? throw new InvalidOperationException("Check in before checking out.");
         var timing = await ResolveEffectiveTimingAsync(person, record.AttendanceDate, attendanceRule, cancellationToken);
         if (record.CheckOutUtc.HasValue) throw new InvalidOperationException("You have already checked out today.");
-        var now = PakistanClock.Now();
+        var now = BusinessClock.Now(person.TimeZoneId);
         //var now = new DateTime(2026, 8, 21, 6, 0, 0);
         var policy = await LoadPolicyAsync(person.TenantId, cancellationToken);
         var checkoutExpiryMinutes = attendanceRule?.MissingCheckoutAfterShiftEndMinutes
@@ -266,7 +266,12 @@ public sealed class AttendanceService : IAttendanceService
             .Select(r => new { r.PersonId, r.CheckInUtc, r.CheckOutUtc, r.TotalBreakMinutes })
             .ToListAsync(cancellationToken);
         var recordsByPerson = records.ToLookup(r => r.PersonId);
-        var workdays = CountWorkingDays(year, month);
+        var reportTimeZoneId = await _db.AttendancePolicies.AsNoTracking()
+            .Where(policy => policy.IsActive)
+            .OrderByDescending(policy => policy.TenantId != null)
+            .Select(policy => policy.TimeZoneId)
+            .FirstOrDefaultAsync(cancellationToken);
+        var workdays = CountWorkingDays(year, month, BusinessClock.Today(reportTimeZoneId));
         foreach (var row in staffRows)
         {
             var employeeRecords = recordsByPerson[row.Dto.PersonId].ToList();
@@ -333,7 +338,7 @@ public sealed class AttendanceService : IAttendanceService
 
         var access = await ResolveAttendanceAccessAsync(identityUserId, organizationWide, cancellationToken);
         EnsureAttendanceModuleAccess(access);
-        EnsureAllowedAttendancePeriod(access, new DateOnly(year, month, 1), new DateOnly(year, month, DateTime.DaysInMonth(year, month)));
+        EnsureAllowedAttendancePeriod(access, new DateOnly(year, month, 1), new DateOnly(year, month, DateTime.DaysInMonth(year, month)), await ResolveTodayAsync(identityUserId, cancellationToken));
         var scope = ResolveEmployeeScopeFlags(access, organizationWide, forceSelfOnly: false);
         var visibility = await ResolveAttendanceVisibilityAsync(
             identityUserId, scope.OrganizationWide, scope.SelfOnly, cancellationToken);
@@ -384,7 +389,7 @@ public sealed class AttendanceService : IAttendanceService
 
         var access = await ResolveAttendanceAccessAsync(identityUserId, organizationWide, cancellationToken);
         EnsureAttendanceModuleAccess(access);
-        EnsureAllowedAttendancePeriod(access, new DateOnly(year, month, 1), new DateOnly(year, month, DateTime.DaysInMonth(year, month)));
+        EnsureAllowedAttendancePeriod(access, new DateOnly(year, month, 1), new DateOnly(year, month, DateTime.DaysInMonth(year, month)), await ResolveTodayAsync(identityUserId, cancellationToken));
         var scope = ResolveEmployeeScopeFlags(access, organizationWide, forceSelfOnly: false);
         var visibility = await ResolveAttendanceVisibilityAsync(
             identityUserId, scope.OrganizationWide, scope.SelfOnly, cancellationToken);
@@ -544,7 +549,7 @@ public sealed class AttendanceService : IAttendanceService
                     ScheduleYear = holidayDate.Year,
                     ScheduleMonth = holidayDate.Month,
                     CreatedByUserId = identityUserId,
-                    CreatedDate = PakistanClock.Now()
+                    CreatedDate = BusinessClock.UtcNow()
                 };
                 _db.EmployeeTimingSchedules.Add(schedule);
             }
@@ -555,7 +560,7 @@ public sealed class AttendanceService : IAttendanceService
             schedule.IsOn = timing.IsOn;
             schedule.WorkingMinutes = timing.WorkingMinutes;
             schedule.ModifiedByUserId = identityUserId;
-            schedule.ModifiedDate = PakistanClock.Now();
+            schedule.ModifiedDate = BusinessClock.UtcNow();
             await _db.SaveChangesAsync(cancellationToken);
             await _db.Entry(schedule).Reference(item => item.HolidayType).LoadAsync(cancellationToken);
             await EvaluateStatusesAsync(employee.TenantId, holidayDate, holidayDate, cancellationToken);
@@ -620,7 +625,7 @@ public sealed class AttendanceService : IAttendanceService
                     schedule.ScheduleDate >= dto.DateFrom &&
                     schedule.ScheduleDate <= dto.DateTo)
                 .ToDictionaryAsync(schedule => schedule.ScheduleDate, cancellationToken);
-            var now = PakistanClock.Now();
+            var now = BusinessClock.UtcNow();
 
             foreach (var date in dates)
             {
@@ -680,7 +685,7 @@ public sealed class AttendanceService : IAttendanceService
         var (callerPerson, _) = await ResolvePersonAsync(identityUserId, cancellationToken);
         var access = await ResolveAttendanceAccessAsync(identityUserId, organizationWide, cancellationToken);
         EnsureAttendanceModuleAccess(access);
-        EnsureAllowedAttendancePeriod(access, dateFrom, dateTo);
+        EnsureAllowedAttendancePeriod(access, dateFrom, dateTo, await ResolveTodayAsync(identityUserId, cancellationToken));
         var scope = ResolveEmployeeScopeFlags(access, organizationWide, forceSelfOnly: false);
         var report = await GetAttendanceReportAsync(
             identityUserId, scope.OrganizationWide, scope.SelfOnly, dateFrom, dateTo, cancellationToken);
@@ -751,7 +756,7 @@ public sealed class AttendanceService : IAttendanceService
         var (callerPerson, _) = await ResolvePersonAsync(identityUserId, cancellationToken);
         var access = await ResolveAttendanceAccessAsync(identityUserId, organizationWide, cancellationToken);
         EnsureAttendanceModuleAccess(access);
-        EnsureAllowedAttendancePeriod(access, dateFrom, dateTo);
+        EnsureAllowedAttendancePeriod(access, dateFrom, dateTo, await ResolveTodayAsync(identityUserId, cancellationToken));
         var scope = ResolveEmployeeScopeFlags(access, organizationWide, forceSelfOnly: false);
         // Remote Attendance intentionally uses the same hierarchy boundary and
         // status evaluation as Daily Attendance, then filters by the database
@@ -796,7 +801,7 @@ public sealed class AttendanceService : IAttendanceService
 
         var access = await ResolveAttendanceAccessAsync(identityUserId, organizationWide, cancellationToken);
         EnsureAttendanceModuleAccess(access);
-        EnsureAllowedAttendancePeriod(access, dateFrom, dateTo);
+        EnsureAllowedAttendancePeriod(access, dateFrom, dateTo, await ResolveTodayAsync(identityUserId, cancellationToken));
         var scope = ResolveEmployeeScopeFlags(access, organizationWide, forceSelfOnly: false);
 
         await ApplicationLoginSessionSchema.EnsureCreatedAsync(_db, cancellationToken);
@@ -807,28 +812,62 @@ public sealed class AttendanceService : IAttendanceService
             scope.SelfOnly,
             cancellationToken);
 
-        var rows = await SpListQuery.ExecAsync<AttendanceLoginReportRow>(
-            _db,
-            "EXEC dbo.usp_Attendance_LoginReport @TenantId, @DateFrom, @DateTo, @VisiblePersonIds",
-            cancellationToken,
-            SpListQuery.TenantId(visibility.TenantId),
-            SpListQuery.Date("@DateFrom", dateFrom),
-            SpListQuery.Date("@DateTo", dateTo),
-            SpListQuery.NVarChar("@VisiblePersonIds", JsonSerializer.Serialize(visibility.VisiblePersonIds)));
+        var visiblePersonIds = visibility.VisiblePersonIds.ToArray();
+        var rows = await _db.ApplicationLoginSessions.AsNoTracking()
+            .Where(row =>
+                row.TenantId == visibility.TenantId &&
+                row.PersonId.HasValue &&
+                visiblePersonIds.Contains(row.PersonId.Value) &&
+                row.SessionDate >= dateFrom &&
+                row.SessionDate <= dateTo &&
+                (row.IdentityUser == null || (!row.IdentityUser.IsTenantAdmin && !row.IdentityUser.IsSuperAdmin)))
+            .OrderByDescending(row => row.LoginUtc)
+            .Select(row => new
+            {
+                row.Id,
+                row.StaffId,
+                row.PersonId,
+                EmployeeNumber = row.Staff != null ? row.Staff.LoginId : null,
+                EmployeeName = row.Person != null ? row.Person.FullName : row.IdentityUserId,
+                TimeZoneId = row.Person != null ? row.Person.TimeZoneId : null,
+                Department = row.Staff != null && row.Staff.Vacancy != null
+                    ? (row.Staff.Vacancy.Organization != null && row.Staff.Vacancy.Organization.Label == "Department"
+                        ? row.Staff.Vacancy.Organization.Name
+                        : row.Staff.Vacancy.Department)
+                    : null,
+                Designation = row.Staff != null && row.Staff.Vacancy != null
+                    ? (row.Staff.Vacancy.DesignationNav != null
+                        ? row.Staff.Vacancy.DesignationNav.Name
+                        : row.Staff.Vacancy.JobTitle)
+                    : null,
+                Date = row.SessionDate,
+                row.LoginUtc,
+                row.LogoutUtc,
+                row.WorkingMinutes,
+                row.Source,
+                row.IpAddress,
+                row.Remarks
+            })
+            .ToListAsync(cancellationToken);
 
+        var utcNow = BusinessClock.UtcNow();
         var result = rows.Select(row => new LoginAttendanceSessionDto
         {
             Id = row.Id,
             StaffId = row.StaffId,
             PersonId = row.PersonId,
-            EmployeeNumber = row.EmployeeNumber,
-            EmployeeName = row.EmployeeName,
-            Department = row.Department,
-            Designation = row.Designation,
+            EmployeeNumber = row.EmployeeNumber ?? string.Empty,
+            EmployeeName = row.EmployeeName ?? string.Empty,
+            Department = row.Department ?? string.Empty,
+            Designation = row.Designation ?? string.Empty,
             Date = row.Date,
-            LoginTime = row.LoginTime,
-            LogoutTime = row.LogoutTime,
-            WorkingMinutes = Math.Max(0, row.WorkingMinutes),
+            LoginTime = BusinessClock.ToLocal(row.LoginUtc, row.TimeZoneId).ToString("HH:mm", CultureInfo.InvariantCulture),
+            LogoutTime = row.LogoutUtc.HasValue
+                ? BusinessClock.ToLocal(row.LogoutUtc.Value, row.TimeZoneId).ToString("HH:mm", CultureInfo.InvariantCulture)
+                : null,
+            WorkingMinutes = row.LogoutUtc.HasValue
+                ? Math.Max(0, row.WorkingMinutes)
+                : Math.Max(0, (int)Math.Floor((utcNow - DateTime.SpecifyKind(row.LoginUtc, DateTimeKind.Utc)).TotalMinutes)),
             Source = row.Source ?? string.Empty,
             IpAddress = row.IpAddress,
             Remarks = row.Remarks,
@@ -851,7 +890,7 @@ public sealed class AttendanceService : IAttendanceService
         EnsureAttendanceModuleAccess(access);
         if (!access.CanViewSelf)
             throw new UnauthorizedAccessException("You are not allowed to view your own attendance.");
-        EnsureAllowedAttendancePeriod(access, dateFrom, dateTo);
+        EnsureAllowedAttendancePeriod(access, dateFrom, dateTo, await ResolveTodayAsync(identityUserId, cancellationToken));
         // Staff Attendance page remains self-scoped; employee/all-employee grants
         // apply to team/org reports, not this personal attendance screen.
         var report = await GetAttendanceReportAsync(
@@ -1029,8 +1068,10 @@ public sealed class AttendanceService : IAttendanceService
         if (requestedDates.Length == 0)
             return;
 
+        var policy = await LoadPolicyAsync(tenantId, cancellationToken);
+        var tenantToday = BusinessClock.Today(policy.TimeZoneId);
         var finalizationMarkerKey = BuildFinalizationMarkerCacheKey(tenantId, year, month, requestedDates, personIdsHash);
-        var includesToday = requestedDates.Contains(PakistanClock.Today());
+        var includesToday = requestedDates.Contains(tenantToday);
         var needsRefresh = await RequiresFinalizationRefreshAsync(
             tenantId,
             periodRows,
@@ -1052,7 +1093,7 @@ public sealed class AttendanceService : IAttendanceService
 
         var monthStart = new DateOnly(year, month, 1);
         var monthEnd = monthStart.AddMonths(1).AddDays(-1);
-        var today = PakistanClock.Today();
+        var today = tenantToday;
         var evalTo = monthEnd < today ? monthEnd : today;
         if (monthStart <= evalTo)
             await EvaluateStatusesAsync(tenantId, monthStart, evalTo, cancellationToken);
@@ -1319,6 +1360,7 @@ public sealed class AttendanceService : IAttendanceService
         DateOnly[] requestedDates,
         CancellationToken cancellationToken)
     {
+        var policy = await LoadPolicyAsync(tenantId, cancellationToken);
         var finalizations = await _db.AttendanceDailyFinalizations
             .IgnoreQueryFilters()
             .AsNoTracking()
@@ -1381,8 +1423,9 @@ public sealed class AttendanceService : IAttendanceService
             if (finalization.AttendanceRecordId != record.Id)
                 return true;
 
-            // Attendance timestamps are stored in Pakistan business time; LastEvaluated is UTC.
-            var evaluatedLocal = ToPakistanLocal(finalization.LastEvaluatedDateUtc);
+            // Attendance timestamps are stored in tenant business time;
+            // LastEvaluatedDateUtc is an actual instant.
+            var evaluatedLocal = BusinessClock.ToLocal(finalization.LastEvaluatedDateUtc, policy.TimeZoneId);
             var latestTouch = new[] { record.ModifiedDate, record.CreatedDate, record.CheckInUtc, record.CheckOutUtc }
                 .Where(value => value.HasValue)
                 .Select(value => DateTime.SpecifyKind(value!.Value, DateTimeKind.Unspecified))
@@ -1445,7 +1488,7 @@ public sealed class AttendanceService : IAttendanceService
                 return true;
         }
 
-        var today = PakistanClock.Today();
+        var today = BusinessClock.Today(policy.TimeZoneId);
         if (!requestedDates.Contains(today))
             return false;
 
@@ -1453,17 +1496,6 @@ public sealed class AttendanceService : IAttendanceService
         return finalizations.Any(row =>
             row.AttendanceDate == today &&
             row.LastEvaluatedDateUtc < freshnessCutoffUtc);
-    }
-
-    private static DateTime ToPakistanLocal(DateTime value)
-    {
-        if (value.Kind == DateTimeKind.Utc)
-            return TimeZoneInfo.ConvertTimeFromUtc(value, PakistanClock.TimeZone);
-        if (value.Kind == DateTimeKind.Local)
-            return TimeZoneInfo.ConvertTime(value, PakistanClock.TimeZone);
-        return TimeZoneInfo.ConvertTimeFromUtc(
-            DateTime.SpecifyKind(value, DateTimeKind.Utc),
-            PakistanClock.TimeZone);
     }
 
     private async Task RecalculateAttendanceDependentsAsync(
@@ -1504,7 +1536,8 @@ public sealed class AttendanceService : IAttendanceService
             .AsNoTracking()
             .ToListAsync(cancellationToken);
 
-        var today = PakistanClock.Today();
+        var policy = await LoadPolicyAsync(tenantId, cancellationToken);
+        var today = BusinessClock.Today(policy.TimeZoneId);
         var isCurrentPeriod = year == today.Year && month == today.Month;
         _cache.Set(
             cacheKey,
@@ -1542,16 +1575,15 @@ public sealed class AttendanceService : IAttendanceService
         DateOnly attendanceDate,
         CancellationToken cancellationToken = default)
     {
-        var today = DateOnly.FromDateTime(PakistanClock.Now());
-        if (attendanceDate == default || attendanceDate > today)
-            throw new ArgumentOutOfRangeException(
-                nameof(attendanceDate),
-                "Select today or an earlier attendance date.");
-
         await AttendanceRecordSchema.EnsureCameraColumnsAsync(_db, cancellationToken);
         var (supervisor, assignments) = await ResolveSupervisorAssignmentsAsync(
             identityUserId,
             cancellationToken);
+        var today = BusinessClock.Today(supervisor.TimeZoneId);
+        if (attendanceDate == default || attendanceDate > today)
+            throw new ArgumentOutOfRangeException(
+                nameof(attendanceDate),
+                "Select today or an earlier attendance date.");
 
         if (assignments.Count == 0)
         {
@@ -1609,7 +1641,11 @@ public sealed class AttendanceService : IAttendanceService
         SaveSupervisorAttendanceDto dto,
         CancellationToken cancellationToken = default)
     {
-        var today = DateOnly.FromDateTime(PakistanClock.Now());
+        var supervisorTimeZoneId = await _db.Persons.AsNoTracking()
+            .Where(person => person.IdentityUserId == identityUserId)
+            .Select(person => person.TimeZoneId)
+            .FirstOrDefaultAsync(cancellationToken);
+        var today = BusinessClock.Today(supervisorTimeZoneId);
         if (dto.AttendanceDate == default || dto.AttendanceDate > today)
             throw new ArgumentOutOfRangeException(
                 nameof(dto.AttendanceDate),
@@ -1687,7 +1723,7 @@ public sealed class AttendanceService : IAttendanceService
                 .Where(item => item.IsActive && item.Code == "ONSITE")
                 .Select(item => (int?)item.Id)
                 .FirstOrDefaultAsync(cancellationToken);
-            var now = PakistanClock.Now();
+            var now = BusinessClock.Now(supervisor.TimeZoneId);
 
             foreach (var entry in entries)
             {
@@ -1762,10 +1798,9 @@ public sealed class AttendanceService : IAttendanceService
             throw new UnauthorizedAccessException("No Attendance view permission is granted.");
     }
 
-    private static void EnsureAllowedAttendancePeriod(AttendanceAccessDto access, DateOnly dateFrom, DateOnly dateTo)
+    private static void EnsureAllowedAttendancePeriod(AttendanceAccessDto access, DateOnly dateFrom, DateOnly dateTo, DateOnly today)
     {
         if (access.CanViewPreviousMonths) return;
-        var today = DateOnly.FromDateTime(PakistanClock.Now());
         var currentMonthStart = new DateOnly(today.Year, today.Month, 1);
         var currentMonthEnd = currentMonthStart.AddMonths(1).AddDays(-1);
         if (!access.CanViewCurrentMonth)
@@ -2068,7 +2103,7 @@ public sealed class AttendanceService : IAttendanceService
 
         var access = await ResolveAttendanceAccessAsync(identityUserId, organizationWide, cancellationToken);
         EnsureAttendanceModuleAccess(access);
-        EnsureAllowedAttendancePeriod(access, dateFrom, dateTo);
+        EnsureAllowedAttendancePeriod(access, dateFrom, dateTo, await ResolveTodayAsync(identityUserId, cancellationToken));
         var scope = ResolveEmployeeScopeFlags(access, organizationWide, forceSelfOnly: false);
 
         // Monthly Chart intentionally delegates to the same hierarchy boundary
@@ -2354,7 +2389,7 @@ public sealed class AttendanceService : IAttendanceService
             var absentAfterShiftStartMinutes = source.AbsentAfterShiftStartMinutes ?? policy.AbsentAfterShiftStartMinutes;
             var earlyCheckoutAbsentMinutes = source.EarlyCheckoutAbsentAfterMinutes ?? policy.MissingCheckoutAfterShiftEndMinutes;
             var missingCheckoutAfterMinutes = source.MissingCheckoutAfterShiftEndMinutes ?? policy.MissingCheckoutAfterShiftEndMinutes;
-            var nowLocal = PakistanClock.Now();
+            var nowLocal = BusinessClock.Now(source.TimeZoneId);
             var checkInAbsentDeadline = shiftWindow.Start.AddMinutes(absentAfterShiftStartMinutes);
             var checkoutMissingDeadline = shiftWindow.End.AddMinutes(missingCheckoutAfterMinutes);
             var missingCheckIn = source.Id.HasValue && !source.CheckInUtc.HasValue &&
@@ -3227,7 +3262,7 @@ public sealed class AttendanceService : IAttendanceService
         var requestedFrom = new DateOnly(year, month, 1);
         var access = await ResolveAttendanceAccessAsync(identityUserId, organizationWide: canViewOthers, cancellationToken);
         EnsureAttendanceModuleAccess(access);
-        EnsureAllowedAttendancePeriod(access, requestedFrom, requestedFrom.AddMonths(1).AddDays(-1));
+        EnsureAllowedAttendancePeriod(access, requestedFrom, requestedFrom.AddMonths(1).AddDays(-1), await ResolveTodayAsync(identityUserId, cancellationToken));
         var callerPersonId = await _db.Persons.AsNoTracking().Where(p => p.IdentityUserId == identityUserId).Select(p => (Guid?)p.PersonId).FirstOrDefaultAsync(cancellationToken);
         var personId = canViewOthers && requestedPersonId.HasValue ? requestedPersonId.Value : callerPersonId
             ?? throw new KeyNotFoundException("No employee profile is linked to this account.");
@@ -3308,7 +3343,7 @@ public sealed class AttendanceService : IAttendanceService
     {
         var person = await _db.Persons.AsNoTracking().FirstOrDefaultAsync(x => x.IdentityUserId == identityUserId, cancellationToken)
             ?? throw new KeyNotFoundException("No employee profile is linked to this account.");
-        var localNow = PakistanClock.Now();
+        var localNow = BusinessClock.Now(person.TimeZoneId);
         return (person, DateOnly.FromDateTime(localNow));
     }
 
@@ -3325,7 +3360,8 @@ public sealed class AttendanceService : IAttendanceService
         DateOnly dateTo,
         CancellationToken cancellationToken)
     {
-        var today = DateOnly.FromDateTime(PakistanClock.Now());
+        var policy = await LoadPolicyAsync(tenantId, cancellationToken);
+        var today = BusinessClock.Today(policy.TimeZoneId);
         var liveFrom = today.AddDays(-1);
         var from = dateFrom > liveFrom ? dateFrom : liveFrom;
         var to = dateTo < today ? dateTo : today;
@@ -3337,6 +3373,8 @@ public sealed class AttendanceService : IAttendanceService
 
     private async Task EvaluateStatusesAsync(int tenantId, DateOnly dateFrom, DateOnly dateTo, CancellationToken cancellationToken)
     {
+        var policy = await LoadPolicyAsync(tenantId, cancellationToken);
+        var businessNow = BusinessClock.Now(policy.TimeZoneId);
         try
         {
             await _db.Database.ExecuteSqlRawAsync(
@@ -3345,7 +3383,7 @@ public sealed class AttendanceService : IAttendanceService
                     new SqlParameter("@TenantId", tenantId),
                     new SqlParameter("@DateFrom", dateFrom.ToDateTime(TimeOnly.MinValue)),
                     new SqlParameter("@DateTo", dateTo.ToDateTime(TimeOnly.MinValue)),
-                    new SqlParameter("@AsOfUtc", PakistanClock.Now())
+                    new SqlParameter("@AsOfUtc", businessNow)
                 ],
                 cancellationToken);
         }
@@ -3364,7 +3402,7 @@ public sealed class AttendanceService : IAttendanceService
                         new SqlParameter("@TenantId", tenantId),
                         new SqlParameter("@DateFrom", dateFrom.ToDateTime(TimeOnly.MinValue)),
                         new SqlParameter("@DateTo", dateTo.ToDateTime(TimeOnly.MinValue)),
-                        new SqlParameter("@AsOfUtc", PakistanClock.Now())
+                        new SqlParameter("@AsOfUtc", businessNow)
                     ],
                     cancellationToken);
             }
@@ -3424,10 +3462,14 @@ public sealed class AttendanceService : IAttendanceService
         return new MyAttendanceTodayDto
         {
             Id = record?.Id, AttendanceDate = record?.AttendanceDate ?? DateOnly.FromDateTime(utcNow),
-            EmployeeName = person.FullName, ShiftStartTime = shiftStart, ShiftEndTime = shiftEnd, TimeZoneId = person.TimeZoneId,
-            CheckInUtc = PakistanClock.AsDatabaseLocal(record?.CheckInUtc),
-            CheckOutUtc = PakistanClock.AsDatabaseLocal(record?.CheckOutUtc),
-            BreakStartedUtc = PakistanClock.AsDatabaseLocal(record?.BreakStartedUtc),
+            EmployeeName = person.FullName, ShiftStartTime = shiftStart, ShiftEndTime = shiftEnd,
+            TimeZoneId = BusinessClock.BrowserTimeZoneId(person.TimeZoneId),
+            // AttendanceRecords currently persist business wall-clock values.
+            // Convert them at the API boundary so every *Utc field is a real
+            // instant and browsers never guess the server's local time zone.
+            CheckInUtc = BusinessClock.ToUtc(record?.CheckInUtc, person.TimeZoneId),
+            CheckOutUtc = BusinessClock.ToUtc(record?.CheckOutUtc, person.TimeZoneId),
+            BreakStartedUtc = BusinessClock.ToUtc(record?.BreakStartedUtc, person.TimeZoneId),
             TotalBreakMinutes = record?.TotalBreakMinutes ?? 0, WorkedMinutes = worked, RequiredMinutes = required,
             ShortMinutes = record?.CheckOutUtc.HasValue == true ? Math.Max(0, required - worked) : 0,
             RemainingMinutes = record?.CheckInUtc.HasValue == true && !record.CheckOutUtc.HasValue && !openCheckoutExpired ? Math.Max(0, required - worked) : 0,
@@ -3550,10 +3592,9 @@ public sealed class AttendanceService : IAttendanceService
             ? parsed
             : throw new InvalidOperationException("The mapped shift time is missing or invalid. Configure it in Map Attendance or Timing Chart.");
 
-    private static int CountWorkingDays(int year, int month)
+    private static int CountWorkingDays(int year, int month, DateOnly today)
     {
         var end = new DateOnly(year, month, DateTime.DaysInMonth(year, month));
-        var today = PakistanClock.Today();
         if (year == today.Year && month == today.Month && today < end) end = today;
         var count = 0;
         for (var day = new DateOnly(year, month, 1); day <= end; day = day.AddDays(1))
@@ -3561,10 +3602,18 @@ public sealed class AttendanceService : IAttendanceService
         return count;
     }
 
+    private async Task<DateOnly> ResolveTodayAsync(string identityUserId, CancellationToken cancellationToken)
+    {
+        var timeZoneId = await _db.Persons.AsNoTracking()
+            .Where(person => person.IdentityUserId == identityUserId)
+            .Select(person => person.TimeZoneId)
+            .FirstOrDefaultAsync(cancellationToken);
+        return BusinessClock.Today(timeZoneId);
+    }
+
     private static TimeZoneInfo ResolveTimeZone(string id)
     {
-        try { return TimeZoneInfo.FindSystemTimeZoneById(id); }
-        catch { return PakistanClock.TimeZone; }
+        return BusinessClock.Resolve(id);
     }
 
     private readonly record struct FinalizationProbeKey(Guid PersonId, DateOnly AttendanceDate);

@@ -135,7 +135,7 @@ public sealed class AttendanceController : ControllerBase
         if (!await HasAttendanceMenuActionAsync(requiredAction, ct, "/attendance/rules/map-attendance", "/attendance/map-attendance"))
             return Forbid();
 
-        var now = PakistanClock.Now();
+        var now = BusinessClock.UtcNow();
         if (rule == null)
         {
             rule = new AttendanceMapRule
@@ -457,7 +457,7 @@ public sealed class AttendanceController : ControllerBase
 
         record.IsOvertimeApproved = dto.IsApproved;
         record.ApprovedByUserId = UserId();
-        record.ApprovedDateUtc = PakistanClock.Now();
+        record.ApprovedDateUtc = BusinessClock.UtcNow();
 
         await _db.SaveChangesAsync(ct);
         await PublishDeductionChangedAsync(
@@ -658,7 +658,7 @@ public sealed class AttendanceController : ControllerBase
             ActionName = Trim(dto.ActionName, 100),
             Comments = Trim(dto.Comments, 1000),
             CreatedByUserId = UserId(),
-            CreatedDate = PakistanClock.Now()
+            CreatedDate = BusinessClock.UtcNow()
         };
 
         _db.AttendanceDeductionRequests.Add(request);
@@ -704,13 +704,13 @@ public sealed class AttendanceController : ControllerBase
         {
             if (!TimeOnly.TryParseExact(dto.CheckInTime, "HH:mm", CultureInfo.InvariantCulture, DateTimeStyles.None, out var time))
                 return BadRequest(new { message = "Check-in time must be in HH:mm format." });
-            checkInUtc = PakistanClock.AsDatabaseLocal(dto.AttendanceDate.ToDateTime(time));
+            checkInUtc = DateTime.SpecifyKind(dto.AttendanceDate.ToDateTime(time), DateTimeKind.Unspecified);
         }
         if (!string.IsNullOrWhiteSpace(dto.CheckOutTime))
         {
             if (!TimeOnly.TryParseExact(dto.CheckOutTime, "HH:mm", CultureInfo.InvariantCulture, DateTimeStyles.None, out var time))
                 return BadRequest(new { message = "Check-out time must be in HH:mm format." });
-            checkOutUtc = PakistanClock.AsDatabaseLocal(dto.AttendanceDate.ToDateTime(time));
+            checkOutUtc = DateTime.SpecifyKind(dto.AttendanceDate.ToDateTime(time), DateTimeKind.Unspecified);
         }
         if (checkInUtc.HasValue && checkOutUtc.HasValue && checkOutUtc.Value < checkInUtc.Value)
             checkOutUtc = checkOutUtc.Value.AddDays(1);
@@ -738,7 +738,7 @@ public sealed class AttendanceController : ControllerBase
 
         var record = await _db.AttendanceRecords
             .SingleOrDefaultAsync(x => x.PersonId == person.PersonId && x.AttendanceDate == dto.AttendanceDate, ct);
-        var now = PakistanClock.Now();
+        var now = BusinessClock.Now(person.TimeZoneId);
         if (record == null)
         {
             record = new AttendanceRecord
@@ -887,7 +887,7 @@ public sealed class AttendanceController : ControllerBase
         if (string.IsNullOrWhiteSpace(value)) return null;
         if (!TimeOnly.TryParseExact(value, "HH:mm", CultureInfo.InvariantCulture, DateTimeStyles.None, out var time))
             throw new ArgumentException("Manual attendance time must be in HH:mm format.");
-        return PakistanClock.AsDatabaseLocal(date.ToDateTime(time));
+        return DateTime.SpecifyKind(date.ToDateTime(time), DateTimeKind.Unspecified);
     }
 
     [HttpGet("report/staff-attendance")]
@@ -1086,7 +1086,7 @@ public sealed class AttendanceController : ControllerBase
                 (!id.HasValue || rule.Id != id.Value), ct);
         if (duplicate) return BadRequest(new { message = "This attendance type already has a rule. Edit the existing rule instead." });
 
-        var now = PakistanClock.Now();
+        var now = BusinessClock.UtcNow();
         AttendanceRuleSetting rule;
         if (id.HasValue)
         {

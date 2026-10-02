@@ -1,6 +1,7 @@
 using Accounts.DTOs;
 using Accounts.Services.Interfaces;
 using Accounts.Services.Services;
+using Microsoft.EntityFrameworkCore;
 
 namespace Accounts.Services;
 
@@ -34,9 +35,16 @@ public sealed class AttendanceFinalizationScheduler(
         {
             await using var scope = scopeFactory.CreateAsyncScope();
             var service = scope.ServiceProvider.GetRequiredService<AttendanceFinalizationService>();
+            var db = scope.ServiceProvider.GetRequiredService<Accounts.Data.ApplicationDbContext>();
             var changesByTenant = await service.RefreshCurrentPeriodsAsync(cancellationToken);
             foreach (var change in changesByTenant)
             {
+                var timeZoneId = await db.AttendancePolicies.IgnoreQueryFilters().AsNoTracking()
+                    .Where(policy => policy.IsActive && (policy.TenantId == change.Key || policy.TenantId == null))
+                    .OrderByDescending(policy => policy.TenantId == change.Key)
+                    .Select(policy => policy.TimeZoneId)
+                    .FirstOrDefaultAsync(cancellationToken);
+                var today = BusinessClock.Today(timeZoneId);
                 logger.LogInformation(
                     "Attendance finalizer created or updated {Count} daily rows for tenant {TenantId}.",
                     change.Value,
@@ -50,8 +58,8 @@ public sealed class AttendanceFinalizationScheduler(
                         change.Key,
                         data: new Dictionary<string, string>
                         {
-                            ["year"] = PakistanClock.Today().Year.ToString(),
-                            ["month"] = PakistanClock.Today().Month.ToString()
+                            ["year"] = today.Year.ToString(),
+                            ["month"] = today.Month.ToString()
                         }));
             }
         }

@@ -18,6 +18,7 @@ public sealed class AccountsRoznamchaController : ControllerBase
 {
     private const string PaymentRozRoute = "/accounts/payment-roz";
     private const string ReceiptRozRoute = "/accounts/receipt-roz";
+    private const string RoznamchaUpdateRoute = "/accounts/roznamcha-update";
 
     private readonly ApplicationDbContext _db;
     private readonly ITenantService _tenant;
@@ -103,6 +104,35 @@ public sealed class AccountsRoznamchaController : ControllerBase
         if (!_tenant.TenantId.HasValue || !await HasActionAsync(ReceiptRozRoute, "VIEW", ct)) return Forbid();
 
         return Ok(await LoadRoznamchaLookupsAsync(ct));
+    }
+
+    /// <summary>Unified ROZ grid (legacy Sp_vgetRoznamcha parity). Optional rozTypeId filters payment/receipt type.</summary>
+    [HttpGet("roznamcha-update")]
+    public async Task<IActionResult> ListRoznamchaUpdate(
+        [FromQuery] DateOnly? dateFrom,
+        [FromQuery] DateOnly? dateTo,
+        [FromQuery] int? rozTypeId,
+        [FromQuery] string? typeCode,
+        CancellationToken ct)
+    {
+        if (_tenant.IsSuperAdmin)
+            return Ok(Array.Empty<object>());
+
+        if (!_tenant.TenantId.HasValue || !await HasActionAsync(RoznamchaUpdateRoute, "VIEW", ct))
+            return Forbid();
+
+        var today = DateOnly.FromDateTime(DateTime.UtcNow);
+        var from = dateFrom ?? new DateOnly(today.Year, today.Month, 1);
+        var to = dateTo ?? today;
+        if (to < from)
+            return BadRequest(new { message = "dateTo must be on or after dateFrom." });
+
+        var tenantId = _tenant.RequiredTenantId;
+        if (!rozTypeId.HasValue && !string.IsNullOrWhiteSpace(typeCode))
+            rozTypeId = await _roznamcha.ResolveRozTypeIdAsync(tenantId, typeCode.Trim(), ct);
+
+        var rows = await _roznamcha.ListRoznamchaAsync(tenantId, from, to, rozTypeId, ct);
+        return Ok(rows);
     }
 
     private async Task<object> LoadRoznamchaLookupsAsync(CancellationToken ct)

@@ -33,6 +33,6 @@ public static class SupervisorAttendanceTime
                 out var time))
             throw new ArgumentException($"{label} time must be in HH:mm format.");
 
-        return PakistanClock.AsDatabaseLocal(date.ToDateTime(time));
+        return DateTime.SpecifyKind(date.ToDateTime(time), DateTimeKind.Unspecified);
     }
 }

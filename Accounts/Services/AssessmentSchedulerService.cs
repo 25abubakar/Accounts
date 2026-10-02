@@ -28,7 +28,6 @@ public sealed class AssessmentSchedulerService(IServiceScopeFactory scopeFactory
             var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
             var rbac = scope.ServiceProvider.GetRequiredService<RbacService>();
             await AssessmentSchema.EnsureCurrentAsync(db);
-            var today = DateOnly.FromDateTime(PakistanClock.Now());
             var tenants = await db.Tenants.AsNoTracking().Where(x => x.IsActive).Select(x => x.Id).ToListAsync(ct);
             var org = await db.OrganizationTree.IgnoreQueryFilters().AsNoTracking().Select(x => new { x.Id, x.ParentId }).ToListAsync(ct);
             var children = org.Where(x => x.ParentId.HasValue).GroupBy(x => x.ParentId!.Value).ToDictionary(x => x.Key, x => x.Select(y => y.Id).ToList());
@@ -40,6 +39,12 @@ public sealed class AssessmentSchedulerService(IServiceScopeFactory scopeFactory
 
             foreach (var tenantId in tenants)
             {
+                var timeZoneId = await db.AttendancePolicies.IgnoreQueryFilters().AsNoTracking()
+                    .Where(policy => policy.IsActive && (policy.TenantId == tenantId || policy.TenantId == null))
+                    .OrderByDescending(policy => policy.TenantId == tenantId)
+                    .Select(policy => policy.TimeZoneId)
+                    .FirstOrDefaultAsync(ct);
+                var today = BusinessClock.Today(timeZoneId);
                 var rule = await db.AssessmentBonusRules.IgnoreQueryFilters().AsNoTracking()
                     .FirstOrDefaultAsync(x => x.TenantId == tenantId && x.IsActive, ct);
                 if (rule == null) continue;

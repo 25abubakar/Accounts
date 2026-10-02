@@ -3441,7 +3441,7 @@ namespace Accounts.Migrations
                     b.Property<DateTime>("GrantedDate")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("datetime")
-                        .HasDefaultValueSql("GETDATE()");
+                        .HasDefaultValueSql("SYSUTCDATETIME()");
 
                     b.Property<bool>("HasAccess")
                         .ValueGeneratedOnAdd()
@@ -3701,7 +3701,7 @@ namespace Accounts.Migrations
                     b.Property<DateTime>("CreatedDate")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("datetime2")
-                        .HasDefaultValueSql("GETDATE()");
+                        .HasDefaultValueSql("SYSUTCDATETIME()");
 
                     b.Property<string>("Description")
                         .HasMaxLength(250)
@@ -5961,7 +5961,7 @@ namespace Accounts.Migrations
                     b.Property<DateTime>("CreatedDate")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("datetime2")
-                        .HasDefaultValueSql("GETDATE()");
+                        .HasDefaultValueSql("SYSUTCDATETIME()");
 
                     b.Property<DateTime?>("DateOfBirth")
                         .HasColumnType("datetime2");
@@ -7572,7 +7572,7 @@ namespace Accounts.Migrations
                     b.Property<DateTime>("CreatedDate")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("datetime2")
-                        .HasDefaultValueSql("GETDATE()");
+                        .HasDefaultValueSql("SYSUTCDATETIME()");
 
                     b.Property<int?>("DeptId")
                         .HasColumnType("int");
@@ -8089,7 +8089,7 @@ namespace Accounts.Migrations
                     b.Property<DateTime>("AssignedDate")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("datetime")
-                        .HasDefaultValueSql("GETDATE()");
+                        .HasDefaultValueSql("SYSUTCDATETIME()");
 
                     b.Property<string>("Note")
                         .HasMaxLength(250)
@@ -8698,7 +8698,7 @@ namespace Accounts.Migrations
                     b.Property<DateTime>("CreatedDate")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("datetime2")
-                        .HasDefaultValueSql("GETDATE()");
+                        .HasDefaultValueSql("SYSUTCDATETIME()");
 
                     b.Property<string>("Department")
                         .HasMaxLength(100)

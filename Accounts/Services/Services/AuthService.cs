@@ -344,7 +344,7 @@ namespace Accounts.Services.Services
                 })
                 .FirstOrDefaultAsync();
 
-            var localNow = PakistanClock.Now();
+            var utcNow = BusinessClock.UtcNow();
             var context = _httpContextAccessor.HttpContext;
             var userAgent = context?.Request.Headers.UserAgent.ToString();
             if (userAgent?.Length > 300) userAgent = userAgent[..300];
@@ -357,12 +357,12 @@ namespace Accounts.Services.Services
                 StaffId = staffInfo?.StaffId,
                 PersonId = staffInfo?.PersonId,
                 IdentityUserId = user.Id,
-                SessionDate = DateOnly.FromDateTime(localNow),
-                LoginUtc = localNow,
+                SessionDate = BusinessClock.Today(staffInfo?.TimeZoneId),
+                LoginUtc = utcNow,
                 IpAddress = context?.Connection.RemoteIpAddress?.ToString(),
                 UserAgent = userAgent,
                 Source = "Software",
-                CreatedDate = localNow,
+                CreatedDate = utcNow,
             });
 
             await _db.SaveChangesAsync();
@@ -384,18 +384,16 @@ namespace Accounts.Services.Services
 
             if (session == null) return;
 
-            var nowLocal = PakistanClock.Now();
-            session.LogoutUtc = nowLocal;
-            session.WorkingMinutes = Math.Max(0, (int)Math.Floor((nowLocal - session.LoginUtc).TotalMinutes));
-            session.ModifiedDate = nowLocal;
+            var utcNow = BusinessClock.UtcNow();
+            session.LogoutUtc = utcNow;
+            session.WorkingMinutes = Math.Max(0, (int)Math.Floor((utcNow - session.LoginUtc).TotalMinutes));
+            session.ModifiedDate = utcNow;
             await _db.SaveChangesAsync();
         }
 
         private static TimeZoneInfo ResolveTimeZone(string? timeZoneId)
         {
-            if (string.IsNullOrWhiteSpace(timeZoneId)) return TimeZoneInfo.Local;
-            try { return TimeZoneInfo.FindSystemTimeZoneById(timeZoneId); }
-            catch { return TimeZoneInfo.Local; }
+            return BusinessClock.Resolve(timeZoneId);
         }
     }
 }

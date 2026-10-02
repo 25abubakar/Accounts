@@ -130,8 +130,8 @@ public sealed class ChartAccountsController(IAccountService service) : Controlle
     [RequestSizeLimit(21 * 1024 * 1024)]
     public Task<IActionResult> SaveFiles(
         int id,
-        [FromForm] IFormFile? photo,
-        [FromForm] IFormFile? attachment,
+        IFormFile? photo,
+        IFormFile? attachment,
         CancellationToken ct) =>
         Run(async () => ApiResponse<AccountDto>.Ok(
             await service.SaveFilesAsync(id, photo, attachment, ct),

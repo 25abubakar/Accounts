@@ -79,11 +79,12 @@ public sealed class AssessmentController : ControllerBase
                 return Forbid();
         }
 
-        var assessmentYear = year is >= 2000 and <= 2100 ? year.Value : DateTime.Today.Year;
-        var assessmentMonth = month is >= 1 and <= 12 ? month.Value : DateTime.Today.Month;
+        var tenantId = _tenant.TenantId.Value;
+        var tenantToday = await TenantTodayAsync(tenantId, ct);
+        var assessmentYear = year is >= 2000 and <= 2100 ? year.Value : tenantToday.Year;
+        var assessmentMonth = month is >= 1 and <= 12 ? month.Value : tenantToday.Month;
         await AssessmentSchema.EnsureCurrentAsync(_db);
 
-        var tenantId = _tenant.TenantId.Value;
         var people = await _db.Persons.AsNoTracking()
             .Where(person => person.TenantId == tenantId && person.IsActive && person.Staff != null)
             .Select(person => new
@@ -459,12 +460,12 @@ public sealed class AssessmentController : ControllerBase
 
         var visible = people
             .OrderBy(person => person.Department).ThenBy(person => person.FullName).ToList();
-        var assessmentYear = year is >= 2000 and <= 2100 ? year.Value : DateTime.Today.Year;
-        var assessmentMonth = month is >= 1 and <= 12 ? month.Value : DateTime.Today.Month;
         var tenantId = current?.TenantId ?? _tenant.TenantId;
         if (!tenantId.HasValue) return Ok(Array.Empty<object>());
+        var today = await TenantTodayAsync(tenantId.Value, ct);
+        var assessmentYear = year is >= 2000 and <= 2100 ? year.Value : today.Year;
+        var assessmentMonth = month is >= 1 and <= 12 ? month.Value : today.Month;
         await AssessmentSchema.EnsureCurrentAsync(_db);
-        var today = DateOnly.FromDateTime(PakistanClock.Now());
         var activeRule = await _db.AssessmentBonusRules.AsNoTracking().FirstOrDefaultAsync(x => x.IsActive, ct);
         var schedule = await _db.AssessmentSchedules.AsNoTracking()
             .FirstOrDefaultAsync(x => x.AssessmentYear == assessmentYear && x.AssessmentMonth == assessmentMonth && x.IsActive, ct);
@@ -536,7 +537,8 @@ public sealed class AssessmentController : ControllerBase
             return BadRequest(new { message = "The same staff member cannot appear more than once in Save All." });
 
         await AssessmentSchema.EnsureCurrentAsync(_db);
-        var today = DateOnly.FromDateTime(PakistanClock.Now());
+        if (!_tenant.TenantId.HasValue) return Forbid();
+        var today = await TenantTodayAsync(_tenant.TenantId.Value, ct);
         var rule = await _db.AssessmentBonusRules.AsNoTracking().FirstOrDefaultAsync(x => x.IsActive, ct);
         if (rule == null) return Conflict(new { message = "Tenant assessment bonus rule is not configured or is inactive." });
         var schedule = await _db.AssessmentSchedules.AsNoTracking()
@@ -712,7 +714,7 @@ public sealed class AssessmentController : ControllerBase
             !await _tenantPermissions.HasMenuRouteAsync(User, ["/assessment/mark", "/assessment/final"], "VIEW", ct))
             return Forbid();
         await AssessmentSchema.EnsureCurrentAsync(_db);
-        var today = DateOnly.FromDateTime(PakistanClock.Now());
+        var today = await TenantTodayAsync(_tenant.TenantId.Value, ct);
         var rule = await _db.AssessmentBonusRules.AsNoTracking().FirstOrDefaultAsync(x => x.IsActive, ct);
         var current = await ResolveCycleAsync(today.Year, today.Month, rule, ct);
         var previousMonth = new DateOnly(today.Year, today.Month, 1).AddMonths(-1);
@@ -738,7 +740,7 @@ public sealed class AssessmentController : ControllerBase
             !await _tenantPermissions.HasMenuRouteAsync(User, ["/assessment/mark"], "EDIT", ct))
             return Forbid();
         await AssessmentSchema.EnsureCurrentAsync(_db);
-        var today = DateOnly.FromDateTime(PakistanClock.Now());
+        var today = await TenantTodayAsync(_tenant.TenantId.Value, ct);
         if (dto.OpenDate.Year != today.Year || dto.OpenDate.Month != today.Month || dto.OpenDate.Day > DateTime.DaysInMonth(today.Year, today.Month)) return BadRequest(new { message = "Select a valid date in the running month." });
         var rule = await _db.AssessmentBonusRules.AsNoTracking().FirstOrDefaultAsync(x => x.IsActive, ct);
         if (rule == null) return Conflict(new { message = "Configure and activate the Assessment Rule before opening the cycle." });
@@ -764,6 +766,16 @@ public sealed class AssessmentController : ControllerBase
             schedule?.OpenDay ?? rule?.OpenDay ?? 25,
             schedule?.CloseDay ?? rule?.CloseDay ?? 8);
         return (cycle, schedule?.IsManualOverride == true);
+    }
+
+    private async Task<DateOnly> TenantTodayAsync(int tenantId, CancellationToken ct)
+    {
+        var timeZoneId = await _db.AttendancePolicies.IgnoreQueryFilters().AsNoTracking()
+            .Where(policy => policy.IsActive && (policy.TenantId == tenantId || policy.TenantId == null))
+            .OrderByDescending(policy => policy.TenantId == tenantId)
+            .Select(policy => policy.TimeZoneId)
+            .FirstOrDefaultAsync(ct);
+        return BusinessClock.Today(timeZoneId);
     }
 
     private static string AssessmentReminderEntityId(int year, int month, Guid assessorPersonId) =>

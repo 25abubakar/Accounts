@@ -67,7 +67,12 @@ public sealed class StaffMonthlyEobiService(
         ValidatePeriod(year, month);
         var periodStart = new DateOnly(year, month, 1);
         var periodEnd = periodStart.AddMonths(1).AddDays(-1);
-        var today = PakistanClock.Today();
+        var timeZoneId = await db.AttendancePolicies.AsNoTracking()
+            .Where(policy => policy.IsActive && (policy.TenantId == tenant.RequiredTenantId || policy.TenantId == null))
+            .OrderByDescending(policy => policy.TenantId == tenant.RequiredTenantId)
+            .Select(policy => policy.TimeZoneId)
+            .FirstOrDefaultAsync(cancellationToken);
+        var today = BusinessClock.Today(timeZoneId);
         var currentMonthStart = new DateOnly(today.Year, today.Month, 1);
         var isHistoricalPeriod = periodEnd < currentMonthStart;
 

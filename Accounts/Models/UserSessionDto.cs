@@ -17,6 +17,8 @@ namespace Accounts.Models
         public string? ProfilePhotoUrl { get; set; }
         public string? JobTitle { get; set; }
         public string? Department { get; set; }
+        public string? TimeZoneId { get; set; }
+        public DateTime ServerUtcNow { get; set; }
 
         // ── Multi-tenant fields ───────────────────────────────────────────────
         public int?  TenantId      { get; set; }

@@ -782,7 +782,7 @@ namespace Accounts.Data
                 e.HasKey(x => x.VacancyId);
                 e.Property(x => x.VacancyId).HasDefaultValueSql("NEWID()").ValueGeneratedNever();
                 e.Property(x => x.IsFilled).HasDefaultValue(false);
-                e.Property(x => x.CreatedDate).HasDefaultValueSql("GETDATE()");
+                e.Property(x => x.CreatedDate).HasDefaultValueSql("SYSUTCDATETIME()");
 
                 e.HasOne(x => x.Organization)
                  .WithMany()
@@ -816,7 +816,7 @@ namespace Accounts.Data
                 e.ToTable("Persons");
                 e.HasKey(x => x.PersonId);
                 e.Property(x => x.PersonId).HasDefaultValueSql("NEWID()").ValueGeneratedNever();
-                e.Property(x => x.CreatedDate).HasDefaultValueSql("GETDATE()");
+                e.Property(x => x.CreatedDate).HasDefaultValueSql("SYSUTCDATETIME()");
                 e.Property(x => x.IdentityUserId).HasMaxLength(450).IsRequired();
                 e.Property(x => x.ProfilePhotoUrl).HasMaxLength(500).IsRequired(false);
                 e.Property(x => x.PersonalEmail).HasMaxLength(256).IsRequired(false);
@@ -1226,7 +1226,7 @@ namespace Accounts.Data
                 e.Property(x => x.FeatureKey).HasMaxLength(100).IsRequired();
                 e.Property(x => x.FeatureName).HasMaxLength(150).IsRequired();
                 e.Property(x => x.Module).HasMaxLength(100).IsRequired();
-                e.Property(x => x.CreatedDate).HasDefaultValueSql("GETDATE()");
+                e.Property(x => x.CreatedDate).HasDefaultValueSql("SYSUTCDATETIME()");
 
                 // Unique index on FeatureKey for backward compatibility lookups
                 e.HasIndex(x => x.FeatureKey).IsUnique();
@@ -1238,7 +1238,7 @@ namespace Accounts.Data
                 e.HasKey(x => new { x.StaffId, x.GroupId });
                 e.Property(x => x.AssignedDate)
                  .HasColumnType("datetime")
-                 .HasDefaultValueSql("GETDATE()");
+                 .HasDefaultValueSql("SYSUTCDATETIME()");
 
                 e.HasOne(x => x.Staff)
                  .WithMany()
@@ -1254,7 +1254,7 @@ namespace Accounts.Data
                 e.Property(x => x.Id).ValueGeneratedOnAdd();
                 e.Property(x => x.GrantedDate)
                  .HasColumnType("datetime")
-                 .HasDefaultValueSql("GETDATE()");
+                 .HasDefaultValueSql("SYSUTCDATETIME()");
                 e.Property(x => x.HasAccess).HasDefaultValue(false);
 
                 // Unique composite index: one entry per StaffId + PermissionId
@@ -1289,7 +1289,7 @@ namespace Accounts.Data
                 e.Property(x => x.Id).ValueGeneratedOnAdd();
                 e.Property(x => x.JobTitle).HasMaxLength(100).IsRequired();
                 e.Property(x => x.IsAllowed).HasDefaultValue(false);
-                e.Property(x => x.CreatedDate).HasDefaultValueSql("GETDATE()");
+                e.Property(x => x.CreatedDate).HasDefaultValueSql("SYSUTCDATETIME()");
 
                 // Unique composite: one row per JobTitle + DeptId + PermissionId
                 e.HasIndex(x => new { x.JobTitle, x.DeptId, x.PermissionId }).IsUnique();

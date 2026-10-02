@@ -283,7 +283,7 @@ public static class AttendanceRecordSchema
                 
                     DECLARE @DateFrom date = DATEFROMPARTS(@Year, @Month, 1);
                     DECLARE @DateTo date = EOMONTH(@DateFrom);
-                    DECLARE @Today date = CAST(SYSDATETIME() AS date);
+                    DECLARE @Today date = CAST(SYSUTCDATETIME() AS date);
                     DECLARE @LastReportDate date = CASE WHEN @DateTo < @Today THEN @DateTo ELSE @Today END;
                 
                     IF @DateFrom > @Today

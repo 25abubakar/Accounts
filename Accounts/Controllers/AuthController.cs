@@ -96,10 +96,10 @@ namespace Accounts.Controllers
 
             if (session != null)
             {
-                var nowLocal = PakistanClock.Now();
-                session.LogoutUtc = nowLocal;
-                session.WorkingMinutes = Math.Max(0, (int)Math.Floor((nowLocal - session.LoginUtc).TotalMinutes));
-                session.ModifiedDate = nowLocal;
+                var utcNow = BusinessClock.UtcNow();
+                session.LogoutUtc = utcNow;
+                session.WorkingMinutes = Math.Max(0, (int)Math.Floor((utcNow - session.LoginUtc).TotalMinutes));
+                session.ModifiedDate = utcNow;
                 await _db.SaveChangesAsync(CancellationToken.None);
             }
 
@@ -144,7 +144,7 @@ namespace Accounts.Controllers
                 })
                 .FirstOrDefaultAsync(CancellationToken.None);
 
-            var localNow = PakistanClock.Now();
+            var utcNow = BusinessClock.UtcNow();
             var userAgent = Request.Headers.UserAgent.ToString();
             if (userAgent.Length > 300) userAgent = userAgent[..300];
 
@@ -154,12 +154,12 @@ namespace Accounts.Controllers
                 StaffId = staffInfo?.StaffId,
                 PersonId = staffInfo?.PersonId,
                 IdentityUserId = identityUserId,
-                SessionDate = DateOnly.FromDateTime(localNow),
-                LoginUtc = localNow,
+                SessionDate = BusinessClock.Today(staffInfo?.TimeZoneId),
+                LoginUtc = utcNow,
                 IpAddress = HttpContext.Connection.RemoteIpAddress?.ToString(),
                 UserAgent = userAgent,
                 Source = "Software",
-                CreatedDate = localNow,
+                CreatedDate = utcNow,
             });
 
             await _db.SaveChangesAsync(CancellationToken.None);

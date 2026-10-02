@@ -11,24 +11,32 @@ public sealed class AttendanceFinalizationService(
 {
     public async Task<IReadOnlyDictionary<int, int>> RefreshCurrentPeriodsAsync(CancellationToken cancellationToken = default)
     {
-        var today = PakistanClock.Today();
-        var tenantIds = await db.Tenants.AsNoTracking()
+        var tenants = await db.Tenants.AsNoTracking()
             .Where(tenant => tenant.IsActive)
-            .Select(tenant => tenant.Id)
+            .Select(tenant => new
+            {
+                tenant.Id,
+                TimeZoneId = db.AttendancePolicies.IgnoreQueryFilters()
+                    .Where(policy => policy.IsActive && (policy.TenantId == tenant.Id || policy.TenantId == null))
+                    .OrderByDescending(policy => policy.TenantId == tenant.Id)
+                    .Select(policy => policy.TimeZoneId)
+                    .FirstOrDefault()
+            })
             .ToListAsync(cancellationToken);
         var changesByTenant = new Dictionary<int, int>();
 
-        foreach (var tenantId in tenantIds)
+        foreach (var tenant in tenants)
         {
             try
             {
+                var today = BusinessClock.Today(tenant.TimeZoneId);
                 var changed = await RefreshPeriodAsync(
-                    tenantId,
+                    tenant.Id,
                     today.Year,
                     today.Month,
                     cancellationToken);
                 if (changed > 0)
-                    changesByTenant[tenantId] = changed;
+                    changesByTenant[tenant.Id] = changed;
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -39,7 +47,7 @@ public sealed class AttendanceFinalizationService(
                 logger.LogError(
                     exception,
                     "Attendance finalization failed for tenant {TenantId}.",
-                    tenantId);
+                    tenant.Id);
             }
         }
 
@@ -63,9 +71,14 @@ public sealed class AttendanceFinalizationService(
         if (year is < 2000 or > 2100 || month is < 1 or > 12)
             throw new ArgumentOutOfRangeException(nameof(month));
 
+        var tenantTimeZoneId = await db.AttendancePolicies.IgnoreQueryFilters().AsNoTracking()
+            .Where(policy => policy.IsActive && (policy.TenantId == tenantId || policy.TenantId == null))
+            .OrderByDescending(policy => policy.TenantId == tenantId)
+            .Select(policy => policy.TimeZoneId)
+            .FirstOrDefaultAsync(cancellationToken);
         var monthStart = new DateOnly(year, month, 1);
         var monthEnd = monthStart.AddMonths(1).AddDays(-1);
-        var today = PakistanClock.Today();
+        var today = BusinessClock.Today(tenantTimeZoneId);
         var dateTo = monthEnd < today ? monthEnd : today;
         if (monthStart > dateTo)
             return 0;
@@ -88,6 +101,7 @@ public sealed class AttendanceFinalizationService(
                 staff.StaffId,
                 person.ShiftStartTime,
                 person.ShiftEndTime,
+                person.TimeZoneId,
                 profile == null ? null : profile.JoiningDate,
                 person.TerminationDateUtc))
             .ToListAsync(cancellationToken);
@@ -188,8 +202,7 @@ public sealed class AttendanceFinalizationService(
                 group => group.Key,
                 group => group.OrderByDescending(row => row.Id).First());
 
-        var localNow = PakistanClock.Now();
-        var utcNow = DateTime.UtcNow;
+        var utcNow = BusinessClock.UtcNow();
         var changed = 0;
 
         // One StaffVacancy row per PersonId — avoids double Add for the same day key.
@@ -197,6 +210,7 @@ public sealed class AttendanceFinalizationService(
                      .GroupBy(e => e.PersonId)
                      .Select(g => g.OrderByDescending(e => e.StaffId).First()))
         {
+            var localNow = BusinessClock.Now(employee.TimeZoneId ?? tenantTimeZoneId);
             mapRules.TryGetValue(employee.StaffId, out var mapRule);
             AttendanceRuleSetting? rule = null;
             if (mapRule is not null)
@@ -541,6 +555,7 @@ public sealed class AttendanceFinalizationService(
         Guid StaffId,
         string ShiftStartTime,
         string ShiftEndTime,
+        string? TimeZoneId,
         DateTime? JoiningDate,
         DateTime? TerminationDateUtc);
 

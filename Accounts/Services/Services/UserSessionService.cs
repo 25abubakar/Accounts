@@ -13,19 +13,22 @@ namespace Accounts.Services.Services
         private readonly IPersonAccessService        _personAccess;
         private readonly IAppNoteService             _notes;
         private readonly UserManager<ApplicationUser> _userManager;
+        private readonly TimeProvider                 _timeProvider;
 
         public UserSessionService(
             ApplicationDbContext         db,
             RbacService                  rbac,
             IPersonAccessService         personAccess,
             IAppNoteService              notes,
-            UserManager<ApplicationUser> userManager)
+            UserManager<ApplicationUser> userManager,
+            TimeProvider                 timeProvider)
         {
             _db           = db;
             _rbac         = rbac;
             _personAccess = personAccess;
             _notes        = notes;
             _userManager  = userManager;
+            _timeProvider = timeProvider;
         }
 
         public async Task<UserSessionDto> GetSessionAsync(
@@ -46,7 +49,8 @@ namespace Accounts.Services.Services
                 Email          = appUser?.Email,
                 TenantId       = appUser?.TenantId,
                 IsSuperAdmin   = appUser?.IsSuperAdmin ?? false,
-                IsTenantAdmin  = appUser?.IsTenantAdmin ?? false
+                IsTenantAdmin  = appUser?.IsTenantAdmin ?? false,
+                ServerUtcNow   = _timeProvider.GetUtcNow().UtcDateTime
             };
 
             if (appUser?.TenantId is int tenantId)
@@ -79,6 +83,14 @@ namespace Accounts.Services.Services
                         session.TenantBrandingUrl = $"/api/tenant-branding/{tenantId}/content?v={version}";
                     }
                 }
+
+                session.TimeZoneId = await _db.AttendancePolicies.AsNoTracking()
+                    .Where(policy => policy.TenantId == tenantId && policy.IsActive)
+                    .OrderBy(policy => policy.Id)
+                    .Select(policy => policy.TimeZoneId)
+                    .FirstOrDefaultAsync(cancellationToken);
+                if (!string.IsNullOrWhiteSpace(session.TimeZoneId))
+                    session.TimeZoneId = BusinessClock.BrowserTimeZoneId(session.TimeZoneId);
             }
 
             // ── Super Admin path ──────────────────────────────────────────────
@@ -194,6 +206,7 @@ namespace Accounts.Services.Services
                  PersonId = person.PersonId,
                  FullName = person.FullName,
                  Email = person.Email,
+                 TimeZoneId = person.TimeZoneId,
                  ProfilePhotoUrl = person.ProfilePhotoUrl,
                  StaffId = staff != null ? staff.StaffId : null,
                  StaffLoginId = staff != null ? staff.EmployeeId : null,
@@ -206,6 +219,7 @@ namespace Accounts.Services.Services
                     PersonId = person.PersonId,
                     FullName = person.FullName,
                     Email = person.Email,
+                    TimeZoneId = person.TimeZoneId,
                     ProfilePhotoUrl = person.ProfilePhotoUrl,
                     StaffId = person.StaffId,
                     StaffLoginId = person.StaffLoginId,
@@ -225,6 +239,7 @@ namespace Accounts.Services.Services
             session.ProfilePhotoUrl = person.ProfilePhotoUrl;
             session.JobTitle = person.JobTitle;
             session.Department = person.Department;
+            session.TimeZoneId = BusinessClock.BrowserTimeZoneId(person.TimeZoneId ?? session.TimeZoneId);
         }
 
         private sealed class SessionPersonInfo
@@ -237,6 +252,7 @@ namespace Accounts.Services.Services
             public string? ProfilePhotoUrl { get; set; }
             public string? JobTitle { get; set; }
             public string? Department { get; set; }
+            public string? TimeZoneId { get; set; }
         }
 
         private static List<object> BuildFullTree(int? parentId, ILookup<int?, Models.Menu> lookup)

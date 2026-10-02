@@ -1503,7 +1503,12 @@ public sealed class PayAndAllowancesController(
         // but is excluded automatically from the following month onward.
         if (row.IsEligible && !dto.IsEligible && effectiveTo == null)
         {
-            var today = PakistanClock.Today();
+            var timeZoneId = await db.AttendancePolicies.AsNoTracking()
+                .Where(policy => policy.IsActive && (policy.TenantId == tenant.RequiredTenantId || policy.TenantId == null))
+                .OrderByDescending(policy => policy.TenantId == tenant.RequiredTenantId)
+                .Select(policy => policy.TimeZoneId)
+                .FirstOrDefaultAsync(ct);
+            var today = BusinessClock.Today(timeZoneId);
             effectiveTo = new DateOnly(today.Year, today.Month, 1).AddMonths(1).AddDays(-1);
         }
         else if (!row.IsEligible && dto.IsEligible)

@@ -37,7 +37,7 @@ namespace Accounts.Services.Services
         {
             try
             {
-                var now = PakistanClock.Now();
+                var now = BusinessClock.UtcNow();
             var recordKey = (entityType != null && entityId != null)
                 ? $"{entityType}:{entityId}"
                 : null;
@@ -353,7 +353,7 @@ namespace Accounts.Services.Services
                 AllowDismiss = request.AllowDismiss,
                 CreatedBy = createdByUserId,
                 OwnerIdentityUserId = request.SourceTypeCode.Trim() == "USER" ? createdByUserId : null,
-                CreatedOnUtc = PakistanClock.Now()
+                CreatedOnUtc = BusinessClock.UtcNow()
             };
 
             if (note.SourceTypeCode == "USER")
@@ -420,7 +420,7 @@ namespace Accounts.Services.Services
             if (note.SourceTypeCode == "USER" && string.IsNullOrWhiteSpace(note.OwnerIdentityUserId))
                 note.OwnerIdentityUserId = updatedByUserId;
             note.UpdatedBy = updatedByUserId;
-            note.UpdatedOnUtc = PakistanClock.Now();
+            note.UpdatedOnUtc = BusinessClock.UtcNow();
 
             var oldTargets = await _db.AppNoteTargets.Where(t => t.NoteId == noteId).ToListAsync(ct);
             _db.AppNoteTargets.RemoveRange(oldTargets);
@@ -454,7 +454,7 @@ namespace Accounts.Services.Services
             var note = await LoadNoteAsync(noteId, ct);
             note.IsDeleted = true;
             note.DeletedBy = deletedByUserId;
-            note.DeletedOnUtc = PakistanClock.Now();
+            note.DeletedOnUtc = BusinessClock.UtcNow();
             await _db.SaveChangesAsync(ct);
             _logger.LogInformation("AppNote deleted. NoteId={NoteId} By={UserId}", noteId, deletedByUserId);
         }
@@ -465,7 +465,7 @@ namespace Accounts.Services.Services
         {
             var state = await GetOrCreateStateAsync(noteId, staffId, ct);
             state.IsRead = true;
-            state.ReadOnUtc ??= PakistanClock.Now();
+            state.ReadOnUtc ??= BusinessClock.UtcNow();
             await _db.SaveChangesAsync(ct);
         }
 
@@ -475,9 +475,9 @@ namespace Accounts.Services.Services
         {
             var state = await GetOrCreateStateAsync(noteId, staffId, ct);
             state.IsRead = true;
-            state.ReadOnUtc ??= PakistanClock.Now();
+            state.ReadOnUtc ??= BusinessClock.UtcNow();
             state.IsAcknowledged = true;
-            state.AcknowledgedOnUtc ??= PakistanClock.Now();
+            state.AcknowledgedOnUtc ??= BusinessClock.UtcNow();
             await _db.SaveChangesAsync(ct);
         }
 
@@ -491,7 +491,7 @@ namespace Accounts.Services.Services
 
             var state = await GetOrCreateStateAsync(noteId, staffId, ct);
             state.IsDismissed = true;
-            state.DismissedOnUtc ??= PakistanClock.Now();
+            state.DismissedOnUtc ??= BusinessClock.UtcNow();
             await _db.SaveChangesAsync(ct);
         }
 
