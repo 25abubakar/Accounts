@@ -17,6 +17,12 @@ public static class SpListQuery
     public static SqlParameter IntNullable(string name, int? value) =>
         new(name, SqlDbType.Int) { Value = value.HasValue ? value.Value : DBNull.Value };
 
+    public static SqlParameter BigInt(string name, long value) =>
+        new(name, SqlDbType.BigInt) { Value = value };
+
+    public static SqlParameter Decimal(string name, decimal value) =>
+        new(name, SqlDbType.Decimal) { Precision = 18, Scale = 4, Value = value };
+
     public static SqlParameter NVarChar(string name, string? value) =>
         new(name, SqlDbType.NVarChar) { Value = (object?)value ?? DBNull.Value };
 

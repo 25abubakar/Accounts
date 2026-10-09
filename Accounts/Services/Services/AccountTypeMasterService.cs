@@ -99,7 +99,8 @@ public sealed class AccountTypeMasterService(ApplicationDbContext db, ICurrentUs
                 if (await db.AccountsModuleSettings.AnyAsync(x => x.DefaultCurrencyId == id, ct)
                     || await db.RoznamchaEntries.AnyAsync(x => x.CurrencyId == id, ct)
                     || await db.ReminderReceivables.AnyAsync(x => x.CurrencyId == id, ct)
-                    || await db.ReminderPayables.AnyAsync(x => x.CurrencyId == id, ct))
+                    || await db.ReminderPayables.AnyAsync(x => x.CurrencyId == id, ct)
+                    || await db.SaleRoznamchaProducts.AnyAsync(x => x.CurrencyId == id, ct))
                     throw new InvalidOperationException("Currency cannot be deleted because records use it.");
                 db.AccountsCurrencies.Remove(row);
                 break;

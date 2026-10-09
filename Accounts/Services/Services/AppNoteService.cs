@@ -2,6 +2,7 @@ using Accounts.Data;
 using Accounts.DTOs.CommCenter;
 using Accounts.Models;
 using Accounts.Services.Interfaces;
+using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 
 namespace Accounts.Services.Services
@@ -78,6 +79,14 @@ namespace Accounts.Services.Services
                 }
                 if (wasClosed) await connection.CloseAsync();
             }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                return [];
+            }
+            catch (SqlException) when (ct.IsCancellationRequested)
+            {
+                return [];
+            }
             catch (Exception ex)
             {
                 _logger.LogWarning("AspNetUsers look up bypassed safely: {Message}", ex.Message);
@@ -122,6 +131,14 @@ namespace Accounts.Services.Services
                     }
                 }
                 if (wasClosed) await connection.CloseAsync();
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                return [];
+            }
+            catch (SqlException) when (ct.IsCancellationRequested)
+            {
+                return [];
             }
             catch (Exception ex)
             {
@@ -286,6 +303,10 @@ namespace Accounts.Services.Services
                 .ToList();
             }
             catch (OperationCanceledException)
+            {
+                return new List<AppNoteDto>();
+            }
+            catch (SqlException) when (ct.IsCancellationRequested)
             {
                 return new List<AppNoteDto>();
             }

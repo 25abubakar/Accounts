@@ -310,6 +310,13 @@ namespace Accounts.Controllers
                 new("Copay IMS - Excel",     "FileCog",            "/copay/ims-excel",                "Copay",     1, new()),
                 new("Copay IMS To Merchant", "GitCompareArrows",   "/copay/ims-to-merchant",          "Copay",     2, new()),
                 new("Merchant To Bank",      "Landmark",           "/copay/merchant-to-bank",         "Copay",     3, new()),
+
+                // Sale Roznamcha
+                new("Sale Roznamcha",        "ShoppingBag",        null,                                  null,               91, new()),
+                new("Management",            "SlidersHorizontal",  "/sale-roznamcha/management",        "Sale Roznamcha",  1, new()),
+                new("Inventory",             "Package",            "/sale-roznamcha/inventory",         "Sale Roznamcha",  2, new()),
+                new("Daily Sale",            "ShoppingBag",        "/sale-roznamcha/daily-sale",        "Sale Roznamcha",  3, new()),
+                new("History",               "Clock3",             "/sale-roznamcha/history",           "Sale Roznamcha",  4, new()),
             };
 
             var validKeys = await _db.Features.Select(f => f.FeatureKey).ToHashSetAsync();

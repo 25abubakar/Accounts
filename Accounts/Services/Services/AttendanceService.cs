@@ -1974,7 +1974,7 @@ public sealed class AttendanceService : IAttendanceService
 
         try
         {
-            var sqlRows = await _db.AttendanceDeductionReportRows
+             var sqlRows = await _db.AttendanceDeductionReportRows
                 .FromSqlRaw(
                     "EXEC dbo.usp_Attendance_DeductionReport @TenantId, @Year, @Month, @VisiblePersonIds",
                     new SqlParameter("@TenantId", visibility.TenantId),

@@ -1,5 +1,7 @@
 namespace Accounts.Middleware;
 
+using Microsoft.Data.SqlClient;
+
 /// <summary>
 /// Treats a request-aborted cancellation as a normal client disconnect.
 /// Database operations must continue to receive RequestAborted so abandoned
@@ -35,6 +37,21 @@ public sealed class RequestCancellationMiddleware
             {
                 context.Response.Clear();
                 // 499 is the conventional status for a client-closed request.
+                context.Response.StatusCode = 499;
+            }
+        }
+        catch (SqlException ex) when (
+            context.RequestAborted.IsCancellationRequested &&
+            (ex.Number == 0 || ex.Message.Contains("cancel", StringComparison.OrdinalIgnoreCase)))
+        {
+            _logger.LogDebug(
+                "SQL work for request {Method} {Path} was cancelled after the client disconnected.",
+                context.Request.Method,
+                context.Request.Path);
+
+            if (!context.Response.HasStarted)
+            {
+                context.Response.Clear();
                 context.Response.StatusCode = 499;
             }
         }
