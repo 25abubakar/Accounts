@@ -146,6 +146,7 @@ public sealed class SaleRoznamchaDailySale : ITenantEntity
 {
     [Key] public long Id { get; set; }
     public int TenantId { get; set; }
+    public long? InvoiceId { get; set; }
     public long ProductId { get; set; }
     public int SaleStatusId { get; set; }
     [MaxLength(100)] public string? MarketplaceCompanyId { get; set; }
@@ -180,6 +181,7 @@ public sealed class SaleRoznamchaDailySale : ITenantEntity
     [MaxLength(450)] public string? CreatedByUserId { get; set; }
     public DateTime CreatedOnUtc { get; set; } = DateTime.UtcNow;
     public SaleRoznamchaProduct Product { get; set; } = null!;
+    public SaleRoznamchaInvoice? Invoice { get; set; }
     public SaleRoznamchaSaleStatus SaleStatus { get; set; } = null!;
     public AccountsCurrency? UnitCostCurrency { get; set; }
     public AccountsCurrency SaleCurrency { get; set; } = null!;
@@ -188,6 +190,70 @@ public sealed class SaleRoznamchaDailySale : ITenantEntity
     public ICollection<SaleRoznamchaDailySaleStockAllocation> StockAllocations { get; set; } = [];
     public ICollection<SaleRoznamchaDailySaleCharge> Charges { get; set; } = [];
     public ICollection<SaleRoznamchaDailySaleTransactionDate> TransactionDates { get; set; } = [];
+}
+
+[Table("SaleRoznamchaInvoices")]
+public sealed class SaleRoznamchaInvoice : ITenantEntity
+{
+    [Key] public long Id { get; set; }
+    public int TenantId { get; set; }
+    [Required, MaxLength(40)] public string ReceiptNumber { get; set; } = string.Empty;
+    [MaxLength(100)] public string? OrderId { get; set; }
+    public int SaleStatusId { get; set; }
+    public int SaleCurrencyId { get; set; }
+    public int PayChargeEffectId { get; set; }
+    [Column(TypeName = "decimal(18,2)")] public decimal PayCharges { get; set; }
+    [Column(TypeName = "decimal(18,2)")] public decimal DeliveryFee { get; set; }
+    [Column(TypeName = "decimal(18,2)")] public decimal OtherAmount { get; set; }
+    [Column(TypeName = "decimal(18,2)")] public decimal PromotionAmount { get; set; }
+    [Column(TypeName = "decimal(18,2)")] public decimal RtoChargeAmount { get; set; }
+    [Column(TypeName = "decimal(18,2)")] public decimal ItemsSubtotal { get; set; }
+    [Column(TypeName = "decimal(18,2)")] public decimal TotalAdditions { get; set; }
+    [Column(TypeName = "decimal(18,2)")] public decimal TotalDeductions { get; set; }
+    [Column(TypeName = "decimal(18,2)")] public decimal NetTotal { get; set; }
+    public int? TransactionTypeId { get; set; }
+    public int? PaidStatusId { get; set; }
+    public int? ToAccountId { get; set; }
+    [MaxLength(100)] public string? InterProReference { get; set; }
+    [MaxLength(100)] public string? OrderReference { get; set; }
+    public DateOnly? SaleDate { get; set; }
+    [MaxLength(2000)] public string? Description { get; set; }
+    [MaxLength(450)] public string? CreatedByUserId { get; set; }
+    public DateTime CreatedOnUtc { get; set; } = DateTime.UtcNow;
+    [MaxLength(450)] public string? UpdatedByUserId { get; set; }
+    public DateTime? UpdatedOnUtc { get; set; }
+    public SaleRoznamchaSaleStatus SaleStatus { get; set; } = null!;
+    public AccountsCurrency SaleCurrency { get; set; } = null!;
+    public SaleRoznamchaAmountEffect PayChargeEffect { get; set; } = null!;
+    public ICollection<SaleRoznamchaDailySale> Lines { get; set; } = [];
+    public ICollection<SaleRoznamchaInvoiceCharge> Charges { get; set; } = [];
+    public ICollection<SaleRoznamchaInvoiceTransactionDate> TransactionDates { get; set; } = [];
+}
+
+[Table("SaleRoznamchaInvoiceCharges")]
+public sealed class SaleRoznamchaInvoiceCharge : ITenantEntity
+{
+    [Key] public long Id { get; set; }
+    public int TenantId { get; set; }
+    public long InvoiceId { get; set; }
+    public int ChargeLabelId { get; set; }
+    [Column(TypeName = "decimal(18,2)")] public decimal Amount { get; set; }
+    public DateTime CreatedOnUtc { get; set; } = DateTime.UtcNow;
+    public SaleRoznamchaInvoice Invoice { get; set; } = null!;
+    public SaleRoznamchaChargeLabel ChargeLabel { get; set; } = null!;
+}
+
+[Table("SaleRoznamchaInvoiceTransactionDates")]
+public sealed class SaleRoznamchaInvoiceTransactionDate : ITenantEntity
+{
+    [Key] public long Id { get; set; }
+    public int TenantId { get; set; }
+    public long InvoiceId { get; set; }
+    public int DateLabelId { get; set; }
+    public DateOnly Value { get; set; }
+    public DateTime CreatedOnUtc { get; set; } = DateTime.UtcNow;
+    public SaleRoznamchaInvoice Invoice { get; set; } = null!;
+    public SaleRoznamchaTransactionDateLabel DateLabel { get; set; } = null!;
 }
 
 [Table("SaleRoznamchaPaidStatuses")]

@@ -256,6 +256,130 @@ public sealed class SaleRoznamchaCreatedId
     public long Id { get; set; }
 }
 
+public sealed class SaleRoznamchaInvoiceLineRequest
+{
+    public int PlatformId { get; set; }
+    public long ProductId { get; set; }
+    public decimal Quantity { get; set; }
+    public decimal UnitSalePrice { get; set; }
+}
+
+public sealed class SaveSaleRoznamchaInvoiceRequest
+{
+    public string? OrderId { get; set; }
+    public int SaleStatusId { get; set; }
+    public int SaleCurrencyId { get; set; }
+    public int PayChargeEffectId { get; set; }
+    public decimal PayCharges { get; set; }
+    public decimal DeliveryFee { get; set; }
+    public decimal OtherAmount { get; set; }
+    public decimal PromotionAmount { get; set; }
+    public decimal RtoChargeAmount { get; set; }
+    public int? TransactionTypeId { get; set; }
+    public int? PaidStatusId { get; set; }
+    public int? ToAccountId { get; set; }
+    public string? InterProReference { get; set; }
+    public string? OrderReference { get; set; }
+    public DateOnly? SaleDate { get; set; }
+    public string? Description { get; set; }
+    public IReadOnlyList<SaleRoznamchaInvoiceLineRequest> Items { get; set; } = [];
+    public IReadOnlyList<CreateSaleRoznamchaChargeRequest> Charges { get; set; } = [];
+    public IReadOnlyList<CreateSaleRoznamchaTransactionDateRequest> TransactionDates { get; set; } = [];
+}
+
+public sealed class UpdateSaleRoznamchaInvoiceRequest
+{
+    public string? OrderId { get; set; }
+    public int PayChargeEffectId { get; set; }
+    public decimal PayCharges { get; set; }
+    public decimal DeliveryFee { get; set; }
+    public decimal OtherAmount { get; set; }
+    public decimal PromotionAmount { get; set; }
+    public decimal RtoChargeAmount { get; set; }
+    public int? TransactionTypeId { get; set; }
+    public int? PaidStatusId { get; set; }
+    public int? ToAccountId { get; set; }
+    public string? InterProReference { get; set; }
+    public string? OrderReference { get; set; }
+    public DateOnly? SaleDate { get; set; }
+    public string? Description { get; set; }
+    public IReadOnlyList<CreateSaleRoznamchaChargeRequest> Charges { get; set; } = [];
+    public IReadOnlyList<CreateSaleRoznamchaTransactionDateRequest> TransactionDates { get; set; } = [];
+}
+
+public sealed class SaleRoznamchaInvoiceLineRow
+{
+    public long Id { get; set; }
+    public long ProductId { get; set; }
+    public string ProductCode { get; set; } = string.Empty;
+    public string ProductName { get; set; } = string.Empty;
+    public int CompanyId { get; set; }
+    public string CompanyName { get; set; } = string.Empty;
+    public int PlatformId { get; set; }
+    public string PlatformName { get; set; } = string.Empty;
+    public decimal Quantity { get; set; }
+    public decimal UnitSalePrice { get; set; }
+    public decimal LineTotal { get; set; }
+    public decimal PurchaseUnitCost { get; set; }
+    public string? PurchaseCurrencyCode { get; set; }
+}
+
+public sealed class SaleRoznamchaInvoiceRow
+{
+    public long Id { get; set; }
+    public string ReceiptNumber { get; set; } = string.Empty;
+    public string? OrderId { get; set; }
+    public int SaleStatusId { get; set; }
+    public string StatusName { get; set; } = string.Empty;
+    public int SaleCurrencyId { get; set; }
+    public string SaleCurrencyCode { get; set; } = string.Empty;
+    public int PayChargeEffectId { get; set; }
+    public string PayChargeEffectName { get; set; } = string.Empty;
+    public decimal PayCharges { get; set; }
+    public decimal DeliveryFee { get; set; }
+    public decimal OtherAmount { get; set; }
+    public decimal PromotionAmount { get; set; }
+    public decimal RtoChargeAmount { get; set; }
+    public decimal ItemsSubtotal { get; set; }
+    public decimal TotalAdditions { get; set; }
+    public decimal TotalDeductions { get; set; }
+    public decimal NetTotal { get; set; }
+    public int? TransactionTypeId { get; set; }
+    public string? TransactionTypeName { get; set; }
+    public int? PaidStatusId { get; set; }
+    public string? PaidStatusName { get; set; }
+    public int? ToAccountId { get; set; }
+    public string? ToAccountName { get; set; }
+    public string? InterProReference { get; set; }
+    public string? OrderReference { get; set; }
+    public DateOnly? SaleDate { get; set; }
+    public string? Description { get; set; }
+    public decimal TotalQuantity { get; set; }
+    public int ItemCount { get; set; }
+    public string ProductSummary { get; set; } = string.Empty;
+    public DateTime CreatedOnUtc { get; set; }
+    public DateTime? UpdatedOnUtc { get; set; }
+    public IReadOnlyList<SaleRoznamchaInvoiceLineRow> Items { get; set; } = [];
+    public IReadOnlyList<SaleRoznamchaInvoiceChargeRow> Charges { get; set; } = [];
+    public IReadOnlyList<SaleRoznamchaInvoiceTransactionDateRow> TransactionDates { get; set; } = [];
+}
+
+public sealed class SaleRoznamchaInvoiceChargeRow
+{
+    public long Id { get; set; }
+    public int ChargeLabelId { get; set; }
+    public string Label { get; set; } = string.Empty;
+    public decimal Amount { get; set; }
+}
+
+public sealed class SaleRoznamchaInvoiceTransactionDateRow
+{
+    public long Id { get; set; }
+    public int DateLabelId { get; set; }
+    public string Label { get; set; } = string.Empty;
+    public DateOnly Value { get; set; }
+}
+
 public sealed class SaleRoznamchaHistoryAggregateRow
 {
     public string Dimension { get; set; } = string.Empty;

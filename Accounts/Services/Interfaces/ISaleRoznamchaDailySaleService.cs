@@ -18,4 +18,11 @@ public interface ISaleRoznamchaDailySaleService
     Task<SaleRoznamchaDailySaleRow> CreateAsync(
         CreateSaleRoznamchaDailySaleRequest request,
         CancellationToken ct = default);
+
+    Task<IReadOnlyList<SaleRoznamchaInvoiceRow>> ListInvoicesAsync(
+        int? categoryId, int? companyId, int? platformId, int? productCategoryId,
+        CancellationToken ct = default);
+    Task<SaleRoznamchaInvoiceRow> GetInvoiceAsync(long id, CancellationToken ct = default);
+    Task<SaleRoznamchaInvoiceRow> CreateInvoiceAsync(SaveSaleRoznamchaInvoiceRequest request, CancellationToken ct = default);
+    Task<SaleRoznamchaInvoiceRow> UpdateInvoiceAsync(long id, UpdateSaleRoznamchaInvoiceRequest request, CancellationToken ct = default);
 }
