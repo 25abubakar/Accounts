@@ -14,6 +14,10 @@ public interface ISaleRoznamchaInventoryService
         bool activeOnly,
         CancellationToken ct = default);
 
+    Task<IReadOnlyList<SaleRoznamchaInventoryPurchaseRow>> ListPurchasesAsync(
+        int? categoryId, int? companyId, int? platformId, int? productCategoryId,
+        CancellationToken ct = default);
+
     Task<SaleRoznamchaInventoryRow> SaveAsync(
         long? id,
         SaveSaleRoznamchaInventoryRequest request,

@@ -100,6 +100,7 @@ public sealed class SaleRoznamchaStockReceipt : ITenantEntity
     [Column(TypeName = "decimal(18,4)")] public decimal RemainingQuantity { get; set; }
     [Column(TypeName = "decimal(18,2)")] public decimal UnitCost { get; set; }
     public int CurrencyId { get; set; }
+    [MaxLength(1000)] public string? Description { get; set; }
     public DateTime PurchasedOnUtc { get; set; } = DateTime.UtcNow;
     [MaxLength(450)] public string? CreatedByUserId { get; set; }
     public DateTime CreatedOnUtc { get; set; } = DateTime.UtcNow;

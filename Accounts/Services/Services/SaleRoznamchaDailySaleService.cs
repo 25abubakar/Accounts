@@ -181,18 +181,23 @@ public sealed class SaleRoznamchaDailySaleService(
         int? categoryId, int? companyId, int? platformId, int? productCategoryId,
         CancellationToken ct = default)
     {
-        var ids = await db.SaleRoznamchaInvoices.AsNoTracking()
+        var invoices = await db.SaleRoznamchaInvoices.AsNoTracking()
+            .Include(x => x.SaleStatus).Include(x => x.SaleCurrency).Include(x => x.PayChargeEffect)
+            .Include(x => x.Lines).ThenInclude(x => x.Product).ThenInclude(x => x.ProductCategory)
+                .ThenInclude(x => x.Platform).ThenInclude(x => x.Company)
+            .Include(x => x.Lines).ThenInclude(x => x.UnitCostCurrency)
+            .Include(x => x.Charges).ThenInclude(x => x.ChargeLabel)
+            .Include(x => x.TransactionDates).ThenInclude(x => x.DateLabel)
             .Where(invoice => invoice.Lines.Any(line =>
                 (!categoryId.HasValue || line.Product.ProductCategory.Platform.Company.CategoryId == categoryId) &&
                 (!companyId.HasValue || line.Product.ProductCategory.Platform.CompanyId == companyId) &&
                 (!platformId.HasValue || line.Product.ProductCategory.PlatformId == platformId) &&
                 (!productCategoryId.HasValue || line.Product.ProductCategoryId == productCategoryId)))
             .OrderByDescending(x => x.CreatedOnUtc).ThenByDescending(x => x.Id)
-            .Select(x => x.Id)
+            .AsSplitQuery()
             .ToListAsync(ct);
-        var result = new List<SaleRoznamchaInvoiceRow>(ids.Count);
-        foreach (var id in ids) result.Add(await GetInvoiceAsync(id, ct));
-        return result;
+        var names = await LoadInvoiceLookupNamesAsync(invoices, ct);
+        return invoices.Select(x => MapInvoice(x, names.TransactionTypes, names.PaidStatuses, names.Accounts)).ToList();
     }
 
     public async Task<SaleRoznamchaInvoiceRow> GetInvoiceAsync(long id, CancellationToken ct = default)
@@ -204,19 +209,19 @@ public sealed class SaleRoznamchaDailySaleService(
             .Include(x => x.Lines).ThenInclude(x => x.UnitCostCurrency)
             .Include(x => x.Charges).ThenInclude(x => x.ChargeLabel)
             .Include(x => x.TransactionDates).ThenInclude(x => x.DateLabel)
+            .AsSplitQuery()
             .SingleOrDefaultAsync(x => x.Id == id, ct)
             ?? throw new KeyNotFoundException("Invoice was not found.");
+        var names = await LoadInvoiceLookupNamesAsync([invoice], ct);
+        return MapInvoice(invoice, names.TransactionTypes, names.PaidStatuses, names.Accounts);
+    }
 
-        var transactionTypeName = invoice.TransactionTypeId.HasValue
-            ? await db.AccountsTransTypes.AsNoTracking().Where(x => x.Id == invoice.TransactionTypeId).Select(x => x.Name).FirstOrDefaultAsync(ct)
-            : null;
-        var paidStatusName = invoice.PaidStatusId.HasValue
-            ? await db.SaleRoznamchaPaidStatuses.AsNoTracking().Where(x => x.Id == invoice.PaidStatusId).Select(x => x.Name).FirstOrDefaultAsync(ct)
-            : null;
-        var accountName = invoice.ToAccountId.HasValue
-            ? await db.AccountsChartAccounts.AsNoTracking().Where(x => x.Id == invoice.ToAccountId).Select(x => x.AccountName).FirstOrDefaultAsync(ct)
-            : null;
-
+    private static SaleRoznamchaInvoiceRow MapInvoice(
+        SaleRoznamchaInvoice invoice,
+        IReadOnlyDictionary<int, string> transactionTypes,
+        IReadOnlyDictionary<int, string> paidStatuses,
+        IReadOnlyDictionary<int, string> accounts)
+    {
         var items = invoice.Lines.OrderBy(x => x.Id).Select(line => new SaleRoznamchaInvoiceLineRow
         {
             Id = line.Id, ProductId = line.ProductId, ProductCode = line.Product.ProductCode,
@@ -237,9 +242,12 @@ public sealed class SaleRoznamchaDailySaleService(
             PromotionAmount = invoice.PromotionAmount, RtoChargeAmount = invoice.RtoChargeAmount,
             ItemsSubtotal = invoice.ItemsSubtotal, TotalAdditions = invoice.TotalAdditions,
             TotalDeductions = invoice.TotalDeductions, NetTotal = invoice.NetTotal,
-            TransactionTypeId = invoice.TransactionTypeId, TransactionTypeName = transactionTypeName,
-            PaidStatusId = invoice.PaidStatusId, PaidStatusName = paidStatusName,
-            ToAccountId = invoice.ToAccountId, ToAccountName = accountName,
+            TransactionTypeId = invoice.TransactionTypeId,
+            TransactionTypeName = LookupName(transactionTypes, invoice.TransactionTypeId),
+            PaidStatusId = invoice.PaidStatusId,
+            PaidStatusName = LookupName(paidStatuses, invoice.PaidStatusId),
+            ToAccountId = invoice.ToAccountId,
+            ToAccountName = LookupName(accounts, invoice.ToAccountId),
             InterProReference = invoice.InterProReference, OrderReference = invoice.OrderReference,
             SaleDate = invoice.SaleDate, Description = invoice.Description,
             TotalQuantity = items.Sum(x => x.Quantity), ItemCount = items.Count,
@@ -252,6 +260,24 @@ public sealed class SaleRoznamchaDailySaleService(
                     { Id = x.Id, DateLabelId = x.DateLabelId, Label = x.DateLabel.Name, Value = x.Value }).ToList(),
         };
     }
+
+    private async Task<(
+        IReadOnlyDictionary<int, string> TransactionTypes,
+        IReadOnlyDictionary<int, string> PaidStatuses,
+        IReadOnlyDictionary<int, string> Accounts)> LoadInvoiceLookupNamesAsync(
+            IReadOnlyCollection<SaleRoznamchaInvoice> invoices, CancellationToken ct)
+    {
+        var transactionTypeIds = invoices.Where(x => x.TransactionTypeId.HasValue).Select(x => x.TransactionTypeId!.Value).Distinct().ToList();
+        var paidStatusIds = invoices.Where(x => x.PaidStatusId.HasValue).Select(x => x.PaidStatusId!.Value).Distinct().ToList();
+        var accountIds = invoices.Where(x => x.ToAccountId.HasValue).Select(x => x.ToAccountId!.Value).Distinct().ToList();
+        var transactionTypes = await db.AccountsTransTypes.AsNoTracking().Where(x => transactionTypeIds.Contains(x.Id)).ToDictionaryAsync(x => x.Id, x => x.Name, ct);
+        var paidStatuses = await db.SaleRoznamchaPaidStatuses.AsNoTracking().Where(x => paidStatusIds.Contains(x.Id)).ToDictionaryAsync(x => x.Id, x => x.Name, ct);
+        var accounts = await db.AccountsChartAccounts.AsNoTracking().Where(x => accountIds.Contains(x.Id)).ToDictionaryAsync(x => x.Id, x => x.AccountName, ct);
+        return (transactionTypes, paidStatuses, accounts);
+    }
+
+    private static string? LookupName(IReadOnlyDictionary<int, string> names, int? id)
+        => id.HasValue && names.TryGetValue(id.Value, out var name) ? name : null;
 
     public async Task<SaleRoznamchaInvoiceRow> CreateInvoiceAsync(
         SaveSaleRoznamchaInvoiceRequest request, CancellationToken ct = default)

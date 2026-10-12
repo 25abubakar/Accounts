@@ -89,6 +89,7 @@ public sealed class SaveSaleRoznamchaInventoryRequest
     public decimal Quantity { get; set; }
     public decimal? PurchasePrice { get; set; }
     public int? CurrencyId { get; set; }
+    public string? Description { get; set; }
     public bool IsActive { get; set; } = true;
 }
 
@@ -97,6 +98,34 @@ public sealed class AddSaleRoznamchaStockRequest
     public decimal Quantity { get; set; }
     public decimal? PurchasePrice { get; set; }
     public int? CurrencyId { get; set; }
+    public string? Description { get; set; }
+}
+
+public sealed class SaleRoznamchaInventoryPurchaseRow
+{
+    public long Id { get; set; }
+    public long ProductId { get; set; }
+    public string ProductCode { get; set; } = string.Empty;
+    public string ProductName { get; set; } = string.Empty;
+    public int CategoryId { get; set; }
+    public string CategoryName { get; set; } = string.Empty;
+    public int CompanyId { get; set; }
+    public string CompanyName { get; set; } = string.Empty;
+    public int PlatformId { get; set; }
+    public string PlatformName { get; set; } = string.Empty;
+    public int ProductCategoryId { get; set; }
+    public string ProductCategoryName { get; set; } = string.Empty;
+    public decimal PurchasedQuantity { get; set; }
+    public decimal SoldQuantity { get; set; }
+    public decimal RemainingQuantity { get; set; }
+    public decimal UnitCost { get; set; }
+    public int CurrencyId { get; set; }
+    public string CurrencyCode { get; set; } = string.Empty;
+    public decimal TotalPurchaseCost { get; set; }
+    public decimal RemainingStockValue { get; set; }
+    public DateTime PurchasedOnUtc { get; set; }
+    public string? Description { get; set; }
+    public string BatchStatus { get; set; } = string.Empty;
 }
 
 public sealed class SaleRoznamchaCurrencyRow

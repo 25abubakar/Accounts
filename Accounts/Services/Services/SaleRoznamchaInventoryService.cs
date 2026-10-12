@@ -68,6 +68,19 @@ public sealed class SaleRoznamchaInventoryService(
             SpListQuery.IntNullable("@ProductCategoryId", productCategoryId),
             SpListQuery.Bit("@ActiveOnly", activeOnly));
 
+    public async Task<IReadOnlyList<SaleRoznamchaInventoryPurchaseRow>> ListPurchasesAsync(
+        int? categoryId, int? companyId, int? platformId, int? productCategoryId,
+        CancellationToken ct = default) =>
+        await SpListQuery.ExecAsync<SaleRoznamchaInventoryPurchaseRow>(
+            db,
+            "EXEC dbo.usp_SaleRoznamcha_InventoryPurchaseList @TenantId, @CategoryId, @CompanyId, @PlatformId, @ProductCategoryId",
+            ct,
+            SpListQuery.TenantId(current.TenantId),
+            SpListQuery.IntNullable("@CategoryId", categoryId),
+            SpListQuery.IntNullable("@CompanyId", companyId),
+            SpListQuery.IntNullable("@PlatformId", platformId),
+            SpListQuery.IntNullable("@ProductCategoryId", productCategoryId));
+
     public async Task<SaleRoznamchaInventoryRow> SaveAsync(
         long? id,
         SaveSaleRoznamchaInventoryRequest request,
@@ -104,7 +117,7 @@ public sealed class SaleRoznamchaInventoryService(
                 await ValidateCurrencyAsync(request.CurrencyId!.Value, ct);
                 created = await SpListQuery.ExecAsync<SaleRoznamchaCreatedId>(
                     db,
-                    "EXEC dbo.usp_SaleRoznamcha_InventoryProductCreate @TenantId, @ProductCategoryId, @ProductCode, @ProductName, @Quantity, @UnitCost, @CurrencyId, @IsActive, @UserId",
+                    "EXEC dbo.usp_SaleRoznamcha_InventoryProductCreate @TenantId, @ProductCategoryId, @ProductCode, @ProductName, @Quantity, @UnitCost, @CurrencyId, @Description, @IsActive, @UserId",
                     ct,
                     SpListQuery.TenantId(current.TenantId),
                     SpListQuery.Int("@ProductCategoryId", request.ProductCategoryId),
@@ -113,6 +126,7 @@ public sealed class SaleRoznamchaInventoryService(
                     SpListQuery.Decimal("@Quantity", request.Quantity),
                     SpListQuery.Decimal("@UnitCost", request.PurchasePrice!.Value),
                     SpListQuery.Int("@CurrencyId", request.CurrencyId!.Value),
+                    SpListQuery.NVarChar("@Description", CleanDescription(request.Description)),
                     SpListQuery.Bit("@IsActive", request.IsActive),
                     SpListQuery.NVarChar("@UserId", current.UserId));
             }
@@ -138,13 +152,14 @@ public sealed class SaleRoznamchaInventoryService(
         {
             var result = await SpListQuery.ExecAsync<SaleRoznamchaCreatedId>(
                 db,
-                "EXEC dbo.usp_SaleRoznamcha_InventoryStockAdd @TenantId, @ProductId, @Quantity, @UnitCost, @CurrencyId, @UserId",
+                "EXEC dbo.usp_SaleRoznamcha_InventoryStockAdd @TenantId, @ProductId, @Quantity, @UnitCost, @CurrencyId, @Description, @UserId",
                 ct,
                 SpListQuery.TenantId(current.TenantId),
                 SpListQuery.BigInt("@ProductId", id),
                 SpListQuery.Decimal("@Quantity", request.Quantity),
                 SpListQuery.Decimal("@UnitCost", request.PurchasePrice!.Value),
                 SpListQuery.Int("@CurrencyId", request.CurrencyId!.Value),
+                SpListQuery.NVarChar("@Description", CleanDescription(request.Description)),
                 SpListQuery.NVarChar("@UserId", current.UserId));
             var savedId = result.SingleOrDefault()?.Id
                 ?? throw new InvalidOperationException("Stock purchase could not be saved.");
@@ -239,5 +254,13 @@ public sealed class SaleRoznamchaInventoryService(
         if (code.Any(character => !char.IsLetterOrDigit(character) && character != '-'))
             throw new InvalidOperationException("Product code may contain only letters, numbers and hyphens.");
         return code;
+    }
+
+    private static string? CleanDescription(string? value)
+    {
+        var description = string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+        if (description?.Length > 1000)
+            throw new InvalidOperationException("Purchase description cannot exceed 1000 characters.");
+        return description;
     }
 }

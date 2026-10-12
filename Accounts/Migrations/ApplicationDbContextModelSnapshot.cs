@@ -8437,6 +8437,9 @@ namespace Accounts.Migrations
                     b.Property<decimal>("InventoryDelta")
                         .HasColumnType("decimal(18,4)");
 
+                    b.Property<long?>("InvoiceId")
+                        .HasColumnType("bigint");
+
                     b.Property<string>("MarketplaceCompanyId")
                         .HasMaxLength(100)
                         .HasColumnType("nvarchar(100)");
@@ -8520,6 +8523,8 @@ namespace Accounts.Migrations
                     b.HasIndex("UnitCostCurrencyId");
 
                     b.HasIndex("TenantId", "CreatedOnUtc");
+
+                    b.HasIndex("TenantId", "InvoiceId");
 
                     b.HasIndex("TenantId", "PayChargeEffectId");
 
@@ -8683,6 +8688,180 @@ namespace Accounts.Migrations
                     b.HasIndex("TenantId", "ProductId", "CreatedOnUtc");
 
                     b.ToTable("SaleRoznamchaInventoryMovements");
+                });
+
+            modelBuilder.Entity("Accounts.Models.SaleRoznamchaInvoice", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<long>("Id"));
+
+                    b.Property<string>("CreatedByUserId")
+                        .HasMaxLength(450)
+                        .HasColumnType("nvarchar(450)");
+
+                    b.Property<DateTime>("CreatedOnUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<decimal>("DeliveryFee")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<string>("Description")
+                        .HasMaxLength(2000)
+                        .HasColumnType("nvarchar(2000)");
+
+                    b.Property<string>("InterProReference")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<decimal>("ItemsSubtotal")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<decimal>("NetTotal")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<string>("OrderId")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<string>("OrderReference")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<decimal>("OtherAmount")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<int?>("PaidStatusId")
+                        .HasColumnType("int");
+
+                    b.Property<int>("PayChargeEffectId")
+                        .HasColumnType("int");
+
+                    b.Property<decimal>("PayCharges")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<decimal>("PromotionAmount")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<string>("ReceiptNumber")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("nvarchar(40)");
+
+                    b.Property<decimal>("RtoChargeAmount")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<int>("SaleCurrencyId")
+                        .HasColumnType("int");
+
+                    b.Property<DateOnly?>("SaleDate")
+                        .HasColumnType("date");
+
+                    b.Property<int>("SaleStatusId")
+                        .HasColumnType("int");
+
+                    b.Property<int>("TenantId")
+                        .HasColumnType("int");
+
+                    b.Property<int?>("ToAccountId")
+                        .HasColumnType("int");
+
+                    b.Property<decimal>("TotalAdditions")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<decimal>("TotalDeductions")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<int?>("TransactionTypeId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("UpdatedByUserId")
+                        .HasMaxLength(450)
+                        .HasColumnType("nvarchar(450)");
+
+                    b.Property<DateTime?>("UpdatedOnUtc")
+                        .HasColumnType("datetime2");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("SaleCurrencyId");
+
+                    b.HasIndex("TenantId", "CreatedOnUtc");
+
+                    b.HasIndex("TenantId", "PayChargeEffectId");
+
+                    b.HasIndex("TenantId", "ReceiptNumber")
+                        .IsUnique();
+
+                    b.HasIndex("TenantId", "SaleStatusId");
+
+                    b.ToTable("SaleRoznamchaInvoices");
+                });
+
+            modelBuilder.Entity("Accounts.Models.SaleRoznamchaInvoiceCharge", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<long>("Id"));
+
+                    b.Property<decimal>("Amount")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<int>("ChargeLabelId")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime>("CreatedOnUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<long>("InvoiceId")
+                        .HasColumnType("bigint");
+
+                    b.Property<int>("TenantId")
+                        .HasColumnType("int");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TenantId", "ChargeLabelId");
+
+                    b.HasIndex("TenantId", "InvoiceId", "ChargeLabelId");
+
+                    b.ToTable("SaleRoznamchaInvoiceCharges");
+                });
+
+            modelBuilder.Entity("Accounts.Models.SaleRoznamchaInvoiceTransactionDate", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<long>("Id"));
+
+                    b.Property<DateTime>("CreatedOnUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<int>("DateLabelId")
+                        .HasColumnType("int");
+
+                    b.Property<long>("InvoiceId")
+                        .HasColumnType("bigint");
+
+                    b.Property<int>("TenantId")
+                        .HasColumnType("int");
+
+                    b.Property<DateOnly>("Value")
+                        .HasColumnType("date");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TenantId", "DateLabelId");
+
+                    b.HasIndex("TenantId", "InvoiceId", "DateLabelId");
+
+                    b.ToTable("SaleRoznamchaInvoiceTransactionDates");
                 });
 
             modelBuilder.Entity("Accounts.Models.SaleRoznamchaPaidStatus", b =>
@@ -12028,6 +12207,12 @@ namespace Accounts.Migrations
                         .HasForeignKey("UnitCostCurrencyId")
                         .OnDelete(DeleteBehavior.Restrict);
 
+                    b.HasOne("Accounts.Models.SaleRoznamchaInvoice", "Invoice")
+                        .WithMany("Lines")
+                        .HasForeignKey("TenantId", "InvoiceId")
+                        .HasPrincipalKey("TenantId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict);
+
                     b.HasOne("Accounts.Models.SaleRoznamchaAmountEffect", "PayChargeEffect")
                         .WithMany("PayChargeSales")
                         .HasForeignKey("TenantId", "PayChargeEffectId")
@@ -12048,6 +12233,8 @@ namespace Accounts.Migrations
                         .HasPrincipalKey("TenantId", "Id")
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
+
+                    b.Navigation("Invoice");
 
                     b.Navigation("PayChargeEffect");
 
@@ -12181,6 +12368,95 @@ namespace Accounts.Migrations
                     b.Navigation("Product");
 
                     b.Navigation("StockReceipt");
+                });
+
+            modelBuilder.Entity("Accounts.Models.SaleRoznamchaInvoice", b =>
+                {
+                    b.HasOne("Accounts.Models.AccountsCurrency", "SaleCurrency")
+                        .WithMany()
+                        .HasForeignKey("SaleCurrencyId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("Accounts.Models.Tenant", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("Accounts.Models.SaleRoznamchaAmountEffect", "PayChargeEffect")
+                        .WithMany()
+                        .HasForeignKey("TenantId", "PayChargeEffectId")
+                        .HasPrincipalKey("TenantId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("Accounts.Models.SaleRoznamchaSaleStatus", "SaleStatus")
+                        .WithMany()
+                        .HasForeignKey("TenantId", "SaleStatusId")
+                        .HasPrincipalKey("TenantId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("PayChargeEffect");
+
+                    b.Navigation("SaleCurrency");
+
+                    b.Navigation("SaleStatus");
+                });
+
+            modelBuilder.Entity("Accounts.Models.SaleRoznamchaInvoiceCharge", b =>
+                {
+                    b.HasOne("Accounts.Models.Tenant", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("Accounts.Models.SaleRoznamchaChargeLabel", "ChargeLabel")
+                        .WithMany()
+                        .HasForeignKey("TenantId", "ChargeLabelId")
+                        .HasPrincipalKey("TenantId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("Accounts.Models.SaleRoznamchaInvoice", "Invoice")
+                        .WithMany("Charges")
+                        .HasForeignKey("TenantId", "InvoiceId")
+                        .HasPrincipalKey("TenantId", "Id")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("ChargeLabel");
+
+                    b.Navigation("Invoice");
+                });
+
+            modelBuilder.Entity("Accounts.Models.SaleRoznamchaInvoiceTransactionDate", b =>
+                {
+                    b.HasOne("Accounts.Models.Tenant", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("Accounts.Models.SaleRoznamchaTransactionDateLabel", "DateLabel")
+                        .WithMany()
+                        .HasForeignKey("TenantId", "DateLabelId")
+                        .HasPrincipalKey("TenantId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("Accounts.Models.SaleRoznamchaInvoice", "Invoice")
+                        .WithMany("TransactionDates")
+                        .HasForeignKey("TenantId", "InvoiceId")
+                        .HasPrincipalKey("TenantId", "Id")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("DateLabel");
+
+                    b.Navigation("Invoice");
                 });
 
             modelBuilder.Entity("Accounts.Models.SaleRoznamchaPaidStatus", b =>
@@ -12663,6 +12939,15 @@ namespace Accounts.Migrations
                     b.Navigation("InventoryMovements");
 
                     b.Navigation("StockAllocations");
+
+                    b.Navigation("TransactionDates");
+                });
+
+            modelBuilder.Entity("Accounts.Models.SaleRoznamchaInvoice", b =>
+                {
+                    b.Navigation("Charges");
+
+                    b.Navigation("Lines");
 
                     b.Navigation("TransactionDates");
                 });

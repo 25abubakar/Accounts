@@ -31,6 +31,19 @@ public sealed class SaleRoznamchaInventoryController(
             await service.ListAsync(categoryId, companyId, platformId, productCategoryId, activeOnly, ct)));
     }
 
+    [HttpGet("purchases")]
+    public async Task<IActionResult> Purchases(
+        [FromQuery] int? categoryId,
+        [FromQuery] int? companyId,
+        [FromQuery] int? platformId,
+        [FromQuery] int? productCategoryId,
+        CancellationToken ct = default)
+    {
+        var denied = await Guard("VIEW", ct); if (denied != null) return denied;
+        return Ok(ApiResponse<IReadOnlyList<SaleRoznamchaInventoryPurchaseRow>>.Ok(
+            await service.ListPurchasesAsync(categoryId, companyId, platformId, productCategoryId, ct)));
+    }
+
     [HttpGet("hierarchy")]
     public async Task<IActionResult> Hierarchy(CancellationToken ct)
     {

@@ -190,6 +190,7 @@ internal static class SaleRoznamchaSql
             @Quantity decimal(18,4),
             @UnitCost decimal(18,2),
             @CurrencyId int,
+            @Description nvarchar(1000) = NULL,
             @IsActive bit,
             @UserId nvarchar(450) = NULL
         AS
@@ -247,9 +248,10 @@ internal static class SaleRoznamchaSql
                 IF @Quantity > 0
                 BEGIN
                     INSERT INTO dbo.SaleRoznamchaStockReceipts
-                        (TenantId, ProductId, PurchasedQuantity, RemainingQuantity, UnitCost, CurrencyId,
+                        (TenantId, ProductId, PurchasedQuantity, RemainingQuantity, UnitCost, CurrencyId, Description,
                          PurchasedOnUtc, CreatedByUserId, CreatedOnUtc)
                     VALUES (@TenantId, @ProductId, @Quantity, @Quantity, @UnitCost, @CurrencyId,
+                            NULLIF(LTRIM(RTRIM(@Description)), N''),
                             SYSUTCDATETIME(), @UserId, SYSUTCDATETIME());
                     SET @ReceiptId = SCOPE_IDENTITY();
 
@@ -311,6 +313,7 @@ internal static class SaleRoznamchaSql
             @Quantity decimal(18,4),
             @UnitCost decimal(18,2),
             @CurrencyId int,
+            @Description nvarchar(1000) = NULL,
             @UserId nvarchar(450) = NULL
         AS
         BEGIN
@@ -329,9 +332,10 @@ internal static class SaleRoznamchaSql
                 SET @BalanceAfter = @CurrentBalance + @Quantity;
 
                 INSERT INTO dbo.SaleRoznamchaStockReceipts
-                    (TenantId, ProductId, PurchasedQuantity, RemainingQuantity, UnitCost, CurrencyId,
+                    (TenantId, ProductId, PurchasedQuantity, RemainingQuantity, UnitCost, CurrencyId, Description,
                      PurchasedOnUtc, CreatedByUserId, CreatedOnUtc)
                 VALUES (@TenantId, @ProductId, @Quantity, @Quantity, @UnitCost, @CurrencyId,
+                        NULLIF(LTRIM(RTRIM(@Description)), N''),
                         SYSUTCDATETIME(), @UserId, SYSUTCDATETIME());
                 SET @ReceiptId = SCOPE_IDENTITY();
 
@@ -351,6 +355,69 @@ internal static class SaleRoznamchaSql
                 IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
                 THROW;
             END CATCH;
+        END;
+        """;
+
+    internal const string InventoryPurchaseListProcedure =
+        """
+        CREATE OR ALTER PROCEDURE dbo.usp_SaleRoznamcha_InventoryPurchaseList
+            @TenantId int,
+            @CategoryId int = NULL,
+            @CompanyId int = NULL,
+            @PlatformId int = NULL,
+            @ProductCategoryId int = NULL
+        AS
+        BEGIN
+            SET NOCOUNT ON;
+
+            SELECT receipt.Id,
+                   product.Id ProductId,
+                   product.ProductCode,
+                   product.Name ProductName,
+                   category.Id CategoryId,
+                   category.Name CategoryName,
+                   company.Id CompanyId,
+                   company.Name CompanyName,
+                   platform.Id PlatformId,
+                   platform.Name PlatformName,
+                   productCategory.Id ProductCategoryId,
+                   productCategory.Name ProductCategoryName,
+                   receipt.PurchasedQuantity,
+                   receipt.PurchasedQuantity - receipt.RemainingQuantity SoldQuantity,
+                   receipt.RemainingQuantity,
+                   receipt.UnitCost,
+                   receipt.CurrencyId,
+                   currency.Code CurrencyCode,
+                   CAST(receipt.PurchasedQuantity * receipt.UnitCost AS decimal(38,2)) TotalPurchaseCost,
+                   CAST(receipt.RemainingQuantity * receipt.UnitCost AS decimal(38,2)) RemainingStockValue,
+                   receipt.PurchasedOnUtc,
+                   receipt.Description,
+                   CASE
+                       WHEN receipt.RemainingQuantity <= 0 THEN N'Fully Sold'
+                       WHEN receipt.RemainingQuantity < receipt.PurchasedQuantity THEN N'Partially Sold'
+                       ELSE N'Available'
+                   END BatchStatus
+            FROM dbo.SaleRoznamchaStockReceipts receipt
+            INNER JOIN dbo.SaleRoznamchaProducts product
+                ON product.TenantId = receipt.TenantId AND product.Id = receipt.ProductId
+            INNER JOIN dbo.SaleRoznamchaProductCategories productCategory
+                ON productCategory.TenantId = product.TenantId AND productCategory.Id = product.ProductCategoryId
+            INNER JOIN dbo.SaleRoznamchaPlatforms platform
+                ON platform.TenantId = productCategory.TenantId AND platform.Id = productCategory.PlatformId
+            INNER JOIN dbo.SaleRoznamchaCompanies company
+                ON company.TenantId = platform.TenantId AND company.Id = platform.CompanyId
+            INNER JOIN dbo.SaleRoznamchaCategories category
+                ON category.TenantId = company.TenantId AND category.Id = company.CategoryId
+            INNER JOIN dbo.AccountsCurrencies currency
+                ON currency.Id = receipt.CurrencyId
+               AND (currency.TenantId IS NULL OR currency.TenantId = receipt.TenantId)
+            WHERE receipt.TenantId = @TenantId
+              AND product.IsDeleted = 0
+              AND (@CategoryId IS NULL OR category.Id = @CategoryId)
+              AND (@CompanyId IS NULL OR company.Id = @CompanyId)
+              AND (@PlatformId IS NULL OR platform.Id = @PlatformId)
+              AND (@ProductCategoryId IS NULL OR productCategory.Id = @ProductCategoryId)
+            ORDER BY receipt.PurchasedOnUtc DESC, receipt.Id DESC;
         END;
         """;
 
