@@ -182,6 +182,7 @@ namespace Accounts.Data
         public DbSet<SaleRoznamchaPaidStatus> SaleRoznamchaPaidStatuses => Set<SaleRoznamchaPaidStatus>();
         public DbSet<SaleRoznamchaChargeLabel> SaleRoznamchaChargeLabels => Set<SaleRoznamchaChargeLabel>();
         public DbSet<SaleRoznamchaTransactionDateLabel> SaleRoznamchaTransactionDateLabels => Set<SaleRoznamchaTransactionDateLabel>();
+        public DbSet<SaleRoznamchaAmountEffect> SaleRoznamchaAmountEffects => Set<SaleRoznamchaAmountEffect>();
         public DbSet<SaleRoznamchaDailySale> SaleRoznamchaDailySales => Set<SaleRoznamchaDailySale>();
         public DbSet<SaleRoznamchaDailySaleCharge> SaleRoznamchaDailySaleCharges => Set<SaleRoznamchaDailySaleCharge>();
         public DbSet<SaleRoznamchaDailySaleTransactionDate> SaleRoznamchaDailySaleTransactionDates => Set<SaleRoznamchaDailySaleTransactionDate>();
@@ -450,6 +451,9 @@ namespace Accounts.Data
                 _tenantService != null && !_tenantService.IsSuperAdmin &&
                 _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
             builder.Entity<SaleRoznamchaTransactionDateLabel>().HasQueryFilter(row =>
+                _tenantService != null && !_tenantService.IsSuperAdmin &&
+                _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
+            builder.Entity<SaleRoznamchaAmountEffect>().HasQueryFilter(row =>
                 _tenantService != null && !_tenantService.IsSuperAdmin &&
                 _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
             builder.Entity<SaleRoznamchaDailySale>().HasQueryFilter(row =>
@@ -2226,6 +2230,13 @@ namespace Accounts.Data
                 e.HasIndex(x => new { x.TenantId, x.Code }).IsUnique();
                 e.HasOne<Tenant>().WithMany().HasForeignKey(x => x.TenantId).OnDelete(DeleteBehavior.Restrict);
             });
+            builder.Entity<SaleRoznamchaAmountEffect>(e =>
+            {
+                e.HasAlternateKey(x => new { x.TenantId, x.Id });
+                e.HasIndex(x => new { x.TenantId, x.Code }).IsUnique();
+                e.HasCheckConstraint("CK_SaleRoznamchaAmountEffects_Multiplier", "[Multiplier] IN (-1, 1)");
+                e.HasOne<Tenant>().WithMany().HasForeignKey(x => x.TenantId).OnDelete(DeleteBehavior.Restrict);
+            });
             builder.Entity<SaleRoznamchaDailySale>(e =>
             {
                 e.Property(x => x.UnitCost).HasPrecision(18, 2);
@@ -2243,6 +2254,13 @@ namespace Accounts.Data
                     .OnDelete(DeleteBehavior.Restrict);
                 e.HasOne(x => x.UnitCostCurrency).WithMany()
                     .HasForeignKey(x => x.UnitCostCurrencyId)
+                    .OnDelete(DeleteBehavior.Restrict);
+                e.HasOne(x => x.SaleCurrency).WithMany()
+                    .HasForeignKey(x => x.SaleCurrencyId)
+                    .OnDelete(DeleteBehavior.Restrict);
+                e.HasOne(x => x.PayChargeEffect).WithMany(x => x.PayChargeSales)
+                    .HasForeignKey(x => new { x.TenantId, x.PayChargeEffectId })
+                    .HasPrincipalKey(x => new { x.TenantId, x.Id })
                     .OnDelete(DeleteBehavior.Restrict);
             });
             builder.Entity<SaleRoznamchaDailySaleCharge>(e =>

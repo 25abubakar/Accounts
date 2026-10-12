@@ -138,6 +138,16 @@ public sealed class SaleRoznamchaDailySaleLookups
     public IReadOnlyList<SaleRoznamchaAccountLookupRow> Accounts { get; set; } = [];
     public IReadOnlyList<SaleRoznamchaLookupRow> ChargeLabels { get; set; } = [];
     public IReadOnlyList<SaleRoznamchaLookupRow> TransactionDateLabels { get; set; } = [];
+    public IReadOnlyList<SaleRoznamchaCurrencyRow> Currencies { get; set; } = [];
+    public IReadOnlyList<SaleRoznamchaAmountEffectRow> PayChargeEffects { get; set; } = [];
+}
+
+public sealed class SaleRoznamchaAmountEffectRow
+{
+    public int Id { get; set; }
+    public string Code { get; set; } = string.Empty;
+    public string Name { get; set; } = string.Empty;
+    public short Multiplier { get; set; }
 }
 
 public sealed class SaleRoznamchaDailySaleRow
@@ -163,6 +173,16 @@ public sealed class SaleRoznamchaDailySaleRow
     public decimal UnitCost { get; set; }
     public int? UnitCostCurrencyId { get; set; }
     public string? UnitCostCurrencyCode { get; set; }
+    public int SaleCurrencyId { get; set; }
+    public string SaleCurrencyCode { get; set; } = string.Empty;
+    public int PayChargeEffectId { get; set; }
+    public string PayChargeEffectName { get; set; } = string.Empty;
+    public short PayChargeMultiplier { get; set; }
+    public decimal UnitSalePrice { get; set; }
+    public decimal BaseSaleAmount { get; set; }
+    public decimal TotalAdditions { get; set; }
+    public decimal TotalDeductions { get; set; }
+    public decimal NetSaleTotal { get; set; }
     public decimal GrossTotal { get; set; }
     public decimal TotalRevenue { get; set; }
     public decimal CostAmount { get; set; }
@@ -170,7 +190,7 @@ public sealed class SaleRoznamchaDailySaleRow
     public decimal DeliveryFee { get; set; }
     public decimal OtherAmount { get; set; }
     public decimal PromotionAmount { get; set; }
-    public decimal RtoRefundAmount { get; set; }
+    public decimal RtoChargeAmount { get; set; }
     public int? TransactionTypeId { get; set; }
     public string? TransactionTypeName { get; set; }
     public int? PaidStatusId { get; set; }
@@ -200,14 +220,14 @@ public sealed class CreateSaleRoznamchaDailySaleRequest
     public decimal Quantity { get; set; }
     public string? MarketplaceCompanyId { get; set; }
     public string? OrderId { get; set; }
-    public decimal GrossTotal { get; set; }
-    public decimal TotalRevenue { get; set; }
-    public decimal CostAmount { get; set; }
+    public decimal UnitSalePrice { get; set; }
+    public int SaleCurrencyId { get; set; }
+    public int PayChargeEffectId { get; set; }
     public decimal PayCharges { get; set; }
     public decimal DeliveryFee { get; set; }
     public decimal OtherAmount { get; set; }
     public decimal PromotionAmount { get; set; }
-    public decimal RtoRefundAmount { get; set; }
+    public decimal RtoChargeAmount { get; set; }
     public int? TransactionTypeId { get; set; }
     public int? PaidStatusId { get; set; }
     public int? ToAccountId { get; set; }

@@ -374,9 +374,14 @@ internal static class SaleRoznamchaSql
                    status.Id SaleStatusId, status.Code StatusCode, status.Name StatusName,
                    sale.MarketplaceCompanyId, sale.OrderId, sale.Quantity,
                    sale.UnitCost, sale.UnitCostCurrencyId, unitCostCurrency.Code UnitCostCurrencyCode,
+                   sale.SaleCurrencyId, saleCurrency.Code SaleCurrencyCode,
+                   sale.PayChargeEffectId, payChargeEffect.Name PayChargeEffectName,
+                   payChargeEffect.Multiplier PayChargeMultiplier,
+                   sale.UnitSalePrice, sale.BaseSaleAmount, sale.TotalAdditions,
+                   sale.TotalDeductions, sale.NetSaleTotal,
                    sale.GrossTotal, sale.TotalRevenue, sale.CostAmount,
                    sale.PayCharges, sale.DeliveryFee, sale.OtherAmount,
-                   sale.PromotionAmount, sale.RtoRefundAmount,
+                   sale.PromotionAmount, sale.RtoChargeAmount,
                    sale.TransactionTypeId, transactionType.Name TransactionTypeName,
                    sale.PaidStatusId, paidStatus.Name PaidStatusName,
                    sale.ToAccountId, account.AccountName ToAccountName,
@@ -411,6 +416,10 @@ internal static class SaleRoznamchaSql
                 ON account.TenantId = sale.TenantId AND account.Id = sale.ToAccountId
             LEFT JOIN dbo.AccountsCurrencies unitCostCurrency
                 ON unitCostCurrency.Id = sale.UnitCostCurrencyId
+            INNER JOIN dbo.AccountsCurrencies saleCurrency
+                ON saleCurrency.Id = sale.SaleCurrencyId
+            INNER JOIN dbo.SaleRoznamchaAmountEffects payChargeEffect
+                ON payChargeEffect.TenantId = sale.TenantId AND payChargeEffect.Id = sale.PayChargeEffectId
             OUTER APPLY
             (
                 SELECT COUNT(*) ChargeCount,
@@ -448,14 +457,14 @@ internal static class SaleRoznamchaSql
             @Quantity decimal(18,4),
             @MarketplaceCompanyId nvarchar(100) = NULL,
             @OrderId nvarchar(100) = NULL,
-            @GrossTotal decimal(18,2) = 0,
-            @TotalRevenue decimal(18,2) = 0,
-            @CostAmount decimal(18,2) = 0,
+            @UnitSalePrice decimal(18,2),
+            @SaleCurrencyId int,
+            @PayChargeEffectId int,
             @PayCharges decimal(18,2) = 0,
             @DeliveryFee decimal(18,2) = 0,
             @OtherAmount decimal(18,2) = 0,
             @PromotionAmount decimal(18,2) = 0,
-            @RtoRefundAmount decimal(18,2) = 0,
+            @RtoChargeAmount decimal(18,2) = 0,
             @TransactionTypeId int = NULL,
             @PaidStatusId int = NULL,
             @ToAccountId int = NULL,
@@ -472,8 +481,8 @@ internal static class SaleRoznamchaSql
             SET XACT_ABORT ON;
 
             IF @Quantity <= 0 THROW 51000, 'Quantity must be greater than zero.', 1;
-            IF @GrossTotal < 0 OR @TotalRevenue < 0 OR @CostAmount < 0 OR @PayCharges < 0
-               OR @DeliveryFee < 0 OR @OtherAmount < 0 OR @PromotionAmount < 0 OR @RtoRefundAmount < 0
+            IF @UnitSalePrice < 0 OR @PayCharges < 0
+               OR @DeliveryFee < 0 OR @OtherAmount < 0 OR @PromotionAmount < 0 OR @RtoChargeAmount < 0
                 THROW 51000, 'Amounts cannot be negative.', 1;
             IF ISJSON(COALESCE(@ChargesJson, N'[]')) <> 1 OR ISJSON(COALESCE(@TransactionDatesJson, N'[]')) <> 1
                 THROW 51000, 'Daily sale detail rows are invalid.', 1;
@@ -482,7 +491,10 @@ internal static class SaleRoznamchaSql
                     @CurrentBalance decimal(18,4), @InventoryDelta decimal(18,4),
                     @BalanceAfter decimal(18,4), @DailySaleId bigint,
                     @RequiredStock decimal(18,4), @AvailableBatchStock decimal(18,4),
-                    @UnitCost decimal(18,2), @UnitCostCurrencyId int;
+                    @UnitCost decimal(18,2), @UnitCostCurrencyId int,
+                    @PayChargeMultiplier smallint, @AdditionalChargeTotal decimal(18,2),
+                    @BaseSaleAmount decimal(18,2), @TotalAdditions decimal(18,2),
+                    @TotalDeductions decimal(18,2), @NetSaleTotal decimal(18,2);
             DECLARE @Allocations TABLE
             (
                 StockReceiptId bigint PRIMARY KEY,
@@ -532,6 +544,26 @@ internal static class SaleRoznamchaSql
             IF @ToAccountId IS NOT NULL AND NOT EXISTS
                (SELECT 1 FROM dbo.AccountsChartAccounts WHERE TenantId = @TenantId AND Id = @ToAccountId AND IsActive = 1)
                 THROW 51000, 'Selected account is invalid or inactive.', 1;
+            IF NOT EXISTS
+               (SELECT 1 FROM dbo.AccountsCurrencies WHERE Id = @SaleCurrencyId AND IsActive = 1
+                AND (TenantId IS NULL OR TenantId = @TenantId))
+                THROW 51000, 'Selected sale currency is invalid or inactive.', 1;
+
+            SELECT @PayChargeMultiplier = Multiplier
+            FROM dbo.SaleRoznamchaAmountEffects
+            WHERE TenantId = @TenantId AND Id = @PayChargeEffectId AND IsActive = 1;
+            IF @PayChargeMultiplier NOT IN (-1, 1)
+                THROW 51000, 'Selected Pay Charge treatment is invalid or inactive.', 1;
+
+            SELECT @AdditionalChargeTotal = COALESCE(SUM(Amount), 0) FROM @Charges;
+            SET @BaseSaleAmount = ROUND(@Quantity * @UnitSalePrice, 2);
+            SET @TotalAdditions = @DeliveryFee + @OtherAmount + @AdditionalChargeTotal
+                                  + CASE WHEN @PayChargeMultiplier = 1 THEN @PayCharges ELSE 0 END;
+            SET @TotalDeductions = @PromotionAmount + @RtoChargeAmount
+                                   + CASE WHEN @PayChargeMultiplier = -1 THEN @PayCharges ELSE 0 END;
+            SET @NetSaleTotal = @BaseSaleAmount + @TotalAdditions - @TotalDeductions;
+            IF @NetSaleTotal < 0
+                THROW 51000, 'Total deductions cannot exceed the sale amount and additions.', 1;
 
             SELECT @InventoryEffect = InventoryEffect, @StatusCode = Code
             FROM dbo.SaleRoznamchaSaleStatuses
@@ -597,16 +629,20 @@ internal static class SaleRoznamchaSql
                 INSERT INTO dbo.SaleRoznamchaDailySales
                     (TenantId, ProductId, SaleStatusId, MarketplaceCompanyId, OrderId, Quantity,
                      UnitCost, UnitCostCurrencyId,
+                     SaleCurrencyId, PayChargeEffectId, UnitSalePrice, BaseSaleAmount,
+                     TotalAdditions, TotalDeductions, NetSaleTotal,
                      GrossTotal, TotalRevenue, CostAmount, PayCharges, DeliveryFee, OtherAmount,
-                     PromotionAmount, RtoRefundAmount, TransactionTypeId, PaidStatusId, ToAccountId,
+                     PromotionAmount, RtoChargeAmount, TransactionTypeId, PaidStatusId, ToAccountId,
                      InterProReference, OrderReference, SaleDate, Description,
                      InventoryDelta, BalanceAfter, CreatedByUserId, CreatedOnUtc)
                 VALUES
                     (@TenantId, @ProductId, @SaleStatusId, NULLIF(LTRIM(RTRIM(@MarketplaceCompanyId)), N''),
                      NULLIF(LTRIM(RTRIM(@OrderId)), N''), @Quantity,
                      @UnitCost, @UnitCostCurrencyId,
-                     @GrossTotal, @TotalRevenue, @CostAmount, @PayCharges, @DeliveryFee, @OtherAmount,
-                     @PromotionAmount, @RtoRefundAmount, @TransactionTypeId, @PaidStatusId, @ToAccountId,
+                     @SaleCurrencyId, @PayChargeEffectId, @UnitSalePrice, @BaseSaleAmount,
+                     @TotalAdditions, @TotalDeductions, @NetSaleTotal,
+                     @BaseSaleAmount, @NetSaleTotal, 0, @PayCharges, @DeliveryFee, @OtherAmount,
+                     @PromotionAmount, @RtoChargeAmount, @TransactionTypeId, @PaidStatusId, @ToAccountId,
                      NULLIF(LTRIM(RTRIM(@InterProReference)), N''), NULLIF(LTRIM(RTRIM(@OrderReference)), N''),
                      @SaleDate, NULLIF(LTRIM(RTRIM(@Description)), N''),
                      @InventoryDelta, @BalanceAfter, @UserId, SYSUTCDATETIME());

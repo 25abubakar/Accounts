@@ -153,6 +153,13 @@ public sealed class SaleRoznamchaDailySale : ITenantEntity
     [Column(TypeName = "decimal(18,4)")] public decimal Quantity { get; set; }
     [Column(TypeName = "decimal(18,2)")] public decimal UnitCost { get; set; }
     public int? UnitCostCurrencyId { get; set; }
+    public int SaleCurrencyId { get; set; }
+    public int PayChargeEffectId { get; set; }
+    [Column(TypeName = "decimal(18,2)")] public decimal UnitSalePrice { get; set; }
+    [Column(TypeName = "decimal(18,2)")] public decimal BaseSaleAmount { get; set; }
+    [Column(TypeName = "decimal(18,2)")] public decimal TotalAdditions { get; set; }
+    [Column(TypeName = "decimal(18,2)")] public decimal TotalDeductions { get; set; }
+    [Column(TypeName = "decimal(18,2)")] public decimal NetSaleTotal { get; set; }
     [Column(TypeName = "decimal(18,2)")] public decimal GrossTotal { get; set; }
     [Column(TypeName = "decimal(18,2)")] public decimal TotalRevenue { get; set; }
     [Column(TypeName = "decimal(18,2)")] public decimal CostAmount { get; set; }
@@ -160,7 +167,7 @@ public sealed class SaleRoznamchaDailySale : ITenantEntity
     [Column(TypeName = "decimal(18,2)")] public decimal DeliveryFee { get; set; }
     [Column(TypeName = "decimal(18,2)")] public decimal OtherAmount { get; set; }
     [Column(TypeName = "decimal(18,2)")] public decimal PromotionAmount { get; set; }
-    [Column(TypeName = "decimal(18,2)")] public decimal RtoRefundAmount { get; set; }
+    [Column(TypeName = "decimal(18,2)")] public decimal RtoChargeAmount { get; set; }
     public int? TransactionTypeId { get; set; }
     public int? PaidStatusId { get; set; }
     public int? ToAccountId { get; set; }
@@ -175,6 +182,8 @@ public sealed class SaleRoznamchaDailySale : ITenantEntity
     public SaleRoznamchaProduct Product { get; set; } = null!;
     public SaleRoznamchaSaleStatus SaleStatus { get; set; } = null!;
     public AccountsCurrency? UnitCostCurrency { get; set; }
+    public AccountsCurrency SaleCurrency { get; set; } = null!;
+    public SaleRoznamchaAmountEffect PayChargeEffect { get; set; } = null!;
     public ICollection<SaleRoznamchaInventoryMovement> InventoryMovements { get; set; } = [];
     public ICollection<SaleRoznamchaDailySaleStockAllocation> StockAllocations { get; set; } = [];
     public ICollection<SaleRoznamchaDailySaleCharge> Charges { get; set; } = [];
@@ -214,6 +223,18 @@ public sealed class SaleRoznamchaTransactionDateLabel : ITenantEntity
     public int SortOrder { get; set; }
     public bool IsActive { get; set; } = true;
     public ICollection<SaleRoznamchaDailySaleTransactionDate> Dates { get; set; } = [];
+}
+
+[Table("SaleRoznamchaAmountEffects")]
+public sealed class SaleRoznamchaAmountEffect : ITenantEntity
+{
+    [Key] public int Id { get; set; }
+    public int TenantId { get; set; }
+    [Required, MaxLength(30)] public string Code { get; set; } = string.Empty;
+    [Required, MaxLength(100)] public string Name { get; set; } = string.Empty;
+    public short Multiplier { get; set; }
+    public bool IsActive { get; set; } = true;
+    public ICollection<SaleRoznamchaDailySale> PayChargeSales { get; set; } = [];
 }
 
 [Table("SaleRoznamchaDailySaleCharges")]
