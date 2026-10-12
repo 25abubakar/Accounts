@@ -372,7 +372,21 @@ internal static class SaleRoznamchaSql
                    platform.Id PlatformId, platform.Name PlatformName,
                    productCategory.Id ProductCategoryId, productCategory.Name ProductCategoryName,
                    status.Id SaleStatusId, status.Code StatusCode, status.Name StatusName,
-                   sale.Quantity, sale.InventoryDelta,
+                   sale.MarketplaceCompanyId, sale.OrderId, sale.Quantity,
+                   sale.UnitCost, sale.UnitCostCurrencyId, unitCostCurrency.Code UnitCostCurrencyCode,
+                   sale.GrossTotal, sale.TotalRevenue, sale.CostAmount,
+                   sale.PayCharges, sale.DeliveryFee, sale.OtherAmount,
+                   sale.PromotionAmount, sale.RtoRefundAmount,
+                   sale.TransactionTypeId, transactionType.Name TransactionTypeName,
+                   sale.PaidStatusId, paidStatus.Name PaidStatusName,
+                   sale.ToAccountId, account.AccountName ToAccountName,
+                   sale.InterProReference, sale.OrderReference, sale.SaleDate, sale.Description,
+                   COALESCE(chargeTotals.ChargeCount, 0) ChargeCount,
+                   COALESCE(chargeTotals.AdditionalChargeTotal, 0) AdditionalChargeTotal,
+                   COALESCE(chargeTotals.ChargeDetails, N'') ChargeDetails,
+                   COALESCE(dateTotals.TransactionDateCount, 0) TransactionDateCount,
+                   COALESCE(dateTotals.TransactionDateDetails, N'') TransactionDateDetails,
+                   sale.InventoryDelta,
                    sale.BalanceAfter - sale.InventoryDelta BalanceBefore,
                    sale.BalanceAfter, sale.CreatedOnUtc
             FROM dbo.SaleRoznamchaDailySales sale
@@ -388,6 +402,34 @@ internal static class SaleRoznamchaSql
                 ON category.TenantId = company.TenantId AND category.Id = company.CategoryId
             INNER JOIN dbo.SaleRoznamchaSaleStatuses status
                 ON status.TenantId = sale.TenantId AND status.Id = sale.SaleStatusId
+            LEFT JOIN dbo.AccountsTransTypes transactionType
+                ON transactionType.Id = sale.TransactionTypeId
+               AND (transactionType.TenantId IS NULL OR transactionType.TenantId = sale.TenantId)
+            LEFT JOIN dbo.SaleRoznamchaPaidStatuses paidStatus
+                ON paidStatus.TenantId = sale.TenantId AND paidStatus.Id = sale.PaidStatusId
+            LEFT JOIN dbo.AccountsChartAccounts account
+                ON account.TenantId = sale.TenantId AND account.Id = sale.ToAccountId
+            LEFT JOIN dbo.AccountsCurrencies unitCostCurrency
+                ON unitCostCurrency.Id = sale.UnitCostCurrencyId
+            OUTER APPLY
+            (
+                SELECT COUNT(*) ChargeCount,
+                       COALESCE(SUM(charge.Amount), 0) AdditionalChargeTotal,
+                       STRING_AGG(CONVERT(nvarchar(max), CONCAT(chargeLabel.Name, N': ', CONVERT(nvarchar(50), charge.Amount))), N'; ') ChargeDetails
+                FROM dbo.SaleRoznamchaDailySaleCharges charge
+                INNER JOIN dbo.SaleRoznamchaChargeLabels chargeLabel
+                    ON chargeLabel.TenantId = charge.TenantId AND chargeLabel.Id = charge.ChargeLabelId
+                WHERE charge.TenantId = sale.TenantId AND charge.DailySaleId = sale.Id
+            ) chargeTotals
+            OUTER APPLY
+            (
+                SELECT COUNT(*) TransactionDateCount,
+                       STRING_AGG(CONVERT(nvarchar(max), CONCAT(dateLabel.Name, N': ', CONVERT(nvarchar(10), transactionDate.Value, 23))), N'; ') TransactionDateDetails
+                FROM dbo.SaleRoznamchaDailySaleTransactionDates transactionDate
+                INNER JOIN dbo.SaleRoznamchaTransactionDateLabels dateLabel
+                    ON dateLabel.TenantId = transactionDate.TenantId AND dateLabel.Id = transactionDate.DateLabelId
+                WHERE transactionDate.TenantId = sale.TenantId AND transactionDate.DailySaleId = sale.Id
+            ) dateTotals
             WHERE sale.TenantId = @TenantId
               AND (@CategoryId IS NULL OR category.Id = @CategoryId)
               AND (@CompanyId IS NULL OR company.Id = @CompanyId)
@@ -404,6 +446,25 @@ internal static class SaleRoznamchaSql
             @ProductId bigint,
             @SaleStatusId int,
             @Quantity decimal(18,4),
+            @MarketplaceCompanyId nvarchar(100) = NULL,
+            @OrderId nvarchar(100) = NULL,
+            @GrossTotal decimal(18,2) = 0,
+            @TotalRevenue decimal(18,2) = 0,
+            @CostAmount decimal(18,2) = 0,
+            @PayCharges decimal(18,2) = 0,
+            @DeliveryFee decimal(18,2) = 0,
+            @OtherAmount decimal(18,2) = 0,
+            @PromotionAmount decimal(18,2) = 0,
+            @RtoRefundAmount decimal(18,2) = 0,
+            @TransactionTypeId int = NULL,
+            @PaidStatusId int = NULL,
+            @ToAccountId int = NULL,
+            @InterProReference nvarchar(100) = NULL,
+            @OrderReference nvarchar(100) = NULL,
+            @SaleDate date = NULL,
+            @Description nvarchar(2000) = NULL,
+            @ChargesJson nvarchar(max) = N'[]',
+            @TransactionDatesJson nvarchar(max) = N'[]',
             @UserId nvarchar(450) = NULL
         AS
         BEGIN
@@ -411,11 +472,17 @@ internal static class SaleRoznamchaSql
             SET XACT_ABORT ON;
 
             IF @Quantity <= 0 THROW 51000, 'Quantity must be greater than zero.', 1;
+            IF @GrossTotal < 0 OR @TotalRevenue < 0 OR @CostAmount < 0 OR @PayCharges < 0
+               OR @DeliveryFee < 0 OR @OtherAmount < 0 OR @PromotionAmount < 0 OR @RtoRefundAmount < 0
+                THROW 51000, 'Amounts cannot be negative.', 1;
+            IF ISJSON(COALESCE(@ChargesJson, N'[]')) <> 1 OR ISJSON(COALESCE(@TransactionDatesJson, N'[]')) <> 1
+                THROW 51000, 'Daily sale detail rows are invalid.', 1;
 
             DECLARE @InventoryEffect smallint, @StatusCode nvarchar(30),
                     @CurrentBalance decimal(18,4), @InventoryDelta decimal(18,4),
                     @BalanceAfter decimal(18,4), @DailySaleId bigint,
-                    @RequiredStock decimal(18,4), @AvailableBatchStock decimal(18,4);
+                    @RequiredStock decimal(18,4), @AvailableBatchStock decimal(18,4),
+                    @UnitCost decimal(18,2), @UnitCostCurrencyId int;
             DECLARE @Allocations TABLE
             (
                 StockReceiptId bigint PRIMARY KEY,
@@ -423,6 +490,48 @@ internal static class SaleRoznamchaSql
                 UnitCost decimal(18,2) NOT NULL,
                 CurrencyId int NOT NULL
             );
+            DECLARE @Charges TABLE (ChargeLabelId int NOT NULL, Amount decimal(18,2) NOT NULL);
+            DECLARE @TransactionDates TABLE (DateLabelId int NOT NULL, Value date NOT NULL);
+
+            INSERT INTO @Charges (ChargeLabelId, Amount)
+            SELECT ChargeLabelId, Amount
+            FROM OPENJSON(COALESCE(@ChargesJson, N'[]'))
+            WITH (ChargeLabelId int '$.ChargeLabelId', Amount decimal(18,2) '$.Amount');
+
+            INSERT INTO @TransactionDates (DateLabelId, Value)
+            SELECT DateLabelId, Value
+            FROM OPENJSON(COALESCE(@TransactionDatesJson, N'[]'))
+            WITH (DateLabelId int '$.DateLabelId', Value date '$.Value');
+
+            IF EXISTS (SELECT 1 FROM @Charges WHERE ChargeLabelId <= 0 OR Amount < 0)
+                THROW 51000, 'Every charge row requires a valid label and non-negative amount.', 1;
+            IF EXISTS (SELECT 1 FROM @TransactionDates WHERE DateLabelId <= 0 OR Value IS NULL)
+                THROW 51000, 'Every transaction date row requires a valid label and date.', 1;
+            IF EXISTS
+            (
+                SELECT 1 FROM @Charges item
+                LEFT JOIN dbo.SaleRoznamchaChargeLabels label
+                    ON label.TenantId = @TenantId AND label.Id = item.ChargeLabelId AND label.IsActive = 1
+                WHERE label.Id IS NULL
+            ) THROW 51000, 'A selected charge label is invalid or inactive.', 1;
+            IF EXISTS
+            (
+                SELECT 1 FROM @TransactionDates item
+                LEFT JOIN dbo.SaleRoznamchaTransactionDateLabels label
+                    ON label.TenantId = @TenantId AND label.Id = item.DateLabelId AND label.IsActive = 1
+                WHERE label.Id IS NULL
+            ) THROW 51000, 'A selected transaction date label is invalid or inactive.', 1;
+
+            IF @TransactionTypeId IS NOT NULL AND NOT EXISTS
+               (SELECT 1 FROM dbo.AccountsTransTypes WHERE Id = @TransactionTypeId AND IsActive = 1
+                AND (TenantId IS NULL OR TenantId = @TenantId))
+                THROW 51000, 'Selected transaction type is invalid or inactive.', 1;
+            IF @PaidStatusId IS NOT NULL AND NOT EXISTS
+               (SELECT 1 FROM dbo.SaleRoznamchaPaidStatuses WHERE TenantId = @TenantId AND Id = @PaidStatusId AND IsActive = 1)
+                THROW 51000, 'Selected paid status is invalid or inactive.', 1;
+            IF @ToAccountId IS NOT NULL AND NOT EXISTS
+               (SELECT 1 FROM dbo.AccountsChartAccounts WHERE TenantId = @TenantId AND Id = @ToAccountId AND IsActive = 1)
+                THROW 51000, 'Selected account is invalid or inactive.', 1;
 
             SELECT @InventoryEffect = InventoryEffect, @StatusCode = Code
             FROM dbo.SaleRoznamchaSaleStatuses
@@ -433,7 +542,9 @@ internal static class SaleRoznamchaSql
 
             BEGIN TRANSACTION;
             BEGIN TRY
-                SELECT @CurrentBalance = QuantityOnHand
+                SELECT @CurrentBalance = QuantityOnHand,
+                       @UnitCost = PurchasePrice,
+                       @UnitCostCurrencyId = CurrencyId
                 FROM dbo.SaleRoznamchaProducts WITH (UPDLOCK, HOLDLOCK)
                 WHERE TenantId = @TenantId AND Id = @ProductId AND IsActive = 1 AND IsDeleted = 0;
 
@@ -484,10 +595,32 @@ internal static class SaleRoznamchaSql
                 WHERE TenantId = @TenantId AND Id = @ProductId;
 
                 INSERT INTO dbo.SaleRoznamchaDailySales
-                    (TenantId, ProductId, SaleStatusId, Quantity, InventoryDelta, BalanceAfter, CreatedByUserId, CreatedOnUtc)
+                    (TenantId, ProductId, SaleStatusId, MarketplaceCompanyId, OrderId, Quantity,
+                     UnitCost, UnitCostCurrencyId,
+                     GrossTotal, TotalRevenue, CostAmount, PayCharges, DeliveryFee, OtherAmount,
+                     PromotionAmount, RtoRefundAmount, TransactionTypeId, PaidStatusId, ToAccountId,
+                     InterProReference, OrderReference, SaleDate, Description,
+                     InventoryDelta, BalanceAfter, CreatedByUserId, CreatedOnUtc)
                 VALUES
-                    (@TenantId, @ProductId, @SaleStatusId, @Quantity, @InventoryDelta, @BalanceAfter, @UserId, SYSUTCDATETIME());
+                    (@TenantId, @ProductId, @SaleStatusId, NULLIF(LTRIM(RTRIM(@MarketplaceCompanyId)), N''),
+                     NULLIF(LTRIM(RTRIM(@OrderId)), N''), @Quantity,
+                     @UnitCost, @UnitCostCurrencyId,
+                     @GrossTotal, @TotalRevenue, @CostAmount, @PayCharges, @DeliveryFee, @OtherAmount,
+                     @PromotionAmount, @RtoRefundAmount, @TransactionTypeId, @PaidStatusId, @ToAccountId,
+                     NULLIF(LTRIM(RTRIM(@InterProReference)), N''), NULLIF(LTRIM(RTRIM(@OrderReference)), N''),
+                     @SaleDate, NULLIF(LTRIM(RTRIM(@Description)), N''),
+                     @InventoryDelta, @BalanceAfter, @UserId, SYSUTCDATETIME());
                 SET @DailySaleId = SCOPE_IDENTITY();
+
+                INSERT INTO dbo.SaleRoznamchaDailySaleCharges
+                    (TenantId, DailySaleId, ChargeLabelId, Amount, CreatedOnUtc)
+                SELECT @TenantId, @DailySaleId, ChargeLabelId, Amount, SYSUTCDATETIME()
+                FROM @Charges;
+
+                INSERT INTO dbo.SaleRoznamchaDailySaleTransactionDates
+                    (TenantId, DailySaleId, DateLabelId, Value, CreatedOnUtc)
+                SELECT @TenantId, @DailySaleId, DateLabelId, Value, SYSUTCDATETIME()
+                FROM @TransactionDates;
 
                 INSERT INTO dbo.SaleRoznamchaDailySaleStockAllocations
                     (TenantId, DailySaleId, StockReceiptId, Quantity, UnitCost, CurrencyId, CreatedOnUtc)
@@ -535,7 +668,7 @@ internal static class SaleRoznamchaSql
                        company.Id CompanyId, company.Name CompanyName,
                        platform.Id PlatformId, platform.Name PlatformName,
                        productCategory.Id ProductCategoryId, productCategory.Name ProductCategoryName,
-                       product.Name ProductName,
+                       product.ProductCode, product.Name ProductName,
                        status.Id StatusId, status.Name StatusName
                 FROM dbo.SaleRoznamchaDailySales sale
                 INNER JOIN dbo.SaleRoznamchaProducts product
@@ -570,19 +703,19 @@ internal static class SaleRoznamchaSql
             FROM Base
 
             UNION ALL
-            SELECT N'TREND_DAY', CONVERT(nvarchar(200), LocalSaleDate, 23),
-                   CONVERT(nvarchar(200), LocalSaleDate, 23), CONVERT(datetime2, LocalSaleDate),
+            SELECT N'TREND_DAY', CONVERT(nvarchar(200), ProductId),
+                   CONVERT(nvarchar(200), LEFT(CONCAT(ProductCode, N' - ', ProductName), 200)), CONVERT(datetime2, LocalSaleDate),
                    CONVERT(bigint, CONVERT(char(8), LocalSaleDate, 112)),
-                   COUNT_BIG(*), SUM(Quantity), SUM(InventoryDelta), COUNT(DISTINCT ProductId)
-            FROM Base GROUP BY LocalSaleDate
+                   COUNT_BIG(*), SUM(Quantity), SUM(InventoryDelta), 1
+            FROM Base GROUP BY LocalSaleDate, ProductId, ProductCode, ProductName
 
             UNION ALL
-            SELECT N'TREND_MONTH', CONVERT(nvarchar(200), DATEFROMPARTS(YEAR(LocalSaleDate), MONTH(LocalSaleDate), 1), 23),
-                   LEFT(DATENAME(month, LocalSaleDate), 3) + N' ' + CONVERT(nvarchar(4), YEAR(LocalSaleDate)),
+            SELECT N'TREND_MONTH', CONVERT(nvarchar(200), ProductId),
+                   CONVERT(nvarchar(200), LEFT(CONCAT(ProductCode, N' - ', ProductName), 200)),
                    CONVERT(datetime2, DATEFROMPARTS(YEAR(LocalSaleDate), MONTH(LocalSaleDate), 1)),
                    CONVERT(bigint, YEAR(LocalSaleDate) * 100 + MONTH(LocalSaleDate)),
-                   COUNT_BIG(*), SUM(Quantity), SUM(InventoryDelta), COUNT(DISTINCT ProductId)
-            FROM Base GROUP BY YEAR(LocalSaleDate), MONTH(LocalSaleDate), DATENAME(month, LocalSaleDate)
+                   COUNT_BIG(*), SUM(Quantity), SUM(InventoryDelta), 1
+            FROM Base GROUP BY YEAR(LocalSaleDate), MONTH(LocalSaleDate), ProductId, ProductCode, ProductName
 
             UNION ALL
             SELECT N'CATEGORY', CONVERT(nvarchar(200), CategoryId), CategoryName, NULL, CategoryId,
@@ -605,9 +738,9 @@ internal static class SaleRoznamchaSql
             FROM Base GROUP BY ProductCategoryId, ProductCategoryName
 
             UNION ALL
-            SELECT N'PRODUCT', CONVERT(nvarchar(200), ProductId), ProductName, NULL, ProductId,
+            SELECT N'PRODUCT', CONVERT(nvarchar(200), ProductId), CONVERT(nvarchar(200), LEFT(CONCAT(ProductCode, N' - ', ProductName), 200)), NULL, ProductId,
                    COUNT_BIG(*), SUM(Quantity), SUM(InventoryDelta), 1
-            FROM Base GROUP BY ProductId, ProductName
+            FROM Base GROUP BY ProductId, ProductCode, ProductName
 
             UNION ALL
             SELECT N'STATUS', CONVERT(nvarchar(200), StatusId), StatusName, NULL, StatusId,
@@ -615,6 +748,415 @@ internal static class SaleRoznamchaSql
             FROM Base GROUP BY StatusId, StatusName
 
             ORDER BY Dimension, SortOrder, Quantity DESC;
+        END;
+        """;
+
+    internal const string SettingsListProcedure =
+        """
+        CREATE OR ALTER PROCEDURE dbo.usp_SaleRoznamcha_SettingList
+            @TenantId int,
+            @SettingType nvarchar(30)
+        AS
+        BEGIN
+            SET NOCOUNT ON;
+            SET @SettingType = LOWER(LTRIM(RTRIM(@SettingType)));
+
+            IF @SettingType = N'transaction-type'
+            BEGIN
+                SELECT Id, @SettingType SettingType, Code, Name, CAST(0 AS int) SortOrder,
+                       CAST(0 AS smallint) InventoryEffect, IsActive,
+                       CONVERT(bit, CASE WHEN TenantId IS NULL THEN 1 ELSE 0 END) IsPlatform
+                FROM dbo.AccountsTransTypes
+                WHERE TenantId IS NULL OR TenantId = @TenantId
+                ORDER BY IsPlatform DESC, Name;
+                RETURN;
+            END;
+
+            IF @SettingType = N'charge-type'
+            BEGIN
+                SELECT Id, @SettingType SettingType, Code, Name, SortOrder,
+                       CAST(0 AS smallint) InventoryEffect, IsActive, CAST(0 AS bit) IsPlatform
+                FROM dbo.SaleRoznamchaChargeLabels WHERE TenantId = @TenantId
+                ORDER BY SortOrder, Name;
+                RETURN;
+            END;
+
+            IF @SettingType = N'transaction-date'
+            BEGIN
+                SELECT Id, @SettingType SettingType, Code, Name, SortOrder,
+                       CAST(0 AS smallint) InventoryEffect, IsActive, CAST(0 AS bit) IsPlatform
+                FROM dbo.SaleRoznamchaTransactionDateLabels WHERE TenantId = @TenantId
+                ORDER BY SortOrder, Name;
+                RETURN;
+            END;
+
+            IF @SettingType = N'paid-status'
+            BEGIN
+                SELECT Id, @SettingType SettingType, Code, Name, CAST(0 AS int) SortOrder,
+                       CAST(0 AS smallint) InventoryEffect, IsActive, CAST(0 AS bit) IsPlatform
+                FROM dbo.SaleRoznamchaPaidStatuses WHERE TenantId = @TenantId
+                ORDER BY Name;
+                RETURN;
+            END;
+
+            IF @SettingType = N'status'
+            BEGIN
+                SELECT Id, @SettingType SettingType, Code, Name, CAST(0 AS int) SortOrder,
+                       InventoryEffect, IsActive, CAST(0 AS bit) IsPlatform
+                FROM dbo.SaleRoznamchaSaleStatuses WHERE TenantId = @TenantId
+                ORDER BY Name;
+                RETURN;
+            END;
+
+            THROW 51000, 'Unknown Sale Roznamcha setting type.', 1;
+        END;
+        """;
+
+    internal const string SettingsSaveProcedure =
+        """
+        CREATE OR ALTER PROCEDURE dbo.usp_SaleRoznamcha_SettingSave
+            @TenantId int,
+            @SettingType nvarchar(30),
+            @Id int = NULL,
+            @Code nvarchar(30),
+            @Name nvarchar(100),
+            @SortOrder int = 0,
+            @InventoryEffect smallint = 0,
+            @IsActive bit = 1
+        AS
+        BEGIN
+            SET NOCOUNT ON;
+            SET XACT_ABORT ON;
+            SET @SettingType = LOWER(LTRIM(RTRIM(@SettingType)));
+            SET @Code = UPPER(LTRIM(RTRIM(@Code)));
+            SET @Name = LTRIM(RTRIM(@Name));
+
+            IF NULLIF(@Code, N'') IS NULL OR NULLIF(@Name, N'') IS NULL
+                THROW 51000, 'Code and name are required.', 1;
+
+            IF @SettingType = N'transaction-type'
+            BEGIN
+                IF @Id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM dbo.AccountsTransTypes WHERE Id = @Id AND TenantId = @TenantId)
+                    THROW 51000, 'Transaction type was not found or is a platform row.', 1;
+                IF EXISTS (
+                    SELECT 1 FROM dbo.AccountsTransTypes
+                    WHERE (TenantId IS NULL OR TenantId = @TenantId)
+                      AND (Code = @Code OR Name = @Name)
+                      AND (@Id IS NULL OR Id <> @Id))
+                    THROW 51000, 'A transaction type with this code or name already exists.', 1;
+
+                IF @Id IS NULL
+                BEGIN
+                    INSERT dbo.AccountsTransTypes (TenantId, Code, Name, IsActive)
+                    VALUES (@TenantId, @Code, @Name, @IsActive);
+                    SET @Id = SCOPE_IDENTITY();
+                END
+                ELSE
+                    UPDATE dbo.AccountsTransTypes SET Code = @Code, Name = @Name, IsActive = @IsActive
+                    WHERE Id = @Id AND TenantId = @TenantId;
+
+                SELECT Id, @SettingType SettingType, Code, Name, CAST(0 AS int) SortOrder,
+                       CAST(0 AS smallint) InventoryEffect, IsActive, CAST(0 AS bit) IsPlatform
+                FROM dbo.AccountsTransTypes WHERE Id = @Id AND TenantId = @TenantId;
+                RETURN;
+            END;
+
+            IF @SettingType = N'charge-type'
+            BEGIN
+                IF @Id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM dbo.SaleRoznamchaChargeLabels WHERE Id = @Id AND TenantId = @TenantId)
+                    THROW 51000, 'Charge type was not found.', 1;
+                IF EXISTS (SELECT 1 FROM dbo.SaleRoznamchaChargeLabels WHERE TenantId = @TenantId AND (Code = @Code OR Name = @Name) AND (@Id IS NULL OR Id <> @Id))
+                    THROW 51000, 'A charge type with this code or name already exists.', 1;
+                IF @Id IS NULL
+                BEGIN
+                    INSERT dbo.SaleRoznamchaChargeLabels (TenantId, Code, Name, SortOrder, IsActive)
+                    VALUES (@TenantId, @Code, @Name, @SortOrder, @IsActive);
+                    SET @Id = SCOPE_IDENTITY();
+                END
+                ELSE UPDATE dbo.SaleRoznamchaChargeLabels SET Code = @Code, Name = @Name, SortOrder = @SortOrder, IsActive = @IsActive WHERE Id = @Id AND TenantId = @TenantId;
+                SELECT Id, @SettingType SettingType, Code, Name, SortOrder, CAST(0 AS smallint) InventoryEffect, IsActive, CAST(0 AS bit) IsPlatform
+                FROM dbo.SaleRoznamchaChargeLabels WHERE Id = @Id AND TenantId = @TenantId;
+                RETURN;
+            END;
+
+            IF @SettingType = N'transaction-date'
+            BEGIN
+                IF @Id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM dbo.SaleRoznamchaTransactionDateLabels WHERE Id = @Id AND TenantId = @TenantId)
+                    THROW 51000, 'Transaction date label was not found.', 1;
+                IF EXISTS (SELECT 1 FROM dbo.SaleRoznamchaTransactionDateLabels WHERE TenantId = @TenantId AND (Code = @Code OR Name = @Name) AND (@Id IS NULL OR Id <> @Id))
+                    THROW 51000, 'A transaction date label with this code or name already exists.', 1;
+                IF @Id IS NULL
+                BEGIN
+                    INSERT dbo.SaleRoznamchaTransactionDateLabels (TenantId, Code, Name, SortOrder, IsActive)
+                    VALUES (@TenantId, @Code, @Name, @SortOrder, @IsActive);
+                    SET @Id = SCOPE_IDENTITY();
+                END
+                ELSE UPDATE dbo.SaleRoznamchaTransactionDateLabels SET Code = @Code, Name = @Name, SortOrder = @SortOrder, IsActive = @IsActive WHERE Id = @Id AND TenantId = @TenantId;
+                SELECT Id, @SettingType SettingType, Code, Name, SortOrder, CAST(0 AS smallint) InventoryEffect, IsActive, CAST(0 AS bit) IsPlatform
+                FROM dbo.SaleRoznamchaTransactionDateLabels WHERE Id = @Id AND TenantId = @TenantId;
+                RETURN;
+            END;
+
+            IF @SettingType = N'paid-status'
+            BEGIN
+                IF @Id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM dbo.SaleRoznamchaPaidStatuses WHERE Id = @Id AND TenantId = @TenantId)
+                    THROW 51000, 'Paid status was not found.', 1;
+                IF EXISTS (SELECT 1 FROM dbo.SaleRoznamchaPaidStatuses WHERE TenantId = @TenantId AND (Code = @Code OR Name = @Name) AND (@Id IS NULL OR Id <> @Id))
+                    THROW 51000, 'A paid status with this code or name already exists.', 1;
+                IF @Id IS NULL
+                BEGIN
+                    INSERT dbo.SaleRoznamchaPaidStatuses (TenantId, Code, Name, IsActive)
+                    VALUES (@TenantId, @Code, @Name, @IsActive);
+                    SET @Id = SCOPE_IDENTITY();
+                END
+                ELSE UPDATE dbo.SaleRoznamchaPaidStatuses SET Code = @Code, Name = @Name, IsActive = @IsActive WHERE Id = @Id AND TenantId = @TenantId;
+                SELECT Id, @SettingType SettingType, Code, Name, CAST(0 AS int) SortOrder, CAST(0 AS smallint) InventoryEffect, IsActive, CAST(0 AS bit) IsPlatform
+                FROM dbo.SaleRoznamchaPaidStatuses WHERE Id = @Id AND TenantId = @TenantId;
+                RETURN;
+            END;
+
+            IF @SettingType = N'status'
+            BEGIN
+                IF @InventoryEffect NOT IN (-1, 0)
+                    THROW 51000, 'Inventory effect must be 0 or -1.', 1;
+                IF @Id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM dbo.SaleRoznamchaSaleStatuses WHERE Id = @Id AND TenantId = @TenantId)
+                    THROW 51000, 'Status was not found.', 1;
+                IF EXISTS (SELECT 1 FROM dbo.SaleRoznamchaSaleStatuses WHERE TenantId = @TenantId AND (Code = @Code OR Name = @Name) AND (@Id IS NULL OR Id <> @Id))
+                    THROW 51000, 'A status with this code or name already exists.', 1;
+                IF @Id IS NULL
+                BEGIN
+                    INSERT dbo.SaleRoznamchaSaleStatuses (TenantId, Code, Name, InventoryEffect, IsActive, CreatedByUserId, CreatedOnUtc)
+                    VALUES (@TenantId, @Code, @Name, @InventoryEffect, @IsActive, NULL, SYSUTCDATETIME());
+                    SET @Id = SCOPE_IDENTITY();
+                END
+                ELSE UPDATE dbo.SaleRoznamchaSaleStatuses SET Code = @Code, Name = @Name, InventoryEffect = @InventoryEffect, IsActive = @IsActive WHERE Id = @Id AND TenantId = @TenantId;
+                SELECT Id, @SettingType SettingType, Code, Name, CAST(0 AS int) SortOrder, InventoryEffect, IsActive, CAST(0 AS bit) IsPlatform
+                FROM dbo.SaleRoznamchaSaleStatuses WHERE Id = @Id AND TenantId = @TenantId;
+                RETURN;
+            END;
+
+            THROW 51000, 'Unknown Sale Roznamcha setting type.', 1;
+        END;
+        """;
+
+    internal const string SettingsDeactivateProcedure =
+        """
+        CREATE OR ALTER PROCEDURE dbo.usp_SaleRoznamcha_SettingDeactivate
+            @TenantId int,
+            @SettingType nvarchar(30),
+            @Id int
+        AS
+        BEGIN
+            SET NOCOUNT ON;
+            SET XACT_ABORT ON;
+            SET @SettingType = LOWER(LTRIM(RTRIM(@SettingType)));
+
+            IF @SettingType = N'transaction-type'
+                UPDATE dbo.AccountsTransTypes SET IsActive = 0 WHERE Id = @Id AND TenantId = @TenantId;
+            ELSE IF @SettingType = N'charge-type'
+                UPDATE dbo.SaleRoznamchaChargeLabels SET IsActive = 0 WHERE Id = @Id AND TenantId = @TenantId;
+            ELSE IF @SettingType = N'transaction-date'
+                UPDATE dbo.SaleRoznamchaTransactionDateLabels SET IsActive = 0 WHERE Id = @Id AND TenantId = @TenantId;
+            ELSE IF @SettingType = N'paid-status'
+                UPDATE dbo.SaleRoznamchaPaidStatuses SET IsActive = 0 WHERE Id = @Id AND TenantId = @TenantId;
+            ELSE IF @SettingType = N'status'
+                UPDATE dbo.SaleRoznamchaSaleStatuses SET IsActive = 0 WHERE Id = @Id AND TenantId = @TenantId;
+            ELSE
+                THROW 51000, 'Unknown Sale Roznamcha setting type.', 1;
+
+            IF @@ROWCOUNT = 0
+                THROW 51000, 'Setting was not found or cannot be changed.', 1;
+        END;
+        """;
+
+    internal const string SettingsListWithColorsProcedure =
+        """
+        CREATE OR ALTER PROCEDURE dbo.usp_SaleRoznamcha_SettingList
+            @TenantId int,
+            @SettingType nvarchar(30)
+        AS
+        BEGIN
+            SET NOCOUNT ON;
+            SET @SettingType = LOWER(LTRIM(RTRIM(@SettingType)));
+
+            IF @SettingType = N'transaction-type'
+            BEGIN
+                SELECT Id, @SettingType SettingType, Code, Name,
+                       CAST(NULL AS nvarchar(20)) ColorCode, CAST(0 AS int) SortOrder,
+                       CAST(0 AS smallint) InventoryEffect, IsActive,
+                       CONVERT(bit, CASE WHEN TenantId IS NULL THEN 1 ELSE 0 END) IsPlatform
+                FROM dbo.AccountsTransTypes
+                WHERE TenantId IS NULL OR TenantId = @TenantId
+                ORDER BY IsPlatform DESC, Name;
+                RETURN;
+            END;
+
+            IF @SettingType = N'charge-type'
+            BEGIN
+                SELECT Id, @SettingType SettingType, Code, Name,
+                       CAST(NULL AS nvarchar(20)) ColorCode, SortOrder,
+                       CAST(0 AS smallint) InventoryEffect, IsActive, CAST(0 AS bit) IsPlatform
+                FROM dbo.SaleRoznamchaChargeLabels WHERE TenantId = @TenantId
+                ORDER BY SortOrder, Name;
+                RETURN;
+            END;
+
+            IF @SettingType = N'transaction-date'
+            BEGIN
+                SELECT Id, @SettingType SettingType, Code, Name,
+                       CAST(NULL AS nvarchar(20)) ColorCode, SortOrder,
+                       CAST(0 AS smallint) InventoryEffect, IsActive, CAST(0 AS bit) IsPlatform
+                FROM dbo.SaleRoznamchaTransactionDateLabels WHERE TenantId = @TenantId
+                ORDER BY SortOrder, Name;
+                RETURN;
+            END;
+
+            IF @SettingType = N'paid-status'
+            BEGIN
+                SELECT Id, @SettingType SettingType, Code, Name, ColorCode,
+                       CAST(0 AS int) SortOrder, CAST(0 AS smallint) InventoryEffect,
+                       IsActive, CAST(0 AS bit) IsPlatform
+                FROM dbo.SaleRoznamchaPaidStatuses WHERE TenantId = @TenantId
+                ORDER BY Name;
+                RETURN;
+            END;
+
+            IF @SettingType = N'status'
+            BEGIN
+                SELECT Id, @SettingType SettingType, Code, Name, ColorCode,
+                       CAST(0 AS int) SortOrder, InventoryEffect,
+                       IsActive, CAST(0 AS bit) IsPlatform
+                FROM dbo.SaleRoznamchaSaleStatuses WHERE TenantId = @TenantId
+                ORDER BY Name;
+                RETURN;
+            END;
+
+            THROW 51000, 'Unknown Sale Roznamcha setting type.', 1;
+        END;
+        """;
+
+    internal const string SettingsSaveWithColorsProcedure =
+        """
+        CREATE OR ALTER PROCEDURE dbo.usp_SaleRoznamcha_SettingSave
+            @TenantId int,
+            @SettingType nvarchar(30),
+            @Id int = NULL,
+            @Code nvarchar(30),
+            @Name nvarchar(100),
+            @ColorCode nvarchar(20) = NULL,
+            @SortOrder int = 0,
+            @InventoryEffect smallint = 0,
+            @IsActive bit = 1
+        AS
+        BEGIN
+            SET NOCOUNT ON;
+            SET XACT_ABORT ON;
+            SET @SettingType = LOWER(LTRIM(RTRIM(@SettingType)));
+            SET @Code = UPPER(LTRIM(RTRIM(@Code)));
+            SET @Name = LTRIM(RTRIM(@Name));
+            SET @ColorCode = UPPER(LTRIM(RTRIM(@ColorCode)));
+
+            IF NULLIF(@Code, N'') IS NULL OR NULLIF(@Name, N'') IS NULL
+                THROW 51000, 'Code and name are required.', 1;
+            IF @SettingType IN (N'paid-status', N'status')
+               AND (LEN(COALESCE(@ColorCode, N'')) <> 7 OR LEFT(@ColorCode, 1) <> N'#'
+                    OR SUBSTRING(@ColorCode, 2, 6) LIKE N'%[^0-9A-F]%')
+                THROW 51000, 'A valid badge color is required.', 1;
+
+            IF @SettingType = N'transaction-type'
+            BEGIN
+                IF @Id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM dbo.AccountsTransTypes WHERE Id = @Id AND TenantId = @TenantId)
+                    THROW 51000, 'Transaction type was not found or is a platform row.', 1;
+                IF EXISTS (SELECT 1 FROM dbo.AccountsTransTypes WHERE (TenantId IS NULL OR TenantId = @TenantId)
+                           AND (Code = @Code OR Name = @Name) AND (@Id IS NULL OR Id <> @Id))
+                    THROW 51000, 'A transaction type with this code or name already exists.', 1;
+                IF @Id IS NULL
+                BEGIN
+                    INSERT dbo.AccountsTransTypes (TenantId, Code, Name, IsActive) VALUES (@TenantId, @Code, @Name, @IsActive);
+                    SET @Id = SCOPE_IDENTITY();
+                END
+                ELSE UPDATE dbo.AccountsTransTypes SET Code = @Code, Name = @Name, IsActive = @IsActive WHERE Id = @Id AND TenantId = @TenantId;
+                SELECT Id, @SettingType SettingType, Code, Name, CAST(NULL AS nvarchar(20)) ColorCode,
+                       CAST(0 AS int) SortOrder, CAST(0 AS smallint) InventoryEffect, IsActive, CAST(0 AS bit) IsPlatform
+                FROM dbo.AccountsTransTypes WHERE Id = @Id AND TenantId = @TenantId;
+                RETURN;
+            END;
+
+            IF @SettingType = N'charge-type'
+            BEGIN
+                IF @Id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM dbo.SaleRoznamchaChargeLabels WHERE Id = @Id AND TenantId = @TenantId)
+                    THROW 51000, 'Charge type was not found.', 1;
+                IF EXISTS (SELECT 1 FROM dbo.SaleRoznamchaChargeLabels WHERE TenantId = @TenantId AND (Code = @Code OR Name = @Name) AND (@Id IS NULL OR Id <> @Id))
+                    THROW 51000, 'A charge type with this code or name already exists.', 1;
+                IF @Id IS NULL
+                BEGIN
+                    INSERT dbo.SaleRoznamchaChargeLabels (TenantId, Code, Name, SortOrder, IsActive) VALUES (@TenantId, @Code, @Name, @SortOrder, @IsActive);
+                    SET @Id = SCOPE_IDENTITY();
+                END
+                ELSE UPDATE dbo.SaleRoznamchaChargeLabels SET Code = @Code, Name = @Name, SortOrder = @SortOrder, IsActive = @IsActive WHERE Id = @Id AND TenantId = @TenantId;
+                SELECT Id, @SettingType SettingType, Code, Name, CAST(NULL AS nvarchar(20)) ColorCode,
+                       SortOrder, CAST(0 AS smallint) InventoryEffect, IsActive, CAST(0 AS bit) IsPlatform
+                FROM dbo.SaleRoznamchaChargeLabels WHERE Id = @Id AND TenantId = @TenantId;
+                RETURN;
+            END;
+
+            IF @SettingType = N'transaction-date'
+            BEGIN
+                IF @Id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM dbo.SaleRoznamchaTransactionDateLabels WHERE Id = @Id AND TenantId = @TenantId)
+                    THROW 51000, 'Transaction date label was not found.', 1;
+                IF EXISTS (SELECT 1 FROM dbo.SaleRoznamchaTransactionDateLabels WHERE TenantId = @TenantId AND (Code = @Code OR Name = @Name) AND (@Id IS NULL OR Id <> @Id))
+                    THROW 51000, 'A transaction date label with this code or name already exists.', 1;
+                IF @Id IS NULL
+                BEGIN
+                    INSERT dbo.SaleRoznamchaTransactionDateLabels (TenantId, Code, Name, SortOrder, IsActive) VALUES (@TenantId, @Code, @Name, @SortOrder, @IsActive);
+                    SET @Id = SCOPE_IDENTITY();
+                END
+                ELSE UPDATE dbo.SaleRoznamchaTransactionDateLabels SET Code = @Code, Name = @Name, SortOrder = @SortOrder, IsActive = @IsActive WHERE Id = @Id AND TenantId = @TenantId;
+                SELECT Id, @SettingType SettingType, Code, Name, CAST(NULL AS nvarchar(20)) ColorCode,
+                       SortOrder, CAST(0 AS smallint) InventoryEffect, IsActive, CAST(0 AS bit) IsPlatform
+                FROM dbo.SaleRoznamchaTransactionDateLabels WHERE Id = @Id AND TenantId = @TenantId;
+                RETURN;
+            END;
+
+            IF @SettingType = N'paid-status'
+            BEGIN
+                IF @Id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM dbo.SaleRoznamchaPaidStatuses WHERE Id = @Id AND TenantId = @TenantId)
+                    THROW 51000, 'Paid status was not found.', 1;
+                IF EXISTS (SELECT 1 FROM dbo.SaleRoznamchaPaidStatuses WHERE TenantId = @TenantId AND (Code = @Code OR Name = @Name) AND (@Id IS NULL OR Id <> @Id))
+                    THROW 51000, 'A paid status with this code or name already exists.', 1;
+                IF @Id IS NULL
+                BEGIN
+                    INSERT dbo.SaleRoznamchaPaidStatuses (TenantId, Code, Name, ColorCode, IsActive) VALUES (@TenantId, @Code, @Name, @ColorCode, @IsActive);
+                    SET @Id = SCOPE_IDENTITY();
+                END
+                ELSE UPDATE dbo.SaleRoznamchaPaidStatuses SET Code = @Code, Name = @Name, ColorCode = @ColorCode, IsActive = @IsActive WHERE Id = @Id AND TenantId = @TenantId;
+                SELECT Id, @SettingType SettingType, Code, Name, ColorCode,
+                       CAST(0 AS int) SortOrder, CAST(0 AS smallint) InventoryEffect, IsActive, CAST(0 AS bit) IsPlatform
+                FROM dbo.SaleRoznamchaPaidStatuses WHERE Id = @Id AND TenantId = @TenantId;
+                RETURN;
+            END;
+
+            IF @SettingType = N'status'
+            BEGIN
+                IF @InventoryEffect NOT IN (-1, 0) THROW 51000, 'Inventory effect must be 0 or -1.', 1;
+                IF @Id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM dbo.SaleRoznamchaSaleStatuses WHERE Id = @Id AND TenantId = @TenantId)
+                    THROW 51000, 'Status was not found.', 1;
+                IF EXISTS (SELECT 1 FROM dbo.SaleRoznamchaSaleStatuses WHERE TenantId = @TenantId AND (Code = @Code OR Name = @Name) AND (@Id IS NULL OR Id <> @Id))
+                    THROW 51000, 'A status with this code or name already exists.', 1;
+                IF @Id IS NULL
+                BEGIN
+                    INSERT dbo.SaleRoznamchaSaleStatuses (TenantId, Code, Name, ColorCode, InventoryEffect, IsActive, CreatedByUserId, CreatedOnUtc)
+                    VALUES (@TenantId, @Code, @Name, @ColorCode, @InventoryEffect, @IsActive, NULL, SYSUTCDATETIME());
+                    SET @Id = SCOPE_IDENTITY();
+                END
+                ELSE UPDATE dbo.SaleRoznamchaSaleStatuses SET Code = @Code, Name = @Name, ColorCode = @ColorCode, InventoryEffect = @InventoryEffect, IsActive = @IsActive WHERE Id = @Id AND TenantId = @TenantId;
+                SELECT Id, @SettingType SettingType, Code, Name, ColorCode,
+                       CAST(0 AS int) SortOrder, InventoryEffect, IsActive, CAST(0 AS bit) IsPlatform
+                FROM dbo.SaleRoznamchaSaleStatuses WHERE Id = @Id AND TenantId = @TenantId;
+                RETURN;
+            END;
+
+            THROW 51000, 'Unknown Sale Roznamcha setting type.', 1;
         END;
         """;
 }

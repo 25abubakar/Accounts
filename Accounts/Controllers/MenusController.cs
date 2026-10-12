@@ -317,6 +317,7 @@ namespace Accounts.Controllers
                 new("Inventory",             "Package",            "/sale-roznamcha/inventory",         "Sale Roznamcha",  2, new()),
                 new("Daily Sale",            "ShoppingBag",        "/sale-roznamcha/daily-sale",        "Sale Roznamcha",  3, new()),
                 new("History",               "Clock3",             "/sale-roznamcha/history",           "Sale Roznamcha",  4, new()),
+                new("Settings",              "Settings",           "/sale-roznamcha/settings",          "Sale Roznamcha",  5, new()),
             };
 
             var validKeys = await _db.Features.Select(f => f.FeatureKey).ToHashSetAsync();

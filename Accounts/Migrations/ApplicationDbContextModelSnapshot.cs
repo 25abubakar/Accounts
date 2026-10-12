@@ -352,6 +352,39 @@ namespace Accounts.Migrations
                     b.ToTable("AccountsCurrencies");
                 });
 
+            modelBuilder.Entity("Accounts.Models.AccountsDateLabel", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<string>("Code")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("nvarchar(40)");
+
+                    b.Property<bool>("IsActive")
+                        .HasColumnType("bit");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(120)
+                        .HasColumnType("nvarchar(120)");
+
+                    b.Property<int?>("TenantId")
+                        .HasColumnType("int");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TenantId", "Code")
+                        .IsUnique()
+                        .HasFilter("[TenantId] IS NOT NULL");
+
+                    b.ToTable("AccountsDateLabels");
+                });
+
             modelBuilder.Entity("Accounts.Models.AccountsEntryDocument", b =>
                 {
                     b.Property<long>("Id")
@@ -3496,6 +3529,137 @@ namespace Accounts.Migrations
                         .IsUnique();
 
                     b.ToTable("JobTitles", (string)null);
+                });
+
+            modelBuilder.Entity("Accounts.Models.EMarketingSalesRozEntry", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<long>("Id"));
+
+                    b.Property<int>("AccountId")
+                        .HasColumnType("int");
+
+                    b.Property<decimal>("AmazonFee")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<decimal>("Amount")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<string>("AmzProRef")
+                        .HasMaxLength(120)
+                        .HasColumnType("nvarchar(120)");
+
+                    b.Property<string>("AttachmentPath")
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)");
+
+                    b.Property<string>("CreatedByUserId")
+                        .HasMaxLength(450)
+                        .HasColumnType("nvarchar(450)");
+
+                    b.Property<DateTime>("CreatedOnUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("Descriptions")
+                        .HasMaxLength(2000)
+                        .HasColumnType("nvarchar(2000)");
+
+                    b.Property<string>("DocName")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<bool>("IsDeleted")
+                        .HasColumnType("bit");
+
+                    b.Property<string>("OrderId")
+                        .HasMaxLength(120)
+                        .HasColumnType("nvarchar(120)");
+
+                    b.Property<decimal>("Other")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<string>("PlatformName")
+                        .HasMaxLength(120)
+                        .HasColumnType("nvarchar(120)");
+
+                    b.Property<decimal>("PurchaseAmount")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<decimal>("Qty")
+                        .HasColumnType("decimal(18,4)");
+
+                    b.Property<decimal>("QtyPurchase")
+                        .HasColumnType("decimal(18,4)");
+
+                    b.Property<decimal>("QtySale")
+                        .HasColumnType("decimal(18,4)");
+
+                    b.Property<string>("Ref")
+                        .HasMaxLength(80)
+                        .HasColumnType("nvarchar(80)");
+
+                    b.Property<string>("Remarks")
+                        .HasMaxLength(2000)
+                        .HasColumnType("nvarchar(2000)");
+
+                    b.Property<decimal>("SaleAmount")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<int?>("SalesTypeId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("SalesTypeName")
+                        .HasMaxLength(120)
+                        .HasColumnType("nvarchar(120)");
+
+                    b.Property<int?>("StatusId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("StatusName")
+                        .HasMaxLength(120)
+                        .HasColumnType("nvarchar(120)");
+
+                    b.Property<int>("TenantId")
+                        .HasColumnType("int");
+
+                    b.Property<decimal>("TotProCharges")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<decimal>("TotProRebate")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<decimal>("TotPromotion")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<DateOnly>("TransDate")
+                        .HasColumnType("date");
+
+                    b.Property<int?>("TransTypeId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("TransTypeName")
+                        .HasMaxLength(120)
+                        .HasColumnType("nvarchar(120)");
+
+                    b.Property<string>("UpdatedByUserId")
+                        .HasMaxLength(450)
+                        .HasColumnType("nvarchar(450)");
+
+                    b.Property<DateTime?>("UpdatedOnUtc")
+                        .HasColumnType("datetime2");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("AccountId");
+
+                    b.HasIndex("TenantId", "TransDate");
+
+                    b.HasIndex("TenantId", "AccountId", "TransDate");
+
+                    b.ToTable("EMarketingSalesRozEntries");
                 });
 
             modelBuilder.Entity("Accounts.Models.EmployeeByOrgAndRoleDto", b =>
@@ -8074,6 +8238,729 @@ namespace Accounts.Migrations
                     b.ToTable("SalaryScales", (string)null);
                 });
 
+            modelBuilder.Entity("Accounts.Models.SaleRoznamchaCategory", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<string>("CreatedByUserId")
+                        .HasMaxLength(450)
+                        .HasColumnType("nvarchar(450)");
+
+                    b.Property<DateTime>("CreatedOnUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<bool>("IsActive")
+                        .HasColumnType("bit");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(160)
+                        .HasColumnType("nvarchar(160)");
+
+                    b.Property<int>("TenantId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("UpdatedByUserId")
+                        .HasMaxLength(450)
+                        .HasColumnType("nvarchar(450)");
+
+                    b.Property<DateTime?>("UpdatedOnUtc")
+                        .HasColumnType("datetime2");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TenantId", "Name")
+                        .IsUnique();
+
+                    b.ToTable("SaleRoznamchaCategories");
+                });
+
+            modelBuilder.Entity("Accounts.Models.SaleRoznamchaChargeLabel", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<string>("Code")
+                        .IsRequired()
+                        .HasMaxLength(30)
+                        .HasColumnType("nvarchar(30)");
+
+                    b.Property<bool>("IsActive")
+                        .HasColumnType("bit");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<int>("SortOrder")
+                        .HasColumnType("int");
+
+                    b.Property<int>("TenantId")
+                        .HasColumnType("int");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TenantId", "Code")
+                        .IsUnique();
+
+                    b.ToTable("SaleRoznamchaChargeLabels");
+                });
+
+            modelBuilder.Entity("Accounts.Models.SaleRoznamchaCompany", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<int>("CategoryId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("CreatedByUserId")
+                        .HasMaxLength(450)
+                        .HasColumnType("nvarchar(450)");
+
+                    b.Property<DateTime>("CreatedOnUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<bool>("IsActive")
+                        .HasColumnType("bit");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(160)
+                        .HasColumnType("nvarchar(160)");
+
+                    b.Property<int>("TenantId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("UpdatedByUserId")
+                        .HasMaxLength(450)
+                        .HasColumnType("nvarchar(450)");
+
+                    b.Property<DateTime?>("UpdatedOnUtc")
+                        .HasColumnType("datetime2");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TenantId", "CategoryId", "Name")
+                        .IsUnique();
+
+                    b.ToTable("SaleRoznamchaCompanies");
+                });
+
+            modelBuilder.Entity("Accounts.Models.SaleRoznamchaDailySale", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<long>("Id"));
+
+                    b.Property<decimal>("BalanceAfter")
+                        .HasColumnType("decimal(18,4)");
+
+                    b.Property<decimal>("CostAmount")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<string>("CreatedByUserId")
+                        .HasMaxLength(450)
+                        .HasColumnType("nvarchar(450)");
+
+                    b.Property<DateTime>("CreatedOnUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<decimal>("DeliveryFee")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<string>("Description")
+                        .HasMaxLength(2000)
+                        .HasColumnType("nvarchar(2000)");
+
+                    b.Property<decimal>("GrossTotal")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<string>("InterProReference")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<decimal>("InventoryDelta")
+                        .HasColumnType("decimal(18,4)");
+
+                    b.Property<string>("MarketplaceCompanyId")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<string>("OrderId")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<string>("OrderReference")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<decimal>("OtherAmount")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<int?>("PaidStatusId")
+                        .HasColumnType("int");
+
+                    b.Property<decimal>("PayCharges")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<long>("ProductId")
+                        .HasColumnType("bigint");
+
+                    b.Property<decimal>("PromotionAmount")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<decimal>("Quantity")
+                        .HasColumnType("decimal(18,4)");
+
+                    b.Property<decimal>("UnitCost")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<int?>("UnitCostCurrencyId")
+                        .HasColumnType("int");
+
+                    b.Property<decimal>("RtoRefundAmount")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<DateOnly?>("SaleDate")
+                        .HasColumnType("date");
+
+                    b.Property<int>("SaleStatusId")
+                        .HasColumnType("int");
+
+                    b.Property<int>("TenantId")
+                        .HasColumnType("int");
+
+                    b.Property<int?>("ToAccountId")
+                        .HasColumnType("int");
+
+                    b.Property<decimal>("TotalRevenue")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<int?>("TransactionTypeId")
+                        .HasColumnType("int");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TenantId", "CreatedOnUtc");
+
+                    b.HasIndex("TenantId", "SaleStatusId");
+
+                    b.HasIndex("UnitCostCurrencyId");
+
+                    b.HasIndex("TenantId", "ProductId", "CreatedOnUtc");
+
+                    b.ToTable("SaleRoznamchaDailySales");
+                });
+
+            modelBuilder.Entity("Accounts.Models.SaleRoznamchaDailySaleCharge", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<long>("Id"));
+
+                    b.Property<decimal>("Amount")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<int>("ChargeLabelId")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime>("CreatedOnUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<long>("DailySaleId")
+                        .HasColumnType("bigint");
+
+                    b.Property<int>("TenantId")
+                        .HasColumnType("int");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TenantId", "ChargeLabelId");
+
+                    b.HasIndex("TenantId", "DailySaleId", "ChargeLabelId");
+
+                    b.ToTable("SaleRoznamchaDailySaleCharges");
+                });
+
+            modelBuilder.Entity("Accounts.Models.SaleRoznamchaDailySaleStockAllocation", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<long>("Id"));
+
+                    b.Property<DateTime>("CreatedOnUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<int>("CurrencyId")
+                        .HasColumnType("int");
+
+                    b.Property<long>("DailySaleId")
+                        .HasColumnType("bigint");
+
+                    b.Property<decimal>("Quantity")
+                        .HasColumnType("decimal(18,4)");
+
+                    b.Property<long>("StockReceiptId")
+                        .HasColumnType("bigint");
+
+                    b.Property<int>("TenantId")
+                        .HasColumnType("int");
+
+                    b.Property<decimal>("UnitCost")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("decimal(18,2)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CurrencyId");
+
+                    b.HasIndex("TenantId", "StockReceiptId");
+
+                    b.HasIndex("TenantId", "DailySaleId", "StockReceiptId")
+                        .IsUnique();
+
+                    b.ToTable("SaleRoznamchaDailySaleStockAllocations");
+                });
+
+            modelBuilder.Entity("Accounts.Models.SaleRoznamchaDailySaleTransactionDate", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<long>("Id"));
+
+                    b.Property<DateTime>("CreatedOnUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<long>("DailySaleId")
+                        .HasColumnType("bigint");
+
+                    b.Property<int>("DateLabelId")
+                        .HasColumnType("int");
+
+                    b.Property<int>("TenantId")
+                        .HasColumnType("int");
+
+                    b.Property<DateOnly>("Value")
+                        .HasColumnType("date");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TenantId", "DateLabelId");
+
+                    b.HasIndex("TenantId", "DailySaleId", "DateLabelId");
+
+                    b.ToTable("SaleRoznamchaDailySaleTransactionDates");
+                });
+
+            modelBuilder.Entity("Accounts.Models.SaleRoznamchaInventoryMovement", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<long>("Id"));
+
+                    b.Property<decimal>("BalanceAfter")
+                        .HasColumnType("decimal(18,4)");
+
+                    b.Property<string>("CreatedByUserId")
+                        .HasMaxLength(450)
+                        .HasColumnType("nvarchar(450)");
+
+                    b.Property<DateTime>("CreatedOnUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<long?>("DailySaleId")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("MovementType")
+                        .IsRequired()
+                        .HasMaxLength(30)
+                        .HasColumnType("nvarchar(30)");
+
+                    b.Property<long>("ProductId")
+                        .HasColumnType("bigint");
+
+                    b.Property<decimal>("QuantityDelta")
+                        .HasColumnType("decimal(18,4)");
+
+                    b.Property<long?>("StockReceiptId")
+                        .HasColumnType("bigint");
+
+                    b.Property<int>("TenantId")
+                        .HasColumnType("int");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TenantId", "DailySaleId");
+
+                    b.HasIndex("TenantId", "StockReceiptId");
+
+                    b.HasIndex("TenantId", "ProductId", "CreatedOnUtc");
+
+                    b.ToTable("SaleRoznamchaInventoryMovements");
+                });
+
+            modelBuilder.Entity("Accounts.Models.SaleRoznamchaPaidStatus", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<string>("Code")
+                        .IsRequired()
+                        .HasMaxLength(30)
+                        .HasColumnType("nvarchar(30)");
+
+                    b.Property<string>("ColorCode")
+                        .HasMaxLength(20)
+                        .HasColumnType("nvarchar(20)");
+
+                    b.Property<bool>("IsActive")
+                        .HasColumnType("bit");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<int>("TenantId")
+                        .HasColumnType("int");
+
+                    b.HasKey("Id");
+
+                    b.HasAlternateKey("TenantId", "Id");
+
+                    b.HasIndex("TenantId", "Code")
+                        .IsUnique();
+
+                    b.ToTable("SaleRoznamchaPaidStatuses");
+                });
+
+            modelBuilder.Entity("Accounts.Models.SaleRoznamchaPlatform", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<string>("Code")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("nvarchar(20)");
+
+                    b.Property<int>("CompanyId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("CreatedByUserId")
+                        .HasMaxLength(450)
+                        .HasColumnType("nvarchar(450)");
+
+                    b.Property<DateTime>("CreatedOnUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<bool>("IsActive")
+                        .HasColumnType("bit");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(160)
+                        .HasColumnType("nvarchar(160)");
+
+                    b.Property<int>("TenantId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("UpdatedByUserId")
+                        .HasMaxLength(450)
+                        .HasColumnType("nvarchar(450)");
+
+                    b.Property<DateTime?>("UpdatedOnUtc")
+                        .HasColumnType("datetime2");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TenantId", "CompanyId", "Code")
+                        .IsUnique();
+
+                    b.HasIndex("TenantId", "CompanyId", "Name")
+                        .IsUnique();
+
+                    b.ToTable("SaleRoznamchaPlatforms");
+                });
+
+            modelBuilder.Entity("Accounts.Models.SaleRoznamchaProduct", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<long>("Id"));
+
+                    b.Property<string>("CreatedByUserId")
+                        .HasMaxLength(450)
+                        .HasColumnType("nvarchar(450)");
+
+                    b.Property<DateTime>("CreatedOnUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<int>("CurrencyId")
+                        .HasColumnType("int");
+
+                    b.Property<bool>("IsActive")
+                        .HasColumnType("bit");
+
+                    b.Property<bool>("IsDeleted")
+                        .HasColumnType("bit");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<int>("ProductCategoryId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("ProductCode")
+                        .IsRequired()
+                        .HasMaxLength(80)
+                        .HasColumnType("nvarchar(80)");
+
+                    b.Property<decimal>("PurchasePrice")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<decimal>("QuantityOnHand")
+                        .HasColumnType("decimal(18,4)");
+
+                    b.Property<int>("TenantId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("UpdatedByUserId")
+                        .HasMaxLength(450)
+                        .HasColumnType("nvarchar(450)");
+
+                    b.Property<DateTime?>("UpdatedOnUtc")
+                        .HasColumnType("datetime2");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CurrencyId");
+
+                    b.HasIndex("TenantId", "ProductCode")
+                        .IsUnique();
+
+                    b.HasIndex("TenantId", "IsDeleted", "IsActive");
+
+                    b.HasIndex("TenantId", "ProductCategoryId", "Name")
+                        .IsUnique();
+
+                    b.ToTable("SaleRoznamchaProducts");
+                });
+
+            modelBuilder.Entity("Accounts.Models.SaleRoznamchaProductCategory", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<string>("Code")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("nvarchar(20)");
+
+                    b.Property<string>("CreatedByUserId")
+                        .HasMaxLength(450)
+                        .HasColumnType("nvarchar(450)");
+
+                    b.Property<DateTime>("CreatedOnUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<bool>("IsActive")
+                        .HasColumnType("bit");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(160)
+                        .HasColumnType("nvarchar(160)");
+
+                    b.Property<int>("PlatformId")
+                        .HasColumnType("int");
+
+                    b.Property<int>("TenantId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("UpdatedByUserId")
+                        .HasMaxLength(450)
+                        .HasColumnType("nvarchar(450)");
+
+                    b.Property<DateTime?>("UpdatedOnUtc")
+                        .HasColumnType("datetime2");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TenantId", "PlatformId", "Code")
+                        .IsUnique();
+
+                    b.HasIndex("TenantId", "PlatformId", "Name")
+                        .IsUnique();
+
+                    b.ToTable("SaleRoznamchaProductCategories");
+                });
+
+            modelBuilder.Entity("Accounts.Models.SaleRoznamchaSaleStatus", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<string>("Code")
+                        .IsRequired()
+                        .HasMaxLength(30)
+                        .HasColumnType("nvarchar(30)");
+
+                    b.Property<string>("ColorCode")
+                        .HasMaxLength(20)
+                        .HasColumnType("nvarchar(20)");
+
+                    b.Property<string>("CreatedByUserId")
+                        .HasMaxLength(450)
+                        .HasColumnType("nvarchar(450)");
+
+                    b.Property<DateTime>("CreatedOnUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<short>("InventoryEffect")
+                        .HasColumnType("smallint");
+
+                    b.Property<bool>("IsActive")
+                        .HasColumnType("bit");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<int>("TenantId")
+                        .HasColumnType("int");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TenantId", "Code")
+                        .IsUnique();
+
+                    b.ToTable("SaleRoznamchaSaleStatuses");
+                });
+
+            modelBuilder.Entity("Accounts.Models.SaleRoznamchaStockReceipt", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<long>("Id"));
+
+                    b.Property<string>("CreatedByUserId")
+                        .HasMaxLength(450)
+                        .HasColumnType("nvarchar(450)");
+
+                    b.Property<DateTime>("CreatedOnUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<int>("CurrencyId")
+                        .HasColumnType("int");
+
+                    b.Property<long>("ProductId")
+                        .HasColumnType("bigint");
+
+                    b.Property<DateTime>("PurchasedOnUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<decimal>("PurchasedQuantity")
+                        .HasColumnType("decimal(18,4)");
+
+                    b.Property<decimal>("RemainingQuantity")
+                        .HasColumnType("decimal(18,4)");
+
+                    b.Property<int>("TenantId")
+                        .HasColumnType("int");
+
+                    b.Property<decimal>("UnitCost")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("decimal(18,2)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CurrencyId");
+
+                    b.HasIndex("TenantId", "ProductId", "RemainingQuantity");
+
+                    b.HasIndex("TenantId", "ProductId", "PurchasedOnUtc", "Id");
+
+                    b.ToTable("SaleRoznamchaStockReceipts");
+                });
+
+            modelBuilder.Entity("Accounts.Models.SaleRoznamchaTransactionDateLabel", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<string>("Code")
+                        .IsRequired()
+                        .HasMaxLength(30)
+                        .HasColumnType("nvarchar(30)");
+
+                    b.Property<bool>("IsActive")
+                        .HasColumnType("bit");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<int>("SortOrder")
+                        .HasColumnType("int");
+
+                    b.Property<int>("TenantId")
+                        .HasColumnType("int");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TenantId", "Code")
+                        .IsUnique();
+
+                    b.ToTable("SaleRoznamchaTransactionDateLabels");
+                });
+
             modelBuilder.Entity("Accounts.Models.StaffAccessGroup", b =>
                 {
                     b.Property<Guid>("StaffId")
@@ -9207,6 +10094,14 @@ namespace Accounts.Migrations
                         .OnDelete(DeleteBehavior.Restrict);
                 });
 
+            modelBuilder.Entity("Accounts.Models.AccountsDateLabel", b =>
+                {
+                    b.HasOne("Accounts.Models.Tenant", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId")
+                        .OnDelete(DeleteBehavior.Restrict);
+                });
+
             modelBuilder.Entity("Accounts.Models.AccountsEntryDocument", b =>
                 {
                     b.HasOne("Accounts.Models.AnnualReportHeader", null)
@@ -9983,6 +10878,21 @@ namespace Accounts.Migrations
 
             modelBuilder.Entity("Accounts.Models.Designation", b =>
                 {
+                    b.HasOne("Accounts.Models.Tenant", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("Accounts.Models.EMarketingSalesRozEntry", b =>
+                {
+                    b.HasOne("Accounts.Models.AccountsChartAccount", null)
+                        .WithMany()
+                        .HasForeignKey("AccountId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
                     b.HasOne("Accounts.Models.Tenant", null)
                         .WithMany()
                         .HasForeignKey("TenantId")
@@ -10990,6 +11900,314 @@ namespace Accounts.Migrations
                     b.Navigation("RuleRegistration");
                 });
 
+            modelBuilder.Entity("Accounts.Models.SaleRoznamchaCategory", b =>
+                {
+                    b.HasOne("Accounts.Models.Tenant", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("Accounts.Models.SaleRoznamchaChargeLabel", b =>
+                {
+                    b.HasOne("Accounts.Models.Tenant", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("Accounts.Models.SaleRoznamchaCompany", b =>
+                {
+                    b.HasOne("Accounts.Models.Tenant", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("Accounts.Models.SaleRoznamchaCategory", "Category")
+                        .WithMany("Companies")
+                        .HasForeignKey("TenantId", "CategoryId")
+                        .HasPrincipalKey("TenantId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Category");
+                });
+
+            modelBuilder.Entity("Accounts.Models.SaleRoznamchaDailySale", b =>
+                {
+                    b.HasOne("Accounts.Models.Tenant", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("Accounts.Models.SaleRoznamchaProduct", "Product")
+                        .WithMany()
+                        .HasForeignKey("TenantId", "ProductId")
+                        .HasPrincipalKey("TenantId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("Accounts.Models.SaleRoznamchaSaleStatus", "SaleStatus")
+                        .WithMany("Sales")
+                        .HasForeignKey("TenantId", "SaleStatusId")
+                        .HasPrincipalKey("TenantId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("Accounts.Models.AccountsCurrency", "UnitCostCurrency")
+                        .WithMany()
+                        .HasForeignKey("UnitCostCurrencyId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.Navigation("Product");
+
+                    b.Navigation("SaleStatus");
+
+                    b.Navigation("UnitCostCurrency");
+                });
+
+            modelBuilder.Entity("Accounts.Models.SaleRoznamchaDailySaleCharge", b =>
+                {
+                    b.HasOne("Accounts.Models.Tenant", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("Accounts.Models.SaleRoznamchaChargeLabel", "ChargeLabel")
+                        .WithMany("Charges")
+                        .HasForeignKey("TenantId", "ChargeLabelId")
+                        .HasPrincipalKey("TenantId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("Accounts.Models.SaleRoznamchaDailySale", "DailySale")
+                        .WithMany("Charges")
+                        .HasForeignKey("TenantId", "DailySaleId")
+                        .HasPrincipalKey("TenantId", "Id")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("ChargeLabel");
+
+                    b.Navigation("DailySale");
+                });
+
+            modelBuilder.Entity("Accounts.Models.SaleRoznamchaDailySaleStockAllocation", b =>
+                {
+                    b.HasOne("Accounts.Models.AccountsCurrency", "Currency")
+                        .WithMany()
+                        .HasForeignKey("CurrencyId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("Accounts.Models.Tenant", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("Accounts.Models.SaleRoznamchaDailySale", "DailySale")
+                        .WithMany("StockAllocations")
+                        .HasForeignKey("TenantId", "DailySaleId")
+                        .HasPrincipalKey("TenantId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("Accounts.Models.SaleRoznamchaStockReceipt", "StockReceipt")
+                        .WithMany("SaleAllocations")
+                        .HasForeignKey("TenantId", "StockReceiptId")
+                        .HasPrincipalKey("TenantId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Currency");
+
+                    b.Navigation("DailySale");
+
+                    b.Navigation("StockReceipt");
+                });
+
+            modelBuilder.Entity("Accounts.Models.SaleRoznamchaDailySaleTransactionDate", b =>
+                {
+                    b.HasOne("Accounts.Models.Tenant", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("Accounts.Models.SaleRoznamchaDailySale", "DailySale")
+                        .WithMany("TransactionDates")
+                        .HasForeignKey("TenantId", "DailySaleId")
+                        .HasPrincipalKey("TenantId", "Id")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("Accounts.Models.SaleRoznamchaTransactionDateLabel", "DateLabel")
+                        .WithMany("Dates")
+                        .HasForeignKey("TenantId", "DateLabelId")
+                        .HasPrincipalKey("TenantId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("DailySale");
+
+                    b.Navigation("DateLabel");
+                });
+
+            modelBuilder.Entity("Accounts.Models.SaleRoznamchaInventoryMovement", b =>
+                {
+                    b.HasOne("Accounts.Models.Tenant", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("Accounts.Models.SaleRoznamchaDailySale", "DailySale")
+                        .WithMany("InventoryMovements")
+                        .HasForeignKey("TenantId", "DailySaleId")
+                        .HasPrincipalKey("TenantId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("Accounts.Models.SaleRoznamchaProduct", "Product")
+                        .WithMany("Movements")
+                        .HasForeignKey("TenantId", "ProductId")
+                        .HasPrincipalKey("TenantId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("Accounts.Models.SaleRoznamchaStockReceipt", "StockReceipt")
+                        .WithMany()
+                        .HasForeignKey("TenantId", "StockReceiptId")
+                        .HasPrincipalKey("TenantId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.Navigation("DailySale");
+
+                    b.Navigation("Product");
+
+                    b.Navigation("StockReceipt");
+                });
+
+            modelBuilder.Entity("Accounts.Models.SaleRoznamchaPaidStatus", b =>
+                {
+                    b.HasOne("Accounts.Models.Tenant", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("Accounts.Models.SaleRoznamchaPlatform", b =>
+                {
+                    b.HasOne("Accounts.Models.Tenant", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("Accounts.Models.SaleRoznamchaCompany", "Company")
+                        .WithMany("Platforms")
+                        .HasForeignKey("TenantId", "CompanyId")
+                        .HasPrincipalKey("TenantId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Company");
+                });
+
+            modelBuilder.Entity("Accounts.Models.SaleRoznamchaProduct", b =>
+                {
+                    b.HasOne("Accounts.Models.AccountsCurrency", "Currency")
+                        .WithMany()
+                        .HasForeignKey("CurrencyId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("Accounts.Models.Tenant", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("Accounts.Models.SaleRoznamchaProductCategory", "ProductCategory")
+                        .WithMany("Products")
+                        .HasForeignKey("TenantId", "ProductCategoryId")
+                        .HasPrincipalKey("TenantId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Currency");
+
+                    b.Navigation("ProductCategory");
+                });
+
+            modelBuilder.Entity("Accounts.Models.SaleRoznamchaProductCategory", b =>
+                {
+                    b.HasOne("Accounts.Models.Tenant", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("Accounts.Models.SaleRoznamchaPlatform", "Platform")
+                        .WithMany("ProductCategories")
+                        .HasForeignKey("TenantId", "PlatformId")
+                        .HasPrincipalKey("TenantId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Platform");
+                });
+
+            modelBuilder.Entity("Accounts.Models.SaleRoznamchaSaleStatus", b =>
+                {
+                    b.HasOne("Accounts.Models.Tenant", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("Accounts.Models.SaleRoznamchaStockReceipt", b =>
+                {
+                    b.HasOne("Accounts.Models.AccountsCurrency", "Currency")
+                        .WithMany()
+                        .HasForeignKey("CurrencyId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("Accounts.Models.Tenant", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("Accounts.Models.SaleRoznamchaProduct", "Product")
+                        .WithMany("StockReceipts")
+                        .HasForeignKey("TenantId", "ProductId")
+                        .HasPrincipalKey("TenantId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Currency");
+
+                    b.Navigation("Product");
+                });
+
+            modelBuilder.Entity("Accounts.Models.SaleRoznamchaTransactionDateLabel", b =>
+                {
+                    b.HasOne("Accounts.Models.Tenant", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
             modelBuilder.Entity("Accounts.Models.StaffAccessGroup", b =>
                 {
                     b.HasOne("Accounts.Models.StaffVacancy", "Staff")
@@ -11326,6 +12544,64 @@ namespace Accounts.Migrations
             modelBuilder.Entity("Accounts.Models.ProcessMaster", b =>
                 {
                     b.Navigation("StatusStyles");
+                });
+
+            modelBuilder.Entity("Accounts.Models.SaleRoznamchaCategory", b =>
+                {
+                    b.Navigation("Companies");
+                });
+
+            modelBuilder.Entity("Accounts.Models.SaleRoznamchaChargeLabel", b =>
+                {
+                    b.Navigation("Charges");
+                });
+
+            modelBuilder.Entity("Accounts.Models.SaleRoznamchaCompany", b =>
+                {
+                    b.Navigation("Platforms");
+                });
+
+            modelBuilder.Entity("Accounts.Models.SaleRoznamchaDailySale", b =>
+                {
+                    b.Navigation("Charges");
+
+                    b.Navigation("InventoryMovements");
+
+                    b.Navigation("StockAllocations");
+
+                    b.Navigation("TransactionDates");
+                });
+
+            modelBuilder.Entity("Accounts.Models.SaleRoznamchaPlatform", b =>
+                {
+                    b.Navigation("ProductCategories");
+                });
+
+            modelBuilder.Entity("Accounts.Models.SaleRoznamchaProduct", b =>
+                {
+                    b.Navigation("Movements");
+
+                    b.Navigation("StockReceipts");
+                });
+
+            modelBuilder.Entity("Accounts.Models.SaleRoznamchaProductCategory", b =>
+                {
+                    b.Navigation("Products");
+                });
+
+            modelBuilder.Entity("Accounts.Models.SaleRoznamchaSaleStatus", b =>
+                {
+                    b.Navigation("Sales");
+                });
+
+            modelBuilder.Entity("Accounts.Models.SaleRoznamchaStockReceipt", b =>
+                {
+                    b.Navigation("SaleAllocations");
+                });
+
+            modelBuilder.Entity("Accounts.Models.SaleRoznamchaTransactionDateLabel", b =>
+                {
+                    b.Navigation("Dates");
                 });
 
             modelBuilder.Entity("Accounts.Models.StaffMenuAccess", b =>

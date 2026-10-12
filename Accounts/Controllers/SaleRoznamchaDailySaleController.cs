@@ -61,6 +61,14 @@ public sealed class SaleRoznamchaDailySaleController(
             await sales.StatusesAsync(ct)));
     }
 
+    [HttpGet("lookups")]
+    public async Task<IActionResult> Lookups(CancellationToken ct)
+    {
+        var denied = await Guard("VIEW", ct); if (denied != null) return denied;
+        return Ok(ApiResponse<SaleRoznamchaDailySaleLookups>.Ok(
+            await sales.LookupsAsync(ct)));
+    }
+
     [HttpPost]
     [Idempotent]
     public async Task<IActionResult> Create(CreateSaleRoznamchaDailySaleRequest request, CancellationToken ct)

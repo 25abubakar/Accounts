@@ -13,6 +13,8 @@ public interface ISaleRoznamchaDailySaleService
 
     Task<IReadOnlyList<SaleRoznamchaSaleStatusRow>> StatusesAsync(CancellationToken ct = default);
 
+    Task<SaleRoznamchaDailySaleLookups> LookupsAsync(CancellationToken ct = default);
+
     Task<SaleRoznamchaDailySaleRow> CreateAsync(
         CreateSaleRoznamchaDailySaleRequest request,
         CancellationToken ct = default);

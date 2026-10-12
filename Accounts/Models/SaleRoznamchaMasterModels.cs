@@ -133,6 +133,7 @@ public sealed class SaleRoznamchaSaleStatus : ITenantEntity
     public int TenantId { get; set; }
     [Required, MaxLength(30)] public string Code { get; set; } = string.Empty;
     [Required, MaxLength(100)] public string Name { get; set; } = string.Empty;
+    [MaxLength(20)] public string? ColorCode { get; set; }
     public short InventoryEffect { get; set; }
     public bool IsActive { get; set; } = true;
     [MaxLength(450)] public string? CreatedByUserId { get; set; }
@@ -147,15 +148,98 @@ public sealed class SaleRoznamchaDailySale : ITenantEntity
     public int TenantId { get; set; }
     public long ProductId { get; set; }
     public int SaleStatusId { get; set; }
+    [MaxLength(100)] public string? MarketplaceCompanyId { get; set; }
+    [MaxLength(100)] public string? OrderId { get; set; }
     [Column(TypeName = "decimal(18,4)")] public decimal Quantity { get; set; }
+    [Column(TypeName = "decimal(18,2)")] public decimal UnitCost { get; set; }
+    public int? UnitCostCurrencyId { get; set; }
+    [Column(TypeName = "decimal(18,2)")] public decimal GrossTotal { get; set; }
+    [Column(TypeName = "decimal(18,2)")] public decimal TotalRevenue { get; set; }
+    [Column(TypeName = "decimal(18,2)")] public decimal CostAmount { get; set; }
+    [Column(TypeName = "decimal(18,2)")] public decimal PayCharges { get; set; }
+    [Column(TypeName = "decimal(18,2)")] public decimal DeliveryFee { get; set; }
+    [Column(TypeName = "decimal(18,2)")] public decimal OtherAmount { get; set; }
+    [Column(TypeName = "decimal(18,2)")] public decimal PromotionAmount { get; set; }
+    [Column(TypeName = "decimal(18,2)")] public decimal RtoRefundAmount { get; set; }
+    public int? TransactionTypeId { get; set; }
+    public int? PaidStatusId { get; set; }
+    public int? ToAccountId { get; set; }
+    [MaxLength(100)] public string? InterProReference { get; set; }
+    [MaxLength(100)] public string? OrderReference { get; set; }
+    public DateOnly? SaleDate { get; set; }
+    [MaxLength(2000)] public string? Description { get; set; }
     [Column(TypeName = "decimal(18,4)")] public decimal InventoryDelta { get; set; }
     [Column(TypeName = "decimal(18,4)")] public decimal BalanceAfter { get; set; }
     [MaxLength(450)] public string? CreatedByUserId { get; set; }
     public DateTime CreatedOnUtc { get; set; } = DateTime.UtcNow;
     public SaleRoznamchaProduct Product { get; set; } = null!;
     public SaleRoznamchaSaleStatus SaleStatus { get; set; } = null!;
+    public AccountsCurrency? UnitCostCurrency { get; set; }
     public ICollection<SaleRoznamchaInventoryMovement> InventoryMovements { get; set; } = [];
     public ICollection<SaleRoznamchaDailySaleStockAllocation> StockAllocations { get; set; } = [];
+    public ICollection<SaleRoznamchaDailySaleCharge> Charges { get; set; } = [];
+    public ICollection<SaleRoznamchaDailySaleTransactionDate> TransactionDates { get; set; } = [];
+}
+
+[Table("SaleRoznamchaPaidStatuses")]
+public sealed class SaleRoznamchaPaidStatus : ITenantEntity
+{
+    [Key] public int Id { get; set; }
+    public int TenantId { get; set; }
+    [Required, MaxLength(30)] public string Code { get; set; } = string.Empty;
+    [Required, MaxLength(100)] public string Name { get; set; } = string.Empty;
+    [MaxLength(20)] public string? ColorCode { get; set; }
+    public bool IsActive { get; set; } = true;
+}
+
+[Table("SaleRoznamchaChargeLabels")]
+public sealed class SaleRoznamchaChargeLabel : ITenantEntity
+{
+    [Key] public int Id { get; set; }
+    public int TenantId { get; set; }
+    [Required, MaxLength(30)] public string Code { get; set; } = string.Empty;
+    [Required, MaxLength(100)] public string Name { get; set; } = string.Empty;
+    public int SortOrder { get; set; }
+    public bool IsActive { get; set; } = true;
+    public ICollection<SaleRoznamchaDailySaleCharge> Charges { get; set; } = [];
+}
+
+[Table("SaleRoznamchaTransactionDateLabels")]
+public sealed class SaleRoznamchaTransactionDateLabel : ITenantEntity
+{
+    [Key] public int Id { get; set; }
+    public int TenantId { get; set; }
+    [Required, MaxLength(30)] public string Code { get; set; } = string.Empty;
+    [Required, MaxLength(100)] public string Name { get; set; } = string.Empty;
+    public int SortOrder { get; set; }
+    public bool IsActive { get; set; } = true;
+    public ICollection<SaleRoznamchaDailySaleTransactionDate> Dates { get; set; } = [];
+}
+
+[Table("SaleRoznamchaDailySaleCharges")]
+public sealed class SaleRoznamchaDailySaleCharge : ITenantEntity
+{
+    [Key] public long Id { get; set; }
+    public int TenantId { get; set; }
+    public long DailySaleId { get; set; }
+    public int ChargeLabelId { get; set; }
+    [Column(TypeName = "decimal(18,2)")] public decimal Amount { get; set; }
+    public DateTime CreatedOnUtc { get; set; } = DateTime.UtcNow;
+    public SaleRoznamchaDailySale DailySale { get; set; } = null!;
+    public SaleRoznamchaChargeLabel ChargeLabel { get; set; } = null!;
+}
+
+[Table("SaleRoznamchaDailySaleTransactionDates")]
+public sealed class SaleRoznamchaDailySaleTransactionDate : ITenantEntity
+{
+    [Key] public long Id { get; set; }
+    public int TenantId { get; set; }
+    public long DailySaleId { get; set; }
+    public int DateLabelId { get; set; }
+    public DateOnly Value { get; set; }
+    public DateTime CreatedOnUtc { get; set; } = DateTime.UtcNow;
+    public SaleRoznamchaDailySale DailySale { get; set; } = null!;
+    public SaleRoznamchaTransactionDateLabel DateLabel { get; set; } = null!;
 }
 
 [Table("SaleRoznamchaDailySaleStockAllocations")]
