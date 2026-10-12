@@ -8238,6 +8238,44 @@ namespace Accounts.Migrations
                     b.ToTable("SalaryScales", (string)null);
                 });
 
+            modelBuilder.Entity("Accounts.Models.SaleRoznamchaAmountEffect", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<string>("Code")
+                        .IsRequired()
+                        .HasMaxLength(30)
+                        .HasColumnType("nvarchar(30)");
+
+                    b.Property<bool>("IsActive")
+                        .HasColumnType("bit");
+
+                    b.Property<short>("Multiplier")
+                        .HasColumnType("smallint");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<int>("TenantId")
+                        .HasColumnType("int");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TenantId", "Code")
+                        .IsUnique();
+
+                    b.ToTable("SaleRoznamchaAmountEffects", t =>
+                        {
+                            t.HasCheckConstraint("CK_SaleRoznamchaAmountEffects_Multiplier", "[Multiplier] IN (-1, 1)");
+                        });
+                });
+
             modelBuilder.Entity("Accounts.Models.SaleRoznamchaCategory", b =>
                 {
                     b.Property<int>("Id")
@@ -8369,6 +8407,9 @@ namespace Accounts.Migrations
                     b.Property<decimal>("BalanceAfter")
                         .HasColumnType("decimal(18,4)");
 
+                    b.Property<decimal>("BaseSaleAmount")
+                        .HasColumnType("decimal(18,2)");
+
                     b.Property<decimal>("CostAmount")
                         .HasColumnType("decimal(18,2)");
 
@@ -8400,6 +8441,9 @@ namespace Accounts.Migrations
                         .HasMaxLength(100)
                         .HasColumnType("nvarchar(100)");
 
+                    b.Property<decimal>("NetSaleTotal")
+                        .HasColumnType("decimal(18,2)");
+
                     b.Property<string>("OrderId")
                         .HasMaxLength(100)
                         .HasColumnType("nvarchar(100)");
@@ -8414,6 +8458,9 @@ namespace Accounts.Migrations
                     b.Property<int?>("PaidStatusId")
                         .HasColumnType("int");
 
+                    b.Property<int>("PayChargeEffectId")
+                        .HasColumnType("int");
+
                     b.Property<decimal>("PayCharges")
                         .HasColumnType("decimal(18,2)");
 
@@ -8426,14 +8473,11 @@ namespace Accounts.Migrations
                     b.Property<decimal>("Quantity")
                         .HasColumnType("decimal(18,4)");
 
-                    b.Property<decimal>("UnitCost")
+                    b.Property<decimal>("RtoChargeAmount")
                         .HasColumnType("decimal(18,2)");
 
-                    b.Property<int?>("UnitCostCurrencyId")
+                    b.Property<int>("SaleCurrencyId")
                         .HasColumnType("int");
-
-                    b.Property<decimal>("RtoRefundAmount")
-                        .HasColumnType("decimal(18,2)");
 
                     b.Property<DateOnly?>("SaleDate")
                         .HasColumnType("date");
@@ -8447,19 +8491,39 @@ namespace Accounts.Migrations
                     b.Property<int?>("ToAccountId")
                         .HasColumnType("int");
 
+                    b.Property<decimal>("TotalAdditions")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<decimal>("TotalDeductions")
+                        .HasColumnType("decimal(18,2)");
+
                     b.Property<decimal>("TotalRevenue")
                         .HasColumnType("decimal(18,2)");
 
                     b.Property<int?>("TransactionTypeId")
                         .HasColumnType("int");
 
+                    b.Property<decimal>("UnitCost")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<int?>("UnitCostCurrencyId")
+                        .HasColumnType("int");
+
+                    b.Property<decimal>("UnitSalePrice")
+                        .HasColumnType("decimal(18,2)");
+
                     b.HasKey("Id");
+
+                    b.HasIndex("SaleCurrencyId");
+
+                    b.HasIndex("UnitCostCurrencyId");
 
                     b.HasIndex("TenantId", "CreatedOnUtc");
 
-                    b.HasIndex("TenantId", "SaleStatusId");
+                    b.HasIndex("TenantId", "PayChargeEffectId");
 
-                    b.HasIndex("UnitCostCurrencyId");
+                    b.HasIndex("TenantId", "SaleStatusId");
 
                     b.HasIndex("TenantId", "ProductId", "CreatedOnUtc");
 
@@ -11900,6 +11964,15 @@ namespace Accounts.Migrations
                     b.Navigation("RuleRegistration");
                 });
 
+            modelBuilder.Entity("Accounts.Models.SaleRoznamchaAmountEffect", b =>
+                {
+                    b.HasOne("Accounts.Models.Tenant", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
             modelBuilder.Entity("Accounts.Models.SaleRoznamchaCategory", b =>
                 {
                     b.HasOne("Accounts.Models.Tenant", null)
@@ -11938,9 +12011,27 @@ namespace Accounts.Migrations
 
             modelBuilder.Entity("Accounts.Models.SaleRoznamchaDailySale", b =>
                 {
+                    b.HasOne("Accounts.Models.AccountsCurrency", "SaleCurrency")
+                        .WithMany()
+                        .HasForeignKey("SaleCurrencyId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
                     b.HasOne("Accounts.Models.Tenant", null)
                         .WithMany()
                         .HasForeignKey("TenantId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("Accounts.Models.AccountsCurrency", "UnitCostCurrency")
+                        .WithMany()
+                        .HasForeignKey("UnitCostCurrencyId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("Accounts.Models.SaleRoznamchaAmountEffect", "PayChargeEffect")
+                        .WithMany("PayChargeSales")
+                        .HasForeignKey("TenantId", "PayChargeEffectId")
+                        .HasPrincipalKey("TenantId", "Id")
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
 
@@ -11958,12 +12049,11 @@ namespace Accounts.Migrations
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
 
-                    b.HasOne("Accounts.Models.AccountsCurrency", "UnitCostCurrency")
-                        .WithMany()
-                        .HasForeignKey("UnitCostCurrencyId")
-                        .OnDelete(DeleteBehavior.Restrict);
+                    b.Navigation("PayChargeEffect");
 
                     b.Navigation("Product");
+
+                    b.Navigation("SaleCurrency");
 
                     b.Navigation("SaleStatus");
 
@@ -12544,6 +12634,11 @@ namespace Accounts.Migrations
             modelBuilder.Entity("Accounts.Models.ProcessMaster", b =>
                 {
                     b.Navigation("StatusStyles");
+                });
+
+            modelBuilder.Entity("Accounts.Models.SaleRoznamchaAmountEffect", b =>
+                {
+                    b.Navigation("PayChargeSales");
                 });
 
             modelBuilder.Entity("Accounts.Models.SaleRoznamchaCategory", b =>

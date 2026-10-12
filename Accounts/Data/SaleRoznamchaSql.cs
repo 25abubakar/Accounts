@@ -481,7 +481,7 @@ internal static class SaleRoznamchaSql
             SET XACT_ABORT ON;
 
             IF @Quantity <= 0 THROW 51000, 'Quantity must be greater than zero.', 1;
-            IF @UnitSalePrice < 0 OR @PayCharges < 0
+            IF @UnitSalePrice <= 0 OR @PayCharges < 0
                OR @DeliveryFee < 0 OR @OtherAmount < 0 OR @PromotionAmount < 0 OR @RtoChargeAmount < 0
                 THROW 51000, 'Amounts cannot be negative.', 1;
             IF ISJSON(COALESCE(@ChargesJson, N'[]')) <> 1 OR ISJSON(COALESCE(@TransactionDatesJson, N'[]')) <> 1
@@ -557,13 +557,12 @@ internal static class SaleRoznamchaSql
 
             SELECT @AdditionalChargeTotal = COALESCE(SUM(Amount), 0) FROM @Charges;
             SET @BaseSaleAmount = ROUND(@Quantity * @UnitSalePrice, 2);
-            SET @TotalAdditions = @DeliveryFee + @OtherAmount + @AdditionalChargeTotal
-                                  + CASE WHEN @PayChargeMultiplier = 1 THEN @PayCharges ELSE 0 END;
-            SET @TotalDeductions = @PromotionAmount + @RtoChargeAmount
-                                   + CASE WHEN @PayChargeMultiplier = -1 THEN @PayCharges ELSE 0 END;
-            SET @NetSaleTotal = @BaseSaleAmount + @TotalAdditions - @TotalDeductions;
-            IF @NetSaleTotal < 0
-                THROW 51000, 'Total deductions cannot exceed the sale amount and additions.', 1;
+            SET @TotalAdditions = ROUND(@DeliveryFee + @OtherAmount + @AdditionalChargeTotal
+                                  + CASE WHEN @PayChargeMultiplier = 1 THEN @PayCharges ELSE 0 END, 2);
+            SET @TotalDeductions = ROUND(@PromotionAmount + @RtoChargeAmount
+                                   + CASE WHEN @PayChargeMultiplier = -1 THEN @PayCharges ELSE 0 END, 2);
+            SET @NetSaleTotal = ROUND(@BaseSaleAmount + @TotalAdditions - @TotalDeductions, 2);
+            IF @NetSaleTotal < 0 THROW 51000, 'Net sale total cannot be negative.', 1;
 
             SELECT @InventoryEffect = InventoryEffect, @StatusCode = Code
             FROM dbo.SaleRoznamchaSaleStatuses

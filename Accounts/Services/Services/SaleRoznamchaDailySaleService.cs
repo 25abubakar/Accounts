@@ -75,14 +75,14 @@ public sealed class SaleRoznamchaDailySaleService(
                 .Select(x => new SaleRoznamchaLookupRow { Id = x.Id, Code = x.Code, Name = x.Name })
                 .ToListAsync(ct),
             Currencies = await db.AccountsCurrencies.AsNoTracking()
-                .Where(x => x.IsActive)
-                .OrderByDescending(x => x.IsDefault).ThenBy(x => x.Code)
+                .Where(x => x.IsActive && (x.TenantId == null || x.TenantId == current.TenantId))
+                .OrderBy(x => x.Code).ThenBy(x => x.Id)
                 .Select(x => new SaleRoznamchaCurrencyRow
                 {
                     Id = x.Id,
                     Code = x.Code,
                     Name = x.Name,
-                    IsDefault = x.IsDefault,
+                    IsDefault = false,
                 })
                 .ToListAsync(ct),
             PayChargeEffects = await db.SaleRoznamchaAmountEffects.AsNoTracking()
@@ -107,13 +107,15 @@ public sealed class SaleRoznamchaDailySaleService(
 
         if (request.SaleCurrencyId <= 0 || request.PayChargeEffectId <= 0)
             throw new InvalidOperationException("Sale currency and Pay Charge treatment are required.");
+        if (request.UnitSalePrice <= 0)
+            throw new InvalidOperationException("Unit Sale Price must be greater than zero.");
 
         var monetaryValues = new[]
         {
             request.UnitSalePrice, request.PayCharges, request.DeliveryFee,
             request.OtherAmount, request.PromotionAmount, request.RtoChargeAmount,
         };
-        if (monetaryValues.Any(value => value < 0) || request.Charges.Any(x => x.Amount < 0))
+        if (monetaryValues.Skip(1).Any(value => value < 0) || request.Charges.Any(x => x.Amount < 0))
             throw new InvalidOperationException("Amounts cannot be negative.");
         if (request.Charges.Any(x => x.ChargeLabelId <= 0) || request.TransactionDates.Any(x => x.DateLabelId <= 0))
             throw new InvalidOperationException("Every added row must have a valid label.");
