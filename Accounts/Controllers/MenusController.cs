@@ -284,6 +284,11 @@ namespace Accounts.Controllers
                 new("Statements",           "Users",              null,                              null,                 86, new()),
                 new("Bank",                 "Landmark",           "/statements/bank",                "Statements",         1, new()),
 
+                // Marketing
+                new("Marketing",            "Users",              null,                              null,                 87, new()),
+                new("Stock Info",           "Package",            "/e-marketing/stock-info",         "Marketing",            1, new()),
+                new("Sales (Roz)",          "ShoppingBag",        "/e-marketing/sales-roz",          "Marketing",            2, new()),
+
                 // Billing
                 new("Billing",              "Users",              null,                              null,                 88, new()),
                 new("Receipt (Roz)",        "ReceiptText",        "/billing/receipt-roz",            "Billing",            1, new()),
@@ -313,7 +318,7 @@ namespace Accounts.Controllers
 
                 // Sale Roznamcha
                 new("Sale Roznamcha",        "ShoppingBag",        null,                                  null,               91, new()),
-                new("Management",            "SlidersHorizontal",  "/sale-roznamcha/management",        "Sale Roznamcha",  1, new()),
+                new("E-Marketing",           "SlidersHorizontal",  "/sale-roznamcha/e-marketing",       "Sale Roznamcha",  1, new()),
                 new("Inventory",             "Package",            "/sale-roznamcha/inventory",         "Sale Roznamcha",  2, new()),
                 new("Daily Sale",            "ShoppingBag",        "/sale-roznamcha/daily-sale",        "Sale Roznamcha",  3, new()),
                 new("History",               "Clock3",             "/sale-roznamcha/history",           "Sale Roznamcha",  4, new()),
@@ -482,7 +487,8 @@ namespace Accounts.Controllers
                 ["/hr/positions"] = "/hr/vacancies",
                 ["/hr/reports"] = "/hr/process/report",
                 ["/HR/REPORTS"] = "/hr/process/report",
-                ["/Hr/Reports"] = "/hr/process/report"
+                ["/Hr/Reports"] = "/hr/process/report",
+                ["/sale-roznamcha/management"] = "/sale-roznamcha/e-marketing"
             };
 
             var menus = await _db.Menus.Where(m => m.Route != null).ToListAsync();

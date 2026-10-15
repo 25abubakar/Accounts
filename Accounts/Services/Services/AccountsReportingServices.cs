@@ -13,32 +13,171 @@ public sealed class AccountsReportService(ApplicationDbContext db, ICurrentUserS
         IReadOnlyList<int>? categoryIds, IReadOnlyList<int>? accountIds, CancellationToken ct = default)
     {
         if (to < from) throw new InvalidOperationException("dateTo must be on or after dateFrom.");
-        var query = BaseReportQuery().Where(x => x.Date >= from && x.Date <= to);
-        if (typeId.HasValue) query = query.Where(x => x.EntryTypeId == typeId.Value);
-        if (categoryIds is { Count: > 0 }) query = query.Where(x => x.CategoryId.HasValue && categoryIds.Contains(x.CategoryId.Value));
-        if (accountIds is { Count: > 0 }) query = query.Where(x => x.AccountId.HasValue && accountIds.Contains(x.AccountId.Value));
-        if (!string.IsNullOrWhiteSpace(name))
+        var query = db.RoznamchaEntries.AsNoTracking()
+            .Where(x => !x.IsDeleted && x.IsShow && x.TransDate >= from && x.TransDate <= to);
+        if (typeId.HasValue) query = query.Where(x => x.RoznamchaTypeId == typeId.Value);
+        if (projectId.HasValue) query = query.Where(x => x.ProjectId == projectId.Value);
+        var entries = await query.OrderBy(x => x.TransDate).ThenBy(x => x.Id).Select(x => new
         {
-            var term = name.Trim();
-            query = query.Where(x => (x.Category ?? "").Contains(term) || (x.Account ?? "").Contains(term) || (x.ReferenceNo ?? "").Contains(term));
-        }
-        if (projectId.HasValue)
+            x.Id, x.TransDate, x.RoznamchaTypeId, x.FromAccountId, x.ToAccountId,
+            PkrAmount = (x.Amount ?? 0) + (x.Adjustment ?? 0), UsdAmount = x.UsdAmount ?? 0,
+            x.Ref, x.Descriptions
+        }).ToListAsync(ct);
+        var referencedIds = entries.SelectMany(x => new[] { x.FromAccountId, x.ToAccountId }).Where(x => x.HasValue).Select(x => x!.Value).Distinct().ToArray();
+        var accounts = await (from account in db.AccountsChartAccounts.AsNoTracking()
+                              join category in db.AccountsCategories.AsNoTracking() on account.CategoryId equals category.Id into categoryRows
+                              from category in categoryRows.DefaultIfEmpty()
+                              where referencedIds.Contains(account.Id)
+                              select new { account.Id, account.AccountName, account.CategoryId, Category = category == null ? null : category.Name })
+            .ToDictionaryAsync(x => x.Id, ct);
+        var types = await db.AccountsRoznamchaTypes.AsNoTracking().ToDictionaryAsync(x => x.Id, x => x.Name, ct);
+        var rows = new List<(long EntryId, ReportRowDto Row)>();
+        foreach (var entry in entries)
         {
-            var entryIds = db.RoznamchaEntries.AsNoTracking().Where(x => x.ProjectId == projectId).Select(x => x.Id);
-            query = query.Where(x => entryIds.Contains(x.InternalEntryId));
-        }
-        return await query.OrderBy(x => x.Date).ThenBy(x => x.InternalEntryId)
-            .Select(x => new ReportRowDto
+            void AddLine(int? id, bool debit)
             {
-                Date = x.Date, CategoryId = x.CategoryId, Category = x.Category,
-                AccountId = x.AccountId, Account = x.Account, EntryTypeId = x.EntryTypeId,
-                Debit = x.Debit, Credit = x.Credit, Balance = x.Debit - x.Credit,
-                ReferenceNo = x.ReferenceNo, Description = x.Description
-            }).ToListAsync(ct);
+                if (!id.HasValue || !accounts.TryGetValue(id.Value, out var account)) return;
+                if (categoryIds is { Count: > 0 } && (!account.CategoryId.HasValue || !categoryIds.Contains(account.CategoryId.Value))) return;
+                if (accountIds is { Count: > 0 } && !accountIds.Contains(account.Id)) return;
+                var typeName = entry.RoznamchaTypeId.HasValue && types.TryGetValue(entry.RoznamchaTypeId.Value, out var resolvedType) ? resolvedType : null;
+                var row = new ReportRowDto
+                {
+                    Date = entry.TransDate, CategoryId = account.CategoryId, Category = account.Category,
+                    AccountId = account.Id, Account = account.AccountName, EntryTypeId = entry.RoznamchaTypeId ?? 0,
+                    EntryType = typeName, Debit = debit ? entry.PkrAmount : 0, Credit = debit ? 0 : entry.PkrAmount,
+                    UsdDebit = debit ? entry.UsdAmount : 0, UsdCredit = debit ? 0 : entry.UsdAmount,
+                    ReferenceNo = entry.Ref, Description = entry.Descriptions,
+                    FromAccount = entry.FromAccountId.HasValue && accounts.TryGetValue(entry.FromAccountId.Value, out var fromAccount) ? fromAccount.AccountName : null,
+                    ToAccount = entry.ToAccountId.HasValue && accounts.TryGetValue(entry.ToAccountId.Value, out var toAccount) ? toAccount.AccountName : null
+                };
+                rows.Add((entry.Id, row));
+            }
+            AddLine(entry.FromAccountId, true);
+            AddLine(entry.ToAccountId, false);
+        }
+        var term = name?.Trim();
+        var filtered = string.IsNullOrWhiteSpace(term) ? rows : rows.Where(x =>
+            (x.Row.Category?.Contains(term, StringComparison.OrdinalIgnoreCase) ?? false) ||
+            (x.Row.Account?.Contains(term, StringComparison.OrdinalIgnoreCase) ?? false) ||
+            (x.Row.ReferenceNo?.Contains(term, StringComparison.OrdinalIgnoreCase) ?? false) ||
+            (x.Row.Description?.Contains(term, StringComparison.OrdinalIgnoreCase) ?? false)).ToList();
+        foreach (var group in filtered.GroupBy(x => x.Row.AccountId))
+        {
+            decimal balance = 0, usdBalance = 0;
+            foreach (var item in group.OrderBy(x => x.Row.Date).ThenBy(x => x.EntryId))
+            {
+                balance += item.Row.Credit - item.Row.Debit;
+                usdBalance += item.Row.UsdCredit - item.Row.UsdDebit;
+                item.Row.Balance = balance;
+                item.Row.UsdBalance = usdBalance;
+            }
+        }
+        return filtered.OrderBy(x => x.Row.Date).ThenBy(x => x.EntryId).Select(x => x.Row).ToList();
     }
 
     public Task<IReadOnlyList<ReportRowDto>> DailyAsync(DateOnly from, DateOnly to, CancellationToken ct = default) =>
         MonthlyAsync(null, from, to, null, null, null, null, ct);
+
+    public async Task<IReadOnlyList<AccountsDailyUpdateDto>> DailyUpdatesAsync(DateOnly from, DateOnly to, CancellationToken ct = default)
+    {
+        if (to < from) throw new InvalidOperationException("toDate must be on or after todayDate.");
+        var start = from.ToDateTime(TimeOnly.MinValue);
+        var end = to.AddDays(1).ToDateTime(TimeOnly.MinValue);
+        return await (from log in db.RoznamchaEntryProcessLogs.AsNoTracking()
+                      join entry in db.RoznamchaEntries.AsNoTracking() on log.RoznamchaEntryId equals entry.Id
+                      join type in db.AccountsRoznamchaTypes.AsNoTracking() on entry.RoznamchaTypeId equals type.Id into typeRows
+                      from type in typeRows.DefaultIfEmpty()
+                      join fromAccount in db.AccountsChartAccounts.AsNoTracking() on entry.FromAccountId equals fromAccount.Id into fromRows
+                      from fromAccount in fromRows.DefaultIfEmpty()
+                      join toAccount in db.AccountsChartAccounts.AsNoTracking() on entry.ToAccountId equals toAccount.Id into toRows
+                      from toAccount in toRows.DefaultIfEmpty()
+                      where log.ProcessedOnUtc >= start && log.ProcessedOnUtc < end
+                      orderby log.ProcessedOnUtc descending, log.Id descending
+                      select new AccountsDailyUpdateDto
+                      {
+                          LogId = log.Id, EntryId = entry.Id, ReferenceNo = entry.Ref,
+                          TransactionDate = entry.TransDate, EntryType = type == null ? null : type.Name,
+                          FromAccount = fromAccount == null ? null : fromAccount.AccountName,
+                          ToAccount = toAccount == null ? null : toAccount.AccountName,
+                          Amount = (entry.Amount ?? 0) + (entry.Adjustment ?? 0), UsdAmount = entry.UsdAmount ?? 0,
+                          Action = log.Action, Notes = log.Notes, ChangedByUserId = log.ProcessedByUserId,
+                          ChangedOnUtc = log.ProcessedOnUtc, Description = entry.Descriptions
+                      }).ToListAsync(ct);
+    }
+
+    public async Task<IReadOnlyList<ReportRowDto>> BankAccountAsync(
+        int accountId, DateOnly from, DateOnly to, CancellationToken ct = default)
+    {
+        if (to < from) throw new InvalidOperationException("dateTo must be on or after dateFrom.");
+        var account = await db.AccountsChartAccounts.AsNoTracking()
+            .FirstOrDefaultAsync(x => x.Id == accountId && x.IsActive, ct)
+            ?? throw new KeyNotFoundException("Account was not found.");
+        var category = account.CategoryId.HasValue
+            ? await db.AccountsCategories.AsNoTracking().Where(x => x.Id == account.CategoryId.Value).Select(x => x.Name).FirstOrDefaultAsync(ct)
+            : null;
+        var openingEntries = await db.RoznamchaEntries.AsNoTracking()
+            .Where(x => !x.IsDeleted && x.IsShow && x.TransDate < from
+                && (x.FromAccountId == accountId || x.ToAccountId == accountId))
+            .Select(x => new
+            {
+                x.FromAccountId, x.ToAccountId,
+                Pkr = (x.Amount ?? 0) + (x.Adjustment ?? 0), Usd = x.UsdAmount ?? 0
+            }).ToListAsync(ct);
+        var opening = openingEntries.Sum(x => x.ToAccountId == accountId ? x.Pkr : -x.Pkr);
+        var usdOpening = openingEntries.Sum(x => x.ToAccountId == accountId ? x.Usd : -x.Usd);
+        var entries = await db.RoznamchaEntries.AsNoTracking()
+            .Where(x => !x.IsDeleted && x.IsShow && x.TransDate >= from && x.TransDate <= to
+                && (x.FromAccountId == accountId || x.ToAccountId == accountId))
+            .OrderBy(x => x.TransDate).ThenBy(x => x.Id)
+            .Select(x => new
+            {
+                x.TransDate, x.RoznamchaTypeId, x.TransTypeId, x.FromAccountId, x.ToAccountId,
+                Pkr = (x.Amount ?? 0) + (x.Adjustment ?? 0), Usd = x.UsdAmount ?? 0,
+                x.Ref, x.Descriptions
+            }).ToListAsync(ct);
+        var relatedIds = entries.SelectMany(x => new[] { x.FromAccountId, x.ToAccountId }).Where(x => x.HasValue).Select(x => x!.Value).Distinct().ToArray();
+        var accountNames = await db.AccountsChartAccounts.AsNoTracking().Where(x => relatedIds.Contains(x.Id)).ToDictionaryAsync(x => x.Id, x => x.AccountName, ct);
+        var typeNames = await db.AccountsRoznamchaTypes.AsNoTracking().ToDictionaryAsync(x => x.Id, x => x.Name, ct);
+        decimal balance = opening, usdBalance = usdOpening;
+        var result = new List<ReportRowDto>();
+        if (opening != 0 || usdOpening != 0)
+        {
+            result.Add(new ReportRowDto
+            {
+                Date = from, CategoryId = account.CategoryId, Category = category,
+                AccountId = account.Id, Account = account.AccountName, ReferenceNo = "OPENING",
+                Description = "Opening balance", Balance = opening, UsdBalance = usdOpening
+            });
+        }
+        result.AddRange(entries.Select(entry =>
+        {
+            var debit = entry.FromAccountId == accountId ? entry.Pkr : 0;
+            var credit = entry.ToAccountId == accountId ? entry.Pkr : 0;
+            var usdDebit = entry.FromAccountId == accountId ? entry.Usd : 0;
+            var usdCredit = entry.ToAccountId == accountId ? entry.Usd : 0;
+            balance += credit - debit;
+            usdBalance += usdCredit - usdDebit;
+            return new ReportRowDto
+            {
+                Date = entry.TransDate,
+                CategoryId = account.CategoryId,
+                Category = category,
+                AccountId = account.Id,
+                Account = account.AccountName,
+                EntryTypeId = entry.RoznamchaTypeId ?? entry.TransTypeId ?? 0,
+                EntryType = entry.RoznamchaTypeId.HasValue && typeNames.TryGetValue(entry.RoznamchaTypeId.Value, out var typeName) ? typeName : null,
+                Debit = debit,
+                Credit = credit,
+                Balance = balance,
+                UsdDebit = usdDebit, UsdCredit = usdCredit, UsdBalance = usdBalance,
+                ReferenceNo = entry.Ref,
+                Description = entry.Descriptions,
+                FromAccount = entry.FromAccountId.HasValue && accountNames.TryGetValue(entry.FromAccountId.Value, out var fromName) ? fromName : null,
+                ToAccount = entry.ToAccountId.HasValue && accountNames.TryGetValue(entry.ToAccountId.Value, out var toName) ? toName : null
+            };
+        }));
+        return result;
+    }
 
     public async Task<IReadOnlyList<ReportFilterDto>> ListFiltersAsync(CancellationToken ct = default)
     {

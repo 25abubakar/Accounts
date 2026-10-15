@@ -13,7 +13,6 @@ public sealed class SaleRoznamchaHistoryService(
     public async Task<IReadOnlyList<SaleRoznamchaHistoryAggregateRow>> ReportAsync(
         DateOnly? fromDate,
         DateOnly? toDate,
-        int? categoryId,
         int? companyId,
         int? platformId,
         int? productCategoryId,
@@ -26,12 +25,11 @@ public sealed class SaleRoznamchaHistoryService(
         {
             var rows = await SpListQuery.ExecAsync<SaleRoznamchaHistoryAggregateRow>(
                 db,
-                "EXEC dbo.usp_SaleRoznamcha_HistoryAggregate @TenantId, @FromDate, @ToDate, @CategoryId, @CompanyId, @PlatformId, @ProductCategoryId",
+                "EXEC dbo.usp_SaleRoznamcha_HistoryAggregate @TenantId, @FromDate, @ToDate, @CompanyId, @PlatformId, @ProductCategoryId",
                 ct,
                 SpListQuery.TenantId(current.TenantId),
                 SpListQuery.DateNullable("@FromDate", fromDate),
                 SpListQuery.DateNullable("@ToDate", toDate),
-                SpListQuery.IntNullable("@CategoryId", categoryId),
                 SpListQuery.IntNullable("@CompanyId", companyId),
                 SpListQuery.IntNullable("@PlatformId", platformId),
                 SpListQuery.IntNullable("@ProductCategoryId", productCategoryId));
@@ -43,7 +41,7 @@ public sealed class SaleRoznamchaHistoryService(
             // only by date, causing dates to appear as chart series. Keep the report usable until
             // the product-trend migration is applied, without trusting or relabelling aggregate data.
             var productTrends = await LoadProductTrendsAsync(
-                fromDate, toDate, categoryId, companyId, platformId, productCategoryId, ct);
+                fromDate, toDate, companyId, platformId, productCategoryId, ct);
 
             return rows
                 .Where(row => row.Dimension is not "TREND_DAY" and not "TREND_MONTH")
@@ -73,7 +71,6 @@ public sealed class SaleRoznamchaHistoryService(
     private async Task<IReadOnlyList<SaleRoznamchaHistoryAggregateRow>> LoadProductTrendsAsync(
         DateOnly? fromDate,
         DateOnly? toDate,
-        int? categoryId,
         int? companyId,
         int? platformId,
         int? productCategoryId,
@@ -96,8 +93,6 @@ public sealed class SaleRoznamchaHistoryService(
             query = query.Where(sale => sale.CreatedOnUtc < toUtcExclusive);
         }
 
-        if (categoryId.HasValue)
-            query = query.Where(sale => sale.Product.ProductCategory.Platform.Company.CategoryId == categoryId.Value);
         if (companyId.HasValue)
             query = query.Where(sale => sale.Product.ProductCategory.Platform.CompanyId == companyId.Value);
         if (platformId.HasValue)

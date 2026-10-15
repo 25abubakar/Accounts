@@ -7,7 +7,6 @@ public interface ISaleRoznamchaHistoryService
     Task<IReadOnlyList<SaleRoznamchaHistoryAggregateRow>> ReportAsync(
         DateOnly? fromDate,
         DateOnly? toDate,
-        int? categoryId,
         int? companyId,
         int? platformId,
         int? productCategoryId,

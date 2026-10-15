@@ -69,13 +69,17 @@ public interface IRoznamchaService
     Task<RoznamchaEntryDto?> GetAsync(long id, CancellationToken ct = default);
     Task<RoznamchaEntryDto> CreateAsync(int entryTypeId, SaveRoznamchaEntryRequest request, CancellationToken ct = default);
     Task<RoznamchaEntryDto> UpdateAsync(long id, int entryTypeId, SaveRoznamchaEntryRequest request, CancellationToken ct = default);
-    Task SoftDeleteAsync(long id, CancellationToken ct = default);
+    Task SoftDeleteAsync(long id, string? remarks = null, CancellationToken ct = default);
     Task<RoznamchaEntryDto> UpdateStatusAsync(long id, UpdateRoznamchaStatusRequest request, CancellationToken ct = default);
     Task<RoznamchaEntryDto> ApproveAsync(long id, CancellationToken ct = default);
     Task<EntryAttachmentDto> AddAttachmentAsync(long id, IFormFile file, string? remarks, CancellationToken ct = default);
     Task<IReadOnlyList<EntryAttachmentDto>> ListAttachmentsAsync(long id, CancellationToken ct = default);
     Task DeleteAttachmentAsync(long attachmentId, CancellationToken ct = default);
     Task<(Stream Stream, string ContentType, string FileName)?> OpenAttachmentAsync(long attachmentId, CancellationToken ct = default);
+    Task<IReadOnlyList<RoznamchaProcessLogDto>> ListProcessLogsAsync(long id, CancellationToken ct = default);
+    Task<IReadOnlyList<LibraryDocumentLinkDto>> ListLibraryDocumentsAsync(long id, CancellationToken ct = default);
+    Task<IReadOnlyList<LibraryDocumentLinkDto>> LinkLibraryDocumentsAsync(long id, IReadOnlyCollection<long> documentIds, CancellationToken ct = default);
+    Task UnlinkLibraryDocumentAsync(long id, long documentId, CancellationToken ct = default);
 }
 
 public interface IPayableReceivableService
@@ -115,6 +119,8 @@ public interface IReportService
 {
     Task<IReadOnlyList<ReportRowDto>> MonthlyAsync(string? name, DateOnly from, DateOnly to, int? typeId, int? projectId, IReadOnlyList<int>? categoryIds, IReadOnlyList<int>? accountIds, CancellationToken ct = default);
     Task<IReadOnlyList<ReportRowDto>> DailyAsync(DateOnly from, DateOnly to, CancellationToken ct = default);
+    Task<IReadOnlyList<AccountsDailyUpdateDto>> DailyUpdatesAsync(DateOnly from, DateOnly to, CancellationToken ct = default);
+    Task<IReadOnlyList<ReportRowDto>> BankAccountAsync(int accountId, DateOnly from, DateOnly to, CancellationToken ct = default);
     Task<IReadOnlyList<ReportFilterDto>> ListFiltersAsync(CancellationToken ct = default);
     Task<ReportFilterDto> SaveFilterAsync(int? id, ReportFilterRequest request, CancellationToken ct = default);
     Task DeleteFilterAsync(int id, CancellationToken ct = default);

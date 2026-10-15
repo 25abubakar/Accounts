@@ -15,69 +15,49 @@ internal static class SaleRoznamchaSql
 
             ;WITH MasterRows AS
             (
-                SELECT category.Id, CAST(N'category' AS nvarchar(30)) EntityType, category.Name,
+                SELECT company.Id, CAST(N'company' AS nvarchar(30)) EntityType, company.Name,
                        CAST(NULL AS nvarchar(20)) Code,
                        CAST(NULL AS int) ParentId, CAST(NULL AS nvarchar(160)) ParentName,
-                       category.Id CategoryId, category.Name CategoryName,
-                       CAST(NULL AS int) CompanyId, CAST(NULL AS nvarchar(160)) CompanyName,
+                       company.Id CompanyId, company.Name CompanyName,
                        CAST(NULL AS int) PlatformId, CAST(NULL AS nvarchar(160)) PlatformName,
-                       category.IsActive, category.CreatedOnUtc, category.UpdatedOnUtc
-                FROM dbo.SaleRoznamchaCategories category
-                WHERE category.TenantId = @TenantId
-
-                UNION ALL
-
-                SELECT company.Id, CAST(N'company' AS nvarchar(30)), company.Name,
-                       CAST(NULL AS nvarchar(20)),
-                       company.CategoryId, category.Name,
-                       category.Id, category.Name, company.Id, company.Name,
-                       CAST(NULL AS int), CAST(NULL AS nvarchar(160)),
                        company.IsActive, company.CreatedOnUtc, company.UpdatedOnUtc
                 FROM dbo.SaleRoznamchaCompanies company
-                INNER JOIN dbo.SaleRoznamchaCategories category
-                    ON category.TenantId = company.TenantId AND category.Id = company.CategoryId
                 WHERE company.TenantId = @TenantId
 
                 UNION ALL
 
                 SELECT platform.Id, CAST(N'platform' AS nvarchar(30)), platform.Name, platform.Code,
                        platform.CompanyId, company.Name,
-                       category.Id, category.Name, company.Id, company.Name,
-                       platform.Id, platform.Name,
+                       company.Id, company.Name, platform.Id, platform.Name,
                        platform.IsActive, platform.CreatedOnUtc, platform.UpdatedOnUtc
                 FROM dbo.SaleRoznamchaPlatforms platform
                 INNER JOIN dbo.SaleRoznamchaCompanies company
                     ON company.TenantId = platform.TenantId AND company.Id = platform.CompanyId
-                INNER JOIN dbo.SaleRoznamchaCategories category
-                    ON category.TenantId = company.TenantId AND category.Id = company.CategoryId
                 WHERE platform.TenantId = @TenantId
 
                 UNION ALL
 
                 SELECT product.Id, CAST(N'product-category' AS nvarchar(30)), product.Name, product.Code,
                        product.PlatformId, platform.Name,
-                       category.Id, category.Name, company.Id, company.Name,
-                       platform.Id, platform.Name,
+                       company.Id, company.Name, platform.Id, platform.Name,
                        product.IsActive, product.CreatedOnUtc, product.UpdatedOnUtc
                 FROM dbo.SaleRoznamchaProductCategories product
                 INNER JOIN dbo.SaleRoznamchaPlatforms platform
                     ON platform.TenantId = product.TenantId AND platform.Id = product.PlatformId
                 INNER JOIN dbo.SaleRoznamchaCompanies company
                     ON company.TenantId = platform.TenantId AND company.Id = platform.CompanyId
-                INNER JOIN dbo.SaleRoznamchaCategories category
-                    ON category.TenantId = company.TenantId AND category.Id = company.CategoryId
                 WHERE product.TenantId = @TenantId
             )
             SELECT Id, EntityType, Name, Code, ParentId, ParentName,
-                   CategoryId, CategoryName, CompanyId, CompanyName, PlatformId, PlatformName,
+                   CompanyId, CompanyName, PlatformId, PlatformName,
                    IsActive, CreatedOnUtc, UpdatedOnUtc
             FROM MasterRows
             WHERE (@EntityType IS NULL OR EntityType = @EntityType)
               AND (@ParentId IS NULL OR ParentId = @ParentId)
               AND (@ActiveOnly = 0 OR IsActive = 1)
-            ORDER BY CASE EntityType WHEN N'category' THEN 1 WHEN N'company' THEN 2
-                                     WHEN N'platform' THEN 3 WHEN N'product-category' THEN 4 ELSE 5 END,
-                     CategoryName, CompanyName, PlatformName, Name;
+            ORDER BY CASE EntityType WHEN N'company' THEN 1
+                                     WHEN N'platform' THEN 2 WHEN N'product-category' THEN 3 ELSE 4 END,
+                     CompanyName, PlatformName, Name;
         END;
         """;
 
@@ -85,7 +65,6 @@ internal static class SaleRoznamchaSql
         """
         CREATE OR ALTER PROCEDURE dbo.usp_SaleRoznamcha_InventoryList
             @TenantId int,
-            @CategoryId int = NULL,
             @CompanyId int = NULL,
             @PlatformId int = NULL,
             @ProductCategoryId int = NULL,
@@ -97,8 +76,7 @@ internal static class SaleRoznamchaSql
             SELECT product.Id,
                    product.ProductCode,
                    product.Name ProductName,
-                   category.Id CategoryId,
-                   category.Name CategoryName,
+                   product.Description,
                    company.Id CompanyId,
                    company.Name CompanyName,
                    platform.Id PlatformId,
@@ -128,17 +106,14 @@ internal static class SaleRoznamchaSql
             INNER JOIN dbo.SaleRoznamchaCompanies company
                 ON company.TenantId = platform.TenantId
                AND company.Id = platform.CompanyId
-            INNER JOIN dbo.SaleRoznamchaCategories category
-                ON category.TenantId = company.TenantId
-               AND category.Id = company.CategoryId
-            INNER JOIN dbo.AccountsCurrencies currency
+            LEFT JOIN dbo.AccountsCurrencies currency
                 ON currency.Id = product.CurrencyId
                AND (currency.TenantId IS NULL OR currency.TenantId = product.TenantId)
             OUTER APPLY
             (
                 SELECT SUM(receipt.PurchasedQuantity) TotalPurchasedQuantity,
                        MAX(receipt.PurchasedOnUtc) LastPurchasedOnUtc
-                FROM dbo.SaleRoznamchaStockReceipts receipt
+                FROM dbo.PaymentRoznamcha receipt
                 WHERE receipt.TenantId = product.TenantId AND receipt.ProductId = product.Id
             ) receiptTotals
             OUTER APPLY
@@ -150,7 +125,7 @@ internal static class SaleRoznamchaSql
             OUTER APPLY
             (
                 SELECT CAST(COALESCE(SUM(receipt.RemainingQuantity * receipt.UnitCost), 0) AS decimal(38,2)) TotalStockValue
-                FROM dbo.SaleRoznamchaStockReceipts receipt
+                FROM dbo.PaymentRoznamcha receipt
                 WHERE receipt.TenantId = product.TenantId AND receipt.ProductId = product.Id
                   AND receipt.CurrencyId = product.CurrencyId AND receipt.RemainingQuantity > 0
             ) latestCurrencyValue
@@ -160,7 +135,7 @@ internal static class SaleRoznamchaSql
                 (
                     SELECT receipt.CurrencyId currencyId, stockCurrency.Code currencyCode,
                            CAST(SUM(receipt.RemainingQuantity * receipt.UnitCost) AS decimal(38,2)) amount
-                    FROM dbo.SaleRoznamchaStockReceipts receipt
+                    FROM dbo.PaymentRoznamcha receipt
                     INNER JOIN dbo.AccountsCurrencies stockCurrency ON stockCurrency.Id = receipt.CurrencyId
                     WHERE receipt.TenantId = product.TenantId AND receipt.ProductId = product.Id
                       AND receipt.RemainingQuantity > 0
@@ -171,12 +146,83 @@ internal static class SaleRoznamchaSql
             ) valueBreakdown
             WHERE product.TenantId = @TenantId
               AND product.IsDeleted = 0
-              AND (@CategoryId IS NULL OR category.Id = @CategoryId)
               AND (@CompanyId IS NULL OR company.Id = @CompanyId)
               AND (@PlatformId IS NULL OR platform.Id = @PlatformId)
               AND (@ProductCategoryId IS NULL OR productCategory.Id = @ProductCategoryId)
               AND (@ActiveOnly = 0 OR product.IsActive = 1)
-            ORDER BY category.Name, company.Name, platform.Name, productCategory.Name, product.Name;
+            ORDER BY company.Name, platform.Name, productCategory.Name, product.Name;
+        END;
+        """;
+
+    internal const string ProductMasterCreateProcedure =
+        """
+        CREATE OR ALTER PROCEDURE dbo.usp_SaleRoznamcha_ProductCreate
+            @TenantId int,
+            @ProductCategoryId int,
+            @ProductCode nvarchar(80) = NULL,
+            @ProductName nvarchar(200),
+            @Description nvarchar(1000) = NULL,
+            @IsActive bit,
+            @UserId nvarchar(450) = NULL
+        AS
+        BEGIN
+            SET NOCOUNT ON;
+            SET XACT_ABORT ON;
+
+            BEGIN TRANSACTION;
+            BEGIN TRY
+                DECLARE @ResolvedCode nvarchar(80) = NULLIF(UPPER(LTRIM(RTRIM(@ProductCode))), N''),
+                        @Prefix nvarchar(45), @Sequence int, @ProductId bigint;
+
+                IF @ResolvedCode IS NULL
+                BEGIN
+                    SELECT @Prefix = CONCAT(platform.Code, N'-', productCategory.Code, N'-')
+                    FROM dbo.SaleRoznamchaProductCategories productCategory
+                    INNER JOIN dbo.SaleRoznamchaPlatforms platform
+                        ON platform.TenantId = productCategory.TenantId AND platform.Id = productCategory.PlatformId
+                    WHERE productCategory.TenantId = @TenantId AND productCategory.Id = @ProductCategoryId
+                      AND productCategory.IsActive = 1 AND platform.IsActive = 1;
+                    IF @Prefix IS NULL THROW 51000, 'Selected product category is invalid or inactive.', 1;
+
+                    SELECT @Sequence = COUNT(*) + 1
+                    FROM dbo.SaleRoznamchaProducts WITH (UPDLOCK, HOLDLOCK)
+                    WHERE TenantId = @TenantId AND ProductCode LIKE @Prefix + N'%';
+                    SET @ResolvedCode = @Prefix + CASE WHEN @Sequence < 1000
+                        THEN RIGHT(N'000' + CONVERT(nvarchar(10), @Sequence), 3)
+                        ELSE CONVERT(nvarchar(10), @Sequence) END;
+                    WHILE EXISTS (SELECT 1 FROM dbo.SaleRoznamchaProducts WHERE TenantId = @TenantId AND ProductCode = @ResolvedCode)
+                    BEGIN
+                        SET @Sequence += 1;
+                        SET @ResolvedCode = @Prefix + CASE WHEN @Sequence < 1000
+                            THEN RIGHT(N'000' + CONVERT(nvarchar(10), @Sequence), 3)
+                            ELSE CONVERT(nvarchar(10), @Sequence) END;
+                    END
+                END
+
+                IF EXISTS (SELECT 1 FROM dbo.SaleRoznamchaProducts WITH (UPDLOCK, HOLDLOCK)
+                           WHERE TenantId = @TenantId AND ProductCode = @ResolvedCode)
+                    THROW 51000, 'Product code already exists.', 1;
+                IF EXISTS (SELECT 1 FROM dbo.SaleRoznamchaProducts WITH (UPDLOCK, HOLDLOCK)
+                           WHERE TenantId = @TenantId AND ProductCategoryId = @ProductCategoryId
+                             AND Name = @ProductName AND IsDeleted = 0)
+                    THROW 51000, 'This product already exists in the selected product category.', 1;
+
+                INSERT INTO dbo.SaleRoznamchaProducts
+                    (TenantId, ProductCategoryId, ProductCode, Name, Description, QuantityOnHand,
+                     PurchasePrice, CurrencyId, IsActive, IsDeleted, CreatedByUserId, CreatedOnUtc)
+                VALUES
+                    (@TenantId, @ProductCategoryId, @ResolvedCode, @ProductName,
+                     NULLIF(LTRIM(RTRIM(@Description)), N''), 0, NULL, NULL,
+                     @IsActive, 0, @UserId, SYSUTCDATETIME());
+                SET @ProductId = SCOPE_IDENTITY();
+
+                COMMIT TRANSACTION;
+                SELECT @ProductId Id;
+            END TRY
+            BEGIN CATCH
+                IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+                THROW;
+            END CATCH;
         END;
         """;
 
@@ -190,6 +236,8 @@ internal static class SaleRoznamchaSql
             @Quantity decimal(18,4),
             @UnitCost decimal(18,2),
             @CurrencyId int,
+            @FromAccountId int,
+            @ToAccountId int = NULL,
             @Description nvarchar(1000) = NULL,
             @IsActive bit,
             @UserId nvarchar(450) = NULL
@@ -199,6 +247,14 @@ internal static class SaleRoznamchaSql
             SET XACT_ABORT ON;
             IF @Quantity < 0 THROW 51000, 'Quantity cannot be negative.', 1;
             IF @UnitCost < 0 THROW 51000, 'Purchase price cannot be negative.', 1;
+            IF @FromAccountId IS NOT NULL AND @FromAccountId = @ToAccountId
+                THROW 51000, 'From Account and To Account must be different.', 1;
+            IF @FromAccountId IS NOT NULL AND NOT EXISTS
+               (SELECT 1 FROM dbo.AccountsChartAccounts WHERE TenantId = @TenantId AND Id = @FromAccountId AND IsActive = 1)
+                THROW 51000, 'Selected From Account was not found or is inactive.', 1;
+            IF @ToAccountId IS NOT NULL AND NOT EXISTS
+               (SELECT 1 FROM dbo.AccountsChartAccounts WHERE TenantId = @TenantId AND Id = @ToAccountId AND IsActive = 1)
+                THROW 51000, 'Selected To Account was not found or is inactive.', 1;
 
             BEGIN TRANSACTION;
             BEGIN TRY
@@ -238,19 +294,22 @@ internal static class SaleRoznamchaSql
                     THROW 51000, 'This product already exists in the selected product category.', 1;
 
                 INSERT INTO dbo.SaleRoznamchaProducts
-                    (TenantId, ProductCategoryId, ProductCode, Name, QuantityOnHand, PurchasePrice, CurrencyId,
+                    (TenantId, ProductCategoryId, ProductCode, Name, Description, QuantityOnHand, PurchasePrice, CurrencyId,
                      IsActive, IsDeleted, CreatedByUserId, CreatedOnUtc)
                 VALUES
-                    (@TenantId, @ProductCategoryId, @ResolvedCode, @ProductName, @Quantity, @UnitCost, @CurrencyId,
+                    (@TenantId, @ProductCategoryId, @ResolvedCode, @ProductName,
+                     NULLIF(LTRIM(RTRIM(@Description)), N''), @Quantity, @UnitCost, @CurrencyId,
                      @IsActive, 0, @UserId, SYSUTCDATETIME());
                 SET @ProductId = SCOPE_IDENTITY();
 
                 IF @Quantity > 0
                 BEGIN
-                    INSERT INTO dbo.SaleRoznamchaStockReceipts
-                        (TenantId, ProductId, PurchasedQuantity, RemainingQuantity, UnitCost, CurrencyId, Description,
+                    INSERT INTO dbo.PaymentRoznamcha
+                        (TenantId, ProductId, PurchasedQuantity, RemainingQuantity, UnitCost, CurrencyId,
+                         FromAccountId, ToAccountId, Description,
                          PurchasedOnUtc, CreatedByUserId, CreatedOnUtc)
                     VALUES (@TenantId, @ProductId, @Quantity, @Quantity, @UnitCost, @CurrencyId,
+                            @FromAccountId, @ToAccountId,
                             NULLIF(LTRIM(RTRIM(@Description)), N''),
                             SYSUTCDATETIME(), @UserId, SYSUTCDATETIME());
                     SET @ReceiptId = SCOPE_IDENTITY();
@@ -278,6 +337,7 @@ internal static class SaleRoznamchaSql
             @ProductCategoryId int,
             @ProductCode nvarchar(80),
             @ProductName nvarchar(200),
+            @Description nvarchar(1000) = NULL,
             @IsActive bit,
             @UserId nvarchar(450) = NULL
         AS
@@ -299,9 +359,172 @@ internal static class SaleRoznamchaSql
 
             UPDATE dbo.SaleRoznamchaProducts
             SET ProductCategoryId = @ProductCategoryId, ProductCode = @ResolvedCode, Name = @ProductName,
+                Description = NULLIF(LTRIM(RTRIM(@Description)), N''),
                 IsActive = @IsActive, UpdatedByUserId = @UserId, UpdatedOnUtc = SYSUTCDATETIME()
             WHERE TenantId = @TenantId AND Id = @ProductId AND IsDeleted = 0;
             SELECT @ProductId Id;
+        END;
+        """;
+
+    internal const string PostInventoryPurchasePaymentProcedure =
+        """
+        CREATE OR ALTER PROCEDURE dbo.usp_SaleRoznamcha_PostInventoryPurchasePayment
+            @TenantId int,
+            @ReceiptId bigint,
+            @UserId nvarchar(450) = NULL
+        AS
+        BEGIN
+            SET NOCOUNT ON;
+            SET XACT_ABORT ON;
+
+            DECLARE
+                @ExistingEntryId bigint,
+                @ProductId bigint,
+                @Reference nvarchar(100),
+                @Quantity decimal(18,4),
+                @UnitCost decimal(18,2),
+                @Debit decimal(18,2),
+                @UsdAmt decimal(18,2),
+                @CurrencyId int,
+                @FromAccountId int,
+                @ToAccountId int,
+                @PurchasedDate date,
+                @Description nvarchar(1000),
+                @Attachment nvarchar(260),
+                @CategoryId int,
+                @PaymentRozTypeId int,
+                @TransTypeId int,
+                @ProductName nvarchar(200),
+                @TenantCode nvarchar(50),
+                @TenantName nvarchar(150),
+                @Prefix nvarchar(20) = N'',
+                @Index int = 1,
+                @NameLen int,
+                @InWord bit = 1,
+                @Char nchar(1),
+                @Starts nvarchar(40),
+                @Next int,
+                @SNo int,
+                @EntryId bigint,
+                @Descriptions nvarchar(2000);
+
+            SELECT
+                @ExistingEntryId = receipt.RoznamchaEntryId,
+                @ProductId = receipt.ProductId,
+                @Reference = receipt.Reference,
+                @Quantity = receipt.PurchasedQuantity,
+                @UnitCost = receipt.UnitCost,
+                @Debit = receipt.Debit,
+                @UsdAmt = receipt.UsdAmt,
+                @CurrencyId = receipt.CurrencyId,
+                @FromAccountId = receipt.FromAccountId,
+                @ToAccountId = receipt.ToAccountId,
+                @PurchasedDate = receipt.PurchasedDate,
+                @Description = receipt.Description,
+                @Attachment = receipt.AttachmentOriginalName
+            FROM dbo.PaymentRoznamcha receipt WITH (UPDLOCK, HOLDLOCK)
+            WHERE receipt.TenantId = @TenantId AND receipt.Id = @ReceiptId;
+
+            IF @ProductId IS NULL THROW 51000, 'Inventory purchase was not found.', 1;
+            IF @ExistingEntryId IS NOT NULL RETURN;
+            IF @FromAccountId IS NULL THROW 51000, 'From Account is required before a purchase can post to Payment Roznamcha.', 1;
+
+            SELECT @CategoryId = fromAccount.CategoryId
+            FROM dbo.AccountsChartAccounts fromAccount
+            WHERE fromAccount.TenantId = @TenantId AND fromAccount.Id = @FromAccountId AND fromAccount.IsActive = 1;
+            IF @CategoryId IS NULL THROW 51000, 'Selected From Account was not found or is inactive.', 1;
+
+            IF @ToAccountId IS NOT NULL AND NOT EXISTS
+               (SELECT 1 FROM dbo.AccountsChartAccounts WHERE TenantId = @TenantId AND Id = @ToAccountId AND IsActive = 1)
+                THROW 51000, 'Selected To Account was not found or is inactive.', 1;
+
+            SELECT @PaymentRozTypeId = COALESCE(
+                settings.PaymentRozTypeId,
+                (
+                    SELECT TOP (1) rozType.Id
+                    FROM dbo.AccountsRoznamchaTypes rozType
+                    WHERE rozType.IsActive = 1
+                      AND rozType.Code = N'PAYMENT'
+                      AND (rozType.TenantId IS NULL OR rozType.TenantId = @TenantId)
+                    ORDER BY CASE WHEN rozType.TenantId = @TenantId THEN 0 WHEN rozType.TenantId IS NULL THEN 1 ELSE 2 END
+                ))
+            FROM (SELECT @TenantId TenantId) seed
+            LEFT JOIN dbo.AccountsModuleSettings settings ON settings.TenantId = seed.TenantId;
+            IF @PaymentRozTypeId IS NULL THROW 51000, 'Payment Roznamcha type is not configured.', 1;
+
+            SELECT TOP (1) @TransTypeId = transType.Id
+            FROM dbo.AccountsTransTypes transType
+            WHERE transType.IsActive = 1
+              AND (transType.TenantId IS NULL OR transType.TenantId = @TenantId)
+              AND (transType.Code = N'PAYMENT' OR transType.Name = N'Payment')
+            ORDER BY CASE WHEN transType.TenantId = @TenantId THEN 0 WHEN transType.TenantId IS NULL THEN 1 ELSE 2 END;
+
+            SELECT @ProductName = product.Name
+            FROM dbo.SaleRoznamchaProducts product
+            WHERE product.TenantId = @TenantId AND product.Id = @ProductId;
+            IF @ProductName IS NULL THROW 51000, 'Inventory product was not found.', 1;
+
+            SELECT @TenantCode = tenant.TenantCode, @TenantName = tenant.TenantName
+            FROM dbo.Tenants tenant
+            WHERE tenant.Id = @TenantId;
+
+            SET @Prefix = UPPER(LTRIM(RTRIM(COALESCE(@TenantCode, N''))));
+            IF @Prefix = N''
+            BEGIN
+                SET @NameLen = LEN(COALESCE(@TenantName, N''));
+                WHILE @Index <= @NameLen
+                BEGIN
+                    SET @Char = SUBSTRING(@TenantName, @Index, 1);
+                    IF @Char = N' ' SET @InWord = 1;
+                    ELSE IF @InWord = 1
+                    BEGIN
+                        SET @Prefix = @Prefix + UPPER(@Char);
+                        SET @InWord = 0;
+                    END;
+                    SET @Index += 1;
+                END;
+            END;
+            IF @Prefix = N'' SET @Prefix = N'ORG';
+            SET @Starts = @Prefix + N'DB-';
+
+            SELECT
+                @SNo = COUNT(*) + 1,
+                @Next = COALESCE(MAX(
+                    CASE
+                        WHEN entry.Ref LIKE @Starts + N'%'
+                        THEN TRY_CONVERT(int, RIGHT(entry.Ref, NULLIF(CHARINDEX(N'-', REVERSE(entry.Ref)), 0) - 1))
+                    END), 0) + 1
+            FROM dbo.RoznamchaEntries entry WITH (UPDLOCK, HOLDLOCK)
+            WHERE entry.TenantId = @TenantId;
+
+            SET @Descriptions = LEFT(
+                CONCAT(
+                    N'Inventory purchase — ',
+                    @ProductName,
+                    CASE WHEN NULLIF(LTRIM(RTRIM(@Description)), N'') IS NULL THEN N'' ELSE N' — ' + LTRIM(RTRIM(@Description)) END),
+                2000);
+
+            INSERT INTO dbo.RoznamchaEntries
+                (TenantId, SNo, Ref, OldRef, RoznamchaTypeId, CategoryId, FromAccountId, ToAccountId,
+                 TransTypeId, Descriptions, CurrencyId, Amount, BalanceAmount, Qty, Rate,
+                 Attachment, Remarks, TransDate, UsdAmount, IsShow, IsApproved, IsSettled,
+                 IsFromLibrary, IsLocked, IsLedger, IsManual, IsDeleted, CreatedByUserId, CreatedOnUtc)
+            VALUES
+                (@TenantId, @SNo, @Starts + RIGHT(N'00000' + CONVERT(nvarchar(12), @Next), 5),
+                 NULLIF(LTRIM(RTRIM(@Reference)), N''), @PaymentRozTypeId, @CategoryId, @FromAccountId, @ToAccountId,
+                 @TransTypeId, @Descriptions, @CurrencyId, @Debit, @Debit, @Quantity, @UnitCost,
+                 NULLIF(LTRIM(RTRIM(@Attachment)), N''), N'Inventory purchase', @PurchasedDate, @UsdAmt,
+                 1, 0, 0, 0, 1, 1, 0, 0, @UserId, SYSUTCDATETIME());
+            SET @EntryId = SCOPE_IDENTITY();
+
+            UPDATE dbo.PaymentRoznamcha
+            SET RoznamchaEntryId = @EntryId
+            WHERE TenantId = @TenantId AND Id = @ReceiptId;
+
+            INSERT INTO dbo.RoznamchaEntryProcessLogs
+                (TenantId, RoznamchaEntryId, Action, Notes, ProcessedByUserId, ProcessedOnUtc)
+            VALUES
+                (@TenantId, @EntryId, N'InventoryPurchase', N'Posted from inventory stock receipt.', @UserId, SYSUTCDATETIME());
         END;
         """;
 
@@ -310,17 +533,34 @@ internal static class SaleRoznamchaSql
         CREATE OR ALTER PROCEDURE dbo.usp_SaleRoznamcha_InventoryStockAdd
             @TenantId int,
             @ProductId bigint,
+            @Reference nvarchar(100) = NULL,
             @Quantity decimal(18,4),
             @UnitCost decimal(18,2),
+            @TotalPurchaseCost decimal(18,2),
+            @UsdAmount decimal(18,2) = NULL,
+            @ExchangeRate decimal(18,6) = NULL,
             @CurrencyId int,
+            @FromAccountId int,
+            @ToAccountId int = NULL,
+            @PurchasedDate date = NULL,
             @Description nvarchar(1000) = NULL,
-            @UserId nvarchar(450) = NULL
+            @UserId nvarchar(450) = NULL,
+            @RoznamchaEntryId bigint = NULL
         AS
         BEGIN
             SET NOCOUNT ON;
             SET XACT_ABORT ON;
-            IF @Quantity <= 0 THROW 51000, 'Stock quantity must be greater than zero.', 1;
-            IF @UnitCost < 0 THROW 51000, 'Purchase price cannot be negative.', 1;
+            IF @Quantity < 0 THROW 51000, 'Quantity cannot be negative.', 1;
+            IF @ExchangeRate < 0 THROW 51000, 'Exchange rate cannot be negative.', 1;
+            IF @FromAccountId IS NULL THROW 51000, 'From Account is required.', 1;
+            IF @FromAccountId = @ToAccountId
+                THROW 51000, 'From Account and To Account must be different.', 1;
+            IF NOT EXISTS
+               (SELECT 1 FROM dbo.AccountsChartAccounts WHERE TenantId = @TenantId AND Id = @FromAccountId AND IsActive = 1)
+                THROW 51000, 'Selected From Account was not found or is inactive.', 1;
+            IF @ToAccountId IS NOT NULL AND NOT EXISTS
+               (SELECT 1 FROM dbo.AccountsChartAccounts WHERE TenantId = @TenantId AND Id = @ToAccountId AND IsActive = 1)
+                THROW 51000, 'Selected To Account was not found or is inactive.', 1;
 
             BEGIN TRANSACTION;
             BEGIN TRY
@@ -331,22 +571,39 @@ internal static class SaleRoznamchaSql
                 IF @CurrentBalance IS NULL THROW 51000, 'Inventory product was not found.', 1;
                 SET @BalanceAfter = @CurrentBalance + @Quantity;
 
-                INSERT INTO dbo.SaleRoznamchaStockReceipts
-                    (TenantId, ProductId, PurchasedQuantity, RemainingQuantity, UnitCost, CurrencyId, Description,
+                INSERT INTO dbo.PaymentRoznamcha
+                    (TenantId, ProductId, Reference, PurchasedQuantity, RemainingQuantity, UnitCost,
+                     Debit, UsdAmt, ExchangeRate, CurrencyId,
+                     FromAccountId, ToAccountId, RoznamchaEntryId, PurchasedDate, Description,
                      PurchasedOnUtc, CreatedByUserId, CreatedOnUtc)
-                VALUES (@TenantId, @ProductId, @Quantity, @Quantity, @UnitCost, @CurrencyId,
+                VALUES (@TenantId, @ProductId, NULLIF(LTRIM(RTRIM(@Reference)), N''), @Quantity, @Quantity, @UnitCost,
+                        @TotalPurchaseCost, @UsdAmount, @ExchangeRate, @CurrencyId,
+                        @FromAccountId, @ToAccountId, @RoznamchaEntryId,
+                        COALESCE(@PurchasedDate, CONVERT(date, SYSUTCDATETIME())),
                         NULLIF(LTRIM(RTRIM(@Description)), N''),
                         SYSUTCDATETIME(), @UserId, SYSUTCDATETIME());
                 SET @ReceiptId = SCOPE_IDENTITY();
 
                 UPDATE dbo.SaleRoznamchaProducts
-                SET QuantityOnHand = @BalanceAfter, PurchasePrice = @UnitCost, CurrencyId = @CurrencyId,
+                SET PurchasePrice = @UnitCost, CurrencyId = @CurrencyId,
+                    QuantityOnHand = CASE WHEN @Quantity > 0 THEN @BalanceAfter ELSE QuantityOnHand END,
                     IsActive = 1, UpdatedByUserId = @UserId, UpdatedOnUtc = SYSUTCDATETIME()
                 WHERE TenantId = @TenantId AND Id = @ProductId;
 
-                INSERT INTO dbo.SaleRoznamchaInventoryMovements
-                    (TenantId, ProductId, StockReceiptId, MovementType, QuantityDelta, BalanceAfter, CreatedByUserId, CreatedOnUtc)
-                VALUES (@TenantId, @ProductId, @ReceiptId, N'PURCHASE', @Quantity, @BalanceAfter, @UserId, SYSUTCDATETIME());
+                IF @Quantity > 0
+                    INSERT INTO dbo.SaleRoznamchaInventoryMovements
+                        (TenantId, ProductId, StockReceiptId, MovementType, QuantityDelta, BalanceAfter, CreatedByUserId, CreatedOnUtc)
+                    VALUES (@TenantId, @ProductId, @ReceiptId, N'PURCHASE', @Quantity, @BalanceAfter, @UserId, SYSUTCDATETIME());
+
+                IF @RoznamchaEntryId IS NULL
+                    EXEC dbo.usp_SaleRoznamcha_PostInventoryPurchasePayment
+                        @TenantId = @TenantId,
+                        @ReceiptId = @ReceiptId,
+                        @UserId = @UserId;
+                ELSE
+                    UPDATE dbo.RoznamchaEntries
+                    SET IsLocked = 1, UpdatedByUserId = @UserId, UpdatedOnUtc = SYSUTCDATETIME()
+                    WHERE TenantId = @TenantId AND Id = @RoznamchaEntryId;
 
                 COMMIT TRANSACTION;
                 SELECT @ProductId Id;
@@ -358,11 +615,117 @@ internal static class SaleRoznamchaSql
         END;
         """;
 
+    internal const string AccountHierarchyView =
+        """
+        CREATE OR ALTER VIEW dbo.vw_AccountsChartAccountHierarchy
+        AS
+        WITH AccountTree AS
+        (
+            SELECT account.Id,
+                   account.TenantId,
+                   account.CategoryId,
+                   account.ParentId,
+                   account.AccountNumber,
+                   account.AccountCode,
+                   account.AccountName,
+                   account.IsActive,
+                   CAST(account.AccountName AS nvarchar(max)) AccountPath
+            FROM dbo.AccountsChartAccounts account
+            WHERE account.ParentId IS NULL
+
+            UNION ALL
+
+            SELECT child.Id,
+                   child.TenantId,
+                   parent.CategoryId,
+                   child.ParentId,
+                   child.AccountNumber,
+                   child.AccountCode,
+                   child.AccountName,
+                   child.IsActive,
+                   CAST(parent.AccountPath + N' / ' + child.AccountName AS nvarchar(max)) AccountPath
+            FROM dbo.AccountsChartAccounts child
+            INNER JOIN AccountTree parent
+                ON parent.TenantId = child.TenantId
+               AND parent.Id = child.ParentId
+        )
+        SELECT Id, TenantId, CategoryId, ParentId, AccountNumber, AccountCode,
+               AccountName, IsActive, AccountPath
+        FROM AccountTree;
+        """;
+
+    internal const string InventoryPurchaseDetailsView =
+        """
+        CREATE OR ALTER VIEW dbo.vw_SaleRoznamcha_InventoryPurchaseDetails
+        AS
+        SELECT receipt.TenantId,
+               receipt.Id,
+               product.Id ProductId,
+               receipt.Reference,
+               product.ProductCode,
+               product.Name ProductName,
+               company.Id CompanyId,
+               company.Name CompanyName,
+               platform.Id PlatformId,
+               platform.Name PlatformName,
+               productCategory.Id ProductCategoryId,
+               productCategory.Name ProductCategoryName,
+               product.IsDeleted ProductIsDeleted,
+               receipt.PurchasedQuantity,
+               receipt.PurchasedQuantity - receipt.RemainingQuantity SoldQuantity,
+               receipt.RemainingQuantity,
+               receipt.UnitCost,
+               receipt.CurrencyId,
+               currency.Code CurrencyCode,
+               fromAccount.CategoryId FromCategoryId,
+               fromCategory.Code FromCategoryCode,
+               fromCategory.Name FromCategoryName,
+               receipt.FromAccountId,
+               COALESCE(fromAccount.AccountCode, fromAccount.AccountNumber) FromAccountCode,
+               fromAccount.AccountName FromAccountName,
+               fromAccount.AccountPath FromAccountPath,
+               receipt.ToAccountId,
+               COALESCE(toAccount.AccountCode, toAccount.AccountNumber) ToAccountCode,
+               toAccount.AccountName ToAccountName,
+               receipt.Debit TotalPurchaseCost,
+               receipt.UsdAmt UsdAmount,
+               receipt.ExchangeRate,
+               CAST(receipt.RemainingQuantity * receipt.UnitCost AS decimal(38,2)) RemainingStockValue,
+               receipt.PurchasedDate,
+               receipt.PurchasedOnUtc,
+               receipt.Description,
+               CONVERT(bit, CASE WHEN receipt.AttachmentStoredName IS NULL THEN 0 ELSE 1 END) HasAttachment,
+               receipt.AttachmentOriginalName AttachmentName,
+               CAST(CASE
+                   WHEN receipt.PurchasedQuantity = 0 THEN N'Charge / Adjustment'
+                   WHEN receipt.RemainingQuantity <= 0 THEN N'Fully Sold'
+                   WHEN receipt.RemainingQuantity < receipt.PurchasedQuantity THEN N'Partially Sold'
+                   ELSE N'Available'
+               END AS nvarchar(30)) BatchStatus
+        FROM dbo.PaymentRoznamcha receipt
+        INNER JOIN dbo.SaleRoznamchaProducts product
+            ON product.TenantId = receipt.TenantId AND product.Id = receipt.ProductId
+        INNER JOIN dbo.SaleRoznamchaProductCategories productCategory
+            ON productCategory.TenantId = product.TenantId AND productCategory.Id = product.ProductCategoryId
+        INNER JOIN dbo.SaleRoznamchaPlatforms platform
+            ON platform.TenantId = productCategory.TenantId AND platform.Id = productCategory.PlatformId
+        INNER JOIN dbo.SaleRoznamchaCompanies company
+            ON company.TenantId = platform.TenantId AND company.Id = platform.CompanyId
+        INNER JOIN dbo.AccountsCurrencies currency
+            ON currency.Id = receipt.CurrencyId
+           AND (currency.TenantId IS NULL OR currency.TenantId = receipt.TenantId)
+        LEFT JOIN dbo.vw_AccountsChartAccountHierarchy fromAccount
+            ON fromAccount.TenantId = receipt.TenantId AND fromAccount.Id = receipt.FromAccountId
+        LEFT JOIN dbo.AccountsCategories fromCategory
+            ON fromCategory.TenantId = fromAccount.TenantId AND fromCategory.Id = fromAccount.CategoryId
+        LEFT JOIN dbo.AccountsChartAccounts toAccount
+            ON toAccount.TenantId = receipt.TenantId AND toAccount.Id = receipt.ToAccountId;
+        """;
+
     internal const string InventoryPurchaseListProcedure =
         """
         CREATE OR ALTER PROCEDURE dbo.usp_SaleRoznamcha_InventoryPurchaseList
             @TenantId int,
-            @CategoryId int = NULL,
             @CompanyId int = NULL,
             @PlatformId int = NULL,
             @ProductCategoryId int = NULL
@@ -370,54 +733,22 @@ internal static class SaleRoznamchaSql
         BEGIN
             SET NOCOUNT ON;
 
-            SELECT receipt.Id,
-                   product.Id ProductId,
-                   product.ProductCode,
-                   product.Name ProductName,
-                   category.Id CategoryId,
-                   category.Name CategoryName,
-                   company.Id CompanyId,
-                   company.Name CompanyName,
-                   platform.Id PlatformId,
-                   platform.Name PlatformName,
-                   productCategory.Id ProductCategoryId,
-                   productCategory.Name ProductCategoryName,
-                   receipt.PurchasedQuantity,
-                   receipt.PurchasedQuantity - receipt.RemainingQuantity SoldQuantity,
-                   receipt.RemainingQuantity,
-                   receipt.UnitCost,
-                   receipt.CurrencyId,
-                   currency.Code CurrencyCode,
-                   CAST(receipt.PurchasedQuantity * receipt.UnitCost AS decimal(38,2)) TotalPurchaseCost,
-                   CAST(receipt.RemainingQuantity * receipt.UnitCost AS decimal(38,2)) RemainingStockValue,
-                   receipt.PurchasedOnUtc,
-                   receipt.Description,
-                   CASE
-                       WHEN receipt.RemainingQuantity <= 0 THEN N'Fully Sold'
-                       WHEN receipt.RemainingQuantity < receipt.PurchasedQuantity THEN N'Partially Sold'
-                       ELSE N'Available'
-                   END BatchStatus
-            FROM dbo.SaleRoznamchaStockReceipts receipt
-            INNER JOIN dbo.SaleRoznamchaProducts product
-                ON product.TenantId = receipt.TenantId AND product.Id = receipt.ProductId
-            INNER JOIN dbo.SaleRoznamchaProductCategories productCategory
-                ON productCategory.TenantId = product.TenantId AND productCategory.Id = product.ProductCategoryId
-            INNER JOIN dbo.SaleRoznamchaPlatforms platform
-                ON platform.TenantId = productCategory.TenantId AND platform.Id = productCategory.PlatformId
-            INNER JOIN dbo.SaleRoznamchaCompanies company
-                ON company.TenantId = platform.TenantId AND company.Id = platform.CompanyId
-            INNER JOIN dbo.SaleRoznamchaCategories category
-                ON category.TenantId = company.TenantId AND category.Id = company.CategoryId
-            INNER JOIN dbo.AccountsCurrencies currency
-                ON currency.Id = receipt.CurrencyId
-               AND (currency.TenantId IS NULL OR currency.TenantId = receipt.TenantId)
-            WHERE receipt.TenantId = @TenantId
-              AND product.IsDeleted = 0
-              AND (@CategoryId IS NULL OR category.Id = @CategoryId)
-              AND (@CompanyId IS NULL OR company.Id = @CompanyId)
-              AND (@PlatformId IS NULL OR platform.Id = @PlatformId)
-              AND (@ProductCategoryId IS NULL OR productCategory.Id = @ProductCategoryId)
-            ORDER BY receipt.PurchasedOnUtc DESC, receipt.Id DESC;
+            SELECT Id, ProductId, Reference, ProductCode, ProductName,
+                   CompanyId, CompanyName, PlatformId, PlatformName,
+                   ProductCategoryId, ProductCategoryName, PurchasedQuantity, SoldQuantity,
+                   RemainingQuantity, UnitCost, CurrencyId, CurrencyCode,
+                   FromCategoryId, FromCategoryCode, FromCategoryName,
+                   FromAccountId, FromAccountCode, FromAccountName, FromAccountPath,
+                   ToAccountId, ToAccountCode, ToAccountName,
+                   TotalPurchaseCost, UsdAmount, ExchangeRate, RemainingStockValue,
+                   PurchasedDate, PurchasedOnUtc, Description, HasAttachment, AttachmentName, BatchStatus
+            FROM dbo.vw_SaleRoznamcha_InventoryPurchaseDetails
+            WHERE TenantId = @TenantId
+              AND ProductIsDeleted = 0
+              AND (@CompanyId IS NULL OR CompanyId = @CompanyId)
+              AND (@PlatformId IS NULL OR PlatformId = @PlatformId)
+              AND (@ProductCategoryId IS NULL OR ProductCategoryId = @ProductCategoryId)
+            ORDER BY PurchasedOnUtc DESC, Id DESC;
         END;
         """;
 
@@ -425,7 +756,6 @@ internal static class SaleRoznamchaSql
         """
         CREATE OR ALTER PROCEDURE dbo.usp_SaleRoznamcha_DailySaleList
             @TenantId int,
-            @CategoryId int = NULL,
             @CompanyId int = NULL,
             @PlatformId int = NULL,
             @ProductCategoryId int = NULL
@@ -434,7 +764,6 @@ internal static class SaleRoznamchaSql
             SET NOCOUNT ON;
 
             SELECT sale.Id, product.Id ProductId, product.ProductCode, product.Name ProductName,
-                   category.Id CategoryId, category.Name CategoryName,
                    company.Id CompanyId, company.Name CompanyName,
                    platform.Id PlatformId, platform.Name PlatformName,
                    productCategory.Id ProductCategoryId, productCategory.Name ProductCategoryName,
@@ -470,8 +799,6 @@ internal static class SaleRoznamchaSql
                 ON platform.TenantId = productCategory.TenantId AND platform.Id = productCategory.PlatformId
             INNER JOIN dbo.SaleRoznamchaCompanies company
                 ON company.TenantId = platform.TenantId AND company.Id = platform.CompanyId
-            INNER JOIN dbo.SaleRoznamchaCategories category
-                ON category.TenantId = company.TenantId AND category.Id = company.CategoryId
             INNER JOIN dbo.SaleRoznamchaSaleStatuses status
                 ON status.TenantId = sale.TenantId AND status.Id = sale.SaleStatusId
             LEFT JOIN dbo.AccountsTransTypes transactionType
@@ -507,7 +834,6 @@ internal static class SaleRoznamchaSql
                 WHERE transactionDate.TenantId = sale.TenantId AND transactionDate.DailySaleId = sale.Id
             ) dateTotals
             WHERE sale.TenantId = @TenantId
-              AND (@CategoryId IS NULL OR category.Id = @CategoryId)
               AND (@CompanyId IS NULL OR company.Id = @CompanyId)
               AND (@PlatformId IS NULL OR platform.Id = @PlatformId)
               AND (@ProductCategoryId IS NULL OR productCategory.Id = @ProductCategoryId)
@@ -656,7 +982,7 @@ internal static class SaleRoznamchaSql
                 BEGIN
                     SET @RequiredStock = -@InventoryDelta;
                     SELECT @AvailableBatchStock = COALESCE(SUM(RemainingQuantity), 0)
-                    FROM dbo.SaleRoznamchaStockReceipts WITH (UPDLOCK, HOLDLOCK)
+                    FROM dbo.PaymentRoznamcha WITH (UPDLOCK, HOLDLOCK)
                     WHERE TenantId = @TenantId AND ProductId = @ProductId AND RemainingQuantity > 0;
                     IF @AvailableBatchStock < @RequiredStock
                         THROW 51001, 'Sale quantity exceeds available FIFO stock.', 1;
@@ -665,7 +991,7 @@ internal static class SaleRoznamchaSql
                     (
                         SELECT Id, RemainingQuantity, UnitCost, CurrencyId,
                                SUM(RemainingQuantity) OVER (ORDER BY PurchasedOnUtc, Id ROWS UNBOUNDED PRECEDING) RunningQuantity
-                        FROM dbo.SaleRoznamchaStockReceipts
+                        FROM dbo.PaymentRoznamcha
                         WHERE TenantId = @TenantId AND ProductId = @ProductId AND RemainingQuantity > 0
                     )
                     INSERT INTO @Allocations (StockReceiptId, Quantity, UnitCost, CurrencyId)
@@ -681,7 +1007,7 @@ internal static class SaleRoznamchaSql
 
                     UPDATE receipt
                     SET RemainingQuantity = receipt.RemainingQuantity - allocation.Quantity
-                    FROM dbo.SaleRoznamchaStockReceipts receipt
+                    FROM dbo.PaymentRoznamcha receipt
                     INNER JOIN @Allocations allocation ON allocation.StockReceiptId = receipt.Id
                     WHERE receipt.TenantId = @TenantId;
                 END
@@ -751,7 +1077,6 @@ internal static class SaleRoznamchaSql
             @TenantId int,
             @FromDate date = NULL,
             @ToDate date = NULL,
-            @CategoryId int = NULL,
             @CompanyId int = NULL,
             @PlatformId int = NULL,
             @ProductCategoryId int = NULL
@@ -766,7 +1091,6 @@ internal static class SaleRoznamchaSql
             (
                 SELECT sale.Id, sale.ProductId, sale.Quantity, sale.InventoryDelta,
                        CONVERT(date, DATEADD(minute, 300, sale.CreatedOnUtc)) LocalSaleDate,
-                       category.Id CategoryId, category.Name CategoryName,
                        company.Id CompanyId, company.Name CompanyName,
                        platform.Id PlatformId, platform.Name PlatformName,
                        productCategory.Id ProductCategoryId, productCategory.Name ProductCategoryName,
@@ -781,14 +1105,11 @@ internal static class SaleRoznamchaSql
                     ON platform.TenantId = productCategory.TenantId AND platform.Id = productCategory.PlatformId
                 INNER JOIN dbo.SaleRoznamchaCompanies company
                     ON company.TenantId = platform.TenantId AND company.Id = platform.CompanyId
-                INNER JOIN dbo.SaleRoznamchaCategories category
-                    ON category.TenantId = company.TenantId AND category.Id = company.CategoryId
                 INNER JOIN dbo.SaleRoznamchaSaleStatuses status
                     ON status.TenantId = sale.TenantId AND status.Id = sale.SaleStatusId
                 WHERE sale.TenantId = @TenantId
                   AND (@FromDate IS NULL OR sale.CreatedOnUtc >= DATEADD(minute, -300, CONVERT(datetime2, @FromDate)))
                   AND (@ToDate IS NULL OR sale.CreatedOnUtc < DATEADD(minute, -300, DATEADD(day, 1, CONVERT(datetime2, @ToDate))))
-                  AND (@CategoryId IS NULL OR category.Id = @CategoryId)
                   AND (@CompanyId IS NULL OR company.Id = @CompanyId)
                   AND (@PlatformId IS NULL OR platform.Id = @PlatformId)
                   AND (@ProductCategoryId IS NULL OR productCategory.Id = @ProductCategoryId)
@@ -818,11 +1139,6 @@ internal static class SaleRoznamchaSql
                    CONVERT(bigint, YEAR(LocalSaleDate) * 100 + MONTH(LocalSaleDate)),
                    COUNT_BIG(*), SUM(Quantity), SUM(InventoryDelta), 1
             FROM Base GROUP BY YEAR(LocalSaleDate), MONTH(LocalSaleDate), ProductId, ProductCode, ProductName
-
-            UNION ALL
-            SELECT N'CATEGORY', CONVERT(nvarchar(200), CategoryId), CategoryName, NULL, CategoryId,
-                   COUNT_BIG(*), SUM(Quantity), SUM(InventoryDelta), COUNT(DISTINCT ProductId)
-            FROM Base GROUP BY CategoryId, CategoryName
 
             UNION ALL
             SELECT N'COMPANY', CONVERT(nvarchar(200), CompanyId), CompanyName, NULL, CompanyId,

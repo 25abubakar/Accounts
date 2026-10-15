@@ -11,7 +11,6 @@ public sealed class SaleRoznamchaMasterService(
     ApplicationDbContext db,
     ICurrentUserService current) : ISaleRoznamchaMasterService
 {
-    private const string Category = "category";
     private const string Company = "company";
     private const string Platform = "platform";
     private const string ProductCategory = "product-category";
@@ -44,8 +43,7 @@ public sealed class SaleRoznamchaMasterService(
 
         var savedId = type switch
         {
-            Category => await SaveCategoryAsync(id, name, request.IsActive, ct),
-            Company => await SaveCompanyAsync(id, RequiredParent(request.ParentId, "Category"), name, request.IsActive, ct),
+            Company => await SaveCompanyAsync(id, name, request.IsActive, ct),
             Platform => await SavePlatformAsync(id, RequiredParent(request.ParentId, "Company"), name, request.Code, request.IsActive, ct),
             ProductCategory => await SaveProductCategoryAsync(id, RequiredParent(request.ParentId, "Platform"), name, request.Code, request.IsActive, ct),
             _ => throw new InvalidOperationException("Unknown Sale Roznamcha master type."),
@@ -59,15 +57,6 @@ public sealed class SaleRoznamchaMasterService(
     {
         switch (Normalize(entityType))
         {
-            case Category:
-            {
-                var row = await db.SaleRoznamchaCategories.FirstOrDefaultAsync(x => x.Id == id, ct)
-                    ?? throw new KeyNotFoundException("Category was not found.");
-                if (await db.SaleRoznamchaCompanies.AnyAsync(x => x.CategoryId == id, ct))
-                    throw new InvalidOperationException("Category cannot be deleted because companies use it.");
-                db.SaleRoznamchaCategories.Remove(row);
-                break;
-            }
             case Company:
             {
                 var row = await db.SaleRoznamchaCompanies.FirstOrDefaultAsync(x => x.Id == id, ct)
@@ -100,41 +89,11 @@ public sealed class SaleRoznamchaMasterService(
         await db.SaveChangesAsync(ct);
     }
 
-    private async Task<int> SaveCategoryAsync(int? id, string name, bool isActive, CancellationToken ct)
+    private async Task<int> SaveCompanyAsync(int? id, string name, bool isActive, CancellationToken ct)
     {
-        if (await db.SaleRoznamchaCategories.AsNoTracking()
-                .AnyAsync(x => x.Name == name && (!id.HasValue || x.Id != id), ct))
-            throw new InvalidOperationException("Category already exists.");
-
-        SaleRoznamchaCategory row;
-        if (id.HasValue)
-        {
-            row = await db.SaleRoznamchaCategories.FirstOrDefaultAsync(x => x.Id == id, ct)
-                ?? throw new KeyNotFoundException("Category was not found.");
-            StampUpdate(row);
-        }
-        else
-        {
-            row = new SaleRoznamchaCategory
-            {
-                TenantId = current.TenantId,
-                CreatedByUserId = current.UserId,
-            };
-            db.SaleRoznamchaCategories.Add(row);
-        }
-        row.Name = name;
-        row.IsActive = isActive;
-        await db.SaveChangesAsync(ct);
-        return row.Id;
-    }
-
-    private async Task<int> SaveCompanyAsync(int? id, int categoryId, string name, bool isActive, CancellationToken ct)
-    {
-        if (!await db.SaleRoznamchaCategories.AnyAsync(x => x.Id == categoryId && x.IsActive, ct))
-            throw new InvalidOperationException("Selected category is invalid or inactive.");
         if (await db.SaleRoznamchaCompanies.AsNoTracking()
-                .AnyAsync(x => x.CategoryId == categoryId && x.Name == name && (!id.HasValue || x.Id != id), ct))
-            throw new InvalidOperationException("Company already exists in the selected category.");
+                .AnyAsync(x => x.Name == name && (!id.HasValue || x.Id != id), ct))
+            throw new InvalidOperationException("Company already exists.");
 
         SaleRoznamchaCompany row;
         if (id.HasValue)
@@ -152,7 +111,6 @@ public sealed class SaleRoznamchaMasterService(
             };
             db.SaleRoznamchaCompanies.Add(row);
         }
-        row.CategoryId = categoryId;
         row.Name = name;
         row.IsActive = isActive;
         await db.SaveChangesAsync(ct);
@@ -225,12 +183,6 @@ public sealed class SaleRoznamchaMasterService(
         return row.Id;
     }
 
-    private void StampUpdate(SaleRoznamchaCategory row)
-    {
-        row.UpdatedByUserId = current.UserId;
-        row.UpdatedOnUtc = DateTime.UtcNow;
-    }
-
     private void StampUpdate(SaleRoznamchaCompany row)
     {
         row.UpdatedByUserId = current.UserId;
@@ -251,7 +203,6 @@ public sealed class SaleRoznamchaMasterService(
 
     private static string Normalize(string value) => value.Trim().ToLowerInvariant() switch
     {
-        Category => Category,
         Company => Company,
         Platform => Platform,
         ProductCategory or "productcategory" => ProductCategory,

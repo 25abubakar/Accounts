@@ -71,6 +71,8 @@ public sealed class SaveAccountRequest
     public int? CategoryId { get; set; }
     public int? ParentId { get; set; }
     public string AccountName { get; set; } = string.Empty;
+    public string? AccountCode { get; set; }
+    public string? AccountNo { get; set; }
     public string? BankAccountNo { get; set; }
     public string? CnicNtn { get; set; }
     public string? Address { get; set; }
@@ -201,9 +203,11 @@ public class SaveRoznamchaEntryRequest
     public bool IsSettled { get; set; }
     public bool IsFromLibrary { get; set; }
     public string? LibraryReference { get; set; }
+    public List<long>? LibraryDocumentIds { get; set; }
     public bool IsLedger { get; set; }
     public bool IsManual { get; set; }
     public int? ProjectId { get; set; }
+    public long? ProductId { get; set; }
 }
 
 public sealed class CreateRoznamchaPaymentRequest : SaveRoznamchaEntryRequest { }
@@ -221,18 +225,47 @@ public sealed class RoznamchaEntryDto
     public string? FromAccountName { get; set; }
     public int? ToAccountId { get; set; }
     public string? ToAccountName { get; set; }
+    public int? TransactionTypeId { get; set; }
+    public int? TransactionModeId { get; set; }
+    public DateOnly? InstrumentDate { get; set; }
+    public string? InstrumentNo { get; set; }
+    public int? CurrencyId { get; set; }
+    public int? TaxTypeId { get; set; }
+    public decimal? TaxRate { get; set; }
+    public int? EntryStatusId { get; set; }
+    public int? ProjectId { get; set; }
     public decimal Amount { get; set; }
     public decimal UsdAmount { get; set; }
+    public decimal GrossAmount { get; set; }
     public decimal TaxAmount { get; set; }
     public decimal Adjustment { get; set; }
+    public decimal Quantity { get; set; }
+    public decimal Rate { get; set; }
     public DateOnly TransactionDate { get; set; }
     public string? Description { get; set; }
     public string? Remarks { get; set; }
+    public string? BankReference { get; set; }
+    public string? BankLTReference { get; set; }
+    public bool IsFromLibrary { get; set; }
+    public string? LibraryReference { get; set; }
+    public IReadOnlyList<LibraryDocumentLinkDto> LibraryDocuments { get; set; } = [];
     public bool IsApproved { get; set; }
     public bool IsSettled { get; set; }
     public bool IsShownHidden { get; set; }
     public bool IsDeleted { get; set; }
     public bool IsLocked { get; set; }
+    public long? ProductId { get; set; }
+}
+
+public sealed class LibraryDocumentLinkDto
+{
+    public long Id { get; set; }
+    public string DocumentReference { get; set; } = string.Empty;
+    public string Title { get; set; } = string.Empty;
+    public string OriginalFileName { get; set; } = string.Empty;
+    public string ContentType { get; set; } = string.Empty;
+    public long FileSizeBytes { get; set; }
+    public string DownloadUrl { get; set; } = string.Empty;
 }
 
 public sealed class UpdateRoznamchaStatusRequest
@@ -252,6 +285,32 @@ public sealed class EntryAttachmentDto
     public string? ContentType { get; set; }
     public long FileSizeBytes { get; set; }
     public DateTime UploadedOnUtc { get; set; }
+    public string? DocumentReference { get; set; }
+    public string? Remarks { get; set; }
+}
+
+public sealed class RoznamchaProcessLogDto
+{
+    public long Id { get; set; }
+    public long EntryId { get; set; }
+    public string? ReferenceNo { get; set; }
+    public string Action { get; set; } = string.Empty;
+    public string? Notes { get; set; }
+    public string? ProcessedByUserId { get; set; }
+    public DateTime ProcessedOnUtc { get; set; }
+}
+
+public sealed class DeleteRoznamchaRequest
+{
+    public string? Remarks { get; set; }
+}
+
+public sealed class BulkRoznamchaStatusRequest
+{
+    public List<long> Ids { get; set; } = [];
+    public int EntryStatusId { get; set; }
+    public string? Comments { get; set; }
+    public bool LockWhenApproved { get; set; }
 }
 
 public sealed class UploadAccountsFileRequest
@@ -354,8 +413,52 @@ public sealed class ReportRowDto
     public decimal Debit { get; set; }
     public decimal Credit { get; set; }
     public decimal Balance { get; set; }
+    public decimal UsdDebit { get; set; }
+    public decimal UsdCredit { get; set; }
+    public decimal UsdBalance { get; set; }
+    public string? EntryType { get; set; }
+    public string? FromAccount { get; set; }
+    public string? ToAccount { get; set; }
     public string? ReferenceNo { get; set; }
     public string? Description { get; set; }
+}
+
+public sealed class AccountsDailyUpdateDto
+{
+    public long LogId { get; set; }
+    public long EntryId { get; set; }
+    public string? ReferenceNo { get; set; }
+    public DateOnly TransactionDate { get; set; }
+    public string? EntryType { get; set; }
+    public string? FromAccount { get; set; }
+    public string? ToAccount { get; set; }
+    public decimal Amount { get; set; }
+    public decimal UsdAmount { get; set; }
+    public string Action { get; set; } = string.Empty;
+    public string? Notes { get; set; }
+    public string? ChangedByUserId { get; set; }
+    public DateTime ChangedOnUtc { get; set; }
+    public string? Description { get; set; }
+}
+
+public sealed class AccountsRecordRowDto
+{
+    public long Id { get; set; }
+    public int? SerialNo { get; set; }
+    public string? ReferenceNo { get; set; }
+    public string? Type { get; set; }
+    public DateOnly TransactionDate { get; set; }
+    public DateTime CreatedOnUtc { get; set; }
+    public string? Category { get; set; }
+    public string? FromAccount { get; set; }
+    public string? ToAccount { get; set; }
+    public decimal Amount { get; set; }
+    public decimal UsdAmount { get; set; }
+    public string? Status { get; set; }
+    public string? Description { get; set; }
+    public string? Remarks { get; set; }
+    public bool IsHidden { get; set; }
+    public bool IsDeleted { get; set; }
 }
 
 public class ProjectCostRuleRequest

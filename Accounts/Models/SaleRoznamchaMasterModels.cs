@@ -3,33 +3,17 @@ using System.ComponentModel.DataAnnotations.Schema;
 
 namespace Accounts.Models;
 
-[Table("SaleRoznamchaCategories")]
-public sealed class SaleRoznamchaCategory : ITenantEntity
-{
-    [Key] public int Id { get; set; }
-    public int TenantId { get; set; }
-    [Required, MaxLength(160)] public string Name { get; set; } = string.Empty;
-    public bool IsActive { get; set; } = true;
-    [MaxLength(450)] public string? CreatedByUserId { get; set; }
-    public DateTime CreatedOnUtc { get; set; } = DateTime.UtcNow;
-    [MaxLength(450)] public string? UpdatedByUserId { get; set; }
-    public DateTime? UpdatedOnUtc { get; set; }
-    public ICollection<SaleRoznamchaCompany> Companies { get; set; } = [];
-}
-
 [Table("SaleRoznamchaCompanies")]
 public sealed class SaleRoznamchaCompany : ITenantEntity
 {
     [Key] public int Id { get; set; }
     public int TenantId { get; set; }
-    public int CategoryId { get; set; }
     [Required, MaxLength(160)] public string Name { get; set; } = string.Empty;
     public bool IsActive { get; set; } = true;
     [MaxLength(450)] public string? CreatedByUserId { get; set; }
     public DateTime CreatedOnUtc { get; set; } = DateTime.UtcNow;
     [MaxLength(450)] public string? UpdatedByUserId { get; set; }
     public DateTime? UpdatedOnUtc { get; set; }
-    public SaleRoznamchaCategory Category { get; set; } = null!;
     public ICollection<SaleRoznamchaPlatform> Platforms { get; set; } = [];
 }
 
@@ -75,9 +59,10 @@ public sealed class SaleRoznamchaProduct : ITenantEntity
     public int ProductCategoryId { get; set; }
     [Required, MaxLength(80)] public string ProductCode { get; set; } = string.Empty;
     [Required, MaxLength(200)] public string Name { get; set; } = string.Empty;
+    [MaxLength(1000)] public string? Description { get; set; }
     [Column(TypeName = "decimal(18,4)")] public decimal QuantityOnHand { get; set; }
-    [Column(TypeName = "decimal(18,2)")] public decimal PurchasePrice { get; set; }
-    public int CurrencyId { get; set; }
+    [Column(TypeName = "decimal(18,2)")] public decimal? PurchasePrice { get; set; }
+    public int? CurrencyId { get; set; }
     public bool IsActive { get; set; } = true;
     public bool IsDeleted { get; set; }
     [MaxLength(450)] public string? CreatedByUserId { get; set; }
@@ -85,22 +70,48 @@ public sealed class SaleRoznamchaProduct : ITenantEntity
     [MaxLength(450)] public string? UpdatedByUserId { get; set; }
     public DateTime? UpdatedOnUtc { get; set; }
     public SaleRoznamchaProductCategory ProductCategory { get; set; } = null!;
-    public AccountsCurrency Currency { get; set; } = null!;
+    public AccountsCurrency? Currency { get; set; }
     public ICollection<SaleRoznamchaInventoryMovement> Movements { get; set; } = [];
     public ICollection<SaleRoznamchaStockReceipt> StockReceipts { get; set; } = [];
 }
 
-[Table("SaleRoznamchaStockReceipts")]
+[Table("SaleRoznamchaPurchaseImports")]
+public sealed class SaleRoznamchaPurchaseImport : ITenantEntity
+{
+    [Key] public long Id { get; set; }
+    public int TenantId { get; set; }
+    [Required, MaxLength(64)] public string FileHash { get; set; } = string.Empty;
+    [Required, MaxLength(260)] public string OriginalFileName { get; set; } = string.Empty;
+    public long FileSize { get; set; }
+    public int ImportedRows { get; set; }
+    public int ProductCount { get; set; }
+    [MaxLength(450)] public string? CreatedByUserId { get; set; }
+    public DateTime CreatedOnUtc { get; set; } = DateTime.UtcNow;
+}
+
+[Table("PaymentRoznamcha")]
 public sealed class SaleRoznamchaStockReceipt : ITenantEntity
 {
     [Key] public long Id { get; set; }
     public int TenantId { get; set; }
     public long ProductId { get; set; }
+    [MaxLength(100)] public string? Reference { get; set; }
     [Column(TypeName = "decimal(18,4)")] public decimal PurchasedQuantity { get; set; }
     [Column(TypeName = "decimal(18,4)")] public decimal RemainingQuantity { get; set; }
     [Column(TypeName = "decimal(18,2)")] public decimal UnitCost { get; set; }
+    [Column("Debit", TypeName = "decimal(18,2)")] public decimal TotalPurchaseCost { get; set; }
+    [Column("UsdAmt", TypeName = "decimal(18,2)")] public decimal? UsdAmount { get; set; }
+    [Column(TypeName = "decimal(18,6)")] public decimal? ExchangeRate { get; set; }
     public int CurrencyId { get; set; }
+    public int FromAccountId { get; set; }
+    public int? ToAccountId { get; set; }
+    public long? RoznamchaEntryId { get; set; }
     [MaxLength(1000)] public string? Description { get; set; }
+    [MaxLength(260)] public string? AttachmentOriginalName { get; set; }
+    [MaxLength(260)] public string? AttachmentStoredName { get; set; }
+    [MaxLength(100)] public string? AttachmentContentType { get; set; }
+    public long? AttachmentSize { get; set; }
+    public DateOnly PurchasedDate { get; set; }
     public DateTime PurchasedOnUtc { get; set; } = DateTime.UtcNow;
     [MaxLength(450)] public string? CreatedByUserId { get; set; }
     public DateTime CreatedOnUtc { get; set; } = DateTime.UtcNow;

@@ -20,7 +20,6 @@ public sealed class SaleRoznamchaHistoryController(
     public async Task<IActionResult> Report(
         [FromQuery] DateOnly? fromDate,
         [FromQuery] DateOnly? toDate,
-        [FromQuery] int? categoryId,
         [FromQuery] int? companyId,
         [FromQuery] int? platformId,
         [FromQuery] int? productCategoryId,
@@ -30,7 +29,7 @@ public sealed class SaleRoznamchaHistoryController(
         try
         {
             return Ok(ApiResponse<IReadOnlyList<SaleRoznamchaHistoryAggregateRow>>.Ok(
-                await history.ReportAsync(fromDate, toDate, categoryId, companyId, platformId, productCategoryId, ct)));
+                await history.ReportAsync(fromDate, toDate, companyId, platformId, productCategoryId, ct)));
         }
         catch (InvalidOperationException ex)
         {

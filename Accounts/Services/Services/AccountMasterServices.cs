@@ -213,9 +213,14 @@ public sealed class AccountService(
         if (await db.AccountsChartAccounts.AsNoTracking().AnyAsync(x => x.AccountName == name && x.ParentId == request.ParentId, ct))
             throw new InvalidOperationException("An account with this name already exists at the selected level.");
 
-        var code = parent == null
+        var requestedCode = OptionalIdentifier(request.AccountCode, "Account code", 80);
+        var code = requestedCode ?? (parent == null
             ? await references.MainAccountCodeAsync(current.TenantId, category.Code, ct)
-            : await references.SubAccountCodeAsync(current.TenantId, parent.Id, parent.AccountCode ?? parent.AccountNumber, ct);
+            : await references.SubAccountCodeAsync(current.TenantId, parent.Id, parent.AccountCode ?? parent.AccountNumber, ct));
+        var requestedAccountNo = OptionalIdentifier(request.AccountNo, "Account number", 50);
+        var accountNo = requestedAccountNo ?? await references.AccountNumberAsync(current.TenantId, code, ct);
+        if (await db.AccountsChartAccounts.AsNoTracking().AnyAsync(x => x.AccountNumber == accountNo, ct))
+            throw new InvalidOperationException("Account number already exists.");
         var row = new AccountsChartAccount
         {
             TenantId = current.TenantId,
@@ -223,7 +228,7 @@ public sealed class AccountService(
             ParentId = parent?.Id,
             AccountName = name,
             AccountCode = code,
-            AccountNumber = await references.AccountNumberAsync(current.TenantId, code, ct),
+            AccountNumber = accountNo,
             AccountReference = await references.AccountReferenceAsync(current.TenantId, ct),
             CreatedByUserId = current.UserId,
             CreatedOnUtc = DateTime.UtcNow
@@ -241,6 +246,19 @@ public sealed class AccountService(
         var name = RequiredName(request.AccountName);
         if (await db.AccountsChartAccounts.AsNoTracking().AnyAsync(x => x.Id != id && x.ParentId == row.ParentId && x.AccountName == name, ct))
             throw new InvalidOperationException("An account with this name already exists at the selected level.");
+        if (request.AccountNo != null)
+        {
+            var accountNo = OptionalIdentifier(request.AccountNo, "Account number", 50)
+                ?? throw new InvalidOperationException("Account number cannot be blank.");
+            if (await db.AccountsChartAccounts.AsNoTracking().AnyAsync(x => x.Id != id && x.AccountNumber == accountNo, ct))
+                throw new InvalidOperationException("Account number already exists.");
+            row.AccountNumber = accountNo;
+        }
+        if (request.AccountCode != null)
+        {
+            row.AccountCode = OptionalIdentifier(request.AccountCode, "Account code", 80)
+                ?? throw new InvalidOperationException("Account code cannot be blank.");
+        }
         row.AccountName = name;
         ApplyMutable(row, request);
         row.UpdatedByUserId = current.UserId;
@@ -520,6 +538,15 @@ public sealed class AccountService(
         var result = value?.Trim();
         if (string.IsNullOrWhiteSpace(result)) throw new InvalidOperationException("Account name is required.");
         return result.Length <= 200 ? result : result[..200];
+    }
+
+    private static string? OptionalIdentifier(string? value, string label, int max)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return null;
+        var result = value.Trim();
+        if (result.Length > max)
+            throw new InvalidOperationException($"{label} cannot exceed {max} characters.");
+        return result;
     }
 
     private static string? Clean(string? value, int max) =>

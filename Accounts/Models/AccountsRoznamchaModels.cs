@@ -63,6 +63,7 @@ public sealed class RoznamchaEntry : ITenantEntity
     public DateTime CreatedOnUtc { get; set; } = DateTime.UtcNow;
     [MaxLength(450)] public string? UpdatedByUserId { get; set; }
     public DateTime? UpdatedOnUtc { get; set; }
+    public ICollection<RoznamchaLibraryDocument> LibraryDocuments { get; set; } = new List<RoznamchaLibraryDocument>();
 }
 
 [Table("AccountsChartAccounts")]

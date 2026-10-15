@@ -4185,6 +4185,10 @@ namespace Accounts.Migrations
                         .HasMaxLength(1000)
                         .HasColumnType("nvarchar(1000)");
 
+                    b.Property<string>("DocumentReference")
+                        .HasMaxLength(40)
+                        .HasColumnType("nvarchar(40)");
+
                     b.Property<string>("FileExtension")
                         .IsRequired()
                         .HasMaxLength(20)
@@ -4195,6 +4199,9 @@ namespace Accounts.Migrations
 
                     b.Property<bool>("IsActive")
                         .HasColumnType("bit");
+
+                    b.Property<int?>("LibrarySubTypeId")
+                        .HasColumnType("int");
 
                     b.Property<int>("LibraryTypeId")
                         .HasColumnType("int");
@@ -4226,7 +4233,13 @@ namespace Accounts.Migrations
 
                     b.HasKey("Id");
 
+                    b.HasIndex("LibrarySubTypeId");
+
                     b.HasIndex("LibraryTypeId");
+
+                    b.HasIndex("TenantId", "DocumentReference")
+                        .IsUnique()
+                        .HasFilter("[DocumentReference] IS NOT NULL");
 
                     b.HasIndex("TenantId", "Title");
 
@@ -4235,6 +4248,72 @@ namespace Accounts.Migrations
                     b.HasIndex("TenantId", "AssetKind", "LibraryTypeId", "IsActive", "CreatedOnUtc");
 
                     b.ToTable("LibraryDocuments");
+                });
+
+            modelBuilder.Entity("Accounts.Models.LibraryHardCopyLocation", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<long>("Id"));
+
+                    b.Property<string>("CreatedByUserId")
+                        .HasMaxLength(450)
+                        .HasColumnType("nvarchar(450)");
+
+                    b.Property<DateTime>("CreatedOnUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("FolderReference")
+                        .HasMaxLength(120)
+                        .HasColumnType("nvarchar(120)");
+
+                    b.Property<DateTime?>("IssuedOn")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("IssuedTo")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<long>("LibraryDocumentId")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("PageNumber")
+                        .HasMaxLength(50)
+                        .HasColumnType("nvarchar(50)");
+
+                    b.Property<string>("Rack")
+                        .HasMaxLength(120)
+                        .HasColumnType("nvarchar(120)");
+
+                    b.Property<DateTime?>("ReturnedOn")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("Store")
+                        .IsRequired()
+                        .HasMaxLength(120)
+                        .HasColumnType("nvarchar(120)");
+
+                    b.Property<int>("TenantId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("UpdatedByUserId")
+                        .HasMaxLength(450)
+                        .HasColumnType("nvarchar(450)");
+
+                    b.Property<DateTime?>("UpdatedOnUtc")
+                        .HasColumnType("datetime2");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("LibraryDocumentId")
+                        .IsUnique();
+
+                    b.HasIndex("TenantId", "LibraryDocumentId")
+                        .IsUnique();
+
+                    b.ToTable("LibraryHardCopyLocations");
                 });
 
             modelBuilder.Entity("Accounts.Models.LibrarySubType", b =>
@@ -4318,6 +4397,9 @@ namespace Accounts.Migrations
                     b.Property<bool>("IsActive")
                         .HasColumnType("bit");
 
+                    b.Property<int?>("LibrarySubTypeId")
+                        .HasColumnType("int");
+
                     b.Property<int>("LibraryTypeId")
                         .HasColumnType("int");
 
@@ -4333,6 +4415,8 @@ namespace Accounts.Migrations
                         .HasColumnType("datetime2");
 
                     b.HasKey("Id");
+
+                    b.HasIndex("LibrarySubTypeId");
 
                     b.HasIndex("LibraryTypeId");
 
@@ -4372,6 +4456,9 @@ namespace Accounts.Migrations
                     b.Property<bool>("IsHardCopyRequired")
                         .HasColumnType("bit");
 
+                    b.Property<int?>("LibraryCategoryId")
+                        .HasColumnType("int");
+
                     b.Property<string>("Name")
                         .IsRequired()
                         .HasMaxLength(120)
@@ -4384,6 +4471,8 @@ namespace Accounts.Migrations
                         .HasColumnType("datetime2");
 
                     b.HasKey("Id");
+
+                    b.HasIndex("LibraryCategoryId");
 
                     b.HasIndex("TenantId", "Code")
                         .IsUnique();
@@ -8052,6 +8141,44 @@ namespace Accounts.Migrations
                     b.ToTable("RoznamchaEntryProcessLogs");
                 });
 
+            modelBuilder.Entity("Accounts.Models.RoznamchaLibraryDocument", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<long>("Id"));
+
+                    b.Property<string>("CreatedByUserId")
+                        .HasMaxLength(450)
+                        .HasColumnType("nvarchar(450)");
+
+                    b.Property<DateTime>("CreatedOnUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<long>("LibraryDocumentId")
+                        .HasColumnType("bigint");
+
+                    b.Property<long>("RoznamchaEntryId")
+                        .HasColumnType("bigint");
+
+                    b.Property<int>("TenantId")
+                        .HasColumnType("int");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("LibraryDocumentId");
+
+                    b.HasIndex("RoznamchaEntryId");
+
+                    b.HasIndex("TenantId", "LibraryDocumentId");
+
+                    b.HasIndex("TenantId", "RoznamchaEntryId", "LibraryDocumentId")
+                        .IsUnique();
+
+                    b.ToTable("RoznamchaLibraryDocuments");
+                });
+
             modelBuilder.Entity("Accounts.Models.SalaryPackage", b =>
                 {
                     b.Property<int>("Id")
@@ -8276,47 +8403,6 @@ namespace Accounts.Migrations
                         });
                 });
 
-            modelBuilder.Entity("Accounts.Models.SaleRoznamchaCategory", b =>
-                {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("int");
-
-                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
-
-                    b.Property<string>("CreatedByUserId")
-                        .HasMaxLength(450)
-                        .HasColumnType("nvarchar(450)");
-
-                    b.Property<DateTime>("CreatedOnUtc")
-                        .HasColumnType("datetime2");
-
-                    b.Property<bool>("IsActive")
-                        .HasColumnType("bit");
-
-                    b.Property<string>("Name")
-                        .IsRequired()
-                        .HasMaxLength(160)
-                        .HasColumnType("nvarchar(160)");
-
-                    b.Property<int>("TenantId")
-                        .HasColumnType("int");
-
-                    b.Property<string>("UpdatedByUserId")
-                        .HasMaxLength(450)
-                        .HasColumnType("nvarchar(450)");
-
-                    b.Property<DateTime?>("UpdatedOnUtc")
-                        .HasColumnType("datetime2");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("TenantId", "Name")
-                        .IsUnique();
-
-                    b.ToTable("SaleRoznamchaCategories");
-                });
-
             modelBuilder.Entity("Accounts.Models.SaleRoznamchaChargeLabel", b =>
                 {
                     b.Property<int>("Id")
@@ -8360,9 +8446,6 @@ namespace Accounts.Migrations
 
                     SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
 
-                    b.Property<int>("CategoryId")
-                        .HasColumnType("int");
-
                     b.Property<string>("CreatedByUserId")
                         .HasMaxLength(450)
                         .HasColumnType("nvarchar(450)");
@@ -8390,7 +8473,9 @@ namespace Accounts.Migrations
 
                     b.HasKey("Id");
 
-                    b.HasIndex("TenantId", "CategoryId", "Name")
+                    b.HasAlternateKey("TenantId", "Id");
+
+                    b.HasIndex("TenantId", "Name")
                         .IsUnique();
 
                     b.ToTable("SaleRoznamchaCompanies");
@@ -8969,8 +9054,12 @@ namespace Accounts.Migrations
                     b.Property<DateTime>("CreatedOnUtc")
                         .HasColumnType("datetime2");
 
-                    b.Property<int>("CurrencyId")
+                    b.Property<int?>("CurrencyId")
                         .HasColumnType("int");
+
+                    b.Property<string>("Description")
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)");
 
                     b.Property<bool>("IsActive")
                         .HasColumnType("bit");
@@ -8991,7 +9080,7 @@ namespace Accounts.Migrations
                         .HasMaxLength(80)
                         .HasColumnType("nvarchar(80)");
 
-                    b.Property<decimal>("PurchasePrice")
+                    b.Property<decimal?>("PurchasePrice")
                         .HasPrecision(18, 2)
                         .HasColumnType("decimal(18,2)");
 
@@ -9018,7 +9107,8 @@ namespace Accounts.Migrations
                     b.HasIndex("TenantId", "IsDeleted", "IsActive");
 
                     b.HasIndex("TenantId", "ProductCategoryId", "Name")
-                        .IsUnique();
+                        .IsUnique()
+                        .HasFilter("[IsDeleted] = 0");
 
                     b.ToTable("SaleRoznamchaProducts");
                 });
@@ -9075,6 +9165,53 @@ namespace Accounts.Migrations
                     b.ToTable("SaleRoznamchaProductCategories");
                 });
 
+            modelBuilder.Entity("Accounts.Models.SaleRoznamchaPurchaseImport", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<long>("Id"));
+
+                    b.Property<string>("CreatedByUserId")
+                        .HasMaxLength(450)
+                        .HasColumnType("nvarchar(450)");
+
+                    b.Property<DateTime>("CreatedOnUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("FileHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<long>("FileSize")
+                        .HasColumnType("bigint");
+
+                    b.Property<int>("ImportedRows")
+                        .HasColumnType("int");
+
+                    b.Property<string>("OriginalFileName")
+                        .IsRequired()
+                        .HasMaxLength(260)
+                        .HasColumnType("nvarchar(260)");
+
+                    b.Property<int>("ProductCount")
+                        .HasColumnType("int");
+
+                    b.Property<int>("TenantId")
+                        .HasColumnType("int");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TenantId", "CreatedOnUtc");
+
+                    b.HasIndex("TenantId", "FileHash")
+                        .IsUnique();
+
+                    b.ToTable("SaleRoznamchaPurchaseImports");
+                });
+
             modelBuilder.Entity("Accounts.Models.SaleRoznamchaSaleStatus", b =>
                 {
                     b.Property<int>("Id")
@@ -9129,6 +9266,21 @@ namespace Accounts.Migrations
 
                     SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<long>("Id"));
 
+                    b.Property<string>("AttachmentContentType")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<string>("AttachmentOriginalName")
+                        .HasMaxLength(260)
+                        .HasColumnType("nvarchar(260)");
+
+                    b.Property<long?>("AttachmentSize")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("AttachmentStoredName")
+                        .HasMaxLength(260)
+                        .HasColumnType("nvarchar(260)");
+
                     b.Property<string>("CreatedByUserId")
                         .HasMaxLength(450)
                         .HasColumnType("nvarchar(450)");
@@ -9139,8 +9291,22 @@ namespace Accounts.Migrations
                     b.Property<int>("CurrencyId")
                         .HasColumnType("int");
 
+                    b.Property<string>("Description")
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)");
+
+                    b.Property<decimal?>("ExchangeRate")
+                        .HasPrecision(18, 6)
+                        .HasColumnType("decimal(18,6)");
+
+                    b.Property<int>("FromAccountId")
+                        .HasColumnType("int");
+
                     b.Property<long>("ProductId")
                         .HasColumnType("bigint");
+
+                    b.Property<DateOnly>("PurchasedDate")
+                        .HasColumnType("date");
 
                     b.Property<DateTime>("PurchasedOnUtc")
                         .HasColumnType("datetime2");
@@ -9148,25 +9314,56 @@ namespace Accounts.Migrations
                     b.Property<decimal>("PurchasedQuantity")
                         .HasColumnType("decimal(18,4)");
 
+                    b.Property<string>("Reference")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
                     b.Property<decimal>("RemainingQuantity")
                         .HasColumnType("decimal(18,4)");
 
+                    b.Property<long?>("RoznamchaEntryId")
+                        .HasColumnType("bigint");
+
                     b.Property<int>("TenantId")
                         .HasColumnType("int");
+
+                    b.Property<int?>("ToAccountId")
+                        .HasColumnType("int");
+
+                    b.Property<decimal>("TotalPurchaseCost")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("decimal(18,2)")
+                        .HasColumnName("Debit");
 
                     b.Property<decimal>("UnitCost")
                         .HasPrecision(18, 2)
                         .HasColumnType("decimal(18,2)");
 
+                    b.Property<decimal?>("UsdAmount")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("decimal(18,2)")
+                        .HasColumnName("UsdAmt");
+
                     b.HasKey("Id");
 
                     b.HasIndex("CurrencyId");
+
+                    b.HasIndex("FromAccountId");
+
+                    b.HasIndex("RoznamchaEntryId")
+                        .IsUnique()
+                        .HasDatabaseName("IX_SaleRoznamchaStockReceipts_RoznamchaEntryId")
+                        .HasFilter("[RoznamchaEntryId] IS NOT NULL");
+
+                    b.HasIndex("ToAccountId");
+
+                    b.HasIndex("TenantId", "Reference");
 
                     b.HasIndex("TenantId", "ProductId", "RemainingQuantity");
 
                     b.HasIndex("TenantId", "ProductId", "PurchasedOnUtc", "Id");
 
-                    b.ToTable("SaleRoznamchaStockReceipts");
+                    b.ToTable("PaymentRoznamcha");
                 });
 
             modelBuilder.Entity("Accounts.Models.SaleRoznamchaTransactionDateLabel", b =>
@@ -11225,6 +11422,11 @@ namespace Accounts.Migrations
 
             modelBuilder.Entity("Accounts.Models.LibraryDocument", b =>
                 {
+                    b.HasOne("Accounts.Models.LibrarySubType", "LibrarySubType")
+                        .WithMany()
+                        .HasForeignKey("LibrarySubTypeId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
                     b.HasOne("Accounts.Models.LibraryType", "LibraryType")
                         .WithMany("Documents")
                         .HasForeignKey("LibraryTypeId")
@@ -11237,7 +11439,26 @@ namespace Accounts.Migrations
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
 
+                    b.Navigation("LibrarySubType");
+
                     b.Navigation("LibraryType");
+                });
+
+            modelBuilder.Entity("Accounts.Models.LibraryHardCopyLocation", b =>
+                {
+                    b.HasOne("Accounts.Models.LibraryDocument", "LibraryDocument")
+                        .WithOne("HardCopyLocation")
+                        .HasForeignKey("Accounts.Models.LibraryHardCopyLocation", "LibraryDocumentId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("Accounts.Models.Tenant", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("LibraryDocument");
                 });
 
             modelBuilder.Entity("Accounts.Models.LibrarySubType", b =>
@@ -11259,6 +11480,11 @@ namespace Accounts.Migrations
 
             modelBuilder.Entity("Accounts.Models.LibraryTemplate", b =>
                 {
+                    b.HasOne("Accounts.Models.LibrarySubType", "LibrarySubType")
+                        .WithMany()
+                        .HasForeignKey("LibrarySubTypeId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
                     b.HasOne("Accounts.Models.LibraryType", "LibraryType")
                         .WithMany("Templates")
                         .HasForeignKey("LibraryTypeId")
@@ -11271,16 +11497,25 @@ namespace Accounts.Migrations
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
 
+                    b.Navigation("LibrarySubType");
+
                     b.Navigation("LibraryType");
                 });
 
             modelBuilder.Entity("Accounts.Models.LibraryType", b =>
                 {
+                    b.HasOne("Accounts.Models.LibraryCategory", "LibraryCategory")
+                        .WithMany()
+                        .HasForeignKey("LibraryCategoryId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
                     b.HasOne("Accounts.Models.Tenant", null)
                         .WithMany()
                         .HasForeignKey("TenantId")
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
+
+                    b.Navigation("LibraryCategory");
                 });
 
             modelBuilder.Entity("Accounts.Models.Menu", b =>
@@ -12102,6 +12337,31 @@ namespace Accounts.Migrations
                         .IsRequired();
                 });
 
+            modelBuilder.Entity("Accounts.Models.RoznamchaLibraryDocument", b =>
+                {
+                    b.HasOne("Accounts.Models.LibraryDocument", "LibraryDocument")
+                        .WithMany("RoznamchaLinks")
+                        .HasForeignKey("LibraryDocumentId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("Accounts.Models.RoznamchaEntry", "RoznamchaEntry")
+                        .WithMany("LibraryDocuments")
+                        .HasForeignKey("RoznamchaEntryId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("Accounts.Models.Tenant", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("LibraryDocument");
+
+                    b.Navigation("RoznamchaEntry");
+                });
+
             modelBuilder.Entity("Accounts.Models.SalaryPackage", b =>
                 {
                     b.HasOne("Accounts.Models.PayRule", "PayRule")
@@ -12152,15 +12412,6 @@ namespace Accounts.Migrations
                         .IsRequired();
                 });
 
-            modelBuilder.Entity("Accounts.Models.SaleRoznamchaCategory", b =>
-                {
-                    b.HasOne("Accounts.Models.Tenant", null)
-                        .WithMany()
-                        .HasForeignKey("TenantId")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
-                });
-
             modelBuilder.Entity("Accounts.Models.SaleRoznamchaChargeLabel", b =>
                 {
                     b.HasOne("Accounts.Models.Tenant", null)
@@ -12177,15 +12428,6 @@ namespace Accounts.Migrations
                         .HasForeignKey("TenantId")
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
-
-                    b.HasOne("Accounts.Models.SaleRoznamchaCategory", "Category")
-                        .WithMany("Companies")
-                        .HasForeignKey("TenantId", "CategoryId")
-                        .HasPrincipalKey("TenantId", "Id")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
-
-                    b.Navigation("Category");
                 });
 
             modelBuilder.Entity("Accounts.Models.SaleRoznamchaDailySale", b =>
@@ -12491,8 +12733,7 @@ namespace Accounts.Migrations
                     b.HasOne("Accounts.Models.AccountsCurrency", "Currency")
                         .WithMany()
                         .HasForeignKey("CurrencyId")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
+                        .OnDelete(DeleteBehavior.Restrict);
 
                     b.HasOne("Accounts.Models.Tenant", null)
                         .WithMany()
@@ -12530,6 +12771,15 @@ namespace Accounts.Migrations
                     b.Navigation("Platform");
                 });
 
+            modelBuilder.Entity("Accounts.Models.SaleRoznamchaPurchaseImport", b =>
+                {
+                    b.HasOne("Accounts.Models.Tenant", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
             modelBuilder.Entity("Accounts.Models.SaleRoznamchaSaleStatus", b =>
                 {
                     b.HasOne("Accounts.Models.Tenant", null)
@@ -12547,11 +12797,30 @@ namespace Accounts.Migrations
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
 
+                    b.HasOne("Accounts.Models.AccountsChartAccount", null)
+                        .WithMany()
+                        .HasForeignKey("FromAccountId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("FK_SaleRoznamchaStockReceipts_FromAccount");
+
+                    b.HasOne("Accounts.Models.RoznamchaEntry", null)
+                        .WithMany()
+                        .HasForeignKey("RoznamchaEntryId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .HasConstraintName("FK_SaleRoznamchaStockReceipts_RoznamchaEntry");
+
                     b.HasOne("Accounts.Models.Tenant", null)
                         .WithMany()
                         .HasForeignKey("TenantId")
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
+
+                    b.HasOne("Accounts.Models.AccountsChartAccount", null)
+                        .WithMany()
+                        .HasForeignKey("ToAccountId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .HasConstraintName("FK_SaleRoznamchaStockReceipts_ToAccount");
 
                     b.HasOne("Accounts.Models.SaleRoznamchaProduct", "Product")
                         .WithMany("StockReceipts")
@@ -12844,6 +13113,13 @@ namespace Accounts.Migrations
                     b.Navigation("Lines");
                 });
 
+            modelBuilder.Entity("Accounts.Models.LibraryDocument", b =>
+                {
+                    b.Navigation("HardCopyLocation");
+
+                    b.Navigation("RoznamchaLinks");
+                });
+
             modelBuilder.Entity("Accounts.Models.LibraryType", b =>
                 {
                     b.Navigation("Documents");
@@ -12912,14 +13188,14 @@ namespace Accounts.Migrations
                     b.Navigation("StatusStyles");
                 });
 
+            modelBuilder.Entity("Accounts.Models.RoznamchaEntry", b =>
+                {
+                    b.Navigation("LibraryDocuments");
+                });
+
             modelBuilder.Entity("Accounts.Models.SaleRoznamchaAmountEffect", b =>
                 {
                     b.Navigation("PayChargeSales");
-                });
-
-            modelBuilder.Entity("Accounts.Models.SaleRoznamchaCategory", b =>
-                {
-                    b.Navigation("Companies");
                 });
 
             modelBuilder.Entity("Accounts.Models.SaleRoznamchaChargeLabel", b =>

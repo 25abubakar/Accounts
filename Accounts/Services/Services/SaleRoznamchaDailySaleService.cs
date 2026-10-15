@@ -13,17 +13,15 @@ public sealed class SaleRoznamchaDailySaleService(
     ICurrentUserService current) : ISaleRoznamchaDailySaleService
 {
     public async Task<IReadOnlyList<SaleRoznamchaDailySaleRow>> ListAsync(
-        int? categoryId,
         int? companyId,
         int? platformId,
         int? productCategoryId,
         CancellationToken ct = default) =>
         await SpListQuery.ExecAsync<SaleRoznamchaDailySaleRow>(
             db,
-            "EXEC dbo.usp_SaleRoznamcha_DailySaleList @TenantId, @CategoryId, @CompanyId, @PlatformId, @ProductCategoryId",
+            "EXEC dbo.usp_SaleRoznamcha_DailySaleList @TenantId, @CompanyId, @PlatformId, @ProductCategoryId",
             ct,
             SpListQuery.TenantId(current.TenantId),
-            SpListQuery.IntNullable("@CategoryId", categoryId),
             SpListQuery.IntNullable("@CompanyId", companyId),
             SpListQuery.IntNullable("@PlatformId", platformId),
             SpListQuery.IntNullable("@ProductCategoryId", productCategoryId));
@@ -129,8 +127,6 @@ public sealed class SaleRoznamchaDailySaleService(
                 on productCategory.PlatformId equals platform.Id
             join company in db.SaleRoznamchaCompanies.AsNoTracking()
                 on platform.CompanyId equals company.Id
-            join category in db.SaleRoznamchaCategories.AsNoTracking()
-                on company.CategoryId equals category.Id
             where product.Id == request.ProductId && !product.IsDeleted && product.IsActive &&
                   platform.Id == request.PlatformId
             select product.Id).AnyAsync(ct);
@@ -169,7 +165,7 @@ public sealed class SaleRoznamchaDailySaleService(
                 SpListQuery.NVarChar("@UserId", current.UserId));
             var id = created.SingleOrDefault()?.Id
                 ?? throw new InvalidOperationException("Daily sale could not be created.");
-            return (await ListAsync(null, null, null, null, ct)).First(x => x.Id == id);
+            return (await ListAsync(null, null, null, ct)).First(x => x.Id == id);
         }
         catch (SqlException ex) when (ex.Number is 51000 or 51001)
         {
@@ -178,7 +174,7 @@ public sealed class SaleRoznamchaDailySaleService(
     }
 
     public async Task<IReadOnlyList<SaleRoznamchaInvoiceRow>> ListInvoicesAsync(
-        int? categoryId, int? companyId, int? platformId, int? productCategoryId,
+        int? companyId, int? platformId, int? productCategoryId,
         CancellationToken ct = default)
     {
         var invoices = await db.SaleRoznamchaInvoices.AsNoTracking()
@@ -189,7 +185,6 @@ public sealed class SaleRoznamchaDailySaleService(
             .Include(x => x.Charges).ThenInclude(x => x.ChargeLabel)
             .Include(x => x.TransactionDates).ThenInclude(x => x.DateLabel)
             .Where(invoice => invoice.Lines.Any(line =>
-                (!categoryId.HasValue || line.Product.ProductCategory.Platform.Company.CategoryId == categoryId) &&
                 (!companyId.HasValue || line.Product.ProductCategory.Platform.CompanyId == companyId) &&
                 (!platformId.HasValue || line.Product.ProductCategory.PlatformId == platformId) &&
                 (!productCategoryId.HasValue || line.Product.ProductCategoryId == productCategoryId)))
@@ -232,6 +227,13 @@ public sealed class SaleRoznamchaDailySaleService(
             PurchaseUnitCost = line.UnitCost, PurchaseCurrencyCode = line.UnitCostCurrency?.Code,
         }).ToList();
 
+        var transactionDates = invoice.TransactionDates.OrderBy(x => x.Value).ThenBy(x => x.Id)
+            .Select(x => new SaleRoznamchaInvoiceTransactionDateRow
+            {
+                Id = x.Id, DateLabelId = x.DateLabelId, Label = x.DateLabel.Name,
+                Code = x.DateLabel.Code, Value = x.Value,
+            }).ToList();
+
         return new SaleRoznamchaInvoiceRow
         {
             Id = invoice.Id, ReceiptNumber = invoice.ReceiptNumber, OrderId = invoice.OrderId,
@@ -249,17 +251,34 @@ public sealed class SaleRoznamchaDailySaleService(
             ToAccountId = invoice.ToAccountId,
             ToAccountName = LookupName(accounts, invoice.ToAccountId),
             InterProReference = invoice.InterProReference, OrderReference = invoice.OrderReference,
-            SaleDate = invoice.SaleDate, Description = invoice.Description,
+            SaleDate = invoice.SaleDate,
+            OrderDate = ResolveLifecycleDate(invoice.TransactionDates, "ORDERDATE"),
+            SoldDate = ResolveLifecycleDate(invoice.TransactionDates, "SOLDDATE"),
+            TransactionDate = ResolveLifecycleDate(invoice.TransactionDates, "TRANSACTIONDATE"),
+            ProcessDate = ResolveLifecycleDate(invoice.TransactionDates, "PROCESSDATE"),
+            PaymentDate = ResolveLifecycleDate(invoice.TransactionDates, "PAYMENTDATE"),
+            Description = invoice.Description,
             TotalQuantity = items.Sum(x => x.Quantity), ItemCount = items.Count,
             ProductSummary = string.Join(", ", items.Select(x => $"{x.ProductCode} - {x.ProductName}")),
             CreatedOnUtc = invoice.CreatedOnUtc, UpdatedOnUtc = invoice.UpdatedOnUtc, Items = items,
             Charges = invoice.Charges.OrderBy(x => x.Id).Select(x => new SaleRoznamchaInvoiceChargeRow
                 { Id = x.Id, ChargeLabelId = x.ChargeLabelId, Label = x.ChargeLabel.Name, Amount = x.Amount }).ToList(),
-            TransactionDates = invoice.TransactionDates.OrderBy(x => x.Value).ThenBy(x => x.Id)
-                .Select(x => new SaleRoznamchaInvoiceTransactionDateRow
-                    { Id = x.Id, DateLabelId = x.DateLabelId, Label = x.DateLabel.Name, Value = x.Value }).ToList(),
+            TransactionDates = transactionDates,
         };
     }
+
+    private static DateOnly? ResolveLifecycleDate(
+        IEnumerable<SaleRoznamchaInvoiceTransactionDate> dates,
+        string semanticName) => dates
+        .Where(x => NormalizeDateSemantic(x.DateLabel.Code) == semanticName ||
+                    NormalizeDateSemantic(x.DateLabel.Name) == semanticName)
+        .OrderByDescending(x => x.Value)
+        .ThenByDescending(x => x.Id)
+        .Select(x => (DateOnly?)x.Value)
+        .FirstOrDefault();
+
+    private static string NormalizeDateSemantic(string? value) =>
+        new((value ?? string.Empty).Where(char.IsLetterOrDigit).Select(char.ToUpperInvariant).ToArray());
 
     private async Task<(
         IReadOnlyDictionary<int, string> TransactionTypes,
@@ -283,9 +302,10 @@ public sealed class SaleRoznamchaDailySaleService(
         SaveSaleRoznamchaInvoiceRequest request, CancellationToken ct = default)
     {
         ValidateInvoice(request.Items, request.PayCharges, request.DeliveryFee, request.OtherAmount,
-            request.PromotionAmount, request.RtoChargeAmount, request.Charges);
+            request.PromotionAmount, request.RtoChargeAmount, request.Charges, request.TransactionDates);
         if (request.SaleStatusId <= 0 || request.SaleCurrencyId <= 0 || request.PayChargeEffectId <= 0)
             throw new InvalidOperationException("Sale Status, Sale Currency and Pay Charge Treatment are required.");
+        await ValidateInvoiceChildrenAsync(request.Charges, request.TransactionDates, ct);
 
         var strategy = db.Database.CreateExecutionStrategy();
         var invoiceId = await strategy.ExecuteAsync(async () =>
@@ -314,11 +334,12 @@ public sealed class SaleRoznamchaDailySaleService(
             decimal subtotal = 0;
             foreach (var item in request.Items)
             {
+                var unitSalePrice = ResolveUnitSalePrice(item);
                 var line = await CreateAsync(new CreateSaleRoznamchaDailySaleRequest
                 {
                     PlatformId = item.PlatformId, ProductId = item.ProductId,
                     SaleStatusId = request.SaleStatusId, Quantity = item.Quantity,
-                    OrderId = request.OrderId, UnitSalePrice = item.UnitSalePrice,
+                    OrderId = request.OrderId, UnitSalePrice = unitSalePrice,
                     SaleCurrencyId = request.SaleCurrencyId, PayChargeEffectId = request.PayChargeEffectId,
                     TransactionTypeId = request.TransactionTypeId, PaidStatusId = request.PaidStatusId,
                     ToAccountId = request.ToAccountId, InterProReference = request.InterProReference,
@@ -327,7 +348,7 @@ public sealed class SaleRoznamchaDailySaleService(
                 }, ct);
                 await db.SaleRoznamchaDailySales.Where(x => x.Id == line.Id)
                     .ExecuteUpdateAsync(setters => setters.SetProperty(x => x.InvoiceId, invoice.Id), ct);
-                subtotal += Math.Round(item.Quantity * item.UnitSalePrice, 2, MidpointRounding.AwayFromZero);
+                subtotal += Math.Round(item.Quantity * unitSalePrice, 2, MidpointRounding.AwayFromZero);
             }
 
             ApplyInvoiceAmounts(invoice, subtotal, effect.Multiplier, request.PayCharges, request.DeliveryFee,
@@ -345,7 +366,8 @@ public sealed class SaleRoznamchaDailySaleService(
         long id, UpdateSaleRoznamchaInvoiceRequest request, CancellationToken ct = default)
     {
         ValidateInvoice([], request.PayCharges, request.DeliveryFee, request.OtherAmount,
-            request.PromotionAmount, request.RtoChargeAmount, request.Charges, requireItems: false);
+            request.PromotionAmount, request.RtoChargeAmount, request.Charges, request.TransactionDates, requireItems: false);
+        await ValidateInvoiceChildrenAsync(request.Charges, request.TransactionDates, ct);
         var strategy = db.Database.CreateExecutionStrategy();
         await strategy.ExecuteAsync(async () =>
         {
@@ -365,8 +387,11 @@ public sealed class SaleRoznamchaDailySaleService(
             invoice.PaidStatusId = request.PaidStatusId; invoice.ToAccountId = request.ToAccountId;
             invoice.InterProReference = Clean(request.InterProReference, 100);
             invoice.OrderReference = Clean(request.OrderReference, 100); invoice.SaleDate = request.SaleDate;
-            invoice.Description = Clean(request.Description, 2000); invoice.UpdatedByUserId = current.UserId;
+            var description = Clean(request.Description, 2000);
+            invoice.Description = description; invoice.UpdatedByUserId = current.UserId;
             invoice.UpdatedOnUtc = DateTime.UtcNow;
+            await db.SaleRoznamchaDailySales.Where(x => x.InvoiceId == invoice.Id)
+                .ExecuteUpdateAsync(setters => setters.SetProperty(x => x.Description, description), ct);
             db.SaleRoznamchaInvoiceCharges.RemoveRange(invoice.Charges);
             db.SaleRoznamchaInvoiceTransactionDates.RemoveRange(invoice.TransactionDates);
             ApplyInvoiceAmounts(invoice, invoice.ItemsSubtotal, effect.Multiplier, request.PayCharges,
@@ -382,14 +407,35 @@ public sealed class SaleRoznamchaDailySaleService(
     private static void ValidateInvoice(
         IReadOnlyList<SaleRoznamchaInvoiceLineRequest> items, decimal payCharges, decimal deliveryFee,
         decimal otherAmount, decimal promotionAmount, decimal rtoChargeAmount,
-        IReadOnlyList<CreateSaleRoznamchaChargeRequest> charges, bool requireItems = true)
+        IReadOnlyList<CreateSaleRoznamchaChargeRequest> charges,
+        IReadOnlyList<CreateSaleRoznamchaTransactionDateRequest> dates,
+        bool requireItems = true)
     {
         if (requireItems && items.Count == 0) throw new InvalidOperationException("Add at least one product to the invoice.");
-        if (items.Any(x => x.ProductId <= 0 || x.PlatformId <= 0 || x.Quantity <= 0 || x.UnitSalePrice <= 0))
-            throw new InvalidOperationException("Every product line requires a valid product, quantity and Unit Sale Price.");
+        if (items.Any(x => x.ProductId <= 0 || x.PlatformId <= 0 || x.Quantity <= 0 || ResolveUnitSalePrice(x) <= 0))
+            throw new InvalidOperationException("Every product line requires a valid product, quantity and Total Sale Amount.");
         if (new[] { payCharges, deliveryFee, otherAmount, promotionAmount, rtoChargeAmount }.Any(x => x < 0)
             || charges.Any(x => x.ChargeLabelId <= 0 || x.Amount < 0))
             throw new InvalidOperationException("Charges and deductions cannot be negative.");
+        if (dates.Any(x => x.DateLabelId <= 0 || x.Value == default))
+            throw new InvalidOperationException("Every transaction date requires a valid label and date.");
+        if (dates.GroupBy(x => x.DateLabelId).Any(group => group.Count() > 1))
+            throw new InvalidOperationException("Each transaction date type can only be added once per receipt.");
+    }
+
+    private async Task ValidateInvoiceChildrenAsync(
+        IReadOnlyList<CreateSaleRoznamchaChargeRequest> charges,
+        IReadOnlyList<CreateSaleRoznamchaTransactionDateRequest> dates,
+        CancellationToken ct)
+    {
+        var chargeIds = charges.Select(x => x.ChargeLabelId).Distinct().ToList();
+        var dateLabelIds = dates.Select(x => x.DateLabelId).Distinct().ToList();
+        if (chargeIds.Count > 0 && await db.SaleRoznamchaChargeLabels.AsNoTracking()
+                .CountAsync(x => chargeIds.Contains(x.Id) && x.IsActive, ct) != chargeIds.Count)
+            throw new InvalidOperationException("One or more charge types are invalid or inactive.");
+        if (dateLabelIds.Count > 0 && await db.SaleRoznamchaTransactionDateLabels.AsNoTracking()
+                .CountAsync(x => dateLabelIds.Contains(x.Id) && x.IsActive, ct) != dateLabelIds.Count)
+            throw new InvalidOperationException("One or more transaction date types are invalid or inactive.");
     }
 
     private static void ApplyInvoiceAmounts(
@@ -420,5 +466,18 @@ public sealed class SaleRoznamchaDailySaleService(
         if (cleaned?.Length > maxLength)
             throw new InvalidOperationException($"Text cannot exceed {maxLength} characters.");
         return cleaned;
+    }
+
+    private static decimal ResolveUnitSalePrice(SaleRoznamchaInvoiceLineRequest item)
+    {
+        if (!item.TotalSaleAmount.HasValue) return item.UnitSalePrice;
+        if (item.Quantity <= 0)
+            throw new InvalidOperationException("Sold quantity must be greater than zero.");
+
+        var total = item.TotalSaleAmount.Value;
+        if (total <= 0 || total > 9999999999999999.99m || decimal.Round(total, 2) != total)
+            throw new InvalidOperationException("Total Sale Amount is outside the supported range or has more than two decimal places.");
+
+        return decimal.Round(total / item.Quantity, 2, MidpointRounding.AwayFromZero);
     }
 }

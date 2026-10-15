@@ -8,8 +8,6 @@ public sealed class SaleRoznamchaMasterRow
     public string? Code { get; set; }
     public int? ParentId { get; set; }
     public string? ParentName { get; set; }
-    public int? CategoryId { get; set; }
-    public string? CategoryName { get; set; }
     public int? CompanyId { get; set; }
     public string? CompanyName { get; set; }
     public int? PlatformId { get; set; }
@@ -55,8 +53,7 @@ public sealed class SaleRoznamchaInventoryRow
     public long Id { get; set; }
     public string ProductCode { get; set; } = string.Empty;
     public string ProductName { get; set; } = string.Empty;
-    public int CategoryId { get; set; }
-    public string CategoryName { get; set; } = string.Empty;
+    public string? Description { get; set; }
     public int CompanyId { get; set; }
     public string CompanyName { get; set; } = string.Empty;
     public int PlatformId { get; set; }
@@ -66,9 +63,9 @@ public sealed class SaleRoznamchaInventoryRow
     public decimal QuantityOnHand { get; set; }
     public decimal TotalPurchasedQuantity { get; set; }
     public decimal SoldQuantity { get; set; }
-    public decimal PurchasePrice { get; set; }
-    public int CurrencyId { get; set; }
-    public string CurrencyCode { get; set; } = string.Empty;
+    public decimal? PurchasePrice { get; set; }
+    public int? CurrencyId { get; set; }
+    public string? CurrencyCode { get; set; }
     public decimal TotalStockValue { get; set; }
     public string StockValueBreakdownJson { get; set; } = "[]";
     public string StockStatus { get; set; } = string.Empty;
@@ -78,17 +75,13 @@ public sealed class SaleRoznamchaInventoryRow
     public DateTime? UpdatedOnUtc { get; set; }
 }
 
-public sealed class SaveSaleRoznamchaInventoryRequest
+public sealed class SaveSaleRoznamchaProductRequest
 {
-    public int CategoryId { get; set; }
     public int CompanyId { get; set; }
     public int PlatformId { get; set; }
     public int ProductCategoryId { get; set; }
     public string? ProductCode { get; set; }
     public string ProductName { get; set; } = string.Empty;
-    public decimal Quantity { get; set; }
-    public decimal? PurchasePrice { get; set; }
-    public int? CurrencyId { get; set; }
     public string? Description { get; set; }
     public bool IsActive { get; set; } = true;
 }
@@ -96,19 +89,31 @@ public sealed class SaveSaleRoznamchaInventoryRequest
 public sealed class AddSaleRoznamchaStockRequest
 {
     public decimal Quantity { get; set; }
+    public string? Reference { get; set; }
     public decimal? PurchasePrice { get; set; }
+    public decimal? TotalPurchaseCost { get; set; }
+    public decimal? UsdAmount { get; set; }
+    public decimal? ExchangeRate { get; set; }
     public int? CurrencyId { get; set; }
+    public int? FromAccountId { get; set; }
+    public int? ToAccountId { get; set; }
+    public DateOnly? PurchasedDate { get; set; }
     public string? Description { get; set; }
+}
+
+public sealed class SaleRoznamchaPurchaseImportResult
+{
+    public int ImportedRows { get; set; }
+    public int ProductCount { get; set; }
 }
 
 public sealed class SaleRoznamchaInventoryPurchaseRow
 {
     public long Id { get; set; }
     public long ProductId { get; set; }
+    public string? Reference { get; set; }
     public string ProductCode { get; set; } = string.Empty;
     public string ProductName { get; set; } = string.Empty;
-    public int CategoryId { get; set; }
-    public string CategoryName { get; set; } = string.Empty;
     public int CompanyId { get; set; }
     public string CompanyName { get; set; } = string.Empty;
     public int PlatformId { get; set; }
@@ -121,12 +126,32 @@ public sealed class SaleRoznamchaInventoryPurchaseRow
     public decimal UnitCost { get; set; }
     public int CurrencyId { get; set; }
     public string CurrencyCode { get; set; } = string.Empty;
+    public int? FromCategoryId { get; set; }
+    public string? FromCategoryCode { get; set; }
+    public string? FromCategoryName { get; set; }
+    public int FromAccountId { get; set; }
+    public string? FromAccountCode { get; set; }
+    public string? FromAccountName { get; set; }
+    public string? FromAccountPath { get; set; }
+    public int? ToAccountId { get; set; }
+    public string? ToAccountCode { get; set; }
+    public string? ToAccountName { get; set; }
     public decimal TotalPurchaseCost { get; set; }
+    public decimal? UsdAmount { get; set; }
+    public decimal? ExchangeRate { get; set; }
     public decimal RemainingStockValue { get; set; }
+    public DateOnly PurchasedDate { get; set; }
     public DateTime PurchasedOnUtc { get; set; }
     public string? Description { get; set; }
+    public bool HasAttachment { get; set; }
+    public string? AttachmentName { get; set; }
     public string BatchStatus { get; set; } = string.Empty;
 }
+
+public sealed record SaleRoznamchaPurchaseAttachmentContent(
+    string FileName,
+    string ContentType,
+    byte[] Content);
 
 public sealed class SaleRoznamchaCurrencyRow
 {
@@ -185,8 +210,6 @@ public sealed class SaleRoznamchaDailySaleRow
     public long ProductId { get; set; }
     public string ProductCode { get; set; } = string.Empty;
     public string ProductName { get; set; } = string.Empty;
-    public int CategoryId { get; set; }
-    public string CategoryName { get; set; } = string.Empty;
     public int CompanyId { get; set; }
     public string CompanyName { get; set; } = string.Empty;
     public int PlatformId { get; set; }
@@ -291,6 +314,7 @@ public sealed class SaleRoznamchaInvoiceLineRequest
     public long ProductId { get; set; }
     public decimal Quantity { get; set; }
     public decimal UnitSalePrice { get; set; }
+    public decimal? TotalSaleAmount { get; set; }
 }
 
 public sealed class SaveSaleRoznamchaInvoiceRequest
@@ -382,6 +406,11 @@ public sealed class SaleRoznamchaInvoiceRow
     public string? InterProReference { get; set; }
     public string? OrderReference { get; set; }
     public DateOnly? SaleDate { get; set; }
+    public DateOnly? OrderDate { get; set; }
+    public DateOnly? SoldDate { get; set; }
+    public DateOnly? TransactionDate { get; set; }
+    public DateOnly? ProcessDate { get; set; }
+    public DateOnly? PaymentDate { get; set; }
     public string? Description { get; set; }
     public decimal TotalQuantity { get; set; }
     public int ItemCount { get; set; }
@@ -406,6 +435,7 @@ public sealed class SaleRoznamchaInvoiceTransactionDateRow
     public long Id { get; set; }
     public int DateLabelId { get; set; }
     public string Label { get; set; } = string.Empty;
+    public string Code { get; set; } = string.Empty;
     public DateOnly Value { get; set; }
 }
 

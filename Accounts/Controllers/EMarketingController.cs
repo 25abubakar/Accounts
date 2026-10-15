@@ -9,8 +9,38 @@ namespace Accounts.Controllers;
 [Authorize]
 [Produces("application/json")]
 [Route("api/e-marketing")]
-public sealed class EMarketingController(IEMarketingService service) : ControllerBase
+public sealed class EMarketingController(
+    IEMarketingService service,
+    ISaleRoznamchaMasterService saleRoznamchaMasters,
+    ISaleRoznamchaInventoryService saleRoznamchaInventory) : ControllerBase
 {
+    [HttpGet("stock-info/hierarchy")]
+    public async Task<IActionResult> StockInfoHierarchy(
+        [FromQuery] string entityType,
+        [FromQuery] int? parentId,
+        CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(entityType))
+            return BadRequest(ApiResponse<object?>.Fail("EntityType is required."));
+
+        return await Run(async () => ApiResponse<IReadOnlyList<SaleRoznamchaMasterRow>>.Ok(
+            await saleRoznamchaMasters.ListAsync(entityType, parentId, true, ct)));
+    }
+
+    [HttpGet("stock-info/products")]
+    public async Task<IActionResult> StockInfoProducts(
+        [FromQuery] int? companyId,
+        [FromQuery] int? platformId,
+        [FromQuery] int? productCategoryId,
+        CancellationToken ct) =>
+        Ok(ApiResponse<IReadOnlyList<SaleRoznamchaInventoryRow>>.Ok(
+            await saleRoznamchaInventory.ListAsync(
+                companyId,
+                platformId,
+                productCategoryId,
+                true,
+                ct)));
+
     [HttpGet("stock-info")]
     public async Task<IActionResult> StockInfo(
         [FromQuery] int accountId,

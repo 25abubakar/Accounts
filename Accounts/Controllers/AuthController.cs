@@ -222,6 +222,8 @@ namespace Accounts.Controllers
             if (string.IsNullOrWhiteSpace(identityUserId))
                 return Unauthorized(new { status = false, message = "Invalid token" });
 
+            try
+            {
             bool isFullAccess = TenantPermissionService.IsSuperAdmin(User);
             _ = int.TryParse(User.FindFirstValue(ITenantService.ClaimTenantId), out var claimedTenantId);
             var appUser = new
@@ -460,6 +462,17 @@ namespace Accounts.Controllers
                 permissionDetails = legacyFeatures,
                 accessSource  = "StaffRbac"
             });
+            }
+            catch (OperationCanceledException) when (
+                ct.IsCancellationRequested ||
+                HttpContext.RequestAborted.IsCancellationRequested)
+            {
+                // Page navigation, refresh, and browser disconnects normally
+                // abort this bootstrap request. Keep the database query
+                // cancellable, but do not surface that expected abort as an
+                // unhandled controller exception in development/debugging.
+                return StatusCode(499);
+            }
         }
 
         private static List<object> BuildFilteredMenuTree(

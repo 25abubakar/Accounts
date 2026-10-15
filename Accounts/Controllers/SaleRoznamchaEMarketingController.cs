@@ -1,4 +1,5 @@
 using Accounts.DTOs;
+using Accounts.Idempotency;
 using Accounts.Services.Interfaces;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -8,12 +9,13 @@ namespace Accounts.Controllers;
 [ApiController]
 [Authorize]
 [Produces("application/json")]
-[Route("api/sale-roznamcha/management")]
-public sealed class SaleRoznamchaManagementController(
+[Route("api/sale-roznamcha/e-marketing")]
+public sealed class SaleRoznamchaEMarketingController(
     ISaleRoznamchaMasterService service,
+    ISaleRoznamchaInventoryService inventory,
     ISaleRoznamchaAccessService access) : ControllerBase
 {
-    private const string RoutePath = "/sale-roznamcha/management";
+    private const string RoutePath = "/sale-roznamcha/e-marketing";
 
     [HttpGet("hierarchy")]
     public async Task<IActionResult> Hierarchy(
@@ -23,6 +25,56 @@ public sealed class SaleRoznamchaManagementController(
         var denied = await Guard("VIEW", ct); if (denied != null) return denied;
         return Ok(ApiResponse<IReadOnlyList<SaleRoznamchaMasterRow>>.Ok(
             await service.ListAsync(null, null, activeOnly, ct)));
+    }
+
+    [HttpGet("products")]
+    public async Task<IActionResult> Products(
+        [FromQuery] int? companyId,
+        [FromQuery] int? platformId,
+        [FromQuery] int? productCategoryId,
+        [FromQuery] bool activeOnly = false,
+        CancellationToken ct = default)
+    {
+        var denied = await Guard("VIEW", ct); if (denied != null) return denied;
+        return Ok(ApiResponse<IReadOnlyList<SaleRoznamchaInventoryRow>>.Ok(
+            await inventory.ListAsync(companyId, platformId, productCategoryId, activeOnly, ct)));
+    }
+
+    [HttpPost("products")]
+    [Idempotent]
+    public async Task<IActionResult> CreateProduct(
+        [FromBody] SaveSaleRoznamchaProductRequest request,
+        CancellationToken ct)
+    {
+        var denied = await Guard("ADD", ct); if (denied != null) return denied;
+        return await Run(async () => ApiResponse<SaleRoznamchaInventoryRow>.Ok(
+            await inventory.SaveProductAsync(null, request, ct),
+            "Product added successfully."));
+    }
+
+    [HttpPut("products/{id:long}")]
+    [Idempotent]
+    public async Task<IActionResult> UpdateProduct(
+        long id,
+        [FromBody] SaveSaleRoznamchaProductRequest request,
+        CancellationToken ct)
+    {
+        var denied = await Guard("EDIT", ct); if (denied != null) return denied;
+        return await Run(async () => ApiResponse<SaleRoznamchaInventoryRow>.Ok(
+            await inventory.SaveProductAsync(id, request, ct),
+            "Product updated successfully."));
+    }
+
+    [HttpDelete("products/{id:long}")]
+    [Idempotent]
+    public async Task<IActionResult> DeleteProduct(long id, CancellationToken ct)
+    {
+        var denied = await Guard("DELETE", ct); if (denied != null) return denied;
+        return await Run(async () =>
+        {
+            await inventory.DeleteProductAsync(id, ct);
+            return ApiResponse<object?>.Ok(null, "Product removed successfully.");
+        });
     }
 
     [HttpGet("{entityType}")]

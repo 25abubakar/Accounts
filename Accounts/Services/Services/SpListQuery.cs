@@ -20,8 +20,14 @@ public static class SpListQuery
     public static SqlParameter BigInt(string name, long value) =>
         new(name, SqlDbType.BigInt) { Value = value };
 
+    public static SqlParameter BigIntNullable(string name, long? value) =>
+        new(name, SqlDbType.BigInt) { Value = value.HasValue ? value.Value : DBNull.Value };
+
     public static SqlParameter Decimal(string name, decimal value) =>
         new(name, SqlDbType.Decimal) { Precision = 18, Scale = 4, Value = value };
+
+    public static SqlParameter DecimalNullable(string name, decimal? value, byte scale = 4) =>
+        new(name, SqlDbType.Decimal) { Precision = 18, Scale = scale, Value = value.HasValue ? value.Value : DBNull.Value };
 
     public static SqlParameter NVarChar(string name, string? value) =>
         new(name, SqlDbType.NVarChar) { Value = (object?)value ?? DBNull.Value };

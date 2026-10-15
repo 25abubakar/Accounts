@@ -5,7 +5,6 @@ namespace Accounts.Services.Interfaces;
 public interface ISaleRoznamchaDailySaleService
 {
     Task<IReadOnlyList<SaleRoznamchaDailySaleRow>> ListAsync(
-        int? categoryId,
         int? companyId,
         int? platformId,
         int? productCategoryId,
@@ -20,7 +19,7 @@ public interface ISaleRoznamchaDailySaleService
         CancellationToken ct = default);
 
     Task<IReadOnlyList<SaleRoznamchaInvoiceRow>> ListInvoicesAsync(
-        int? categoryId, int? companyId, int? platformId, int? productCategoryId,
+        int? companyId, int? platformId, int? productCategoryId,
         CancellationToken ct = default);
     Task<SaleRoznamchaInvoiceRow> GetInvoiceAsync(long id, CancellationToken ct = default);
     Task<SaleRoznamchaInvoiceRow> CreateInvoiceAsync(SaveSaleRoznamchaInvoiceRequest request, CancellationToken ct = default);

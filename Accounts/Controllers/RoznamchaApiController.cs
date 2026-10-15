@@ -83,7 +83,7 @@ public sealed class RoznamchaApiController(IRoznamchaService service) : Controll
         Run(async () => ApiResponse<RoznamchaEntryDto>.Ok(await service.UpdateAsync(id, type, request, ct), "Transaction updated successfully."));
 
     private Task<IActionResult> Delete(long id, CancellationToken ct) =>
-        Run(async () => { await service.SoftDeleteAsync(id, ct); return ApiResponse<object?>.Ok(null, "Transaction deleted successfully."); });
+        Run(async () => { await service.SoftDeleteAsync(id, null, ct); return ApiResponse<object?>.Ok(null, "Transaction deleted successfully."); });
 
     private async Task<IActionResult> Run<T>(Func<Task<ApiResponse<T>>> action)
     {

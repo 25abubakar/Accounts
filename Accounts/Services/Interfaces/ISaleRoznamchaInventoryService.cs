@@ -5,9 +5,9 @@ namespace Accounts.Services.Interfaces;
 public interface ISaleRoznamchaInventoryService
 {
     Task<IReadOnlyList<SaleRoznamchaCurrencyRow>> ListCurrenciesAsync(CancellationToken ct = default);
+    Task<IReadOnlyList<SaleRoznamchaAccountLookupRow>> ListAccountsAsync(CancellationToken ct = default);
 
     Task<IReadOnlyList<SaleRoznamchaInventoryRow>> ListAsync(
-        int? categoryId,
         int? companyId,
         int? platformId,
         int? productCategoryId,
@@ -15,12 +15,12 @@ public interface ISaleRoznamchaInventoryService
         CancellationToken ct = default);
 
     Task<IReadOnlyList<SaleRoznamchaInventoryPurchaseRow>> ListPurchasesAsync(
-        int? categoryId, int? companyId, int? platformId, int? productCategoryId,
+        int? companyId, int? platformId, int? productCategoryId,
         CancellationToken ct = default);
 
-    Task<SaleRoznamchaInventoryRow> SaveAsync(
+    Task<SaleRoznamchaInventoryRow> SaveProductAsync(
         long? id,
-        SaveSaleRoznamchaInventoryRequest request,
+        SaveSaleRoznamchaProductRequest request,
         CancellationToken ct = default);
 
     Task<SaleRoznamchaInventoryRow> AddStockAsync(
@@ -28,5 +28,18 @@ public interface ISaleRoznamchaInventoryService
         AddSaleRoznamchaStockRequest request,
         CancellationToken ct = default);
 
-    Task DeleteAsync(long id, CancellationToken ct = default);
+    Task<SaleRoznamchaPurchaseImportResult> ImportPurchasesAsync(
+        IFormFile excelFile,
+        CancellationToken ct = default);
+
+    Task<string> UploadPurchaseAttachmentAsync(
+        long purchaseId,
+        IFormFile file,
+        CancellationToken ct = default);
+
+    Task<SaleRoznamchaPurchaseAttachmentContent> GetPurchaseAttachmentAsync(
+        long purchaseId,
+        CancellationToken ct = default);
+
+    Task DeleteProductAsync(long id, CancellationToken ct = default);
 }

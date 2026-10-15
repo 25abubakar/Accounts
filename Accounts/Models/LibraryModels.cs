@@ -24,6 +24,7 @@ public sealed class LibraryType : ITenantEntity
     [Key]
     public int Id { get; set; }
     public int TenantId { get; set; }
+    public int? LibraryCategoryId { get; set; }
     [Required, MaxLength(30)] public string Code { get; set; } = string.Empty;
     [Required, MaxLength(120)] public string Name { get; set; } = string.Empty;
     [MaxLength(500)] public string? Description { get; set; }
@@ -32,6 +33,7 @@ public sealed class LibraryType : ITenantEntity
     public bool IsActive { get; set; } = true;
     public DateTime CreatedOnUtc { get; set; } = DateTime.UtcNow;
     public DateTime? UpdatedOnUtc { get; set; }
+    public LibraryCategory? LibraryCategory { get; set; }
     public ICollection<LibraryDocument> Documents { get; set; } = new List<LibraryDocument>();
     public ICollection<LibrarySubType> SubTypes { get; set; } = new List<LibrarySubType>();
     public ICollection<LibraryTemplate> Templates { get; set; } = new List<LibraryTemplate>();
@@ -61,6 +63,8 @@ public sealed class LibraryDocument : ITenantEntity
     public long Id { get; set; }
     public int TenantId { get; set; }
     public int LibraryTypeId { get; set; }
+    public int? LibrarySubTypeId { get; set; }
+    [MaxLength(40)] public string? DocumentReference { get; set; }
     [Required, MaxLength(20)] public string AssetKind { get; set; } = "Document";
     [Required, MaxLength(200)] public string Title { get; set; } = string.Empty;
     [MaxLength(1000)] public string? Description { get; set; }
@@ -74,6 +78,9 @@ public sealed class LibraryDocument : ITenantEntity
     public DateTime CreatedOnUtc { get; set; } = DateTime.UtcNow;
     public DateTime? UpdatedOnUtc { get; set; }
     public LibraryType? LibraryType { get; set; }
+    public LibrarySubType? LibrarySubType { get; set; }
+    public LibraryHardCopyLocation? HardCopyLocation { get; set; }
+    public ICollection<RoznamchaLibraryDocument> RoznamchaLinks { get; set; } = new List<RoznamchaLibraryDocument>();
 }
 
 [Table("LibraryTemplates")]
@@ -83,6 +90,7 @@ public sealed class LibraryTemplate : ITenantEntity
     public long Id { get; set; }
     public int TenantId { get; set; }
     public int LibraryTypeId { get; set; }
+    public int? LibrarySubTypeId { get; set; }
     [Required, MaxLength(200)] public string Name { get; set; } = string.Empty;
     [MaxLength(1000)] public string? Description { get; set; }
     [Required] public string Content { get; set; } = string.Empty;
@@ -91,6 +99,40 @@ public sealed class LibraryTemplate : ITenantEntity
     public DateTime CreatedOnUtc { get; set; } = DateTime.UtcNow;
     public DateTime? UpdatedOnUtc { get; set; }
     public LibraryType? LibraryType { get; set; }
+    public LibrarySubType? LibrarySubType { get; set; }
+}
+
+[Table("LibraryHardCopyLocations")]
+public sealed class LibraryHardCopyLocation : ITenantEntity
+{
+    [Key] public long Id { get; set; }
+    public int TenantId { get; set; }
+    public long LibraryDocumentId { get; set; }
+    [Required, MaxLength(120)] public string Store { get; set; } = string.Empty;
+    [MaxLength(120)] public string? Rack { get; set; }
+    [MaxLength(120)] public string? FolderReference { get; set; }
+    [MaxLength(50)] public string? PageNumber { get; set; }
+    [MaxLength(200)] public string? IssuedTo { get; set; }
+    public DateTime? IssuedOn { get; set; }
+    public DateTime? ReturnedOn { get; set; }
+    [MaxLength(450)] public string? CreatedByUserId { get; set; }
+    public DateTime CreatedOnUtc { get; set; } = DateTime.UtcNow;
+    [MaxLength(450)] public string? UpdatedByUserId { get; set; }
+    public DateTime? UpdatedOnUtc { get; set; }
+    public LibraryDocument? LibraryDocument { get; set; }
+}
+
+[Table("RoznamchaLibraryDocuments")]
+public sealed class RoznamchaLibraryDocument : ITenantEntity
+{
+    [Key] public long Id { get; set; }
+    public int TenantId { get; set; }
+    public long RoznamchaEntryId { get; set; }
+    public long LibraryDocumentId { get; set; }
+    [MaxLength(450)] public string? CreatedByUserId { get; set; }
+    public DateTime CreatedOnUtc { get; set; } = DateTime.UtcNow;
+    public RoznamchaEntry? RoznamchaEntry { get; set; }
+    public LibraryDocument? LibraryDocument { get; set; }
 }
 
 [Table("GeneratedInvoices")]

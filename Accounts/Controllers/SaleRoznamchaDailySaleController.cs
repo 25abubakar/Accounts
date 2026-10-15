@@ -20,7 +20,6 @@ public sealed class SaleRoznamchaDailySaleController(
 
     [HttpGet]
     public async Task<IActionResult> List(
-        [FromQuery] int? categoryId,
         [FromQuery] int? companyId,
         [FromQuery] int? platformId,
         [FromQuery] int? productCategoryId,
@@ -28,12 +27,11 @@ public sealed class SaleRoznamchaDailySaleController(
     {
         var denied = await Guard("VIEW", ct); if (denied != null) return denied;
         return Ok(ApiResponse<IReadOnlyList<SaleRoznamchaDailySaleRow>>.Ok(
-            await sales.ListAsync(categoryId, companyId, platformId, productCategoryId, ct)));
+            await sales.ListAsync(companyId, platformId, productCategoryId, ct)));
     }
 
     [HttpGet("invoices")]
     public async Task<IActionResult> Invoices(
-        [FromQuery] int? categoryId,
         [FromQuery] int? companyId,
         [FromQuery] int? platformId,
         [FromQuery] int? productCategoryId,
@@ -41,7 +39,7 @@ public sealed class SaleRoznamchaDailySaleController(
     {
         var denied = await Guard("VIEW", ct); if (denied != null) return denied;
         return Ok(ApiResponse<IReadOnlyList<SaleRoznamchaInvoiceRow>>.Ok(
-            await sales.ListInvoicesAsync(categoryId, companyId, platformId, productCategoryId, ct)));
+            await sales.ListInvoicesAsync(companyId, platformId, productCategoryId, ct)));
     }
 
     [HttpGet("invoices/{id:long}")]
@@ -61,7 +59,6 @@ public sealed class SaleRoznamchaDailySaleController(
     // Active inventory picker used by the Daily Sale registration form.
     [HttpGet("products")]
     public async Task<IActionResult> Products(
-        [FromQuery] int? categoryId,
         [FromQuery] int? companyId,
         [FromQuery] int? platformId,
         [FromQuery] int? productCategoryId,
@@ -69,7 +66,7 @@ public sealed class SaleRoznamchaDailySaleController(
     {
         var denied = await Guard("VIEW", ct); if (denied != null) return denied;
         return Ok(ApiResponse<IReadOnlyList<SaleRoznamchaInventoryRow>>.Ok(
-            await inventory.ListAsync(categoryId, companyId, platformId, productCategoryId, true, ct)));
+            await inventory.ListAsync(companyId, platformId, productCategoryId, true, ct)));
     }
 
     [HttpGet("hierarchy")]

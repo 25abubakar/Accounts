@@ -42,6 +42,7 @@ public sealed class LibraryController : ControllerBase
     private readonly TenantPermissionService _tenantPermissions;
     private readonly RbacService _rbac;
     private readonly IWebHostEnvironment _environment;
+    private readonly ILibraryService _library;
     private readonly ILogger<LibraryController> _logger;
 
     public LibraryController(
@@ -49,6 +50,7 @@ public sealed class LibraryController : ControllerBase
         ITenantService tenant,
         TenantPermissionService tenantPermissions,
         RbacService rbac,
+        ILibraryService library,
         IWebHostEnvironment environment,
         ILogger<LibraryController> logger)
     {
@@ -56,6 +58,7 @@ public sealed class LibraryController : ControllerBase
         _tenant = tenant;
         _tenantPermissions = tenantPermissions;
         _rbac = rbac;
+        _library = library;
         _environment = environment;
         _logger = logger;
     }
@@ -111,6 +114,8 @@ public sealed class LibraryController : ControllerBase
         if (!_tenant.TenantId.HasValue || !await HasActionAsync(TypesRoute, "DELETE", ct)) return Forbid();
         var row = await _db.LibraryCategories.SingleOrDefaultAsync(x => x.Id == id, ct);
         if (row == null) return NotFound(new { message = "Library category not found." });
+        if (await _db.LibraryTypes.AnyAsync(x => x.LibraryCategoryId == id, ct))
+            return Conflict(new { message = "This category cannot be deleted while library types are using it." });
         _db.LibraryCategories.Remove(row);
         await _db.SaveChangesAsync(ct);
         return Ok(new { message = "Library category deleted successfully." });
@@ -126,7 +131,8 @@ public sealed class LibraryController : ControllerBase
             .OrderBy(x => x.DisplayOrder == 0 ? int.MaxValue : x.DisplayOrder)
             .ThenBy(x => x.Name)
             .Select(x => new LibraryTypeDto(x.Id, x.Code, x.Name, x.Description, x.DisplayOrder, x.IsHardCopyRequired, x.IsActive,
-                x.Documents.Count(document => document.AssetKind == DocumentKind && document.IsActive), x.SubTypes.Count(subType => subType.IsActive)))
+                x.Documents.Count(document => document.AssetKind == DocumentKind && document.IsActive), x.SubTypes.Count(subType => subType.IsActive),
+                x.LibraryCategoryId, x.LibraryCategory == null ? null : x.LibraryCategory.Name))
             .ToListAsync(ct);
         return Ok(rows);
     }
@@ -137,6 +143,8 @@ public sealed class LibraryController : ControllerBase
         if (!_tenant.TenantId.HasValue || !await HasActionAsync(TypesRoute, "ADD", ct)) return Forbid();
         var validation = ValidateType(dto);
         if (validation != null) return BadRequest(new { message = validation });
+        if (dto.LibraryCategoryId.HasValue && !await _db.LibraryCategories.AnyAsync(x => x.Id == dto.LibraryCategoryId && x.IsActive, ct))
+            return BadRequest(new { message = "Select an active library category." });
 
         var code = dto.Code.Trim().ToUpperInvariant();
         var name = dto.Name.Trim();
@@ -147,6 +155,7 @@ public sealed class LibraryController : ControllerBase
         var row = new LibraryType
         {
             TenantId = _tenant.RequiredTenantId,
+            LibraryCategoryId = dto.LibraryCategoryId,
             Code = code,
             Name = name,
             Description = Clean(dto.Description),
@@ -166,6 +175,8 @@ public sealed class LibraryController : ControllerBase
         if (!_tenant.TenantId.HasValue || !await HasActionAsync(TypesRoute, "EDIT", ct)) return Forbid();
         var validation = ValidateType(dto);
         if (validation != null) return BadRequest(new { message = validation });
+        if (dto.LibraryCategoryId.HasValue && !await _db.LibraryCategories.AnyAsync(x => x.Id == dto.LibraryCategoryId && x.IsActive, ct))
+            return BadRequest(new { message = "Select an active library category." });
 
         var row = await _db.LibraryTypes.SingleOrDefaultAsync(x => x.Id == id, ct);
         if (row == null) return NotFound(new { message = "Library type not found." });
@@ -177,6 +188,7 @@ public sealed class LibraryController : ControllerBase
         if (duplicate) return Conflict(new { message = "A library type with this code or name already exists." });
 
         row.Code = code;
+        row.LibraryCategoryId = dto.LibraryCategoryId;
         row.Name = name;
         row.Description = Clean(dto.Description);
         row.DisplayOrder = Math.Max(0, dto.DisplayOrder);
@@ -242,6 +254,10 @@ public sealed class LibraryController : ControllerBase
         if (validation != null) return BadRequest(new { message = validation });
         var row = await _db.LibrarySubTypes.SingleOrDefaultAsync(x => x.Id == id, ct);
         if (row == null) return NotFound(new { message = "Library sub type not found." });
+        if (row.LibraryTypeId != dto.LibraryTypeId &&
+            (await _db.LibraryDocuments.AnyAsync(x => x.LibrarySubTypeId == id, ct) ||
+             await _db.LibraryTemplates.AnyAsync(x => x.LibrarySubTypeId == id, ct)))
+            return Conflict(new { message = "The parent type cannot be changed while library content uses this sub type." });
         var code = dto.Code.Trim().ToUpperInvariant();
         var name = dto.Name.Trim();
         if (await _db.LibrarySubTypes.AnyAsync(x => x.Id != id && x.LibraryTypeId == dto.LibraryTypeId && (x.Code == code || x.Name == name), ct))
@@ -258,6 +274,9 @@ public sealed class LibraryController : ControllerBase
         if (!_tenant.TenantId.HasValue || !await HasActionAsync(TypesRoute, "DELETE", ct)) return Forbid();
         var row = await _db.LibrarySubTypes.SingleOrDefaultAsync(x => x.Id == id, ct);
         if (row == null) return NotFound(new { message = "Library sub type not found." });
+        if (await _db.LibraryDocuments.AnyAsync(x => x.LibrarySubTypeId == id, ct) ||
+            await _db.LibraryTemplates.AnyAsync(x => x.LibrarySubTypeId == id, ct))
+            return Conflict(new { message = "This sub type cannot be deleted while library content is using it." });
         _db.LibrarySubTypes.Remove(row);
         await _db.SaveChangesAsync(ct);
         return Ok(new { message = "Library sub type deleted successfully." });
@@ -277,9 +296,51 @@ public sealed class LibraryController : ControllerBase
             SpListQuery.NVarChar("@AssetKind", DocumentKind),
             SpListQuery.IntNullable("@TypeId", typeId));
         return Ok(rows.Select(row => new LibraryDocumentDto(
-            row.Id, row.LibraryTypeId, row.LibraryTypeName ?? string.Empty, row.Title, row.Description,
+            row.Id, row.DocumentReference ?? $"Doc-{row.Id}", row.LibraryTypeId, row.LibraryTypeName ?? string.Empty,
+            row.LibrarySubTypeId, row.LibrarySubTypeName, row.Title, row.Description,
             row.OriginalFileName, row.ContentType, row.FileExtension, row.FileSizeBytes, row.IsActive,
             row.CreatedOnUtc, $"/api/library/documents/{row.Id}/download")));
+    }
+
+    [HttpGet("documents/picker")]
+    public async Task<IActionResult> SearchDocuments(
+        [FromQuery] string? search, [FromQuery] int? typeId, [FromQuery] int? subTypeId,
+        [FromQuery] int take = 30, CancellationToken ct = default)
+    {
+        if (!_tenant.TenantId.HasValue || !await HasActionAsync(DocumentsRoute, "VIEW", ct)) return Forbid();
+        return Ok(await _library.SearchDocumentsAsync(search, typeId, subTypeId, take, ct));
+    }
+
+    [HttpGet("documents/{id:long}/hard-copy")]
+    public async Task<IActionResult> GetHardCopy(long id, CancellationToken ct)
+    {
+        if (!_tenant.TenantId.HasValue || !await HasActionAsync(DocumentsRoute, "VIEW", ct)) return Forbid();
+        var row = await _library.GetHardCopyAsync(id, ct);
+        return row == null ? NotFound(new { message = "Hard-copy location not found." }) : Ok(row);
+    }
+
+    [HttpPut("documents/{id:long}/hard-copy")]
+    public async Task<IActionResult> SaveHardCopy(long id, [FromBody] SaveLibraryHardCopyLocationDto dto, CancellationToken ct)
+    {
+        if (!_tenant.TenantId.HasValue || !await HasActionAsync(DocumentsRoute, "EDIT", ct)) return Forbid();
+        try
+        {
+            return Ok(await _library.SaveHardCopyAsync(id, dto, User.FindFirstValue(ClaimTypes.NameIdentifier), ct));
+        }
+        catch (KeyNotFoundException ex) { return NotFound(new { message = ex.Message }); }
+        catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
+    }
+
+    [HttpDelete("documents/{id:long}/hard-copy")]
+    public async Task<IActionResult> DeleteHardCopy(long id, CancellationToken ct)
+    {
+        if (!_tenant.TenantId.HasValue || !await HasActionAsync(DocumentsRoute, "EDIT", ct)) return Forbid();
+        try
+        {
+            await _library.DeleteHardCopyAsync(id, ct);
+            return Ok(new { message = "Hard-copy location deleted successfully." });
+        }
+        catch (KeyNotFoundException ex) { return NotFound(new { message = ex.Message }); }
     }
 
     [HttpPost("documents")]
@@ -293,11 +354,15 @@ public sealed class LibraryController : ControllerBase
         var storedFileName = await SaveFileAsync(form.File!, ct);
         try
         {
+            await using var transaction = _db.Database.IsRelational()
+                ? await _db.Database.BeginTransactionAsync(ct)
+                : null;
             var extension = Path.GetExtension(form.File!.FileName).ToLowerInvariant();
             var row = new LibraryDocument
             {
                 TenantId = _tenant.RequiredTenantId,
                 LibraryTypeId = form.LibraryTypeId,
+                LibrarySubTypeId = form.LibrarySubTypeId,
                 AssetKind = DocumentKind,
                 Title = form.Title.Trim(),
                 Description = Clean(form.Description),
@@ -312,7 +377,12 @@ public sealed class LibraryController : ControllerBase
             };
             _db.LibraryDocuments.Add(row);
             await _db.SaveChangesAsync(ct);
+            row.DocumentReference = $"Doc-{row.Id}";
+            await _db.SaveChangesAsync(ct);
             row.LibraryType = await _db.LibraryTypes.AsNoTracking().SingleAsync(x => x.Id == row.LibraryTypeId, ct);
+            if (row.LibrarySubTypeId.HasValue)
+                row.LibrarySubType = await _db.LibrarySubTypes.AsNoTracking().SingleAsync(x => x.Id == row.LibrarySubTypeId, ct);
+            if (transaction != null) await transaction.CommitAsync(ct);
             return Ok(ToDocumentDto(row));
         }
         catch
@@ -346,6 +416,7 @@ public sealed class LibraryController : ControllerBase
                 row.FileSizeBytes = form.File.Length;
             }
             row.LibraryTypeId = form.LibraryTypeId;
+            row.LibrarySubTypeId = form.LibrarySubTypeId;
             row.Title = form.Title.Trim();
             row.Description = Clean(form.Description);
             row.IsActive = form.IsActive;
@@ -353,6 +424,9 @@ public sealed class LibraryController : ControllerBase
             await _db.SaveChangesAsync(ct);
             if (newStoredFileName != null) DeleteStoredFile(previousStoredFileName);
             row.LibraryType = await _db.LibraryTypes.AsNoTracking().SingleAsync(x => x.Id == row.LibraryTypeId, ct);
+            row.LibrarySubType = row.LibrarySubTypeId.HasValue
+                ? await _db.LibrarySubTypes.AsNoTracking().SingleAsync(x => x.Id == row.LibrarySubTypeId, ct)
+                : null;
             return Ok(ToDocumentDto(row));
         }
         catch
@@ -366,15 +440,15 @@ public sealed class LibraryController : ControllerBase
     public async Task<IActionResult> DownloadDocument(long id, CancellationToken ct)
     {
         if (!_tenant.TenantId.HasValue || !await HasActionAsync(DocumentsRoute, "VIEW", ct)) return Forbid();
-        var row = await _db.LibraryDocuments.AsNoTracking().SingleOrDefaultAsync(x => x.Id == id && x.AssetKind == DocumentKind, ct);
-        if (row == null) return NotFound(new { message = "Library document not found." });
-        var path = GetStoredPath(row.StoredFileName);
+        var file = await _library.GetDocumentFileAsync(id, activeOnly: true, ct);
+        if (file == null) return NotFound(new { message = "Library document not found." });
+        var path = file.Value.Path;
         if (!System.IO.File.Exists(path))
         {
-            _logger.LogWarning("Library file {DocumentId} is missing from {Path}.", row.Id, path);
+            _logger.LogWarning("Library file {DocumentId} is missing from {Path}.", id, path);
             return NotFound(new { message = "The stored file is unavailable. Please contact an administrator." });
         }
-        return PhysicalFile(path, row.ContentType, row.OriginalFileName, enableRangeProcessing: true);
+        return PhysicalFile(path, file.Value.ContentType, file.Value.FileName, enableRangeProcessing: true);
     }
 
     [HttpDelete("documents/{id:long}")]
@@ -383,6 +457,8 @@ public sealed class LibraryController : ControllerBase
         if (!_tenant.TenantId.HasValue || !await HasActionAsync(DocumentsRoute, "DELETE", ct)) return Forbid();
         var row = await _db.LibraryDocuments.SingleOrDefaultAsync(x => x.Id == id && x.AssetKind == DocumentKind, ct);
         if (row == null) return NotFound(new { message = "Library document not found." });
+        if (await _library.HasRoznamchaLinksAsync(id, ct))
+            return Conflict(new { message = "Linked library documents cannot be deleted. Unlink the document from all Payment/Receipt entries first." });
         var storedFileName = row.StoredFileName;
         _db.LibraryDocuments.Remove(row);
         await _db.SaveChangesAsync(ct);
@@ -402,7 +478,8 @@ public sealed class LibraryController : ControllerBase
             SpListQuery.TenantId(_tenant.RequiredTenantId),
             SpListQuery.IntNullable("@TypeId", typeId));
         return Ok(rows.Select(row => new LibraryTemplateDto(
-            row.Id, row.LibraryTypeId, row.LibraryTypeName ?? string.Empty, row.Name, row.Description,
+            row.Id, row.LibraryTypeId, row.LibraryTypeName ?? string.Empty,
+            row.LibrarySubTypeId, row.LibrarySubTypeName, row.Name, row.Description,
             row.Content, row.IsActive, row.CreatedOnUtc)));
     }
 
@@ -416,6 +493,7 @@ public sealed class LibraryController : ControllerBase
         {
             TenantId = _tenant.RequiredTenantId,
             LibraryTypeId = dto.LibraryTypeId,
+            LibrarySubTypeId = dto.LibrarySubTypeId,
             Name = dto.Name.Trim(),
             Description = Clean(dto.Description),
             Content = dto.Content,
@@ -438,6 +516,7 @@ public sealed class LibraryController : ControllerBase
         var row = await _db.LibraryTemplates.Include(x => x.LibraryType).SingleOrDefaultAsync(x => x.Id == id, ct);
         if (row == null) return NotFound(new { message = "Library template not found." });
         row.LibraryTypeId = dto.LibraryTypeId;
+        row.LibrarySubTypeId = dto.LibrarySubTypeId;
         row.Name = dto.Name.Trim();
         row.Description = Clean(dto.Description);
         row.Content = dto.Content;
@@ -472,7 +551,8 @@ public sealed class LibraryController : ControllerBase
             SpListQuery.NVarChar("@AssetKind", PictureKind),
             SpListQuery.IntNullable("@TypeId", typeId));
         return Ok(rows.Select(row => new LibraryPictureDto(
-            row.Id, row.LibraryTypeId, row.LibraryTypeName ?? string.Empty, row.Title, row.Description,
+            row.Id, row.DocumentReference ?? $"Doc-{row.Id}", row.LibraryTypeId, row.LibraryTypeName ?? string.Empty,
+            row.LibrarySubTypeId, row.LibrarySubTypeName, row.Title, row.Description,
             row.OriginalFileName, row.ContentType, row.FileExtension, row.FileSizeBytes, row.IsActive,
             row.CreatedOnUtc, $"/api/library/pictures/{row.Id}/content", $"/api/library/pictures/{row.Id}/download")));
     }
@@ -487,10 +567,14 @@ public sealed class LibraryController : ControllerBase
         var storedFileName = await SaveFileAsync(form.File!, ct);
         try
         {
+            await using var transaction = _db.Database.IsRelational()
+                ? await _db.Database.BeginTransactionAsync(ct)
+                : null;
             var row = new LibraryDocument
             {
                 TenantId = _tenant.RequiredTenantId,
                 LibraryTypeId = form.LibraryTypeId,
+                LibrarySubTypeId = form.LibrarySubTypeId,
                 AssetKind = PictureKind,
                 Title = form.Title.Trim(),
                 Description = Clean(form.Description),
@@ -505,7 +589,12 @@ public sealed class LibraryController : ControllerBase
             };
             _db.LibraryDocuments.Add(row);
             await _db.SaveChangesAsync(ct);
+            row.DocumentReference = $"Doc-{row.Id}";
+            await _db.SaveChangesAsync(ct);
             row.LibraryType = await _db.LibraryTypes.AsNoTracking().SingleAsync(x => x.Id == row.LibraryTypeId, ct);
+            if (row.LibrarySubTypeId.HasValue)
+                row.LibrarySubType = await _db.LibrarySubTypes.AsNoTracking().SingleAsync(x => x.Id == row.LibrarySubTypeId, ct);
+            if (transaction != null) await transaction.CommitAsync(ct);
             return Ok(ToPictureDto(row));
         }
         catch
@@ -538,6 +627,7 @@ public sealed class LibraryController : ControllerBase
                 row.FileSizeBytes = form.File.Length;
             }
             row.LibraryTypeId = form.LibraryTypeId;
+            row.LibrarySubTypeId = form.LibrarySubTypeId;
             row.Title = form.Title.Trim();
             row.Description = Clean(form.Description);
             row.IsActive = form.IsActive;
@@ -545,6 +635,9 @@ public sealed class LibraryController : ControllerBase
             await _db.SaveChangesAsync(ct);
             if (newStoredFileName != null) DeleteStoredFile(previousStoredFileName);
             row.LibraryType = await _db.LibraryTypes.AsNoTracking().SingleAsync(x => x.Id == row.LibraryTypeId, ct);
+            row.LibrarySubType = row.LibrarySubTypeId.HasValue
+                ? await _db.LibrarySubTypes.AsNoTracking().SingleAsync(x => x.Id == row.LibrarySubTypeId, ct)
+                : null;
             return Ok(ToPictureDto(row));
         }
         catch
@@ -690,7 +783,8 @@ public sealed class LibraryController : ControllerBase
         if (string.IsNullOrWhiteSpace(form.Title)) return "Document title is required.";
         if (form.Title.Trim().Length > 200) return "Document title must be 200 characters or less.";
         if (!string.IsNullOrWhiteSpace(form.Description) && form.Description.Trim().Length > 1000) return "Description must be 1000 characters or less.";
-        if (!await _db.LibraryTypes.AnyAsync(x => x.Id == form.LibraryTypeId && x.IsActive, ct)) return "Select an active library type.";
+        var hierarchyError = await _library.ValidateHierarchyAsync(form.LibraryTypeId, form.LibrarySubTypeId, null, ct);
+        if (hierarchyError != null) return hierarchyError;
         if (requireFile && (form.File == null || form.File.Length == 0)) return "Select a file to upload.";
         if (form.File is not { Length: > 0 }) return null;
         if (form.File.Length > MaximumFileSize) return "The selected file is larger than the 50 MB limit.";
@@ -719,8 +813,8 @@ public sealed class LibraryController : ControllerBase
 
     private async Task<string?> ValidateTemplateAsync(SaveLibraryTemplateDto dto, CancellationToken ct)
     {
-        if (!await _db.LibraryTypes.AnyAsync(x => x.Id == dto.LibraryTypeId && x.IsActive, ct))
-            return "Select an active library type.";
+        var hierarchyError = await _library.ValidateHierarchyAsync(dto.LibraryTypeId, dto.LibrarySubTypeId, null, ct);
+        if (hierarchyError != null) return hierarchyError;
         if (string.IsNullOrWhiteSpace(dto.Name)) return "Template name is required.";
         if (dto.Name.Trim().Length > 200) return "Template name must be 200 characters or less.";
         if (!string.IsNullOrWhiteSpace(dto.Description) && dto.Description.Trim().Length > 1000)
@@ -853,22 +947,26 @@ public sealed class LibraryController : ControllerBase
         new(row.Id, row.Code, row.Name, row.Description, row.DisplayOrder, row.IsActive);
 
     private static LibraryTypeDto ToTypeDto(LibraryType row, int documentCount, int subTypeCount = 0) =>
-        new(row.Id, row.Code, row.Name, row.Description, row.DisplayOrder, row.IsHardCopyRequired, row.IsActive, documentCount, subTypeCount);
+        new(row.Id, row.Code, row.Name, row.Description, row.DisplayOrder, row.IsHardCopyRequired, row.IsActive,
+            documentCount, subTypeCount, row.LibraryCategoryId, row.LibraryCategory?.Name);
 
     private static LibrarySubTypeDto ToSubTypeDto(LibrarySubType row) =>
         new(row.Id, row.LibraryTypeId, row.LibraryType?.Name ?? string.Empty, row.Code, row.Name, row.Description, row.DisplayOrder, row.IsActive);
 
     private static LibraryDocumentDto ToDocumentDto(LibraryDocument row) => new(
-        row.Id, row.LibraryTypeId, row.LibraryType?.Name ?? string.Empty, row.Title, row.Description,
+        row.Id, row.DocumentReference ?? $"Doc-{row.Id}", row.LibraryTypeId, row.LibraryType?.Name ?? string.Empty,
+        row.LibrarySubTypeId, row.LibrarySubType?.Name, row.Title, row.Description,
         row.OriginalFileName, row.ContentType, row.FileExtension, row.FileSizeBytes, row.IsActive,
         row.CreatedOnUtc, $"/api/library/documents/{row.Id}/download");
 
     private static LibraryTemplateDto ToTemplateDto(LibraryTemplate row) => new(
-        row.Id, row.LibraryTypeId, row.LibraryType?.Name ?? string.Empty, row.Name, row.Description,
+        row.Id, row.LibraryTypeId, row.LibraryType?.Name ?? string.Empty, row.LibrarySubTypeId,
+        row.LibrarySubType?.Name, row.Name, row.Description,
         row.Content, row.IsActive, row.CreatedOnUtc);
 
     private static LibraryPictureDto ToPictureDto(LibraryDocument row) => new(
-        row.Id, row.LibraryTypeId, row.LibraryType?.Name ?? string.Empty, row.Title, row.Description,
+        row.Id, row.DocumentReference ?? $"Doc-{row.Id}", row.LibraryTypeId, row.LibraryType?.Name ?? string.Empty,
+        row.LibrarySubTypeId, row.LibrarySubType?.Name, row.Title, row.Description,
         row.OriginalFileName, row.ContentType, row.FileExtension, row.FileSizeBytes, row.IsActive,
         row.CreatedOnUtc, $"/api/library/pictures/{row.Id}/content", $"/api/library/pictures/{row.Id}/download");
 
@@ -891,27 +989,31 @@ public sealed class LibraryController : ControllerBase
 
 public sealed record LibraryCategoryDto(int Id, string Code, string Name, string? Description, int DisplayOrder, bool IsActive);
 public sealed record SaveLibraryCategoryDto(string Code, string Name, string? Description, int DisplayOrder, bool IsActive = true);
-public sealed record LibraryTypeDto(int Id, string Code, string Name, string? Description, int DisplayOrder, bool IsHardCopyRequired, bool IsActive, int DocumentCount, int SubTypeCount);
-public sealed record SaveLibraryTypeDto(string Code, string Name, string? Description, int DisplayOrder, bool IsHardCopyRequired, bool IsActive = true);
+public sealed record LibraryTypeDto(int Id, string Code, string Name, string? Description, int DisplayOrder, bool IsHardCopyRequired, bool IsActive, int DocumentCount, int SubTypeCount, int? LibraryCategoryId, string? LibraryCategoryName);
+public sealed record SaveLibraryTypeDto(string Code, string Name, string? Description, int DisplayOrder, bool IsHardCopyRequired, bool IsActive = true, int? LibraryCategoryId = null);
 public sealed record LibrarySubTypeDto(int Id, int LibraryTypeId, string LibraryTypeName, string Code, string Name, string? Description, int DisplayOrder, bool IsActive);
 public sealed record SaveLibrarySubTypeDto(int LibraryTypeId, string Code, string Name, string? Description, int DisplayOrder, bool IsActive = true);
 
 public sealed class SaveLibraryDocumentForm
 {
     public int LibraryTypeId { get; set; }
+    public int? LibrarySubTypeId { get; set; }
     public string Title { get; set; } = string.Empty;
     public string? Description { get; set; }
     public bool IsActive { get; set; } = true;
     public IFormFile? File { get; set; }
 }
 
-public sealed record LibraryDocumentDto(long Id, int LibraryTypeId, string LibraryTypeName, string Title, string? Description,
+public sealed record LibraryDocumentDto(long Id, string DocumentReference, int LibraryTypeId, string LibraryTypeName,
+    int? LibrarySubTypeId, string? LibrarySubTypeName, string Title, string? Description,
     string OriginalFileName, string ContentType, string FileExtension, long FileSizeBytes, bool IsActive, DateTime CreatedOnUtc, string DownloadUrl);
 
-public sealed record SaveLibraryTemplateDto(int LibraryTypeId, string Name, string? Description, string Content, bool IsActive = true);
-public sealed record LibraryTemplateDto(long Id, int LibraryTypeId, string LibraryTypeName, string Name, string? Description,
+public sealed record SaveLibraryTemplateDto(int LibraryTypeId, string Name, string? Description, string Content, bool IsActive = true, int? LibrarySubTypeId = null);
+public sealed record LibraryTemplateDto(long Id, int LibraryTypeId, string LibraryTypeName, int? LibrarySubTypeId,
+    string? LibrarySubTypeName, string Name, string? Description,
     string Content, bool IsActive, DateTime CreatedOnUtc);
-public sealed record LibraryPictureDto(long Id, int LibraryTypeId, string LibraryTypeName, string Title, string? Description,
+public sealed record LibraryPictureDto(long Id, string DocumentReference, int LibraryTypeId, string LibraryTypeName,
+    int? LibrarySubTypeId, string? LibrarySubTypeName, string Title, string? Description,
     string OriginalFileName, string ContentType, string FileExtension, long FileSizeBytes, bool IsActive,
     DateTime CreatedOnUtc, string ContentUrl, string DownloadUrl);
 

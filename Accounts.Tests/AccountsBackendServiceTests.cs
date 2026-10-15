@@ -38,25 +38,22 @@ public sealed class AccountsBackendServiceTests
     }
 
     [Fact]
-    public async Task Payment_list_returns_saved_tenant_entry_without_stored_procedure_dependency()
+    public async Task Payment_list_requires_relational_stored_procedure_provider()
     {
         await using var db = CreateDb(1);
         await SeedAccounts(db, 1);
         await NewRoznamcha(db, 1).CreateAsync(1, Entry(1, 2, amount: 750));
 
-        var rows = await new AccountsRoznamchaService(db).ListPaymentRozAsync(
-            1,
-            new DateOnly(2026, 9, 1),
-            new DateOnly(2026, 9, 30));
-
-        var row = Assert.Single(rows);
-        Assert.Equal(750, row.Debit);
-        Assert.Equal("Cash", row.AccountName);
-        Assert.Equal("Bank", row.ToAccountName);
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            new AccountsRoznamchaService(db).ListPaymentRozAsync(
+                1,
+                new DateOnly(2026, 9, 1),
+                new DateOnly(2026, 9, 30)));
+        Assert.Contains("relational", exception.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
-    public async Task Receipt_list_returns_receipts_and_excludes_payments()
+    public async Task Receipt_list_requires_relational_stored_procedure_provider()
     {
         await using var db = CreateDb(1);
         await SeedAccounts(db, 1);
@@ -64,15 +61,12 @@ public sealed class AccountsBackendServiceTests
         await transactions.CreateAsync(1, Entry(1, 2, amount: 300));
         await transactions.CreateAsync(2, Entry(2, 1, amount: 900));
 
-        var rows = await new AccountsRoznamchaService(db).ListReceiptRozAsync(
-            1,
-            new DateOnly(2026, 9, 1),
-            new DateOnly(2026, 9, 30));
-
-        var row = Assert.Single(rows);
-        Assert.Equal(900, row.Debit);
-        Assert.Equal("Bank", row.AccountName);
-        Assert.Equal("Cash", row.ToAccountName);
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            new AccountsRoznamchaService(db).ListReceiptRozAsync(
+                1,
+                new DateOnly(2026, 9, 1),
+                new DateOnly(2026, 9, 30)));
+        Assert.Contains("relational", exception.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -108,7 +102,7 @@ public sealed class AccountsBackendServiceTests
         await using var db = CreateDb(1);
         await SeedAccounts(db, 1);
         await NewRoznamcha(db, 1).CreateAsync(1, Entry(1, 2, amount: 100));
-        var service = new AccountService(db, new TestCurrentUser(1), new TestReferences());
+        var service = new AccountService(db, new TestCurrentUser(1), new TestReferences(), new TestFiles());
 
         var exception = await Assert.ThrowsAsync<InvalidOperationException>(() => service.DeleteAsync(1));
 
@@ -153,6 +147,115 @@ public sealed class AccountsBackendServiceTests
         }
         await using var tenantOne = new ApplicationDbContext(options, new TestTenant(1));
         Assert.Equal(["Tenant one"], await tenantOne.AccountsChartAccounts.Select(x => x.AccountName).ToListAsync());
+    }
+
+    [Fact]
+    public async Task Roznamcha_reconciles_active_same_tenant_library_documents()
+    {
+        await using var db = CreateDb(1);
+        await SeedAccounts(db, 1);
+        db.LibraryTypes.Add(new LibraryType { Id = 7, TenantId = 1, Code = "DOC", Name = "Documents" });
+        db.LibraryDocuments.Add(new LibraryDocument
+        {
+            Id = 9, TenantId = 1, LibraryTypeId = 7, DocumentReference = "Doc-9",
+            AssetKind = "Document", Title = "Voucher", OriginalFileName = "voucher.pdf",
+            StoredFileName = "voucher.pdf", ContentType = "application/pdf", FileExtension = ".pdf",
+            FileSizeBytes = 10, IsActive = true
+        });
+        await db.SaveChangesAsync();
+        var request = Entry(1, 2, 100);
+        request.LibraryDocumentIds = [9];
+
+        var result = await NewRoznamcha(db, 1).CreateAsync(1, request);
+
+        Assert.True(result.IsFromLibrary);
+        var linked = Assert.Single(result.LibraryDocuments);
+        Assert.Equal(9, linked.Id);
+        Assert.Equal("Doc-9", linked.DocumentReference);
+        Assert.Single(await db.RoznamchaLibraryDocuments.ToListAsync());
+    }
+
+    [Fact]
+    public async Task Roznamcha_library_links_are_idempotent_and_reusable()
+    {
+        await using var db = CreateDb(1);
+        await SeedAccounts(db, 1);
+        db.LibraryTypes.Add(new LibraryType { Id = 7, TenantId = 1, Code = "DOC", Name = "Documents" });
+        db.LibraryDocuments.Add(new LibraryDocument
+        {
+            Id = 9, TenantId = 1, LibraryTypeId = 7, DocumentReference = "Doc-9",
+            AssetKind = "Document", Title = "Voucher", OriginalFileName = "voucher.pdf",
+            StoredFileName = "voucher.pdf", ContentType = "application/pdf", FileExtension = ".pdf",
+            FileSizeBytes = 10, IsActive = true
+        });
+        await db.SaveChangesAsync();
+        var service = NewRoznamcha(db, 1);
+        var first = await service.CreateAsync(1, Entry(1, 2, 100));
+        var second = await service.CreateAsync(2, Entry(2, 1, 100));
+
+        await service.LinkLibraryDocumentsAsync(first.Id, [9, 9]);
+        await service.LinkLibraryDocumentsAsync(first.Id, [9]);
+        await service.LinkLibraryDocumentsAsync(second.Id, [9]);
+
+        Assert.Equal(2, await db.RoznamchaLibraryDocuments.CountAsync());
+        Assert.Single(await service.ListLibraryDocumentsAsync(first.Id));
+        Assert.Single(await service.ListLibraryDocumentsAsync(second.Id));
+    }
+
+    [Fact]
+    public async Task Inventory_posted_payment_cannot_be_deleted_or_edited()
+    {
+        await using var db = CreateDb(1);
+        await SeedAccounts(db, 1);
+        var service = NewRoznamcha(db, 1);
+        var payment = await service.CreateAsync(1, Entry(1, 2, amount: 180));
+        db.SaleRoznamchaStockReceipts.Add(new SaleRoznamchaStockReceipt
+        {
+            TenantId = 1,
+            ProductId = 1,
+            PurchasedQuantity = 1,
+            RemainingQuantity = 1,
+            UnitCost = 180,
+            TotalPurchaseCost = 180,
+            CurrencyId = 1,
+            FromAccountId = 1,
+            PurchasedDate = new DateOnly(2026, 10, 14),
+            RoznamchaEntryId = payment.Id
+        });
+        await db.SaveChangesAsync();
+
+        var edit = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            service.UpdateAsync(payment.Id, 1, Entry(1, 2, amount: 90)));
+        Assert.Contains("inventory purchase", edit.Message, StringComparison.OrdinalIgnoreCase);
+
+        var delete = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            service.SoftDeleteAsync(payment.Id));
+        Assert.Contains("inventory purchase", delete.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.False((await db.RoznamchaEntries.SingleAsync(x => x.Id == payment.Id)).IsDeleted);
+    }
+
+    [Fact]
+    public async Task Roznamcha_rejects_library_document_outside_tenant()
+    {
+        await using var db = CreateDb(1);
+        await SeedAccounts(db, 1);
+        db.LibraryTypes.Add(new LibraryType { Id = 8, TenantId = 2, Code = "OTHER", Name = "Other tenant" });
+        db.LibraryDocuments.Add(new LibraryDocument
+        {
+            Id = 10, TenantId = 2, LibraryTypeId = 8, DocumentReference = "Doc-10",
+            AssetKind = "Document", Title = "Private", OriginalFileName = "private.pdf",
+            StoredFileName = "private.pdf", ContentType = "application/pdf", FileExtension = ".pdf",
+            FileSizeBytes = 10, IsActive = true
+        });
+        await db.SaveChangesAsync();
+        var request = Entry(1, 2, 100);
+        request.LibraryDocumentIds = [10];
+
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            NewRoznamcha(db, 1).CreateAsync(1, request));
+
+        Assert.Contains("outside this tenant", exception.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Empty(await db.RoznamchaLibraryDocuments.ToListAsync());
     }
 
     private static ApplicationDbContext CreateDb(int tenantId)

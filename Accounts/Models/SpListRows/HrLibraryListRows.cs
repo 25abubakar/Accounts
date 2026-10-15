@@ -113,8 +113,11 @@ public sealed class LibraryDocumentListRow
 {
     public long Id { get; set; }
     public int TenantId { get; set; }
+    public string? DocumentReference { get; set; }
     public int LibraryTypeId { get; set; }
     public string? LibraryTypeName { get; set; }
+    public int? LibrarySubTypeId { get; set; }
+    public string? LibrarySubTypeName { get; set; }
     public string AssetKind { get; set; } = "";
     public string Title { get; set; } = "";
     public string? Description { get; set; }
@@ -135,6 +138,8 @@ public sealed class LibraryTemplateListRow
     public int TenantId { get; set; }
     public int LibraryTypeId { get; set; }
     public string? LibraryTypeName { get; set; }
+    public int? LibrarySubTypeId { get; set; }
+    public string? LibrarySubTypeName { get; set; }
     public string Name { get; set; } = "";
     public string? Description { get; set; }
     public string Content { get; set; } = "";
