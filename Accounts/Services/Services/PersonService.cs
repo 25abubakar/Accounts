@@ -410,6 +410,21 @@ namespace Accounts.Services.Services
             var branch   = orgNodes.FirstOrDefault(n => n.Id == dto.BranchId);
             if (branch == null) return (null, null, null, $"Branch {dto.BranchId} not found.", 400);
 
+            Vacancy? vacancy = null;
+            if (dto.VacancyId.HasValue)
+            {
+                vacancy = await _db.Vacancies
+                    .SingleOrDefaultAsync(item => item.VacancyId == dto.VacancyId.Value);
+                if (vacancy == null)
+                    return (null, null, null, $"Vacancy {dto.VacancyId.Value} not found.", 400);
+                if (vacancy.IsFilled)
+                    return (null, null, null, $"Vacancy '{vacancy.VacancyCode}' is already filled.", 409);
+                if (vacancy.OrganizationId != dto.BranchId)
+                    return (null, null, null, "The selected vacancy does not belong to the selected organization.", 400);
+                if (vacancy.TenantId != _tenantService.RequiredTenantId)
+                    return (null, null, null, "The selected vacancy does not belong to this company.", 403);
+            }
+
             // ── Walk up the full ancestor chain to find the Company node by label ─
             OrganizationTree companyNode;
             try   { companyNode = FindCompanyNode(orgNodes, branch); }
@@ -545,6 +560,36 @@ namespace Accounts.Services.Services
             }
 
             _db.Persons.Add(person);
+            if (vacancy != null)
+            {
+                var staff = new StaffVacancy
+                {
+                    StaffId = Guid.NewGuid(),
+                    VacancyId = vacancy.VacancyId,
+                    PersonId = person.PersonId,
+                    LoginId = loginId,
+                    TenantId = vacancy.TenantId
+                };
+                _db.StaffVacancies.Add(staff);
+
+                var staffAttendanceMenuId = await _db.Menus
+                    .Where(menu => menu.IsActive && menu.Route == "/attendance/staff")
+                    .Select(menu => (int?)menu.Id)
+                    .FirstOrDefaultAsync();
+                if (staffAttendanceMenuId.HasValue)
+                {
+                    _db.StaffMenuAccesses.Add(new StaffMenuAccess
+                    {
+                        StaffId = staff.StaffId,
+                        MenuId = staffAttendanceMenuId.Value,
+                        IsAllow = true,
+                        GrantedBy = "System: Staff Attendance",
+                        GrantedDate = DateTime.UtcNow
+                    });
+                }
+
+                vacancy.IsFilled = true;
+            }
             try
             {
                 await _db.SaveChangesAsync();
@@ -1268,7 +1313,8 @@ namespace Accounts.Services.Services
                 PersonalEmail = p.PersonalEmail ?? p.Contacts.FirstOrDefault(c => c.ContactType == "PersonalEmail")?.ContactValue,
                 ShiftStartTime = p.ShiftStartTime, ShiftEndTime = p.ShiftEndTime, TimeZoneId = p.TimeZoneId,
                 PhotoUrl = p.ProfilePhotoUrl,
-                IsHired = p.Staff != null, IsActive = p.IsActive, EmploymentStatus = p.EmploymentStatus,
+                IsHired = p.Staff != null, StaffId = p.Staff?.StaffId, VacancyId = p.Staff?.VacancyId,
+                IsActive = p.IsActive, EmploymentStatus = p.EmploymentStatus,
                 TerminationDateUtc = p.TerminationDateUtc, TerminationReason = p.TerminationReason,
                 RegisteredAt = p.CreatedDate.ToString("o"), JoiningDate = p.LastJoiningDate,
                 BranchId = branch?.Id, BranchName = branch?.Name ?? p.LastBranchName, CompanyName = company?.Name ?? p.LastCompanyName, CountryName = country?.Name ?? p.LastCountryName,

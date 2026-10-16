@@ -59,6 +59,8 @@ namespace Accounts.DTOs
         [Required]
         [Range(1, int.MaxValue, ErrorMessage = "BranchId is required")]
         public int       BranchId      { get; set; }
+
+        public Guid? VacancyId { get; set; }
         
         // Password is NOT required — auto-generated as LoginId@
 
@@ -180,6 +182,8 @@ namespace Accounts.DTOs
         public string? TimeZoneId { get; set; }
         public string?   PhotoUrl      { get; set; }
         public bool      IsHired       { get; set; }
+        public Guid?     StaffId       { get; set; }
+        public Guid?     VacancyId     { get; set; }
         public bool      IsActive      { get; set; }
         public string    EmploymentStatus { get; set; } = "Registered";
         public DateTime? TerminationDateUtc { get; set; }

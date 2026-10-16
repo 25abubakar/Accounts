@@ -160,6 +160,7 @@ namespace Accounts.Data
 
         // ── Accounts / ROZ billing ledger ──────────────────────────────────────
         public DbSet<RoznamchaEntry> RoznamchaEntries => Set<RoznamchaEntry>();
+        public DbSet<RoznamchaToAccountCategoryRow> RoznamchaToAccountCategories => Set<RoznamchaToAccountCategoryRow>();
         public DbSet<AccountsChartAccount> AccountsChartAccounts => Set<AccountsChartAccount>();
         public DbSet<AccountsCategory> AccountsCategories => Set<AccountsCategory>();
         public DbSet<AccountsCategoryType> AccountsCategoryTypes => Set<AccountsCategoryType>();
@@ -384,6 +385,9 @@ namespace Accounts.Data
                 _tenantService.TenantId != null && row.Invoice != null &&
                 row.Invoice.TenantId == _tenantService.TenantId);
             builder.Entity<RoznamchaEntry>().HasQueryFilter(row =>
+                _tenantService != null && !_tenantService.IsSuperAdmin &&
+                _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
+            builder.Entity<RoznamchaToAccountCategoryRow>().HasQueryFilter(row =>
                 _tenantService != null && !_tenantService.IsSuperAdmin &&
                 _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
             builder.Entity<AccountsChartAccount>().HasQueryFilter(row =>
@@ -983,6 +987,17 @@ namespace Accounts.Data
                 e.HasOne(x => x.Status).WithMany(x => x.ProcessStyles).HasForeignKey(x => x.StatusId).OnDelete(DeleteBehavior.Restrict);
                 e.HasOne(x => x.ColorStyle).WithMany(x => x.ProcessStatuses).HasForeignKey(x => x.ColorStyleId).OnDelete(DeleteBehavior.Restrict);
                 e.HasOne(x => x.Tenant).WithMany().HasForeignKey(x => x.TenantId).OnDelete(DeleteBehavior.Restrict);
+            });
+
+            builder.Entity<RoznamchaToAccountCategoryRow>(e =>
+            {
+                e.HasNoKey();
+                e.ToView("vw_RoznamchaToAccountCategory", "dbo");
+                e.Property(x => x.ToCategoryName).HasMaxLength(120);
+                e.Property(x => x.ToCategoryCode).HasMaxLength(40);
+                e.Property(x => x.ToAccountName).HasMaxLength(200);
+                e.Property(x => x.ToAccountNumber).HasMaxLength(50);
+                e.Property(x => x.ToAccountCode).HasMaxLength(80);
             });
 
             builder.Entity<StatusConfigurationManagementRow>(e =>

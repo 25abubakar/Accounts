@@ -13,10 +13,10 @@ internal static class RoznamchaListSql
             SELECT @BillingCategoryId=BillingCategoryId, @PaymentRozTypeId=PaymentRozTypeId
             FROM dbo.AccountsModuleSettings WHERE TenantId=@TenantId;
             SELECT e.Id, e.SNo, e.Ref, e.OldRef, rt.Name AS TypeName,
-                CAST(NULL AS NVARCHAR(200)) AS Project, e.ProjectId, toCat.Id AS ToCategoryId,
-                cat.Name AS CategoryName, fromAcct.AccountName AS AccountName, e.ToAccountId,
-                fromAcct.AccountNumber AS FromAccountNumber, toCat.Name AS ToCategoryName,
-                toAcct.AccountName AS ToAccountName, toAcct.AccountNumber AS ToAccountNumber,
+                CAST(NULL AS NVARCHAR(200)) AS Project, e.ProjectId, toMap.ToCategoryId,
+                fromCat.Name AS CategoryName, fromAcct.AccountName AS AccountName, e.ToAccountId,
+                fromAcct.AccountNumber AS FromAccountNumber, toMap.ToCategoryName,
+                toMap.ToAccountName, toMap.ToAccountNumber,
                 tt.Name AS TransTypeName, tm.Name AS TransModeName, e.CreatedOnUtc AS CreatedDate,
                 e.BankRef, e.InstrumentNo, e.Descriptions, e.TransDate, e.Adjustment,
                 e.Amount AS Debit, e.UsdAmount AS UsdDebit, e.Qty, e.Rate, st.Name AS StatusName,
@@ -25,10 +25,9 @@ internal static class RoznamchaListSql
                 CAST(NULL AS DATETIME2) AS ProcessDate
             FROM dbo.RoznamchaEntries e
             LEFT JOIN dbo.AccountsRoznamchaTypes rt ON rt.Id=e.RoznamchaTypeId AND (rt.TenantId IS NULL OR rt.TenantId=e.TenantId)
-            LEFT JOIN dbo.AccountsCategories cat ON cat.Id=e.CategoryId AND cat.TenantId=e.TenantId
-            LEFT JOIN dbo.AccountsChartAccounts fromAcct ON fromAcct.Id=e.FromAccountId AND fromAcct.TenantId=e.TenantId
-            LEFT JOIN dbo.AccountsChartAccounts toAcct ON toAcct.Id=e.ToAccountId AND toAcct.TenantId=e.TenantId
-            LEFT JOIN dbo.AccountsCategories toCat ON toCat.Id=toAcct.CategoryId AND toCat.TenantId=e.TenantId
+            LEFT JOIN dbo.vw_AccountsChartAccountHierarchy fromAcct ON fromAcct.Id=e.FromAccountId AND fromAcct.TenantId=e.TenantId
+            LEFT JOIN dbo.AccountsCategories fromCat ON fromCat.Id=fromAcct.CategoryId AND fromCat.TenantId=e.TenantId
+            LEFT JOIN dbo.vw_RoznamchaToAccountCategory toMap ON toMap.ToAccountId=e.ToAccountId AND toMap.TenantId=e.TenantId
             LEFT JOIN dbo.AccountsTransTypes tt ON tt.Id=e.TransTypeId AND (tt.TenantId IS NULL OR tt.TenantId=e.TenantId)
             LEFT JOIN dbo.AccountsTransModes tm ON tm.Id=e.TransModeId AND (tm.TenantId IS NULL OR tm.TenantId=e.TenantId)
             LEFT JOIN dbo.AccountsEntryStatuses st ON st.Id=e.EnterStatusId AND (st.TenantId IS NULL OR st.TenantId=e.TenantId)
@@ -62,10 +61,10 @@ internal static class RoznamchaListSql
             SELECT @BillingCategoryId=BillingCategoryId, @ReceiptRozTypeId=ReceiptRozTypeId
             FROM dbo.AccountsModuleSettings WHERE TenantId=@TenantId;
             SELECT e.Id, e.SNo, e.Ref, e.OldRef, rt.Name AS TypeName,
-                CAST(NULL AS NVARCHAR(200)) AS Project, e.ProjectId, toCat.Id AS ToCategoryId,
-                cat.Name AS CategoryName, fromAcct.AccountName AS AccountName, e.ToAccountId,
-                fromAcct.AccountNumber AS FromAccountNumber, toCat.Name AS ToCategoryName,
-                toAcct.AccountName AS ToAccountName, toAcct.AccountNumber AS ToAccountNumber,
+                CAST(NULL AS NVARCHAR(200)) AS Project, e.ProjectId, toMap.ToCategoryId,
+                fromCat.Name AS CategoryName, fromAcct.AccountName AS AccountName, e.ToAccountId,
+                fromAcct.AccountNumber AS FromAccountNumber, toMap.ToCategoryName,
+                toMap.ToAccountName, toMap.ToAccountNumber,
                 tt.Name AS TransTypeName, tm.Name AS TransModeName, e.CreatedOnUtc AS CreatedDate,
                 e.BankRef, e.InstrumentNo, e.Descriptions, e.TransDate, e.Adjustment,
                 e.Amount AS Debit, e.UsdAmount AS UsdDebit, e.Qty, e.Rate, st.Name AS StatusName,
@@ -74,10 +73,9 @@ internal static class RoznamchaListSql
                 CAST(NULL AS DATETIME2) AS ProcessDate
             FROM dbo.RoznamchaEntries e
             LEFT JOIN dbo.AccountsRoznamchaTypes rt ON rt.Id=e.RoznamchaTypeId AND (rt.TenantId IS NULL OR rt.TenantId=e.TenantId)
-            LEFT JOIN dbo.AccountsCategories cat ON cat.Id=e.CategoryId AND cat.TenantId=e.TenantId
-            LEFT JOIN dbo.AccountsChartAccounts fromAcct ON fromAcct.Id=e.FromAccountId AND fromAcct.TenantId=e.TenantId
-            LEFT JOIN dbo.AccountsChartAccounts toAcct ON toAcct.Id=e.ToAccountId AND toAcct.TenantId=e.TenantId
-            LEFT JOIN dbo.AccountsCategories toCat ON toCat.Id=toAcct.CategoryId AND toCat.TenantId=e.TenantId
+            LEFT JOIN dbo.vw_AccountsChartAccountHierarchy fromAcct ON fromAcct.Id=e.FromAccountId AND fromAcct.TenantId=e.TenantId
+            LEFT JOIN dbo.AccountsCategories fromCat ON fromCat.Id=fromAcct.CategoryId AND fromCat.TenantId=e.TenantId
+            LEFT JOIN dbo.vw_RoznamchaToAccountCategory toMap ON toMap.ToAccountId=e.ToAccountId AND toMap.TenantId=e.TenantId
             LEFT JOIN dbo.AccountsTransTypes tt ON tt.Id=e.TransTypeId AND (tt.TenantId IS NULL OR tt.TenantId=e.TenantId)
             LEFT JOIN dbo.AccountsTransModes tm ON tm.Id=e.TransModeId AND (tm.TenantId IS NULL OR tm.TenantId=e.TenantId)
             LEFT JOIN dbo.AccountsEntryStatuses st ON st.Id=e.EnterStatusId AND (st.TenantId IS NULL OR st.TenantId=e.TenantId)
@@ -133,10 +131,10 @@ internal static class RoznamchaListSql
             DECLARE @BillingCategoryId INT=NULL;
             SELECT @BillingCategoryId=BillingCategoryId FROM dbo.AccountsModuleSettings WHERE TenantId=@TenantId;
             SELECT e.Id, e.SNo, e.Ref, e.OldRef, rt.Name AS TypeName, p.Name AS Project,
-                e.ProjectId, toCat.Id AS ToCategoryId, cat.Name AS CategoryName,
+                e.ProjectId, toMap.ToCategoryId, fromCat.Name AS CategoryName,
                 fromAcct.AccountName AS AccountName, e.ToAccountId,
-                fromAcct.AccountNumber AS FromAccountNumber, toCat.Name AS ToCategoryName,
-                toAcct.AccountName AS ToAccountName, toAcct.AccountNumber AS ToAccountNumber,
+                fromAcct.AccountNumber AS FromAccountNumber, toMap.ToCategoryName,
+                toMap.ToAccountName, toMap.ToAccountNumber,
                 tt.Name AS TransTypeName, tm.Name AS TransModeName, e.CreatedOnUtc AS CreatedDate,
                 e.BankRef, e.InstrumentNo, e.Descriptions, e.TransDate, e.Adjustment,
                 e.Amount AS Debit, e.UsdAmount AS UsdDebit, e.Qty, e.Rate, st.Name AS StatusName,
@@ -146,10 +144,9 @@ internal static class RoznamchaListSql
             FROM dbo.RoznamchaEntries e
             LEFT JOIN dbo.AccountsRoznamchaTypes rt ON rt.Id=e.RoznamchaTypeId AND (rt.TenantId IS NULL OR rt.TenantId=e.TenantId)
             LEFT JOIN dbo.AccountsProjects p ON p.Id=e.ProjectId AND p.TenantId=e.TenantId
-            LEFT JOIN dbo.AccountsCategories cat ON cat.Id=e.CategoryId AND cat.TenantId=e.TenantId
-            LEFT JOIN dbo.AccountsChartAccounts fromAcct ON fromAcct.Id=e.FromAccountId AND fromAcct.TenantId=e.TenantId
-            LEFT JOIN dbo.AccountsChartAccounts toAcct ON toAcct.Id=e.ToAccountId AND toAcct.TenantId=e.TenantId
-            LEFT JOIN dbo.AccountsCategories toCat ON toCat.Id=toAcct.CategoryId AND toCat.TenantId=e.TenantId
+            LEFT JOIN dbo.vw_AccountsChartAccountHierarchy fromAcct ON fromAcct.Id=e.FromAccountId AND fromAcct.TenantId=e.TenantId
+            LEFT JOIN dbo.AccountsCategories fromCat ON fromCat.Id=fromAcct.CategoryId AND fromCat.TenantId=e.TenantId
+            LEFT JOIN dbo.vw_RoznamchaToAccountCategory toMap ON toMap.ToAccountId=e.ToAccountId AND toMap.TenantId=e.TenantId
             LEFT JOIN dbo.AccountsTransTypes tt ON tt.Id=e.TransTypeId AND (tt.TenantId IS NULL OR tt.TenantId=e.TenantId)
             LEFT JOIN dbo.AccountsTransModes tm ON tm.Id=e.TransModeId AND (tm.TenantId IS NULL OR tm.TenantId=e.TenantId)
             LEFT JOIN dbo.AccountsEntryStatuses st ON st.Id=e.EnterStatusId AND (st.TenantId IS NULL OR st.TenantId=e.TenantId)

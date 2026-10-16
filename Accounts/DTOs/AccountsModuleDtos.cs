@@ -213,6 +213,16 @@ public class SaveRoznamchaEntryRequest
 public sealed class CreateRoznamchaPaymentRequest : SaveRoznamchaEntryRequest { }
 public sealed class CreateRoznamchaReceiptRequest : SaveRoznamchaEntryRequest { }
 
+public sealed class PaymentRozExcelImportResult
+{
+    public int TotalRows { get; set; }
+    public int ImportedRows { get; set; }
+    public int SkippedRows { get; set; }
+    public int DuplicateRows { get; set; }
+    public int InventoryLinksRestored { get; set; }
+    public List<string> Errors { get; set; } = [];
+}
+
 public sealed class RoznamchaEntryDto
 {
     public long Id { get; set; }

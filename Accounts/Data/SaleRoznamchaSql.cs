@@ -499,7 +499,6 @@ internal static class SaleRoznamchaSql
 
             SET @Descriptions = LEFT(
                 CONCAT(
-                    N'Inventory purchase — ',
                     @ProductName,
                     CASE WHEN NULLIF(LTRIM(RTRIM(@Description)), N'') IS NULL THEN N'' ELSE N' — ' + LTRIM(RTRIM(@Description)) END),
                 2000);
@@ -652,6 +651,28 @@ internal static class SaleRoznamchaSql
         SELECT Id, TenantId, CategoryId, ParentId, AccountNumber, AccountCode,
                AccountName, IsActive, AccountPath
         FROM AccountTree;
+        """;
+
+    internal const string ToAccountCategoryView =
+        """
+        CREATE OR ALTER VIEW dbo.vw_RoznamchaToAccountCategory
+        AS
+        SELECT chart.Id ToAccountId,
+               chart.TenantId,
+               COALESCE(chart.CategoryId, hierarchy.CategoryId) ToCategoryId,
+               category.Name ToCategoryName,
+               category.Code ToCategoryCode,
+               chart.AccountName ToAccountName,
+               chart.AccountNumber ToAccountNumber,
+               chart.AccountCode ToAccountCode,
+               chart.ParentId,
+               chart.IsActive
+        FROM dbo.AccountsChartAccounts chart
+        LEFT JOIN dbo.vw_AccountsChartAccountHierarchy hierarchy
+            ON hierarchy.Id = chart.Id AND hierarchy.TenantId = chart.TenantId
+        LEFT JOIN dbo.AccountsCategories category
+            ON category.TenantId = chart.TenantId
+           AND category.Id = COALESCE(chart.CategoryId, hierarchy.CategoryId);
         """;
 
     internal const string InventoryPurchaseDetailsView =

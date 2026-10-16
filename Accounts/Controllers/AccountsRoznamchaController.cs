@@ -203,8 +203,16 @@ public sealed class AccountsRoznamchaController : ControllerBase
 
         var categories = await _db.AccountsCategories.AsNoTracking().Where(x => x.IsActive).OrderBy(x => x.Name)
             .Select(x => new { x.Id, x.Name, x.Code }).ToListAsync(ct);
-        var accounts = await _db.AccountsChartAccounts.AsNoTracking().Where(x => x.IsActive).OrderBy(x => x.AccountName)
-            .Select(x => new { x.Id, x.CategoryId, x.ParentId, x.AccountName, x.AccountNumber, x.AccountCode }).ToListAsync(ct);
+        var accounts = await _db.RoznamchaToAccountCategories.AsNoTracking().Where(x => x.IsActive).OrderBy(x => x.ToAccountName)
+            .Select(x => new
+            {
+                Id = x.ToAccountId,
+                CategoryId = x.ToCategoryId,
+                x.ParentId,
+                AccountName = x.ToAccountName,
+                AccountNumber = x.ToAccountNumber,
+                AccountCode = x.ToAccountCode
+            }).ToListAsync(ct);
         var transactionTypes = await _db.AccountsTransTypes.AsNoTracking().Where(x => x.IsActive).OrderBy(x => x.Name)
             .Select(x => new { x.Id, x.Code, x.Name }).ToListAsync(ct);
         var projects = await _db.AccountsProjects.AsNoTracking().Where(x => x.IsActive).OrderBy(x => x.Name)
@@ -270,6 +278,37 @@ public sealed class AccountsRoznamchaController : ControllerBase
         catch (InvalidOperationException ex)
         {
             return BadRequest(ApiResponse<object?>.Fail(ex.Message));
+        }
+    }
+
+    [HttpPost("payment-roz/import-excel")]
+    [Consumes("multipart/form-data")]
+    [RequestFormLimits(MultipartBodyLengthLimit = 10 * 1024 * 1024)]
+    [RequestSizeLimit(10 * 1024 * 1024)]
+    public async Task<IActionResult> ImportPaymentRozExcel(IFormFile? excelFile, CancellationToken ct)
+    {
+        if (_tenant.IsSuperAdmin || !_tenant.TenantId.HasValue || !await HasActionAsync(PaymentRozRoute, "ADD", ct))
+            return Forbid();
+        if (excelFile == null || excelFile.Length == 0)
+            return BadRequest(ApiResponse<object?>.Fail("Excel payment file is required. Upload an .xlsx, .xls, or .csv file."));
+        try
+        {
+            var result = await _transactions.ImportPaymentsAsync(excelFile, ct);
+            var message = result.Errors.Count == 0
+                ? result.ImportedRows == 0
+                    ? $"{result.SkippedRows} row(s) were skipped and no new payments were imported."
+                    : $"{result.ImportedRows} payment row(s) imported successfully."
+                : $"{result.ImportedRows} row(s) imported; {result.Errors.Count} row(s) need correction.";
+            return Ok(ApiResponse<PaymentRozExcelImportResult>.Ok(result, message));
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(ApiResponse<object?>.Fail(ex.Message));
+        }
+        catch (Exception ex)
+        {
+            return BadRequest(ApiResponse<object?>.Fail(
+                "Payment Excel could not be imported. " + (ex.InnerException?.Message ?? ex.Message)));
         }
     }
 

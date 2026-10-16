@@ -38,6 +38,20 @@ public sealed class AccountsBackendServiceTests
     }
 
     [Fact]
+    public async Task Payment_accepts_negative_amount_and_rate()
+    {
+        await using var db = CreateDb(1);
+        await SeedAccounts(db, 1);
+        var request = Entry(1, 2, amount: -733_830.37m);
+        request.Rate = -7_312.31m;
+
+        var result = await NewRoznamcha(db, 1).CreateAsync(1, request);
+
+        Assert.Equal(-733_830.37m, result.Amount);
+        Assert.Equal(-7_312.31m, result.Rate);
+    }
+
+    [Fact]
     public async Task Payment_list_requires_relational_stored_procedure_provider()
     {
         await using var db = CreateDb(1);
@@ -203,7 +217,7 @@ public sealed class AccountsBackendServiceTests
     }
 
     [Fact]
-    public async Task Inventory_posted_payment_cannot_be_deleted_or_edited()
+    public async Task Inventory_posted_payment_edit_synchronizes_stock_but_delete_remains_blocked()
     {
         await using var db = CreateDb(1);
         await SeedAccounts(db, 1);
@@ -224,9 +238,22 @@ public sealed class AccountsBackendServiceTests
         });
         await db.SaveChangesAsync();
 
-        var edit = await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            service.UpdateAsync(payment.Id, 1, Entry(1, 2, amount: 90)));
-        Assert.Contains("inventory purchase", edit.Message, StringComparison.OrdinalIgnoreCase);
+        var update = Entry(1, 2, amount: 90);
+        update.CurrencyId = 1;
+        update.Quantity = 2;
+        update.Rate = 45;
+        update.Description = "Adjusted purchase";
+        await service.UpdateAsync(payment.Id, 1, update);
+
+        var purchase = await db.SaleRoznamchaStockReceipts.SingleAsync(x => x.RoznamchaEntryId == payment.Id);
+        Assert.Equal(2, purchase.PurchasedQuantity);
+        Assert.Equal(2, purchase.RemainingQuantity);
+        Assert.Equal(45, purchase.UnitCost);
+        Assert.Equal(90, purchase.TotalPurchaseCost);
+        Assert.Equal("Adjusted purchase", purchase.Description);
+        var movement = await db.SaleRoznamchaInventoryMovements.SingleAsync(x => x.StockReceiptId == purchase.Id);
+        Assert.Equal(1, movement.QuantityDelta);
+        Assert.Equal(2, movement.BalanceAfter);
 
         var delete = await Assert.ThrowsAsync<InvalidOperationException>(() =>
             service.SoftDeleteAsync(payment.Id));

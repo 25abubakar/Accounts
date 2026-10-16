@@ -267,12 +267,12 @@ namespace Accounts.Controllers
             if (dto is null) return BadRequest(new { message = "Request body missing." });
             var (person, loginId, password, error, statusCode) = await _service.RegisterAsync(dto);
             if (error != null) return StatusCode(statusCode, new { message = error });
-            return CreatedAtAction(nameof(GetById), new { id = person!.PersonId }, new
+            return StatusCode(StatusCodes.Status201Created, new
             {
                 person,
                 generatedLoginId  = loginId,
                 generatedPassword = password,
-                generatedEmail    = person.Email,
+                generatedEmail    = person!.Email,
                 note = "Save these credentials — the password cannot be retrieved again."
             });
         }

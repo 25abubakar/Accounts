@@ -15,6 +15,13 @@ namespace Accounts.Controllers
     [Produces("application/json")]
     public class DesignationsController : ControllerBase
     {
+        private static readonly string[] DesignationMenuRoutes =
+        [
+            "/settings/types",
+            "/settings/statuses",
+            "/settings/job-titles"
+        ];
+
         private readonly DesignationService _service;
         private readonly PlatformSettingsProvisioningService _provisioning;
         private readonly ITenantService _tenantService;
@@ -42,7 +49,7 @@ namespace Accounts.Controllers
         {
             if (TenantPermissionService.IsSuperAdmin(User)) return true;
             if (TenantPermissionService.IsTenantAdmin(User))
-                return await _tenantPermissions.HasMenuRouteAsync(User, ["/settings/types", "/settings/job-titles"], action);
+                return await _tenantPermissions.HasMenuRouteAsync(User, DesignationMenuRoutes, action);
             if (!_tenantService.TenantId.HasValue) return false;
 
             var identityUserId = User.FindFirstValue(ClaimTypes.NameIdentifier);
@@ -55,8 +62,7 @@ namespace Accounts.Controllers
             if (!staffId.HasValue) return false;
 
             var menuIds = await _db.Menus.AsNoTracking()
-                .Where(menu => menu.IsActive &&
-                    (menu.Route == "/settings/types" || menu.Route == "/settings/job-titles"))
+                .Where(menu => menu.IsActive && DesignationMenuRoutes.Contains(menu.Route))
                 .Select(menu => menu.Id)
                 .ToListAsync();
             if (menuIds.Count == 0) return false;

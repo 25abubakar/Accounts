@@ -68,6 +68,7 @@ public interface IRoznamchaService
     Task<IReadOnlyList<RoznamchaEntryDto>> ListAsync(int entryTypeId, DateOnly? from, DateOnly? to, CancellationToken ct = default);
     Task<RoznamchaEntryDto?> GetAsync(long id, CancellationToken ct = default);
     Task<RoznamchaEntryDto> CreateAsync(int entryTypeId, SaveRoznamchaEntryRequest request, CancellationToken ct = default);
+    Task<PaymentRozExcelImportResult> ImportPaymentsAsync(IFormFile excelFile, CancellationToken ct = default);
     Task<RoznamchaEntryDto> UpdateAsync(long id, int entryTypeId, SaveRoznamchaEntryRequest request, CancellationToken ct = default);
     Task SoftDeleteAsync(long id, string? remarks = null, CancellationToken ct = default);
     Task<RoznamchaEntryDto> UpdateStatusAsync(long id, UpdateRoznamchaStatusRequest request, CancellationToken ct = default);

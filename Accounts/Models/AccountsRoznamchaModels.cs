@@ -318,3 +318,21 @@ public sealed class AccountsEntryDocument : ITenantEntity
     [MaxLength(450)] public string? UploadedByUserId { get; set; }
     public DateTime UploadedOnUtc { get; set; } = DateTime.UtcNow;
 }
+
+/// <summary>
+/// Live To Account → To Category mapping. Not stored on RoznamchaEntries;
+/// read from dbo.vw_RoznamchaToAccountCategory so a category move stays current.
+/// </summary>
+public sealed class RoznamchaToAccountCategoryRow
+{
+    public int ToAccountId { get; set; }
+    public int TenantId { get; set; }
+    public int? ToCategoryId { get; set; }
+    public string? ToCategoryName { get; set; }
+    public string? ToCategoryCode { get; set; }
+    public string ToAccountName { get; set; } = string.Empty;
+    public string ToAccountNumber { get; set; } = string.Empty;
+    public string? ToAccountCode { get; set; }
+    public int? ParentId { get; set; }
+    public bool IsActive { get; set; }
+}

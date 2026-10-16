@@ -25,8 +25,26 @@ namespace Accounts.Data
         };
 
         // ── Super Admin accounts to seed ─────────────────────────────────────
-        // Add entries here if you need additional system-level admins.
-        private static readonly SuperAdminSeed[] SuperAdmins = Array.Empty<SuperAdminSeed>();
+        // Bootstrap credentials are supplied only for the startup that needs to
+        // create the account. Keeping the password out of source/config files
+        // prevents a well-known credential from being committed accidentally.
+        private static SuperAdminSeed[] GetBootstrapSuperAdmins()
+        {
+            var password = Environment.GetEnvironmentVariable("ACCOUNTS_BOOTSTRAP_ADMIN_PASSWORD");
+            if (string.IsNullOrWhiteSpace(password))
+                return Array.Empty<SuperAdminSeed>();
+
+            var userName = Environment.GetEnvironmentVariable("ACCOUNTS_BOOTSTRAP_ADMIN_USERNAME");
+            var email = Environment.GetEnvironmentVariable("ACCOUNTS_BOOTSTRAP_ADMIN_EMAIL");
+
+            return
+            [
+                new SuperAdminSeed(
+                    string.IsNullOrWhiteSpace(userName) ? "Admin" : userName.Trim(),
+                    string.IsNullOrWhiteSpace(email) ? "admin@laltechnologies.com" : email.Trim(),
+                    password)
+            ];
+        }
 
         /// <summary>
         /// Entry point — call from Program.cs inside a scoped DI scope.
@@ -73,7 +91,7 @@ namespace Accounts.Data
             UserManager<ApplicationUser> userManager,
             ILogger logger)
         {
-            foreach (var seed in SuperAdmins)
+            foreach (var seed in GetBootstrapSuperAdmins())
             {
                 // Check by username first, then fall back to email
                 var user = await userManager.FindByNameAsync(seed.UserName)
