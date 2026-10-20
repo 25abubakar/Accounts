@@ -2,6 +2,35 @@ namespace Accounts.Migrations;
 
 internal static class RoznamchaListSql
 {
+    internal static readonly string ConfiguredPayment = WithConfiguredStatuses(Payment);
+    internal static readonly string ConfiguredReceipt = WithConfiguredStatuses(Receipt);
+    internal static readonly string ConfiguredUnified = WithConfiguredStatuses(Unified);
+    // New deployments must keep the two ledger sides separate even when
+    // AccountsModuleSettings has no row or its optional type is unset.
+    internal static readonly string TypedPayment = WithTransferMetadata(ConfiguredPayment).Replace(
+        "AND (@PaymentRozTypeId IS NULL OR e.RoznamchaTypeId=@PaymentRozTypeId)",
+        "AND (@PaymentRozTypeId IS NULL OR e.RoznamchaTypeId=@PaymentRozTypeId) AND UPPER(rt.Code)=N'PAYMENT'", StringComparison.Ordinal);
+    internal static readonly string TypedReceipt = WithTransferMetadata(ConfiguredReceipt).Replace(
+        "AND (@ReceiptRozTypeId IS NULL OR e.RoznamchaTypeId=@ReceiptRozTypeId)",
+        "AND (@ReceiptRozTypeId IS NULL OR e.RoznamchaTypeId=@ReceiptRozTypeId) AND UPPER(rt.Code)=N'RECEIPT'", StringComparison.Ordinal);
+    internal static readonly string TransferUnified = WithTransferMetadata(ConfiguredUnified);
+
+    private static string WithTransferMetadata(string sql) => sql
+        .Replace("SELECT e.Id, e.SNo", "SELECT e.Id, e.InternalTransferGroupId, e.SNo", StringComparison.Ordinal)
+        .Replace("AND (@BillingCategoryId IS NULL OR e.CategoryId=@BillingCategoryId",
+            "AND (@BillingCategoryId IS NULL OR e.CategoryId=@BillingCategoryId OR e.InternalTransferGroupId IS NOT NULL", StringComparison.Ordinal);
+
+    private static string WithConfiguredStatuses(string sql) => sql
+        .Replace("st.Name AS StatusName,", "st.Name AS StatusName, e.EnterStatusId AS StatusId, statusMap.Id AS ProcessStatusId, statusColor.ColorCode AS StatusColorCode, statusColor.FontColor AS StatusFontColor,", StringComparison.Ordinal)
+        .Replace("LEFT JOIN dbo.AccountsEntryStatuses st ON st.Id=e.EnterStatusId AND (st.TenantId IS NULL OR st.TenantId=e.TenantId)",
+            """
+            LEFT JOIN PlatformSettings.Statuses st ON st.Id=e.EnterStatusId
+            LEFT JOIN PlatformSettings.Processes statusProcess
+              ON statusProcess.Name=CASE UPPER(rt.Code) WHEN N'PAYMENT' THEN N'Payment' WHEN N'RECEIPT' THEN N'Receipt' ELSE rt.Name END
+            LEFT JOIN PlatformSettings.ProcessStatuses statusMap ON statusMap.ProcessId=statusProcess.Id AND statusMap.StatusId=e.EnterStatusId
+            LEFT JOIN PlatformSettings.Colors statusColor ON statusColor.Id=statusMap.ColorId
+            """, StringComparison.Ordinal);
+
     internal const string Payment =
         """
         CREATE OR ALTER PROCEDURE dbo.usp_Accounts_PaymentRoz_List
@@ -13,7 +42,7 @@ internal static class RoznamchaListSql
             SELECT @BillingCategoryId=BillingCategoryId, @PaymentRozTypeId=PaymentRozTypeId
             FROM dbo.AccountsModuleSettings WHERE TenantId=@TenantId;
             SELECT e.Id, e.SNo, e.Ref, e.OldRef, rt.Name AS TypeName,
-                CAST(NULL AS NVARCHAR(200)) AS Project, e.ProjectId, toMap.ToCategoryId,
+                p.Name AS Project, e.ProjectId, toMap.ToCategoryId,
                 fromCat.Name AS CategoryName, fromAcct.AccountName AS AccountName, e.ToAccountId,
                 fromAcct.AccountNumber AS FromAccountNumber, toMap.ToCategoryName,
                 toMap.ToAccountName, toMap.ToAccountNumber,
@@ -24,12 +53,13 @@ internal static class RoznamchaListSql
                 COALESCE(linked.LibRef,e.LibRef) AS LibRef, e.Remarks,
                 CAST(NULL AS DATETIME2) AS ProcessDate
             FROM dbo.RoznamchaEntries e
-            LEFT JOIN dbo.AccountsRoznamchaTypes rt ON rt.Id=e.RoznamchaTypeId AND (rt.TenantId IS NULL OR rt.TenantId=e.TenantId)
+            LEFT JOIN dbo.AccountsRoznamchaTypes rt ON rt.Id=e.RoznamchaTypeId
+            LEFT JOIN dbo.AccountsProjects p ON p.Id=e.ProjectId AND p.TenantId=e.TenantId
             LEFT JOIN dbo.vw_AccountsChartAccountHierarchy fromAcct ON fromAcct.Id=e.FromAccountId AND fromAcct.TenantId=e.TenantId
             LEFT JOIN dbo.AccountsCategories fromCat ON fromCat.Id=fromAcct.CategoryId AND fromCat.TenantId=e.TenantId
             LEFT JOIN dbo.vw_RoznamchaToAccountCategory toMap ON toMap.ToAccountId=e.ToAccountId AND toMap.TenantId=e.TenantId
-            LEFT JOIN dbo.AccountsTransTypes tt ON tt.Id=e.TransTypeId AND (tt.TenantId IS NULL OR tt.TenantId=e.TenantId)
-            LEFT JOIN dbo.AccountsTransModes tm ON tm.Id=e.TransModeId AND (tm.TenantId IS NULL OR tm.TenantId=e.TenantId)
+            LEFT JOIN dbo.AccountsTransTypes tt ON tt.Id=e.TransTypeId
+            LEFT JOIN dbo.AccountsTransModes tm ON tm.Id=e.TransModeId
             LEFT JOIN dbo.AccountsEntryStatuses st ON st.Id=e.EnterStatusId AND (st.TenantId IS NULL OR st.TenantId=e.TenantId)
             OUTER APPLY (
                 SELECT STRING_AGG(CAST(COALESCE(d.DocumentReference,CONCAT(N'Doc-',d.Id)) AS NVARCHAR(MAX)),N', ')
@@ -61,7 +91,7 @@ internal static class RoznamchaListSql
             SELECT @BillingCategoryId=BillingCategoryId, @ReceiptRozTypeId=ReceiptRozTypeId
             FROM dbo.AccountsModuleSettings WHERE TenantId=@TenantId;
             SELECT e.Id, e.SNo, e.Ref, e.OldRef, rt.Name AS TypeName,
-                CAST(NULL AS NVARCHAR(200)) AS Project, e.ProjectId, toMap.ToCategoryId,
+                p.Name AS Project, e.ProjectId, toMap.ToCategoryId,
                 fromCat.Name AS CategoryName, fromAcct.AccountName AS AccountName, e.ToAccountId,
                 fromAcct.AccountNumber AS FromAccountNumber, toMap.ToCategoryName,
                 toMap.ToAccountName, toMap.ToAccountNumber,
@@ -72,12 +102,13 @@ internal static class RoznamchaListSql
                 COALESCE(linked.LibRef,e.LibRef) AS LibRef, e.Remarks,
                 CAST(NULL AS DATETIME2) AS ProcessDate
             FROM dbo.RoznamchaEntries e
-            LEFT JOIN dbo.AccountsRoznamchaTypes rt ON rt.Id=e.RoznamchaTypeId AND (rt.TenantId IS NULL OR rt.TenantId=e.TenantId)
+            LEFT JOIN dbo.AccountsRoznamchaTypes rt ON rt.Id=e.RoznamchaTypeId
+            LEFT JOIN dbo.AccountsProjects p ON p.Id=e.ProjectId AND p.TenantId=e.TenantId
             LEFT JOIN dbo.vw_AccountsChartAccountHierarchy fromAcct ON fromAcct.Id=e.FromAccountId AND fromAcct.TenantId=e.TenantId
             LEFT JOIN dbo.AccountsCategories fromCat ON fromCat.Id=fromAcct.CategoryId AND fromCat.TenantId=e.TenantId
             LEFT JOIN dbo.vw_RoznamchaToAccountCategory toMap ON toMap.ToAccountId=e.ToAccountId AND toMap.TenantId=e.TenantId
-            LEFT JOIN dbo.AccountsTransTypes tt ON tt.Id=e.TransTypeId AND (tt.TenantId IS NULL OR tt.TenantId=e.TenantId)
-            LEFT JOIN dbo.AccountsTransModes tm ON tm.Id=e.TransModeId AND (tm.TenantId IS NULL OR tm.TenantId=e.TenantId)
+            LEFT JOIN dbo.AccountsTransTypes tt ON tt.Id=e.TransTypeId
+            LEFT JOIN dbo.AccountsTransModes tm ON tm.Id=e.TransModeId
             LEFT JOIN dbo.AccountsEntryStatuses st ON st.Id=e.EnterStatusId AND (st.TenantId IS NULL OR st.TenantId=e.TenantId)
             OUTER APPLY (
                 SELECT STRING_AGG(CAST(COALESCE(d.DocumentReference,CONCAT(N'Doc-',d.Id)) AS NVARCHAR(MAX)),N', ')
@@ -142,13 +173,13 @@ internal static class RoznamchaListSql
                 e.ImagePath AS [Image], COALESCE(linked.LibRef,e.LibRef) AS LibRef,
                 e.Remarks, procLog.ProcessDate
             FROM dbo.RoznamchaEntries e
-            LEFT JOIN dbo.AccountsRoznamchaTypes rt ON rt.Id=e.RoznamchaTypeId AND (rt.TenantId IS NULL OR rt.TenantId=e.TenantId)
+            LEFT JOIN dbo.AccountsRoznamchaTypes rt ON rt.Id=e.RoznamchaTypeId
             LEFT JOIN dbo.AccountsProjects p ON p.Id=e.ProjectId AND p.TenantId=e.TenantId
             LEFT JOIN dbo.vw_AccountsChartAccountHierarchy fromAcct ON fromAcct.Id=e.FromAccountId AND fromAcct.TenantId=e.TenantId
             LEFT JOIN dbo.AccountsCategories fromCat ON fromCat.Id=fromAcct.CategoryId AND fromCat.TenantId=e.TenantId
             LEFT JOIN dbo.vw_RoznamchaToAccountCategory toMap ON toMap.ToAccountId=e.ToAccountId AND toMap.TenantId=e.TenantId
-            LEFT JOIN dbo.AccountsTransTypes tt ON tt.Id=e.TransTypeId AND (tt.TenantId IS NULL OR tt.TenantId=e.TenantId)
-            LEFT JOIN dbo.AccountsTransModes tm ON tm.Id=e.TransModeId AND (tm.TenantId IS NULL OR tm.TenantId=e.TenantId)
+            LEFT JOIN dbo.AccountsTransTypes tt ON tt.Id=e.TransTypeId
+            LEFT JOIN dbo.AccountsTransModes tm ON tm.Id=e.TransModeId
             LEFT JOIN dbo.AccountsEntryStatuses st ON st.Id=e.EnterStatusId AND (st.TenantId IS NULL OR st.TenantId=e.TenantId)
             OUTER APPLY (
                 SELECT TOP(1) l.ProcessedOnUtc AS ProcessDate

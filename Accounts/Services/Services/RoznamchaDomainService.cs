@@ -21,8 +21,6 @@ public sealed class RoznamchaService(
     {
         if (excelFile == null || excelFile.Length == 0)
             throw new InvalidOperationException("Excel payment file is required.");
-        if (excelFile.Length > 10 * 1024 * 1024)
-            throw new InvalidOperationException("Excel payment file cannot exceed 10 MB.");
 
         var extension = Path.GetExtension(excelFile.FileName).ToLowerInvariant();
         if (extension is not (".xlsx" or ".xls" or ".csv"))
@@ -53,9 +51,6 @@ public sealed class RoznamchaService(
                 "The uploaded file could not be read as a valid Excel or CSV file. " + (ex.InnerException?.Message ?? ex.Message));
         }
 
-        if (table.Rows.Count > 10000)
-            throw new InvalidOperationException("A maximum of 10,000 payment rows can be imported at once.");
-
         var headers = table.Columns.Cast<DataColumn>()
             .GroupBy(x => NormalizeExcelHeader(x.ColumnName))
             .Where(x => x.Key.Length > 0)
@@ -75,8 +70,8 @@ public sealed class RoznamchaService(
         var currencies = await db.AccountsCurrencies.AsNoTracking().Where(x => x.IsActive).ToListAsync(ct);
         var transTypes = await db.AccountsTransTypes.AsNoTracking().Where(x => x.IsActive).ToListAsync(ct);
         var transModes = await db.AccountsTransModes.AsNoTracking().Where(x => x.IsActive).ToListAsync(ct);
-        var statuses = await db.AccountsEntryStatuses.AsNoTracking().Where(x => x.IsActive).ToListAsync(ct);
-        var projects = await db.AccountsProjects.AsNoTracking().Where(x => x.IsActive).ToListAsync(ct);
+        var statuses = await RoznamchaStatusCatalog.Query(db, "Payment").ToListAsync(ct);
+        var projects = await db.AccountsProjects.Where(x => x.IsActive).ToListAsync(ct);
         var products = await db.SaleRoznamchaProducts.AsNoTracking().Where(x => x.IsActive && !x.IsDeleted).ToListAsync(ct);
         var stockReceipts = await db.SaleRoznamchaStockReceipts
             .Where(x => x.Reference != null)
@@ -187,9 +182,21 @@ public sealed class RoznamchaService(
                 var transMode = ResolveLookup(transModes,
                     ReadText(row, headers, "transmode", "transactionmode", "mode"), x => x.Code, x => x.Name);
                 var statusText = ReadText(row, headers, "status", "entrystatus");
-                var status = ResolveLookup(statuses, statusText, x => x.Code, x => x.Name) ?? defaultStatus;
-                var project = ResolveLookup(projects,
-                    ReadText(row, headers, "project", "projectname"), _ => null, x => x.Name);
+                var explicitStatusId = ReadInt(row, headers, "statusid", "entrystatusid");
+                var status = explicitStatusId.HasValue
+                    ? statuses.FirstOrDefault(x => x.Id == explicitStatusId.Value)
+                    : ResolveLookup(statuses, statusText, x => x.Code, x => x.Name);
+                if ((explicitStatusId.HasValue || !string.IsNullOrWhiteSpace(statusText)) && status == null)
+                    throw new InvalidOperationException($"Status '{statusText ?? explicitStatusId?.ToString()}' is not configured for Payment in Settings / Configuration.");
+                if (explicitStatusId.HasValue && !string.IsNullOrWhiteSpace(statusText) &&
+                    ResolveLookup(statuses, statusText, x => x.Code, x => x.Name)?.Id != explicitStatusId.Value)
+                    throw new InvalidOperationException("Status ID and status name refer to different configured statuses.");
+                status ??= defaultStatus;
+                var project = await EnsureProjectAsync(
+                    projects,
+                    ReadInt(row, headers, "projectid", "project_id"),
+                    ReadText(row, headers, "project", "projectname"),
+                    ct);
                 var transactionDate = ReadDate(row, headers, "transdate", "transactiondate", "purchaseddate", "transdateadjustment", "date")
                     ?? throw new InvalidOperationException("TransDate is missing or invalid.");
 
@@ -220,7 +227,9 @@ public sealed class RoznamchaService(
                     LibraryDocumentIds = []
                 };
 
-                var created = await CreateAsync(1, request, ct);
+                // Historical Excel already represents individual ledger sides. Do not
+                // synthesize receipts when importing legacy payment rows.
+                var created = await CreateCoreAsync(1, request, false, ct);
                 var createdEntity = await db.RoznamchaEntries.FirstAsync(x => x.Id == created.Id, ct);
                 var createdOn = ReadDateTime(row, headers, "createddate", "createdon", "createdatutc");
                 if (createdOn.HasValue) createdEntity.CreatedOnUtc = createdOn.Value;
@@ -230,6 +239,9 @@ public sealed class RoznamchaService(
 
                 if (matchedStock != null && matchedStock.RoznamchaEntryId == null)
                 {
+                    // Successful previous rows are detached to keep large imports bounded.
+                    if (db.Entry(matchedStock).State == EntityState.Detached)
+                        db.SaleRoznamchaStockReceipts.Attach(matchedStock);
                     matchedStock.RoznamchaEntryId = created.Id;
                     createdEntity.IsLocked = true;
                     result.InventoryLinksRestored++;
@@ -237,6 +249,7 @@ public sealed class RoznamchaService(
                 await db.SaveChangesAsync(ct);
                 if (!string.IsNullOrEmpty(normalizedRef)) existingOldRefs.Add(normalizedRef);
                 result.ImportedRows++;
+                db.ChangeTracker.Clear();
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
@@ -260,12 +273,19 @@ public sealed class RoznamchaService(
     public Task<RoznamchaEntryDto?> GetAsync(long id, CancellationToken ct = default) =>
         EntryQuery().FirstOrDefaultAsync(x => x.Id == id, ct);
 
-    public async Task<RoznamchaEntryDto> CreateAsync(int entryTypeId, SaveRoznamchaEntryRequest request, CancellationToken ct = default)
+    public Task<RoznamchaEntryDto> CreateAsync(int entryTypeId, SaveRoznamchaEntryRequest request, CancellationToken ct = default) =>
+        CreateCoreAsync(entryTypeId, request, true, ct);
+
+    private async Task<RoznamchaEntryDto> CreateCoreAsync(int entryTypeId, SaveRoznamchaEntryRequest request, bool pairInternalTransfer, CancellationToken ct)
     {
         EnsureEntryType(entryTypeId);
         await ValidateAsync(entryTypeId, request, ct);
         await ValidateLibraryDocumentsAsync(request.LibraryDocumentIds ?? [], ct);
+        var isTransfer = pairInternalTransfer && await IsInternalTransferAsync(request.TransactionTypeId, ct);
+        if (isTransfer && request.ProductId.HasValue)
+            throw new InvalidOperationException("An internal account transfer cannot also post an inventory purchase.");
         var gross = decimal.Round(request.Amount, 2, MidpointRounding.AwayFromZero);
+        if (isTransfer) gross = entryTypeId == 1 ? -decimal.Abs(gross) : decimal.Abs(gross);
         var taxRate = request.TaxRate.GetValueOrDefault();
         if (taxRate < 0 || taxRate > 100) throw new InvalidOperationException("Tax rate must be between 0 and 100.");
         var tax = request.TaxTypeId.HasValue || taxRate > 0
@@ -281,21 +301,34 @@ public sealed class RoznamchaService(
             Ref = entryTypeId == 1
                 ? await references.PaymentReferenceAsync(current.TenantId, ct)
                 : await references.ReceiptReferenceAsync(current.TenantId, ct),
-            RoznamchaTypeId = await ResolveRoznamchaTypeIdAsync(entryTypeId, ct),
+            RoznamchaTypeId = await ResolveRoznamchaTypeIdAsync(entryTypeId, ct)
+                ?? throw new InvalidOperationException("The requested Payment/Receipt type is not configured."),
             TransTypeId = request.TransactionTypeId ?? entryTypeId,
             CreatedByUserId = current.UserId,
             CreatedOnUtc = DateTime.UtcNow
         };
+        if (isTransfer) row.InternalTransferGroupId = Guid.NewGuid();
         Apply(row, request, net, tax, isUsd);
         await ExecuteInTransactionAsync(async () =>
         {
+            var counterpart = isTransfer ? await NewTransferCounterpartAsync(row, entryTypeId, ct) : null;
             db.RoznamchaEntries.Add(row);
+            if (counterpart != null)
+            {
+                counterpart.SNo = row.SNo + 1;
+                db.RoznamchaEntries.Add(counterpart);
+            }
             await db.SaveChangesAsync(ct);
             await ReconcileLibraryDocumentsAsync(row, request.LibraryDocumentIds ?? [], ct);
             await db.SaveChangesAsync(ct);
             await ApplyInventoryPurchaseFromPaymentAsync(entryTypeId, row, request, isUsd, ct);
+            if (counterpart != null)
+            {
+                await ReconcileLibraryDocumentsAsync(counterpart, request.LibraryDocumentIds ?? [], ct);
+                await AddProcessLogAsync(counterpart.Id, "Created", $"Internal transfer linked to {row.Ref} (entry {row.Id}).", ct);
+            }
+            await AddProcessLogAsync(row.Id, "Created", isTransfer ? "Linked internal transfer Payment/Receipt pair." : null, ct);
         }, ct);
-        await AddProcessLogAsync(row.Id, "Created", null, ct);
         return await GetAsync(row.Id, ct) ?? throw new InvalidOperationException("Saved transaction could not be reloaded.");
     }
 
@@ -304,15 +337,26 @@ public sealed class RoznamchaService(
         EnsureEntryType(entryTypeId);
         var row = await db.RoznamchaEntries.FirstOrDefaultAsync(x => x.Id == id && !x.IsDeleted, ct)
             ?? throw new KeyNotFoundException("Transaction was not found.");
+        if (row.RoznamchaTypeId != await ResolveRoznamchaTypeIdAsync(entryTypeId, ct))
+            throw new KeyNotFoundException("Transaction was not found for the requested Payment/Receipt type.");
         var inventoryPurchase = entryTypeId == 1
             ? await db.SaleRoznamchaStockReceipts.FirstOrDefaultAsync(x => x.RoznamchaEntryId == id, ct)
             : null;
         if (row.IsLocked && inventoryPurchase == null)
             throw new InvalidOperationException("Locked transaction cannot be edited.");
+        var counterpart = await FindTransferCounterpartAsync(row, ct);
+        if (counterpart?.IsLocked == true)
+            throw new InvalidOperationException("The linked internal transfer entry is locked; neither side can be edited.");
         await ValidateAsync(entryTypeId, request, ct);
         if (request.LibraryDocumentIds != null)
             await ValidateLibraryDocumentsAsync(request.LibraryDocumentIds, ct);
+        var isTransfer = await IsInternalTransferAsync(request.TransactionTypeId, ct);
+        if (row.InternalTransferGroupId.HasValue && !isTransfer)
+            throw new InvalidOperationException("A linked internal transfer must remain Internal Transfer. Delete the pair before creating a different transaction type.");
+        if (isTransfer && (request.ProductId.HasValue || inventoryPurchase != null))
+            throw new InvalidOperationException("An internal account transfer cannot also post an inventory purchase.");
         var gross = decimal.Round(request.Amount, 2, MidpointRounding.AwayFromZero);
+        if (isTransfer) gross = entryTypeId == 1 ? -decimal.Abs(gross) : decimal.Abs(gross);
         var taxRate = request.TaxRate.GetValueOrDefault();
         if (taxRate < 0 || taxRate > 100) throw new InvalidOperationException("Tax rate must be between 0 and 100.");
         var tax = request.TaxTypeId.HasValue || taxRate > 0 ? decimal.Round(gross * taxRate / 100m, 2) : 0m;
@@ -325,6 +369,16 @@ public sealed class RoznamchaService(
         Apply(row, request, net, tax, isUsd);
         await ExecuteInTransactionAsync(async () =>
         {
+            if (isTransfer)
+            {
+                row.InternalTransferGroupId ??= Guid.NewGuid();
+                if (counterpart == null)
+                {
+                    counterpart = await NewTransferCounterpartAsync(row, entryTypeId, ct);
+                    db.RoznamchaEntries.Add(counterpart);
+                }
+                else await CopyTransferCounterpartAsync(row, counterpart, entryTypeId, ct);
+            }
             if (inventoryPurchase != null)
                 await SynchronizeInventoryPurchaseAsync(inventoryPurchase, request, isUsd, ct);
             if (request.LibraryDocumentIds != null)
@@ -333,8 +387,14 @@ public sealed class RoznamchaService(
                 row.IsFromLibrary = !string.IsNullOrWhiteSpace(row.LibRef) ||
                     await db.RoznamchaLibraryDocuments.AnyAsync(x => x.RoznamchaEntryId == row.Id, ct);
             await db.SaveChangesAsync(ct);
+            if (counterpart != null)
+            {
+                if (request.LibraryDocumentIds != null)
+                    await ReconcileLibraryDocumentsAsync(counterpart, request.LibraryDocumentIds, ct);
+                await AddProcessLogAsync(counterpart.Id, "Updated", $"Internal transfer linked to {row.Ref} (entry {row.Id}).", ct);
+            }
+            await AddProcessLogAsync(row.Id, "Updated", null, ct);
         }, ct);
-        await AddProcessLogAsync(row.Id, "Updated", null, ct);
         return await GetAsync(row.Id, ct) ?? throw new InvalidOperationException("Updated transaction could not be reloaded.");
     }
 
@@ -342,21 +402,38 @@ public sealed class RoznamchaService(
     {
         var row = await db.RoznamchaEntries.FirstOrDefaultAsync(x => x.Id == id, ct)
             ?? throw new KeyNotFoundException("Transaction was not found.");
-        if (row.IsLocked) throw new InvalidOperationException("Locked transaction cannot be deleted.");
-        await EnsureNotInventoryPostedAsync(id, "deleted", ct);
-        row.IsDeleted = true;
-        row.UpdatedByUserId = current.UserId;
-        row.UpdatedOnUtc = DateTime.UtcNow;
-        if (!string.IsNullOrWhiteSpace(remarks)) row.Remarks = Clean(remarks, 2000);
-        await db.SaveChangesAsync(ct);
-        await AddProcessLogAsync(row.Id, "SoftDeleted", remarks, ct);
+        var counterpart = await FindTransferCounterpartAsync(row, ct);
+        var entries = counterpart == null ? new[] { row } : new[] { row, counterpart };
+        foreach (var entry in entries)
+        {
+            if (entry.IsLocked) throw new InvalidOperationException("An internal transfer side or transaction is locked and cannot be deleted.");
+            await EnsureNotInventoryPostedAsync(entry.Id, "deleted", ct);
+        }
+        await ExecuteInTransactionAsync(async () =>
+        {
+            foreach (var entry in entries)
+            {
+                entry.IsDeleted = true;
+                entry.UpdatedByUserId = current.UserId;
+                entry.UpdatedOnUtc = DateTime.UtcNow;
+                if (!string.IsNullOrWhiteSpace(remarks)) entry.Remarks = Clean(remarks, 2000);
+            }
+            await db.SaveChangesAsync(ct);
+            foreach (var entry in entries) await AddProcessLogAsync(entry.Id, "SoftDeleted", remarks, ct);
+        }, ct);
     }
 
     public async Task<RoznamchaEntryDto> UpdateStatusAsync(long id, UpdateRoznamchaStatusRequest request, CancellationToken ct = default)
     {
         var row = await db.RoznamchaEntries.FirstOrDefaultAsync(x => x.Id == id && !x.IsDeleted, ct)
             ?? throw new KeyNotFoundException("Transaction was not found.");
-        if (request.EntryStatusId.HasValue) row.EnterStatusId = request.EntryStatusId;
+        if (request.EntryStatusId.HasValue)
+        {
+            var processName = await RoznamchaStatusCatalog.ProcessForEntryAsync(db, row.RoznamchaTypeId, ct);
+            if (!await RoznamchaStatusCatalog.Query(db, processName).AnyAsync(x => x.Id == request.EntryStatusId, ct))
+                throw new InvalidOperationException("Status is not configured for this process in Settings / Configuration.");
+            row.EnterStatusId = request.EntryStatusId;
+        }
         if (request.IsSettled.HasValue) row.IsSettled = request.IsSettled.Value;
         if (request.IsShownHidden.HasValue) row.IsShow = !request.IsShownHidden.Value;
         if (request.IsLocked == false)
@@ -529,8 +606,9 @@ public sealed class RoznamchaService(
             throw new InvalidOperationException("Currency was not found or is inactive.");
         if (request.TaxTypeId.HasValue && !await db.AccountsTaxTypes.AsNoTracking().AnyAsync(x => x.Id == request.TaxTypeId && x.IsActive, ct))
             throw new InvalidOperationException("Tax type was not found or is inactive.");
-        if (request.EntryStatusId.HasValue && !await db.AccountsEntryStatuses.AsNoTracking().AnyAsync(x => x.Id == request.EntryStatusId && x.IsActive, ct))
-            throw new InvalidOperationException("Status was not found or is inactive.");
+        if (request.EntryStatusId.HasValue && !await RoznamchaStatusCatalog.Query(db, entryTypeId == 1 ? "Payment" : "Receipt")
+                .AnyAsync(x => x.Id == request.EntryStatusId, ct))
+            throw new InvalidOperationException("Status is not configured for this process in Settings / Configuration.");
         if (request.ProjectId.HasValue && !await db.AccountsProjects.AsNoTracking().AnyAsync(x => x.Id == request.ProjectId && x.IsActive, ct))
             throw new InvalidOperationException("Project was not found or is inactive.");
         if (entryTypeId == 1 && request.ProductId.HasValue)
@@ -594,6 +672,87 @@ public sealed class RoznamchaService(
             DownloadUrl = $"/api/accounts/roznamcha/entry/{entryId}/library-documents/{document.Id}/download"
         };
 
+    private Task<bool> IsInternalTransferAsync(int? transactionTypeId, CancellationToken ct) =>
+        db.AccountsTransTypes.AsNoTracking().AnyAsync(x =>
+            x.Id == transactionTypeId && x.IsActive && x.Code == "INTERNAL_TRANSFER", ct);
+
+    private async Task<RoznamchaEntry?> FindTransferCounterpartAsync(RoznamchaEntry row, CancellationToken ct)
+    {
+        if (!row.InternalTransferGroupId.HasValue) return null;
+        var linked = await db.RoznamchaEntries.Where(x => x.TenantId == row.TenantId &&
+                x.InternalTransferGroupId == row.InternalTransferGroupId && x.Id != row.Id)
+            .ToListAsync(ct);
+        if (linked.Count != 1 || linked[0].IsDeleted)
+            throw new InvalidOperationException("The linked internal transfer pair is incomplete. No changes were saved.");
+        return linked[0];
+    }
+
+    private async Task<RoznamchaEntry> NewTransferCounterpartAsync(RoznamchaEntry row, int entryTypeId, CancellationToken ct)
+    {
+        var counterpart = new RoznamchaEntry
+        {
+            TenantId = row.TenantId,
+            SNo = await db.RoznamchaEntries.CountAsync(ct) + 1,
+            Ref = entryTypeId == 1
+                ? await references.ReceiptReferenceAsync(current.TenantId, ct)
+                : await references.PaymentReferenceAsync(current.TenantId, ct),
+            CreatedByUserId = current.UserId,
+            CreatedOnUtc = DateTime.UtcNow
+        };
+        await CopyTransferCounterpartAsync(row, counterpart, entryTypeId, ct);
+        return counterpart;
+    }
+
+    private async Task CopyTransferCounterpartAsync(RoznamchaEntry source, RoznamchaEntry target, int sourceType, CancellationToken ct)
+    {
+        var targetType = sourceType == 1 ? 2 : 1;
+        var typeId = await ResolveRoznamchaTypeIdAsync(targetType, ct)
+            ?? throw new InvalidOperationException("Both Payment and Receipt types must be configured before saving an internal transfer.");
+        if (source.EnterStatusId.HasValue && !await RoznamchaStatusCatalog.Query(db, targetType == 1 ? "Payment" : "Receipt")
+                .AnyAsync(x => x.Id == source.EnterStatusId, ct))
+            throw new InvalidOperationException("The status is not configured for the linked internal transfer process in Settings / Configuration.");
+        target.InternalTransferGroupId = source.InternalTransferGroupId;
+        target.RoznamchaTypeId = typeId;
+        target.OldRef = source.OldRef;
+        target.FromAccountId = source.ToAccountId;
+        target.ToAccountId = source.FromAccountId;
+        target.CategoryId = await db.AccountsChartAccounts.AsNoTracking()
+            .Where(x => x.Id == source.ToAccountId).Select(x => x.CategoryId).SingleAsync(ct);
+        target.ProjectId = source.ProjectId;
+        target.CustomerId = source.CustomerId;
+        target.StaffId = source.StaffId;
+        target.TransTypeId = source.TransTypeId;
+        target.TransModeId = source.TransModeId;
+        target.InstrumentDate = source.InstrumentDate;
+        target.InstrumentNo = source.InstrumentNo;
+        target.Descriptions = source.Descriptions;
+        target.CurrencyId = source.CurrencyId;
+        target.TaxTypeId = source.TaxTypeId;
+        target.TaxRate = source.TaxRate;
+        target.TaxAmt = -source.TaxAmt;
+        target.Adjustment = -source.Adjustment;
+        target.Amount = -source.Amount;
+        target.UsdAmount = -source.UsdAmount;
+        target.BalanceAmount = -source.BalanceAmount;
+        target.Qty = source.Qty;
+        target.Rate = source.Rate;
+        target.EnterStatusId = source.EnterStatusId;
+        target.Remarks = source.Remarks;
+        target.BankRef = source.BankRef;
+        target.BankLtRef = source.BankLtRef;
+        target.TransDate = source.TransDate;
+        target.IsShow = source.IsShow;
+        target.IsSettled = source.IsSettled;
+        target.LibRef = source.LibRef;
+        target.IsLedger = source.IsLedger;
+        target.IsManual = source.IsManual;
+        if (target.Id != 0)
+        {
+            target.UpdatedByUserId = current.UserId;
+            target.UpdatedOnUtc = DateTime.UtcNow;
+        }
+    }
+
     private async Task<bool> IsUsdCurrencyAsync(int? currencyId, CancellationToken ct) =>
         currencyId.HasValue && await db.AccountsCurrencies.AsNoTracking()
             .AnyAsync(x => x.Id == currencyId.Value && x.IsActive && x.Code == "USD", ct);
@@ -635,6 +794,8 @@ public sealed class RoznamchaService(
 
     private IQueryable<RoznamchaEntryDto> EntryQuery() =>
         from entry in db.RoznamchaEntries.AsNoTracking()
+        join kind in db.AccountsRoznamchaTypes.AsNoTracking() on entry.RoznamchaTypeId equals kind.Id into kindRows
+        from kind in kindRows.DefaultIfEmpty()
         join fromAccount in db.AccountsChartAccounts.AsNoTracking() on entry.FromAccountId equals fromAccount.Id into fromRows
         from fromAccount in fromRows.DefaultIfEmpty()
         join toAccount in db.AccountsChartAccounts.AsNoTracking() on entry.ToAccountId equals toAccount.Id into toRows
@@ -642,10 +803,11 @@ public sealed class RoznamchaService(
         select new RoznamchaEntryDto
         {
             Id = entry.Id,
+            InternalTransferGroupId = entry.InternalTransferGroupId,
             SerialNo = entry.SNo,
             ReferenceNo = entry.Ref,
             OldReferenceNo = entry.OldRef,
-            EntryTypeId = entry.TransTypeId ?? entry.RoznamchaTypeId ?? 0,
+            EntryTypeId = kind == null ? 0 : kind.Code == "PAYMENT" ? 1 : kind.Code == "RECEIPT" ? 2 : 0,
             CategoryId = entry.CategoryId,
             FromAccountId = entry.FromAccountId,
             FromAccountName = fromAccount == null ? null : fromAccount.AccountName,
@@ -717,7 +879,6 @@ public sealed class RoznamchaService(
         var code = entryTypeId == 1 ? "PAYMENT" : "RECEIPT";
         return await db.AccountsRoznamchaTypes.AsNoTracking()
             .Where(x => x.IsActive && x.Code == code)
-            .OrderByDescending(x => x.TenantId.HasValue)
             .Select(x => (int?)x.Id)
             .FirstOrDefaultAsync(ct);
     }
@@ -976,11 +1137,92 @@ public sealed class RoznamchaService(
     private static bool HasAnyExcelHeader(IReadOnlyDictionary<string, int> headers, params string[] aliases) =>
         aliases.Any(alias => headers.ContainsKey(NormalizeExcelHeader(alias)));
 
+    private async Task<AccountsProject?> EnsureProjectAsync(
+        List<AccountsProject> projects,
+        int? projectId,
+        string? projectName,
+        CancellationToken ct)
+    {
+        var name = Clean(projectName, 160);
+        if (projectId is not > 0 && string.IsNullOrWhiteSpace(name))
+            return null;
+
+        if (projectId is > 0)
+        {
+            var byId = projects.FirstOrDefault(x => x.Id == projectId.Value);
+            if (byId != null)
+            {
+                if (!string.IsNullOrWhiteSpace(name) &&
+                    !string.Equals(byId.Name, name, StringComparison.OrdinalIgnoreCase))
+                {
+                    if (db.Entry(byId).State == EntityState.Detached)
+                        db.AccountsProjects.Attach(byId);
+                    byId.Name = name;
+                    await db.SaveChangesAsync(ct);
+                }
+                return byId;
+            }
+        }
+
+        if (!string.IsNullOrWhiteSpace(name))
+        {
+            var byName = projects.FirstOrDefault(x =>
+                string.Equals(x.Name, name, StringComparison.OrdinalIgnoreCase));
+            if (byName != null)
+                return byName;
+        }
+
+        if (current.TenantId <= 0)
+            throw new InvalidOperationException("A tenant is required before Project / ProjectId can be imported.");
+
+        var created = new AccountsProject
+        {
+            TenantId = current.TenantId,
+            Name = string.IsNullOrWhiteSpace(name) ? $"Project {projectId}" : name,
+            IsActive = true
+        };
+
+        if (projectId is > 0)
+        {
+            var taken = await db.AccountsProjects.IgnoreQueryFilters()
+                .AnyAsync(x => x.Id == projectId.Value, ct);
+            if (taken)
+                throw new InvalidOperationException($"Project Id {projectId.Value} already exists.");
+
+            created.Id = projectId.Value;
+            await db.Database.ExecuteSqlRawAsync("SET IDENTITY_INSERT dbo.AccountsProjects ON", cancellationToken: ct);
+            try
+            {
+                db.AccountsProjects.Add(created);
+                await db.SaveChangesAsync(ct);
+            }
+            finally
+            {
+                await db.Database.ExecuteSqlRawAsync("SET IDENTITY_INSERT dbo.AccountsProjects OFF", cancellationToken: ct);
+            }
+        }
+        else
+        {
+            db.AccountsProjects.Add(created);
+            await db.SaveChangesAsync(ct);
+        }
+
+        projects.Add(created);
+        return created;
+    }
+
     private static int? ReadInt(DataRow row, IReadOnlyDictionary<string, int> headers, params string[] aliases)
     {
         var text = ReadText(row, headers, aliases);
         if (string.IsNullOrWhiteSpace(text)) return null;
-        return int.TryParse(text, NumberStyles.Integer, CultureInfo.InvariantCulture, out var value) ? value : null;
+        if (int.TryParse(text, NumberStyles.Integer, CultureInfo.InvariantCulture, out var value))
+            return value;
+        if (decimal.TryParse(text, NumberStyles.Any, CultureInfo.InvariantCulture, out var decimalValue)
+            && decimalValue == decimal.Truncate(decimalValue)
+            && decimalValue > 0
+            && decimalValue <= int.MaxValue)
+            return (int)decimalValue;
+        return null;
     }
 
     private static long? ReadLong(DataRow row, IReadOnlyDictionary<string, int> headers, params string[] aliases)

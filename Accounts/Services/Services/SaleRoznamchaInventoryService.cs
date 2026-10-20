@@ -48,7 +48,7 @@ public sealed class SaleRoznamchaInventoryService(
 
         var currencies = await db.AccountsCurrencies.AsNoTracking()
             .Where(x => x.IsActive)
-            .Select(x => new { x.Id, x.Code, x.Name, x.TenantId })
+            .Select(x => new { x.Id, x.Code, x.Name })
             .ToListAsync(ct);
 
         var selected = currencies.OrderBy(x => x.Code).ThenBy(x => x.Id).ToList();

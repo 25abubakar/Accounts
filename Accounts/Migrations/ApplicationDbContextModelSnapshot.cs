@@ -154,9 +154,6 @@ namespace Accounts.Migrations
                         .HasMaxLength(120)
                         .HasColumnType("nvarchar(120)");
 
-                    b.Property<int>("TenantId")
-                        .HasColumnType("int");
-
                     b.Property<string>("UpdatedByUserId")
                         .HasMaxLength(450)
                         .HasColumnType("nvarchar(450)");
@@ -166,7 +163,7 @@ namespace Accounts.Migrations
 
                     b.HasKey("Id");
 
-                    b.HasIndex("TenantId", "Name")
+                    b.HasIndex("Name")
                         .IsUnique();
 
                     b.ToTable("AccountsCategoryTypes");
@@ -305,8 +302,7 @@ namespace Accounts.Migrations
                     b.HasIndex("TenantId", "AccountCode")
                         .HasFilter("[AccountCode] IS NOT NULL");
 
-                    b.HasIndex("TenantId", "AccountNumber")
-                        .IsUnique();
+                    b.HasIndex("TenantId", "AccountNumber");
 
                     b.HasIndex("TenantId", "AccountReference")
                         .IsUnique()
@@ -340,14 +336,10 @@ namespace Accounts.Migrations
                         .HasMaxLength(80)
                         .HasColumnType("nvarchar(80)");
 
-                    b.Property<int?>("TenantId")
-                        .HasColumnType("int");
-
                     b.HasKey("Id");
 
-                    b.HasIndex("TenantId", "Code")
-                        .IsUnique()
-                        .HasFilter("[TenantId] IS NOT NULL");
+                    b.HasIndex("Code")
+                        .IsUnique();
 
                     b.ToTable("AccountsCurrencies");
                 });
@@ -373,14 +365,10 @@ namespace Accounts.Migrations
                         .HasMaxLength(120)
                         .HasColumnType("nvarchar(120)");
 
-                    b.Property<int?>("TenantId")
-                        .HasColumnType("int");
-
                     b.HasKey("Id");
 
-                    b.HasIndex("TenantId", "Code")
-                        .IsUnique()
-                        .HasFilter("[TenantId] IS NOT NULL");
+                    b.HasIndex("Code")
+                        .IsUnique();
 
                     b.ToTable("AccountsDateLabels");
                 });
@@ -730,14 +718,10 @@ namespace Accounts.Migrations
                         .HasMaxLength(120)
                         .HasColumnType("nvarchar(120)");
 
-                    b.Property<int?>("TenantId")
-                        .HasColumnType("int");
-
                     b.HasKey("Id");
 
-                    b.HasIndex("TenantId", "Code")
-                        .IsUnique()
-                        .HasFilter("[TenantId] IS NOT NULL");
+                    b.HasIndex("Code")
+                        .IsUnique();
 
                     b.ToTable("AccountsRoznamchaTypes");
                 });
@@ -799,14 +783,10 @@ namespace Accounts.Migrations
                         .HasMaxLength(120)
                         .HasColumnType("nvarchar(120)");
 
-                    b.Property<int?>("TenantId")
-                        .HasColumnType("int");
-
                     b.HasKey("Id");
 
-                    b.HasIndex("TenantId", "Code")
-                        .IsUnique()
-                        .HasFilter("[TenantId] IS NOT NULL");
+                    b.HasIndex("Code")
+                        .IsUnique();
 
                     b.ToTable("AccountsTransModes");
                 });
@@ -832,14 +812,10 @@ namespace Accounts.Migrations
                         .HasMaxLength(120)
                         .HasColumnType("nvarchar(120)");
 
-                    b.Property<int?>("TenantId")
-                        .HasColumnType("int");
-
                     b.HasKey("Id");
 
-                    b.HasIndex("TenantId", "Code")
-                        .IsUnique()
-                        .HasFilter("[TenantId] IS NOT NULL");
+                    b.HasIndex("Code")
+                        .IsUnique();
 
                     b.ToTable("AccountsTransTypes");
                 });
@@ -7060,18 +7036,13 @@ namespace Accounts.Migrations
                     b.Property<int>("StatusId")
                         .HasColumnType("int");
 
-                    b.Property<int>("TenantId")
-                        .HasColumnType("int");
-
                     b.HasKey("Id");
-
-                    b.HasIndex("ActionId");
 
                     b.HasIndex("ColorId");
 
                     b.HasIndex("StatusId");
 
-                    b.HasIndex("TenantId", "ActionId", "StatusId")
+                    b.HasIndex("ActionId", "StatusId")
                         .IsUnique();
 
                     b.ToTable("ActionStatuses", "PlatformSettings");
@@ -7113,12 +7084,9 @@ namespace Accounts.Migrations
                     b.Property<DateTime?>("ModifiedOnUtc")
                         .HasColumnType("datetime2");
 
-                    b.Property<int>("TenantId")
-                        .HasColumnType("int");
-
                     b.HasKey("Id");
 
-                    b.HasIndex("TenantId", "ColorCode")
+                    b.HasIndex("ColorCode")
                         .IsUnique();
 
                     b.ToTable("Colors", "PlatformSettings");
@@ -7157,16 +7125,60 @@ namespace Accounts.Migrations
                         .HasMaxLength(150)
                         .HasColumnType("nvarchar(150)");
 
-                    b.Property<int>("TenantId")
-                        .HasColumnType("int");
-
                     b.HasKey("Id");
-
-                    b.HasIndex("TenantId");
 
                     b.ToTable((string)null);
 
                     b.UseTpcMappingStrategy();
+                });
+
+            modelBuilder.Entity("Accounts.Models.PlatformSettingProcessStatus", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<int?>("ColorId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("CreatedByUserId")
+                        .HasMaxLength(450)
+                        .HasColumnType("nvarchar(450)");
+
+                    b.Property<DateTime>("CreatedOnUtc")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("datetime2")
+                        .HasDefaultValueSql("SYSUTCDATETIME()");
+
+                    b.Property<string>("ModifiedByUserId")
+                        .HasMaxLength(450)
+                        .HasColumnType("nvarchar(450)");
+
+                    b.Property<DateTime?>("ModifiedOnUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<int>("ProcessId")
+                        .HasColumnType("int");
+
+                    b.Property<int>("StatusId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("Value")
+                        .HasMaxLength(150)
+                        .HasColumnType("nvarchar(150)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ColorId");
+
+                    b.HasIndex("StatusId");
+
+                    b.HasIndex("ProcessId", "StatusId")
+                        .IsUnique();
+
+                    b.ToTable("ProcessStatuses", "PlatformSettings");
                 });
 
             modelBuilder.Entity("Accounts.Models.PlatformSettingStatusCrDbValue", b =>
@@ -7206,14 +7218,9 @@ namespace Accounts.Migrations
                     b.Property<int>("StatusId")
                         .HasColumnType("int");
 
-                    b.Property<int>("TenantId")
-                        .HasColumnType("int");
-
                     b.HasKey("Id");
 
-                    b.HasIndex("StatusId");
-
-                    b.HasIndex("TenantId", "StatusId")
+                    b.HasIndex("StatusId")
                         .IsUnique();
 
                     b.ToTable("StatusCrDbValues", "PlatformSettings");
@@ -7934,6 +7941,9 @@ namespace Accounts.Migrations
                         .HasMaxLength(100)
                         .HasColumnType("nvarchar(100)");
 
+                    b.Property<Guid?>("InternalTransferGroupId")
+                        .HasColumnType("uniqueidentifier");
+
                     b.Property<bool>("IsApproved")
                         .HasColumnType("bit");
 
@@ -8042,6 +8052,7 @@ namespace Accounts.Migrations
                         .HasColumnType("nvarchar(450)");
 
                     b.Property<DateTime?>("UpdatedOnUtc")
+                        .IsConcurrencyToken()
                         .HasColumnType("datetime2");
 
                     b.Property<decimal?>("UsdAmount")
@@ -8050,6 +8061,8 @@ namespace Accounts.Migrations
                     b.HasKey("Id");
 
                     b.HasIndex("CategoryId");
+
+                    b.HasIndex("EnterStatusId");
 
                     b.HasIndex("FromAccountId");
 
@@ -8064,6 +8077,10 @@ namespace Accounts.Migrations
                     b.HasIndex("TenantId", "TransDate");
 
                     b.HasIndex("TenantId", "CategoryId", "TransDate");
+
+                    b.HasIndex("TenantId", "InternalTransferGroupId", "RoznamchaTypeId")
+                        .IsUnique()
+                        .HasFilter("[InternalTransferGroupId] IS NOT NULL");
 
                     b.HasIndex("TenantId", "RoznamchaTypeId", "TransDate");
 
@@ -8177,6 +8194,50 @@ namespace Accounts.Migrations
                         .IsUnique();
 
                     b.ToTable("RoznamchaLibraryDocuments");
+                });
+
+            modelBuilder.Entity("Accounts.Models.RoznamchaToAccountCategoryRow", b =>
+                {
+                    b.Property<bool>("IsActive")
+                        .HasColumnType("bit");
+
+                    b.Property<int?>("ParentId")
+                        .HasColumnType("int");
+
+                    b.Property<int>("TenantId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("ToAccountCode")
+                        .HasMaxLength(80)
+                        .HasColumnType("nvarchar(80)");
+
+                    b.Property<int>("ToAccountId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("ToAccountName")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<string>("ToAccountNumber")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .HasColumnType("nvarchar(50)");
+
+                    b.Property<string>("ToCategoryCode")
+                        .HasMaxLength(40)
+                        .HasColumnType("nvarchar(40)");
+
+                    b.Property<int?>("ToCategoryId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("ToCategoryName")
+                        .HasMaxLength(120)
+                        .HasColumnType("nvarchar(120)");
+
+                    b.ToTable((string)null);
+
+                    b.ToView("vw_RoznamchaToAccountCategory", "dbo");
                 });
 
             modelBuilder.Entity("Accounts.Models.SalaryPackage", b =>
@@ -8472,8 +8533,6 @@ namespace Accounts.Migrations
                         .HasColumnType("datetime2");
 
                     b.HasKey("Id");
-
-                    b.HasAlternateKey("TenantId", "Id");
 
                     b.HasIndex("TenantId", "Name")
                         .IsUnique();
@@ -10290,17 +10349,27 @@ namespace Accounts.Migrations
                 {
                     b.HasBaseType("Accounts.Models.PlatformSettingNamedRow");
 
-                    b.HasIndex("TenantId", "Name")
+                    b.HasIndex("Name")
                         .IsUnique();
 
                     b.ToTable("Actions", "PlatformSettings");
+                });
+
+            modelBuilder.Entity("Accounts.Models.PlatformSettingProcess", b =>
+                {
+                    b.HasBaseType("Accounts.Models.PlatformSettingNamedRow");
+
+                    b.HasIndex("Name")
+                        .IsUnique();
+
+                    b.ToTable("Processes", "PlatformSettings");
                 });
 
             modelBuilder.Entity("Accounts.Models.PlatformSettingStatus", b =>
                 {
                     b.HasBaseType("Accounts.Models.PlatformSettingNamedRow");
 
-                    b.HasIndex("TenantId", "Name")
+                    b.HasIndex("Name")
                         .IsUnique();
 
                     b.ToTable("Statuses", "PlatformSettings");
@@ -10498,15 +10567,6 @@ namespace Accounts.Migrations
                         .IsRequired();
                 });
 
-            modelBuilder.Entity("Accounts.Models.AccountsCategoryType", b =>
-                {
-                    b.HasOne("Accounts.Models.Tenant", null)
-                        .WithMany()
-                        .HasForeignKey("TenantId")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
-                });
-
             modelBuilder.Entity("Accounts.Models.AccountsChartAccount", b =>
                 {
                     b.HasOne("Accounts.Models.AccountsCategory", null)
@@ -10524,22 +10584,6 @@ namespace Accounts.Migrations
                         .HasForeignKey("TenantId")
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
-                });
-
-            modelBuilder.Entity("Accounts.Models.AccountsCurrency", b =>
-                {
-                    b.HasOne("Accounts.Models.Tenant", null)
-                        .WithMany()
-                        .HasForeignKey("TenantId")
-                        .OnDelete(DeleteBehavior.Restrict);
-                });
-
-            modelBuilder.Entity("Accounts.Models.AccountsDateLabel", b =>
-                {
-                    b.HasOne("Accounts.Models.Tenant", null)
-                        .WithMany()
-                        .HasForeignKey("TenantId")
-                        .OnDelete(DeleteBehavior.Restrict);
                 });
 
             modelBuilder.Entity("Accounts.Models.AccountsEntryDocument", b =>
@@ -10705,31 +10749,7 @@ namespace Accounts.Migrations
                         .IsRequired();
                 });
 
-            modelBuilder.Entity("Accounts.Models.AccountsRoznamchaType", b =>
-                {
-                    b.HasOne("Accounts.Models.Tenant", null)
-                        .WithMany()
-                        .HasForeignKey("TenantId")
-                        .OnDelete(DeleteBehavior.Restrict);
-                });
-
             modelBuilder.Entity("Accounts.Models.AccountsTaxType", b =>
-                {
-                    b.HasOne("Accounts.Models.Tenant", null)
-                        .WithMany()
-                        .HasForeignKey("TenantId")
-                        .OnDelete(DeleteBehavior.Restrict);
-                });
-
-            modelBuilder.Entity("Accounts.Models.AccountsTransMode", b =>
-                {
-                    b.HasOne("Accounts.Models.Tenant", null)
-                        .WithMany()
-                        .HasForeignKey("TenantId")
-                        .OnDelete(DeleteBehavior.Restrict);
-                });
-
-            modelBuilder.Entity("Accounts.Models.AccountsTransType", b =>
                 {
                     b.HasOne("Accounts.Models.Tenant", null)
                         .WithMany()
@@ -12002,41 +12022,37 @@ namespace Accounts.Migrations
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
 
-                    b.HasOne("Accounts.Models.Tenant", "Tenant")
-                        .WithMany()
-                        .HasForeignKey("TenantId")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
-
                     b.Navigation("Action");
 
                     b.Navigation("Color");
 
                     b.Navigation("Status");
-
-                    b.Navigation("Tenant");
                 });
 
-            modelBuilder.Entity("Accounts.Models.PlatformSettingColor", b =>
+            modelBuilder.Entity("Accounts.Models.PlatformSettingProcessStatus", b =>
                 {
-                    b.HasOne("Accounts.Models.Tenant", "Tenant")
+                    b.HasOne("Accounts.Models.PlatformSettingColor", "Color")
                         .WithMany()
-                        .HasForeignKey("TenantId")
+                        .HasForeignKey("ColorId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("Accounts.Models.PlatformSettingProcess", "Process")
+                        .WithMany()
+                        .HasForeignKey("ProcessId")
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
 
-                    b.Navigation("Tenant");
-                });
-
-            modelBuilder.Entity("Accounts.Models.PlatformSettingNamedRow", b =>
-                {
-                    b.HasOne("Accounts.Models.Tenant", "Tenant")
+                    b.HasOne("Accounts.Models.PlatformSettingStatus", "Status")
                         .WithMany()
-                        .HasForeignKey("TenantId")
+                        .HasForeignKey("StatusId")
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
 
-                    b.Navigation("Tenant");
+                    b.Navigation("Color");
+
+                    b.Navigation("Process");
+
+                    b.Navigation("Status");
                 });
 
             modelBuilder.Entity("Accounts.Models.PlatformSettingStatusCrDbValue", b =>
@@ -12047,15 +12063,7 @@ namespace Accounts.Migrations
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
 
-                    b.HasOne("Accounts.Models.Tenant", "Tenant")
-                        .WithMany()
-                        .HasForeignKey("TenantId")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
-
                     b.Navigation("Status");
-
-                    b.Navigation("Tenant");
                 });
 
             modelBuilder.Entity("Accounts.Models.PlatformTypeTableRow", b =>
@@ -12278,6 +12286,11 @@ namespace Accounts.Migrations
                     b.HasOne("Accounts.Models.AccountsCategory", null)
                         .WithMany()
                         .HasForeignKey("CategoryId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("Accounts.Models.PlatformSettingStatus", null)
+                        .WithMany()
+                        .HasForeignKey("EnterStatusId")
                         .OnDelete(DeleteBehavior.Restrict);
 
                     b.HasOne("Accounts.Models.AccountsChartAccount", null)

@@ -1,5 +1,6 @@
 using Accounts.Data;
 using Accounts.DTOs;
+using Accounts.Services.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -22,5 +23,5 @@ public sealed class AccountsLookupsController(ApplicationDbContext db) : Control
     public async Task<IActionResult> Taxes(CancellationToken ct) => Ok(ApiResponse<object>.Ok(await db.AccountsTaxTypes.AsNoTracking().Where(x => x.IsActive).OrderBy(x => x.Name).Select(x => new { x.Id, x.Code, x.Name, x.DefaultRate }).ToListAsync(ct)));
 
     [HttpGet("statuses/account-entry")]
-    public async Task<IActionResult> Statuses(CancellationToken ct) => Ok(ApiResponse<object>.Ok(await db.AccountsEntryStatuses.AsNoTracking().Where(x => x.IsActive).OrderBy(x => x.Name).Select(x => new { x.Id, x.Code, x.Name, x.ColorCode, x.FontColor }).ToListAsync(ct)));
+    public async Task<IActionResult> Statuses(CancellationToken ct) => Ok(ApiResponse<object>.Ok(await RoznamchaStatusCatalog.Query(db).OrderBy(x => x.Name).ToListAsync(ct)));
 }

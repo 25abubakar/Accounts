@@ -62,7 +62,6 @@ public sealed class AccountsRoznamchaService(ApplicationDbContext db) : IAccount
 
         return await db.AccountsRoznamchaTypes.AsNoTracking()
             .Where(x => x.IsActive && x.Code == typeCode)
-            .OrderByDescending(x => x.TenantId.HasValue)
             .Select(x => (int?)x.Id)
             .FirstOrDefaultAsync(cancellationToken);
     }

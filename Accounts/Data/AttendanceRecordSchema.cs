@@ -127,19 +127,19 @@ public static class AttendanceRecordSchema
                         SELECT @ProcessId=Id FROM dbo.Processes WHERE ProcessName=N''Attendance'';
                         
                         DECLARE @PlatformActionId int;
-                        SELECT TOP(1) @PlatformActionId=Id FROM PlatformSettings.Actions WHERE Name=N''Attendance'' AND TenantId=@TenantId;
+                        SELECT TOP(1) @PlatformActionId=Id FROM PlatformSettings.Actions WHERE Name=N''Attendance'';
 
                         SELECT TOP(1) @PlatformDayOff = pas.Id
                         FROM PlatformSettings.Statuses s
                         JOIN PlatformSettings.ActionStatuses pas ON pas.StatusId = s.Id
-                        WHERE pas.ActionId = @PlatformActionId AND s.Name = N''Day Off'' AND (pas.TenantId = @TenantId OR pas.TenantId IS NULL)
-                        ORDER BY CASE WHEN pas.TenantId=@TenantId THEN 0 ELSE 1 END;
+                        WHERE pas.ActionId = @PlatformActionId AND s.Name = N''Day Off''
+                        ORDER BY pas.Id;
                         
                         SELECT TOP(1) @PlatformHoliday = pas.Id
                         FROM PlatformSettings.Statuses s
                         JOIN PlatformSettings.ActionStatuses pas ON pas.StatusId = s.Id
-                        WHERE pas.ActionId = @PlatformActionId AND s.Name = N''Holiday'' AND (pas.TenantId = @TenantId OR pas.TenantId IS NULL)
-                        ORDER BY CASE WHEN pas.TenantId=@TenantId THEN 0 ELSE 1 END;
+                        WHERE pas.ActionId = @PlatformActionId AND s.Name = N''Holiday''
+                        ORDER BY pas.Id;
 
                         ;WITH Dates AS(
                             SELECT @DateFrom AttendanceDate UNION ALL
@@ -228,11 +228,11 @@ public static class AttendanceRecordSchema
                         FROM ReportRows rowData
                         LEFT JOIN PlatformSettings.ActionStatuses platformActionStatus ON platformActionStatus.Id=rowData.PlatformActionStatusId
                         LEFT JOIN PlatformSettings.Statuses platformStatus ON platformStatus.Id=platformActionStatus.StatusId
-                        LEFT JOIN PlatformSettings.StatusCrDbValues platformCrDb ON platformCrDb.StatusId=platformStatus.Id AND (platformCrDb.TenantId=@TenantId OR platformCrDb.TenantId IS NULL)
+                        LEFT JOIN PlatformSettings.StatusCrDbValues platformCrDb ON platformCrDb.StatusId=platformStatus.Id
                         LEFT JOIN PlatformSettings.Colors platformColor ON platformColor.Id=platformActionStatus.ColorId
                         LEFT JOIN PlatformSettings.ActionStatuses cameraActionStatus ON cameraActionStatus.Id=rowData.CameraPlatformActionStatusId
                         LEFT JOIN PlatformSettings.Statuses cameraStatus ON cameraStatus.Id=cameraActionStatus.StatusId
-                        LEFT JOIN PlatformSettings.StatusCrDbValues cameraCrDb ON cameraCrDb.StatusId=cameraStatus.Id AND (cameraCrDb.TenantId=@TenantId OR cameraCrDb.TenantId IS NULL)
+                        LEFT JOIN PlatformSettings.StatusCrDbValues cameraCrDb ON cameraCrDb.StatusId=cameraStatus.Id
                         LEFT JOIN PlatformSettings.Colors cameraColor ON cameraColor.Id=cameraActionStatus.ColorId
                         LEFT JOIN PlatformTypes.AttendanceTypes entryType ON entryType.Id=rowData.AttendanceEntryTypeId AND entryType.TenantId=@TenantId
                         LEFT JOIN PlatformTypes.AttendanceTypes noEntry ON noEntry.Code=N''NONE'' AND noEntry.IsActive=1 AND noEntry.TenantId=@TenantId

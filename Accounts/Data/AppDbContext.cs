@@ -84,9 +84,11 @@ namespace Accounts.Data
         public DbSet<AttendanceType>           AttendanceTypes          => Set<AttendanceType>();
         public DbSet<BenefitType>              BenefitTypes             => Set<BenefitType>();
         public DbSet<PlatformSettingAction>    PlatformSettingActions   => Set<PlatformSettingAction>();
+        public DbSet<PlatformSettingProcess>   PlatformSettingProcesses => Set<PlatformSettingProcess>();
         public DbSet<PlatformSettingStatus>    PlatformSettingStatuses  => Set<PlatformSettingStatus>();
         public DbSet<PlatformSettingColor>     PlatformSettingColors    => Set<PlatformSettingColor>();
         public DbSet<PlatformSettingActionStatus> PlatformSettingActionStatuses => Set<PlatformSettingActionStatus>();
+        public DbSet<PlatformSettingProcessStatus> PlatformSettingProcessStatuses => Set<PlatformSettingProcessStatus>();
         public DbSet<PlatformSettingStatusCrDbValue> PlatformSettingStatusCrDbValues => Set<PlatformSettingStatusCrDbValue>();
         public DbSet<ProcessMaster>            Processes                => Set<ProcessMaster>();
         public DbSet<ProcessApprovalCode> ProcessApprovalCodes => Set<ProcessApprovalCode>();
@@ -396,30 +398,7 @@ namespace Accounts.Data
             builder.Entity<AccountsCategory>().HasQueryFilter(row =>
                 _tenantService != null && !_tenantService.IsSuperAdmin &&
                 _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
-            builder.Entity<AccountsCategoryType>().HasQueryFilter(row =>
-                _tenantService != null && !_tenantService.IsSuperAdmin &&
-                _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
-            builder.Entity<AccountsRoznamchaType>().HasQueryFilter(row =>
-                _tenantService != null && !_tenantService.IsSuperAdmin &&
-                _tenantService.TenantId != null &&
-                (row.TenantId == null || row.TenantId == _tenantService.TenantId));
             builder.Entity<AccountsEntryStatus>().HasQueryFilter(row =>
-                _tenantService != null && !_tenantService.IsSuperAdmin &&
-                _tenantService.TenantId != null &&
-                (row.TenantId == null || row.TenantId == _tenantService.TenantId));
-            builder.Entity<AccountsTransType>().HasQueryFilter(row =>
-                _tenantService != null && !_tenantService.IsSuperAdmin &&
-                _tenantService.TenantId != null &&
-                (row.TenantId == null || row.TenantId == _tenantService.TenantId));
-            builder.Entity<AccountsTransMode>().HasQueryFilter(row =>
-                _tenantService != null && !_tenantService.IsSuperAdmin &&
-                _tenantService.TenantId != null &&
-                (row.TenantId == null || row.TenantId == _tenantService.TenantId));
-            builder.Entity<AccountsCurrency>().HasQueryFilter(row =>
-                _tenantService != null && !_tenantService.IsSuperAdmin &&
-                _tenantService.TenantId != null &&
-                (row.TenantId == null || row.TenantId == _tenantService.TenantId));
-            builder.Entity<AccountsDateLabel>().HasQueryFilter(row =>
                 _tenantService != null && !_tenantService.IsSuperAdmin &&
                 _tenantService.TenantId != null &&
                 (row.TenantId == null || row.TenantId == _tenantService.TenantId));
@@ -530,18 +509,6 @@ namespace Accounts.Data
                 _tenantService != null && !_tenantService.IsSuperAdmin &&
                 _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
             builder.Entity<PlatformTypeTableRow>().HasQueryFilter(row =>
-                _tenantService != null && !_tenantService.IsSuperAdmin &&
-                _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
-            builder.Entity<PlatformSettingNamedRow>().HasQueryFilter(row =>
-                _tenantService != null && !_tenantService.IsSuperAdmin &&
-                _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
-            builder.Entity<PlatformSettingColor>().HasQueryFilter(row =>
-                _tenantService != null && !_tenantService.IsSuperAdmin &&
-                _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
-            builder.Entity<PlatformSettingActionStatus>().HasQueryFilter(row =>
-                _tenantService != null && !_tenantService.IsSuperAdmin &&
-                _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
-            builder.Entity<PlatformSettingStatusCrDbValue>().HasQueryFilter(row =>
                 _tenantService != null && !_tenantService.IsSuperAdmin &&
                 _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
             builder.Entity<AttendanceRecord>().HasQueryFilter(row =>
@@ -1069,9 +1036,9 @@ namespace Accounts.Data
                 e.HasKey(x => x.Id);
                 e.Property(x => x.Name).HasMaxLength(150).IsRequired();
                 e.Property(x => x.CreatedOnUtc).HasDefaultValueSql("SYSUTCDATETIME()");
-                e.HasOne(x => x.Tenant).WithMany().HasForeignKey(x => x.TenantId).OnDelete(DeleteBehavior.Restrict);
             });
             ConfigurePlatformSettingNameTable<PlatformSettingAction>(builder, "Actions");
+            ConfigurePlatformSettingNameTable<PlatformSettingProcess>(builder, "Processes");
             ConfigurePlatformSettingNameTable<PlatformSettingStatus>(builder, "Statuses");
 
             builder.Entity<PlatformSettingColor>(e =>
@@ -1081,8 +1048,7 @@ namespace Accounts.Data
                 e.Property(x => x.ColorCode).HasMaxLength(9).IsRequired();
                 e.Property(x => x.FontColor).HasMaxLength(9);
                 e.Property(x => x.CreatedOnUtc).HasDefaultValueSql("SYSUTCDATETIME()");
-                e.HasIndex(x => new { x.TenantId, x.ColorCode }).IsUnique();
-                e.HasOne(x => x.Tenant).WithMany().HasForeignKey(x => x.TenantId).OnDelete(DeleteBehavior.Restrict);
+                e.HasIndex(x => x.ColorCode).IsUnique();
             });
 
             builder.Entity<PlatformSettingActionStatus>(e =>
@@ -1090,9 +1056,20 @@ namespace Accounts.Data
                 e.ToTable("ActionStatuses", "PlatformSettings");
                 e.HasKey(x => x.Id);
                 e.Property(x => x.CreatedOnUtc).HasDefaultValueSql("SYSUTCDATETIME()");
-                e.HasIndex(x => new { x.TenantId, x.ActionId, x.StatusId }).IsUnique();
-                e.HasOne(x => x.Tenant).WithMany().HasForeignKey(x => x.TenantId).OnDelete(DeleteBehavior.Restrict);
+                e.HasIndex(x => new { x.ActionId, x.StatusId }).IsUnique();
                 e.HasOne(x => x.Action).WithMany().HasForeignKey(x => x.ActionId).OnDelete(DeleteBehavior.Restrict);
+                e.HasOne(x => x.Status).WithMany().HasForeignKey(x => x.StatusId).OnDelete(DeleteBehavior.Restrict);
+                e.HasOne(x => x.Color).WithMany().HasForeignKey(x => x.ColorId).OnDelete(DeleteBehavior.Restrict);
+            });
+
+            builder.Entity<PlatformSettingProcessStatus>(e =>
+            {
+                e.ToTable("ProcessStatuses", "PlatformSettings");
+                e.HasKey(x => x.Id);
+                e.Property(x => x.Value).HasMaxLength(150);
+                e.Property(x => x.CreatedOnUtc).HasDefaultValueSql("SYSUTCDATETIME()");
+                e.HasIndex(x => new { x.ProcessId, x.StatusId }).IsUnique();
+                e.HasOne(x => x.Process).WithMany().HasForeignKey(x => x.ProcessId).OnDelete(DeleteBehavior.Restrict);
                 e.HasOne(x => x.Status).WithMany().HasForeignKey(x => x.StatusId).OnDelete(DeleteBehavior.Restrict);
                 e.HasOne(x => x.Color).WithMany().HasForeignKey(x => x.ColorId).OnDelete(DeleteBehavior.Restrict);
             });
@@ -1104,8 +1081,7 @@ namespace Accounts.Data
                 e.Property(x => x.CrValue).HasMaxLength(150).IsRequired();
                 e.Property(x => x.DbValue).HasMaxLength(150).IsRequired();
                 e.Property(x => x.CreatedOnUtc).HasDefaultValueSql("SYSUTCDATETIME()");
-                e.HasIndex(x => new { x.TenantId, x.StatusId }).IsUnique();
-                e.HasOne(x => x.Tenant).WithMany().HasForeignKey(x => x.TenantId).OnDelete(DeleteBehavior.Restrict);
+                e.HasIndex(x => x.StatusId).IsUnique();
                 e.HasOne(x => x.Status).WithMany().HasForeignKey(x => x.StatusId).OnDelete(DeleteBehavior.Restrict);
             });
 
@@ -2090,10 +2066,14 @@ namespace Accounts.Data
             // ── Accounts / ROZ module ───────────────────────────────────────────
             builder.Entity<RoznamchaEntry>(e =>
             {
+                e.HasOne<PlatformSettingStatus>().WithMany().HasForeignKey(x => x.EnterStatusId).OnDelete(DeleteBehavior.Restrict);
+                e.Property(x => x.UpdatedOnUtc).IsConcurrencyToken();
                 e.HasIndex(x => new { x.TenantId, x.TransDate });
                 e.HasIndex(x => new { x.TenantId, x.Ref }).IsUnique().HasFilter("[Ref] IS NOT NULL");
                 e.HasIndex(x => new { x.TenantId, x.CategoryId, x.TransDate });
                 e.HasIndex(x => new { x.TenantId, x.RoznamchaTypeId, x.TransDate });
+                e.HasIndex(x => new { x.TenantId, x.InternalTransferGroupId, x.RoznamchaTypeId })
+                    .IsUnique().HasFilter("[InternalTransferGroupId] IS NOT NULL");
                 e.HasOne<Tenant>().WithMany().HasForeignKey(x => x.TenantId).OnDelete(DeleteBehavior.Restrict);
                 e.HasOne<AccountsCategory>().WithMany().HasForeignKey(x => x.CategoryId).OnDelete(DeleteBehavior.Restrict);
                 e.HasOne<AccountsChartAccount>().WithMany().HasForeignKey(x => x.FromAccountId).OnDelete(DeleteBehavior.Restrict);
@@ -2102,11 +2082,12 @@ namespace Accounts.Data
             });
             builder.Entity<AccountsChartAccount>(e =>
             {
-                e.HasIndex(x => new { x.TenantId, x.AccountNumber }).IsUnique();
+                // Preserve legacy account numbers exactly. Historical tenant data can
+                // contain more than one account with the same displayed account number.
+                e.HasIndex(x => new { x.TenantId, x.AccountNumber });
                 e.HasIndex(x => new { x.TenantId, x.CategoryId });
                 e.HasIndex(x => new { x.TenantId, x.ParentId });
-                // Legacy chart data can intentionally share a display code (for example BNK-10)
-                // while AccountNumber remains the tenant-scoped unique accounting key.
+                // Legacy chart data can intentionally share a display code (for example BNK-10).
                 e.HasIndex(x => new { x.TenantId, x.AccountCode }).HasFilter("[AccountCode] IS NOT NULL");
                 e.HasIndex(x => new { x.TenantId, x.AccountReference }).IsUnique().HasFilter("[AccountReference] IS NOT NULL");
                 e.HasOne<Tenant>().WithMany().HasForeignKey(x => x.TenantId).OnDelete(DeleteBehavior.Restrict);
@@ -2122,13 +2103,11 @@ namespace Accounts.Data
             });
             builder.Entity<AccountsCategoryType>(e =>
             {
-                e.HasIndex(x => new { x.TenantId, x.Name }).IsUnique();
-                e.HasOne<Tenant>().WithMany().HasForeignKey(x => x.TenantId).OnDelete(DeleteBehavior.Restrict);
+                e.HasIndex(x => x.Name).IsUnique();
             });
             builder.Entity<AccountsRoznamchaType>(e =>
             {
-                e.HasIndex(x => new { x.TenantId, x.Code }).IsUnique();
-                e.HasOne<Tenant>().WithMany().HasForeignKey(x => x.TenantId).OnDelete(DeleteBehavior.Restrict);
+                e.HasIndex(x => x.Code).IsUnique();
             });
             builder.Entity<AccountsEntryStatus>(e =>
             {
@@ -2137,23 +2116,19 @@ namespace Accounts.Data
             });
             builder.Entity<AccountsTransType>(e =>
             {
-                e.HasIndex(x => new { x.TenantId, x.Code }).IsUnique();
-                e.HasOne<Tenant>().WithMany().HasForeignKey(x => x.TenantId).OnDelete(DeleteBehavior.Restrict);
+                e.HasIndex(x => x.Code).IsUnique();
             });
             builder.Entity<AccountsTransMode>(e =>
             {
-                e.HasIndex(x => new { x.TenantId, x.Code }).IsUnique();
-                e.HasOne<Tenant>().WithMany().HasForeignKey(x => x.TenantId).OnDelete(DeleteBehavior.Restrict);
+                e.HasIndex(x => x.Code).IsUnique();
             });
             builder.Entity<AccountsCurrency>(e =>
             {
-                e.HasIndex(x => new { x.TenantId, x.Code }).IsUnique();
-                e.HasOne<Tenant>().WithMany().HasForeignKey(x => x.TenantId).OnDelete(DeleteBehavior.Restrict);
+                e.HasIndex(x => x.Code).IsUnique();
             });
             builder.Entity<AccountsDateLabel>(e =>
             {
-                e.HasIndex(x => new { x.TenantId, x.Code }).IsUnique();
-                e.HasOne<Tenant>().WithMany().HasForeignKey(x => x.TenantId).OnDelete(DeleteBehavior.Restrict);
+                e.HasIndex(x => x.Code).IsUnique();
             });
             builder.Entity<AccountsModuleSettings>(e =>
             {
@@ -2569,7 +2544,7 @@ namespace Accounts.Data
         {
             var entity = builder.Entity<TEntity>();
             entity.ToTable(tableName, "PlatformSettings");
-            entity.HasIndex(x => new { x.TenantId, x.Name }).IsUnique();
+            entity.HasIndex(x => x.Name).IsUnique();
         }
     }
 }

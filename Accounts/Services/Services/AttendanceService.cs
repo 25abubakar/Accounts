@@ -2189,7 +2189,7 @@ public sealed class AttendanceService : IAttendanceService
     private async Task<Dictionary<int, MonthlyAttendanceChartLegendItemDto>> GetAttendanceDisplayStyleMapByIdAsync(int tenantId, CancellationToken cancellationToken)
     {
         var query = from actionStatus in _db.PlatformSettingActionStatuses.AsNoTracking()
-                    where actionStatus.Action.Name == "Attendance" && actionStatus.TenantId == tenantId
+                    where actionStatus.Action.Name == "Attendance"
                     join crDb in _db.PlatformSettingStatusCrDbValues.AsNoTracking()
                         on actionStatus.StatusId equals crDb.StatusId into crDbGroup
                     from crDb in crDbGroup.DefaultIfEmpty()
@@ -3308,7 +3308,6 @@ public sealed class AttendanceService : IAttendanceService
             .Where(r => r.PersonId == personId && r.AttendanceDate >= dateFrom && r.AttendanceDate < dateTo)
             .OrderByDescending(r => r.AttendanceDate).ToListAsync(cancellationToken);
         var statusCodes = await _db.PlatformSettingStatusCrDbValues.AsNoTracking()
-            .Where(x => x.TenantId == person.TenantId || x.TenantId == null)
             .ToDictionaryAsync(x => x.StatusId, x => x.DbValue, cancellationToken);
         var rows = records.Select(r =>
         {

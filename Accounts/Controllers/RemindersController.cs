@@ -89,16 +89,11 @@ public sealed class RemindersController : ControllerBase
             .Select(x => new { x.Id, x.Name })
             .ToListAsync(ct);
 
-        var transTypeRows = await _db.AccountsTransTypes.AsNoTracking()
+        var transTypes = await _db.AccountsTransTypes.AsNoTracking()
             .Where(x => x.IsActive && (x.Code == "PAYMENT" || x.Code == "RECEIPT"))
-            .Select(x => new { x.Id, x.Name, x.Code, x.TenantId })
-            .ToListAsync(ct);
-        var transTypes = transTypeRows
-            .GroupBy(x => x.Code)
-            .Select(group => group.OrderByDescending(x => x.TenantId.HasValue).First())
             .OrderBy(x => x.Name)
             .Select(x => new { x.Id, x.Name, x.Code })
-            .ToList();
+            .ToListAsync(ct);
 
         var reminderLookups = await _db.AppLookupValues.AsNoTracking()
             .Where(x => x.IsActive && x.LookupType != null && x.LookupType.IsActive &&
@@ -172,16 +167,11 @@ public sealed class RemindersController : ControllerBase
             .Select(x => new { x.Id, x.Name })
             .ToListAsync(ct);
 
-        var transTypeRows = await _db.AccountsTransTypes.AsNoTracking()
+        var transTypes = await _db.AccountsTransTypes.AsNoTracking()
             .Where(x => x.IsActive && (x.Code == "PAYMENT" || x.Code == "RECEIPT"))
-            .Select(x => new { x.Id, x.Name, x.Code, x.TenantId })
-            .ToListAsync(ct);
-        var transTypes = transTypeRows
-            .GroupBy(x => x.Code)
-            .Select(group => group.OrderByDescending(x => x.TenantId.HasValue).First())
             .OrderBy(x => x.Name)
             .Select(x => new { x.Id, x.Name, x.Code })
-            .ToList();
+            .ToListAsync(ct);
 
         var reminderLookups = await _db.AppLookupValues.AsNoTracking()
             .Where(x => x.IsActive && x.LookupType != null && x.LookupType.IsActive &&

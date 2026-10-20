@@ -108,7 +108,6 @@ internal static class SaleRoznamchaSql
                AND company.Id = platform.CompanyId
             LEFT JOIN dbo.AccountsCurrencies currency
                 ON currency.Id = product.CurrencyId
-               AND (currency.TenantId IS NULL OR currency.TenantId = product.TenantId)
             OUTER APPLY
             (
                 SELECT SUM(receipt.PurchasedQuantity) TotalPurchasedQuantity,
@@ -445,8 +444,7 @@ internal static class SaleRoznamchaSql
                     FROM dbo.AccountsRoznamchaTypes rozType
                     WHERE rozType.IsActive = 1
                       AND rozType.Code = N'PAYMENT'
-                      AND (rozType.TenantId IS NULL OR rozType.TenantId = @TenantId)
-                    ORDER BY CASE WHEN rozType.TenantId = @TenantId THEN 0 WHEN rozType.TenantId IS NULL THEN 1 ELSE 2 END
+                    ORDER BY rozType.Id
                 ))
             FROM (SELECT @TenantId TenantId) seed
             LEFT JOIN dbo.AccountsModuleSettings settings ON settings.TenantId = seed.TenantId;
@@ -455,9 +453,8 @@ internal static class SaleRoznamchaSql
             SELECT TOP (1) @TransTypeId = transType.Id
             FROM dbo.AccountsTransTypes transType
             WHERE transType.IsActive = 1
-              AND (transType.TenantId IS NULL OR transType.TenantId = @TenantId)
               AND (transType.Code = N'PAYMENT' OR transType.Name = N'Payment')
-            ORDER BY CASE WHEN transType.TenantId = @TenantId THEN 0 WHEN transType.TenantId IS NULL THEN 1 ELSE 2 END;
+            ORDER BY transType.Id;
 
             SELECT @ProductName = product.Name
             FROM dbo.SaleRoznamchaProducts product
@@ -734,7 +731,6 @@ internal static class SaleRoznamchaSql
             ON company.TenantId = platform.TenantId AND company.Id = platform.CompanyId
         INNER JOIN dbo.AccountsCurrencies currency
             ON currency.Id = receipt.CurrencyId
-           AND (currency.TenantId IS NULL OR currency.TenantId = receipt.TenantId)
         LEFT JOIN dbo.vw_AccountsChartAccountHierarchy fromAccount
             ON fromAccount.TenantId = receipt.TenantId AND fromAccount.Id = receipt.FromAccountId
         LEFT JOIN dbo.AccountsCategories fromCategory
@@ -824,7 +820,6 @@ internal static class SaleRoznamchaSql
                 ON status.TenantId = sale.TenantId AND status.Id = sale.SaleStatusId
             LEFT JOIN dbo.AccountsTransTypes transactionType
                 ON transactionType.Id = sale.TransactionTypeId
-               AND (transactionType.TenantId IS NULL OR transactionType.TenantId = sale.TenantId)
             LEFT JOIN dbo.SaleRoznamchaPaidStatuses paidStatus
                 ON paidStatus.TenantId = sale.TenantId AND paidStatus.Id = sale.PaidStatusId
             LEFT JOIN dbo.AccountsChartAccounts account
@@ -949,8 +944,7 @@ internal static class SaleRoznamchaSql
             ) THROW 51000, 'A selected transaction date label is invalid or inactive.', 1;
 
             IF @TransactionTypeId IS NOT NULL AND NOT EXISTS
-               (SELECT 1 FROM dbo.AccountsTransTypes WHERE Id = @TransactionTypeId AND IsActive = 1
-                AND (TenantId IS NULL OR TenantId = @TenantId))
+               (SELECT 1 FROM dbo.AccountsTransTypes WHERE Id = @TransactionTypeId AND IsActive = 1)
                 THROW 51000, 'Selected transaction type is invalid or inactive.', 1;
             IF @PaidStatusId IS NOT NULL AND NOT EXISTS
                (SELECT 1 FROM dbo.SaleRoznamchaPaidStatuses WHERE TenantId = @TenantId AND Id = @PaidStatusId AND IsActive = 1)
@@ -959,8 +953,7 @@ internal static class SaleRoznamchaSql
                (SELECT 1 FROM dbo.AccountsChartAccounts WHERE TenantId = @TenantId AND Id = @ToAccountId AND IsActive = 1)
                 THROW 51000, 'Selected account is invalid or inactive.', 1;
             IF NOT EXISTS
-               (SELECT 1 FROM dbo.AccountsCurrencies WHERE Id = @SaleCurrencyId AND IsActive = 1
-                AND (TenantId IS NULL OR TenantId = @TenantId))
+               (SELECT 1 FROM dbo.AccountsCurrencies WHERE Id = @SaleCurrencyId AND IsActive = 1)
                 THROW 51000, 'Selected sale currency is invalid or inactive.', 1;
 
             SELECT @PayChargeMultiplier = Multiplier
@@ -1203,11 +1196,9 @@ internal static class SaleRoznamchaSql
             IF @SettingType = N'transaction-type'
             BEGIN
                 SELECT Id, @SettingType SettingType, Code, Name, CAST(0 AS int) SortOrder,
-                       CAST(0 AS smallint) InventoryEffect, IsActive,
-                       CONVERT(bit, CASE WHEN TenantId IS NULL THEN 1 ELSE 0 END) IsPlatform
+                       CAST(0 AS smallint) InventoryEffect, IsActive, CAST(0 AS bit) IsPlatform
                 FROM dbo.AccountsTransTypes
-                WHERE TenantId IS NULL OR TenantId = @TenantId
-                ORDER BY IsPlatform DESC, Name;
+                ORDER BY Name;
                 RETURN;
             END;
 
@@ -1275,28 +1266,27 @@ internal static class SaleRoznamchaSql
 
             IF @SettingType = N'transaction-type'
             BEGIN
-                IF @Id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM dbo.AccountsTransTypes WHERE Id = @Id AND TenantId = @TenantId)
-                    THROW 51000, 'Transaction type was not found or is a platform row.', 1;
+                IF @Id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM dbo.AccountsTransTypes WHERE Id = @Id)
+                    THROW 51000, 'Transaction type was not found.', 1;
                 IF EXISTS (
                     SELECT 1 FROM dbo.AccountsTransTypes
-                    WHERE (TenantId IS NULL OR TenantId = @TenantId)
-                      AND (Code = @Code OR Name = @Name)
+                    WHERE (Code = @Code OR Name = @Name)
                       AND (@Id IS NULL OR Id <> @Id))
                     THROW 51000, 'A transaction type with this code or name already exists.', 1;
 
                 IF @Id IS NULL
                 BEGIN
-                    INSERT dbo.AccountsTransTypes (TenantId, Code, Name, IsActive)
-                    VALUES (@TenantId, @Code, @Name, @IsActive);
+                    INSERT dbo.AccountsTransTypes (Code, Name, IsActive)
+                    VALUES (@Code, @Name, @IsActive);
                     SET @Id = SCOPE_IDENTITY();
                 END
                 ELSE
                     UPDATE dbo.AccountsTransTypes SET Code = @Code, Name = @Name, IsActive = @IsActive
-                    WHERE Id = @Id AND TenantId = @TenantId;
+                    WHERE Id = @Id;
 
                 SELECT Id, @SettingType SettingType, Code, Name, CAST(0 AS int) SortOrder,
                        CAST(0 AS smallint) InventoryEffect, IsActive, CAST(0 AS bit) IsPlatform
-                FROM dbo.AccountsTransTypes WHERE Id = @Id AND TenantId = @TenantId;
+                FROM dbo.AccountsTransTypes WHERE Id = @Id;
                 RETURN;
             END;
 
@@ -1391,7 +1381,7 @@ internal static class SaleRoznamchaSql
             SET @SettingType = LOWER(LTRIM(RTRIM(@SettingType)));
 
             IF @SettingType = N'transaction-type'
-                UPDATE dbo.AccountsTransTypes SET IsActive = 0 WHERE Id = @Id AND TenantId = @TenantId;
+                UPDATE dbo.AccountsTransTypes SET IsActive = 0 WHERE Id = @Id;
             ELSE IF @SettingType = N'charge-type'
                 UPDATE dbo.SaleRoznamchaChargeLabels SET IsActive = 0 WHERE Id = @Id AND TenantId = @TenantId;
             ELSE IF @SettingType = N'transaction-date'
@@ -1422,11 +1412,9 @@ internal static class SaleRoznamchaSql
             BEGIN
                 SELECT Id, @SettingType SettingType, Code, Name,
                        CAST(NULL AS nvarchar(20)) ColorCode, CAST(0 AS int) SortOrder,
-                       CAST(0 AS smallint) InventoryEffect, IsActive,
-                       CONVERT(bit, CASE WHEN TenantId IS NULL THEN 1 ELSE 0 END) IsPlatform
+                       CAST(0 AS smallint) InventoryEffect, IsActive, CAST(0 AS bit) IsPlatform
                 FROM dbo.AccountsTransTypes
-                WHERE TenantId IS NULL OR TenantId = @TenantId
-                ORDER BY IsPlatform DESC, Name;
+                ORDER BY Name;
                 RETURN;
             END;
 
@@ -1504,20 +1492,20 @@ internal static class SaleRoznamchaSql
 
             IF @SettingType = N'transaction-type'
             BEGIN
-                IF @Id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM dbo.AccountsTransTypes WHERE Id = @Id AND TenantId = @TenantId)
-                    THROW 51000, 'Transaction type was not found or is a platform row.', 1;
-                IF EXISTS (SELECT 1 FROM dbo.AccountsTransTypes WHERE (TenantId IS NULL OR TenantId = @TenantId)
-                           AND (Code = @Code OR Name = @Name) AND (@Id IS NULL OR Id <> @Id))
+                IF @Id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM dbo.AccountsTransTypes WHERE Id = @Id)
+                    THROW 51000, 'Transaction type was not found.', 1;
+                IF EXISTS (SELECT 1 FROM dbo.AccountsTransTypes WHERE
+                           (Code = @Code OR Name = @Name) AND (@Id IS NULL OR Id <> @Id))
                     THROW 51000, 'A transaction type with this code or name already exists.', 1;
                 IF @Id IS NULL
                 BEGIN
-                    INSERT dbo.AccountsTransTypes (TenantId, Code, Name, IsActive) VALUES (@TenantId, @Code, @Name, @IsActive);
+                    INSERT dbo.AccountsTransTypes (Code, Name, IsActive) VALUES (@Code, @Name, @IsActive);
                     SET @Id = SCOPE_IDENTITY();
                 END
-                ELSE UPDATE dbo.AccountsTransTypes SET Code = @Code, Name = @Name, IsActive = @IsActive WHERE Id = @Id AND TenantId = @TenantId;
+                ELSE UPDATE dbo.AccountsTransTypes SET Code = @Code, Name = @Name, IsActive = @IsActive WHERE Id = @Id;
                 SELECT Id, @SettingType SettingType, Code, Name, CAST(NULL AS nvarchar(20)) ColorCode,
                        CAST(0 AS int) SortOrder, CAST(0 AS smallint) InventoryEffect, IsActive, CAST(0 AS bit) IsPlatform
-                FROM dbo.AccountsTransTypes WHERE Id = @Id AND TenantId = @TenantId;
+                FROM dbo.AccountsTransTypes WHERE Id = @Id;
                 RETURN;
             END;
 

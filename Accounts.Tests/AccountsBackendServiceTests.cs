@@ -67,6 +67,90 @@ public sealed class AccountsBackendServiceTests
     }
 
     [Fact]
+    public async Task Payment_excel_accepts_over_ten_thousand_rows_and_over_ten_megabytes_without_reimporting_duplicates()
+    {
+        await using var db = CreateDb(1);
+        await SeedAccounts(db, 1);
+        var service = NewRoznamcha(db, 1);
+        var original = Entry(1, 2, 100);
+        original.OldReferenceNo = "ALREADY-IMPORTED";
+        await service.CreateAsync(1, original);
+
+        const int rowCount = 10_001;
+        var csv = new System.Text.StringBuilder("Ref,Remarks\r\n");
+        var line = "ALREADY-IMPORTED," + new string('x', 1100) + "\r\n";
+        for (var i = 0; i < rowCount; i++) csv.Append(line);
+        await using var stream = new MemoryStream(System.Text.Encoding.UTF8.GetBytes(csv.ToString()));
+        Assert.True(stream.Length > 10 * 1024 * 1024);
+        var upload = new FormFile(stream, 0, stream.Length, "excelFile", "large-payments.csv");
+
+        var result = await service.ImportPaymentsAsync(upload);
+
+        Assert.Equal(rowCount, result.TotalRows);
+        Assert.Equal(rowCount, result.SkippedRows);
+        Assert.Equal(rowCount, result.DuplicateRows);
+        Assert.Equal(0, result.ImportedRows);
+        Assert.Empty(result.Errors);
+        Assert.Single(await db.RoznamchaEntries.ToListAsync());
+    }
+
+    [Fact]
+    public async Task Payment_excel_saves_each_row_and_project_changes_after_tracker_cleanup()
+    {
+        await using var db = CreateDb(1);
+        await SeedAccounts(db, 1);
+        db.AccountsProjects.Add(new AccountsProject { Id = 1, TenantId = 1, Name = "Original project", IsActive = true });
+        await db.SaveChangesAsync();
+        var csv = "Ref,AcctName,ToAcctName,Debit,TransDate,ProjectId,Project\r\n" +
+                  "IMPORT-A,Cash,Bank,100,2026-09-22,1,First project name\r\n" +
+                  "IMPORT-B,Cash,Bank,200,2026-09-23,1,Final project name\r\n";
+        await using var stream = new MemoryStream(System.Text.Encoding.UTF8.GetBytes(csv));
+        var result = await NewRoznamcha(db, 1).ImportPaymentsAsync(new FormFile(stream, 0, stream.Length, "excelFile", "payments.csv"));
+
+        Assert.Empty(result.Errors);
+        Assert.Equal(2, result.ImportedRows);
+        Assert.Empty(db.ChangeTracker.Entries());
+        Assert.Equal("Final project name", (await db.AccountsProjects.AsNoTracking().SingleAsync()).Name);
+        var payments = await db.RoznamchaEntries.AsNoTracking().OrderBy(x => x.OldRef).ToListAsync();
+        Assert.Equal(new[] { "IMPORT-A", "IMPORT-B" }, payments.Select(x => x.OldRef));
+        Assert.Equal(new decimal?[] { 100, 200 }, payments.Select(x => x.Amount));
+        Assert.All(payments, row => Assert.Equal(1, row.ProjectId));
+    }
+
+    [Fact]
+    public async Task Payment_excel_uses_configuration_status_ids_and_rejects_unknown_or_other_process_statuses()
+    {
+        await using var db = CreateDb(1);
+        await SeedAccounts(db, 1);
+        db.PlatformSettingProcesses.AddRange(new PlatformSettingProcess { Id = 100014, Name = "Payment" }, new PlatformSettingProcess { Id = 100020, Name = "Billing" });
+        db.PlatformSettingStatuses.AddRange(new PlatformSettingStatus { Id = 14, Name = "Entered" }, new PlatformSettingStatus { Id = 20, Name = "Settled" }, new PlatformSettingStatus { Id = 19, Name = "Pending" });
+        db.PlatformSettingColors.Add(new PlatformSettingColor { Id = 8, ColorCode = "#2BFA06" });
+        db.PlatformSettingProcessStatuses.AddRange(
+            new PlatformSettingProcessStatus { Id = 35, ProcessId = 100014, StatusId = 14 },
+            new PlatformSettingProcessStatus { Id = 40, ProcessId = 100014, StatusId = 20, ColorId = 8 },
+            new PlatformSettingProcessStatus { Id = 78, ProcessId = 100020, StatusId = 19 });
+        // A conflicting legacy ID must not control the imported status.
+        db.AccountsEntryStatuses.Add(new AccountsEntryStatus { Id = 20, Code = "WRONG", Name = "Legacy wrong status" });
+        await db.SaveChangesAsync();
+        var csv = "Ref,AcctName,ToAcctName,Debit,TransDate,Status\r\n" +
+                  "SETTLED-ROW,Cash,Bank,100,2022-02-28,Settled\r\n" +
+                  "UNKNOWN-ROW,Cash,Bank,100,2022-02-28,Unknown status\r\n" +
+                  "OTHER-PROCESS,Cash,Bank,100,2022-02-28,Pending\r\n";
+        await using var stream = new MemoryStream(System.Text.Encoding.UTF8.GetBytes(csv));
+        var result = await NewRoznamcha(db, 1).ImportPaymentsAsync(new FormFile(stream, 0, stream.Length, "excelFile", "statuses.csv"));
+        Assert.Equal(1, result.ImportedRows);
+        Assert.Equal(2, result.Errors.Count);
+        Assert.All(result.Errors, error => Assert.Contains("not configured for Payment", error));
+        var saved = await db.RoznamchaEntries.AsNoTracking().SingleAsync();
+        Assert.Equal(20, saved.EnterStatusId);
+        Assert.True(saved.IsSettled);
+        var configured = await RoznamchaStatusCatalog.Query(db, "Payment").SingleAsync(x => x.Id == saved.EnterStatusId);
+        Assert.Equal("Settled", configured.Name);
+        Assert.Equal("#2BFA06", configured.ColorCode);
+        Assert.Null(configured.FontColor);
+    }
+
+    [Fact]
     public async Task Receipt_list_requires_relational_stored_procedure_provider()
     {
         await using var db = CreateDb(1);

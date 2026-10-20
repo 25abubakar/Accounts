@@ -14,6 +14,8 @@ public sealed class RoznamchaEntry : ITenantEntity
     [MaxLength(80)] public string? Ref { get; set; }
     [MaxLength(80)] public string? OldRef { get; set; }
     public int? RoznamchaTypeId { get; set; }
+    /// <summary>Links newly saved internal-transfer Payment/Receipt rows; legacy imports remain unpaired.</summary>
+    public Guid? InternalTransferGroupId { get; set; }
     public int? CategoryId { get; set; }
     public int? FromAccountId { get; set; }
     public int? ToAccountId { get; set; }
@@ -34,6 +36,7 @@ public sealed class RoznamchaEntry : ITenantEntity
     [Column(TypeName = "decimal(18,2)")] public decimal? BalanceAmount { get; set; }
     [Column(TypeName = "decimal(18,4)")] public decimal? Qty { get; set; }
     [Column(TypeName = "decimal(18,4)")] public decimal? Rate { get; set; }
+    /// <summary>Shared PlatformSettings.Statuses.Id; distinct from the ProcessStatuses mapping ID.</summary>
     public int? EnterStatusId { get; set; }
     [MaxLength(500)] public string? Attachment { get; set; }
     [MaxLength(2000)] public string? Remarks { get; set; }
@@ -129,10 +132,9 @@ public sealed class AccountsCategory : ITenantEntity
 }
 
 [Table("AccountsCategoryTypes")]
-public sealed class AccountsCategoryType : ITenantEntity
+public sealed class AccountsCategoryType
 {
     [Key] public int Id { get; set; }
-    public int TenantId { get; set; }
     [Required, MaxLength(120)] public string Name { get; set; } = string.Empty;
     public bool IsActive { get; set; } = true;
     [MaxLength(450)] public string? CreatedByUserId { get; set; }
@@ -146,7 +148,6 @@ public sealed class AccountsRoznamchaType
 {
     [Key]
     public int Id { get; set; }
-    public int? TenantId { get; set; }
     [Required, MaxLength(40)] public string Code { get; set; } = string.Empty;
     [Required, MaxLength(120)] public string Name { get; set; } = string.Empty;
     public bool IsActive { get; set; } = true;
@@ -170,7 +171,6 @@ public sealed class AccountsTransType
 {
     [Key]
     public int Id { get; set; }
-    public int? TenantId { get; set; }
     [Required, MaxLength(40)] public string Code { get; set; } = string.Empty;
     [Required, MaxLength(120)] public string Name { get; set; } = string.Empty;
     public bool IsActive { get; set; } = true;
@@ -181,7 +181,6 @@ public sealed class AccountsTransMode
 {
     [Key]
     public int Id { get; set; }
-    public int? TenantId { get; set; }
     [Required, MaxLength(40)] public string Code { get; set; } = string.Empty;
     [Required, MaxLength(120)] public string Name { get; set; } = string.Empty;
     public bool IsActive { get; set; } = true;
@@ -192,7 +191,6 @@ public sealed class AccountsCurrency
 {
     [Key]
     public int Id { get; set; }
-    public int? TenantId { get; set; }
     [Required, MaxLength(10)] public string Code { get; set; } = string.Empty;
     [Required, MaxLength(80)] public string Name { get; set; } = string.Empty;
     public bool IsActive { get; set; } = true;
@@ -204,7 +202,6 @@ public sealed class AccountsDateLabel
 {
     [Key]
     public int Id { get; set; }
-    public int? TenantId { get; set; }
     [Required, MaxLength(40)] public string Code { get; set; } = string.Empty;
     [Required, MaxLength(120)] public string Name { get; set; } = string.Empty;
     public bool IsActive { get; set; } = true;

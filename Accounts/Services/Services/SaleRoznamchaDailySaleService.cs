@@ -74,7 +74,7 @@ public sealed class SaleRoznamchaDailySaleService(
                 .Select(x => new SaleRoznamchaLookupRow { Id = x.Id, Code = x.Code, Name = x.Name })
                 .ToListAsync(ct),
             Currencies = await db.AccountsCurrencies.AsNoTracking()
-                .Where(x => x.IsActive && (x.TenantId == null || x.TenantId == current.TenantId))
+                .Where(x => x.IsActive)
                 .OrderBy(x => x.Code).ThenBy(x => x.Id)
                 .Select(x => new SaleRoznamchaCurrencyRow
                 {

@@ -179,7 +179,7 @@ public sealed class AttendanceController : ControllerBase
                           join actionStatus in _db.PlatformSettingActionStatuses on status.Id equals actionStatus.StatusId
                           join action in _db.PlatformSettingActions on actionStatus.ActionId equals action.Id
                           join color in _db.PlatformSettingColors on actionStatus.ColorId equals color.Id
-                          where action.Name == "Attendance" && (actionStatus.TenantId == _tenant.RequiredTenantId || actionStatus.TenantId == null)
+                          where action.Name == "Attendance"
                           select new AttendanceHolidayColorMapDto
                           {
                               Id = lookup.LookupValueId,

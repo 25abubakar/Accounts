@@ -226,6 +226,7 @@ public sealed class PaymentRozExcelImportResult
 public sealed class RoznamchaEntryDto
 {
     public long Id { get; set; }
+    public Guid? InternalTransferGroupId { get; set; }
     public int? SerialNo { get; set; }
     public string? ReferenceNo { get; set; }
     public string? OldReferenceNo { get; set; }

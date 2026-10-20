@@ -34,7 +34,6 @@ public sealed class AccountCategoryService(ApplicationDbContext db, ICurrentUser
         {
             row = new AccountsCategoryType
             {
-                TenantId = current.TenantId,
                 Name = name,
                 IsActive = request.IsActive,
                 CreatedByUserId = current.UserId
@@ -250,7 +249,11 @@ public sealed class AccountService(
         {
             var accountNo = OptionalIdentifier(request.AccountNo, "Account number", 50)
                 ?? throw new InvalidOperationException("Account number cannot be blank.");
-            if (await db.AccountsChartAccounts.AsNoTracking().AnyAsync(x => x.Id != id && x.AccountNumber == accountNo, ct))
+            // Imported legacy rows can share an account number. Preserve an unchanged
+            // legacy value during edit, while still preventing users from introducing
+            // a new duplicate through the normal account form.
+            if (!string.Equals(row.AccountNumber, accountNo, StringComparison.OrdinalIgnoreCase) &&
+                await db.AccountsChartAccounts.AsNoTracking().AnyAsync(x => x.Id != id && x.AccountNumber == accountNo, ct))
                 throw new InvalidOperationException("Account number already exists.");
             row.AccountNumber = accountNo;
         }

@@ -65,8 +65,16 @@ public sealed class AccountsRoznamchaController : ControllerBase
         if (to < from)
             return BadRequest(new { message = "dateTo must be on or after dateFrom." });
 
-        var rows = await _roznamcha.ListPaymentRozAsync(_tenant.RequiredTenantId, from, to, ct);
-        return Ok(rows);
+        try
+        {
+            var rows = await _roznamcha.ListPaymentRozAsync(_tenant.RequiredTenantId, from, to, ct);
+            return Ok(rows);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            // A superseded filter/navigation is a cancelled request, not an empty successful list.
+            return StatusCode(499);
+        }
     }
 
     [HttpGet("payment-roz/lookups")]
@@ -75,7 +83,7 @@ public sealed class AccountsRoznamchaController : ControllerBase
         if (_tenant.IsSuperAdmin) return Ok(new { categories = Array.Empty<object>(), accounts = Array.Empty<object>() });
         if (!_tenant.TenantId.HasValue || !await HasActionAsync(PaymentRozRoute, "VIEW", ct)) return Forbid();
 
-        return Ok(await LoadRoznamchaLookupsAsync(ct));
+        return Ok(await LoadRoznamchaLookupsAsync(ct, "Payment"));
     }
 
     [HttpGet("receipt-roz")]
@@ -96,8 +104,15 @@ public sealed class AccountsRoznamchaController : ControllerBase
         if (to < from)
             return BadRequest(new { message = "dateTo must be on or after dateFrom." });
 
-        var rows = await _roznamcha.ListReceiptRozAsync(_tenant.RequiredTenantId, from, to, ct);
-        return Ok(rows);
+        try
+        {
+            var rows = await _roznamcha.ListReceiptRozAsync(_tenant.RequiredTenantId, from, to, ct);
+            return Ok(rows);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            return StatusCode(499);
+        }
     }
 
     [HttpGet("receipt-roz/lookups")]
@@ -106,7 +121,7 @@ public sealed class AccountsRoznamchaController : ControllerBase
         if (_tenant.IsSuperAdmin) return Ok(new { categories = Array.Empty<object>(), accounts = Array.Empty<object>() });
         if (!_tenant.TenantId.HasValue || !await HasActionAsync(ReceiptRozRoute, "VIEW", ct)) return Forbid();
 
-        return Ok(await LoadRoznamchaLookupsAsync(ct));
+        return Ok(await LoadRoznamchaLookupsAsync(ct, "Receipt"));
     }
 
     /// <summary>Unified ROZ grid (legacy Sp_vgetRoznamcha parity). Optional rozTypeId filters payment/receipt type.</summary>
@@ -134,8 +149,15 @@ public sealed class AccountsRoznamchaController : ControllerBase
         if (!rozTypeId.HasValue && !string.IsNullOrWhiteSpace(typeCode))
             rozTypeId = await _roznamcha.ResolveRozTypeIdAsync(tenantId, typeCode.Trim(), ct);
 
-        var rows = await _roznamcha.ListRoznamchaAsync(tenantId, from, to, rozTypeId, ct);
-        return Ok(rows);
+        try
+        {
+            var rows = await _roznamcha.ListRoznamchaAsync(tenantId, from, to, rozTypeId, ct);
+            return Ok(rows);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            return StatusCode(499);
+        }
     }
 
     [HttpGet("show-record")]
@@ -159,7 +181,7 @@ public sealed class AccountsRoznamchaController : ControllerBase
             from fromAccount in fromRows.DefaultIfEmpty()
             join toAccount in _db.AccountsChartAccounts.AsNoTracking() on entry.ToAccountId equals toAccount.Id into toRows
             from toAccount in toRows.DefaultIfEmpty()
-            join status in _db.AccountsEntryStatuses.AsNoTracking() on entry.EnterStatusId equals status.Id into statusRows
+            join status in _db.PlatformSettingStatuses.AsNoTracking() on entry.EnterStatusId equals status.Id into statusRows
             from status in statusRows.DefaultIfEmpty()
             where (entry.IsDeleted || !entry.IsShow) && entry.TransDate >= startDate && entry.TransDate <= endDate
             orderby entry.TransDate descending, entry.Id descending
@@ -198,7 +220,7 @@ public sealed class AccountsRoznamchaController : ControllerBase
         return Ok(ApiResponse<object>.Ok(new { id }, "Record restored successfully."));
     }
 
-    private async Task<object> LoadRoznamchaLookupsAsync(CancellationToken ct)
+    private async Task<object> LoadRoznamchaLookupsAsync(CancellationToken ct, string processName)
     {
 
         var categories = await _db.AccountsCategories.AsNoTracking().Where(x => x.IsActive).OrderBy(x => x.Name)
@@ -223,8 +245,7 @@ public sealed class AccountsRoznamchaController : ControllerBase
             .Select(x => new { x.Id, x.Code, x.Name }).ToListAsync(ct);
         var taxTypes = await _db.AccountsTaxTypes.AsNoTracking().Where(x => x.IsActive).OrderBy(x => x.Name)
             .Select(x => new { x.Id, x.Code, x.Name, x.DefaultRate }).ToListAsync(ct);
-        var statuses = await _db.AccountsEntryStatuses.AsNoTracking().Where(x => x.IsActive).OrderBy(x => x.Name)
-            .Select(x => new { x.Id, x.Code, x.Name, x.ColorCode, x.FontColor }).ToListAsync(ct);
+        var statuses = await RoznamchaStatusCatalog.Query(_db, processName).OrderBy(x => x.Name).ToListAsync(ct);
         var libraryDocuments = await _db.LibraryDocuments.AsNoTracking()
             .Where(x => x.IsActive && x.AssetKind == "Document")
             .OrderByDescending(x => x.CreatedOnUtc).Take(100)
@@ -263,13 +284,10 @@ public sealed class AccountsRoznamchaController : ControllerBase
         {
             request.TransactionTypeId ??= await _db.AccountsTransTypes.AsNoTracking()
                 .Where(x => x.IsActive && x.Code == "PAYMENT")
-                .OrderByDescending(x => x.TenantId.HasValue)
                 .Select(x => (int?)x.Id)
                 .FirstOrDefaultAsync(ct);
-            request.EntryStatusId = await _db.AccountsEntryStatuses.AsNoTracking()
-                .Where(x => x.IsActive && (x.Code == "ENTERED" || x.Code == "DRAFT"))
-                .OrderByDescending(x => x.Code == "ENTERED")
-                .ThenByDescending(x => x.TenantId.HasValue)
+            request.EntryStatusId = await RoznamchaStatusCatalog.Query(_db, "Payment")
+                .Where(x => x.Code == "ENTERED")
                 .Select(x => (int?)x.Id)
                 .FirstOrDefaultAsync(ct);
             var row = await _transactions.CreateAsync(1, request, ct);
@@ -283,8 +301,8 @@ public sealed class AccountsRoznamchaController : ControllerBase
 
     [HttpPost("payment-roz/import-excel")]
     [Consumes("multipart/form-data")]
-    [RequestFormLimits(MultipartBodyLengthLimit = 10 * 1024 * 1024)]
-    [RequestSizeLimit(10 * 1024 * 1024)]
+    [RequestFormLimits(MultipartBodyLengthLimit = long.MaxValue)]
+    [DisableRequestSizeLimit]
     public async Task<IActionResult> ImportPaymentRozExcel(IFormFile? excelFile, CancellationToken ct)
     {
         if (_tenant.IsSuperAdmin || !_tenant.TenantId.HasValue || !await HasActionAsync(PaymentRozRoute, "ADD", ct))
@@ -305,7 +323,7 @@ public sealed class AccountsRoznamchaController : ControllerBase
         {
             return BadRequest(ApiResponse<object?>.Fail(ex.Message));
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is not OperationCanceledException)
         {
             return BadRequest(ApiResponse<object?>.Fail(
                 "Payment Excel could not be imported. " + (ex.InnerException?.Message ?? ex.Message)));
@@ -316,10 +334,12 @@ public sealed class AccountsRoznamchaController : ControllerBase
     public Task<IActionResult> GetPaymentRoz(long id, CancellationToken ct) => GetRozEntry(id, "PAYMENT", PaymentRozRoute, ct);
 
     [HttpPut("payment-roz/{id:long}")]
+    [Idempotent]
     public Task<IActionResult> UpdatePaymentRoz(long id, [FromBody] CreateRoznamchaPaymentRequest request, CancellationToken ct) =>
         UpdateRozEntry(id, 1, request, PaymentRozRoute, ct);
 
     [HttpDelete("payment-roz/{id:long}")]
+    [Idempotent]
     public Task<IActionResult> DeletePaymentRoz(long id, [FromBody] DeleteRoznamchaRequest? request, CancellationToken ct) =>
         DeleteRozEntry(id, "PAYMENT", PaymentRozRoute, request?.Remarks, ct);
 
@@ -418,13 +438,10 @@ public sealed class AccountsRoznamchaController : ControllerBase
         {
             request.TransactionTypeId ??= await _db.AccountsTransTypes.AsNoTracking()
                 .Where(x => x.IsActive && x.Code == "RECEIPT")
-                .OrderByDescending(x => x.TenantId.HasValue)
                 .Select(x => (int?)x.Id)
                 .FirstOrDefaultAsync(ct);
-            request.EntryStatusId = await _db.AccountsEntryStatuses.AsNoTracking()
-                .Where(x => x.IsActive && (x.Code == "ENTERED" || x.Code == "DRAFT"))
-                .OrderByDescending(x => x.Code == "ENTERED")
-                .ThenByDescending(x => x.TenantId.HasValue)
+            request.EntryStatusId = await RoznamchaStatusCatalog.Query(_db, "Receipt")
+                .Where(x => x.Code == "ENTERED")
                 .Select(x => (int?)x.Id)
                 .FirstOrDefaultAsync(ct);
             var row = await _transactions.CreateAsync(2, request, ct);
@@ -440,10 +457,12 @@ public sealed class AccountsRoznamchaController : ControllerBase
     public Task<IActionResult> GetReceiptRoz(long id, CancellationToken ct) => GetRozEntry(id, "RECEIPT", ReceiptRozRoute, ct);
 
     [HttpPut("receipt-roz/{id:long}")]
+    [Idempotent]
     public Task<IActionResult> UpdateReceiptRoz(long id, [FromBody] CreateRoznamchaReceiptRequest request, CancellationToken ct) =>
         UpdateRozEntry(id, 2, request, ReceiptRozRoute, ct);
 
     [HttpDelete("receipt-roz/{id:long}")]
+    [Idempotent]
     public Task<IActionResult> DeleteReceiptRoz(long id, [FromBody] DeleteRoznamchaRequest? request, CancellationToken ct) =>
         DeleteRozEntry(id, "RECEIPT", ReceiptRozRoute, request?.Remarks, ct);
 
@@ -582,7 +601,7 @@ public sealed class AccountsRoznamchaController : ControllerBase
         if (_tenant.IsSuperAdmin || !_tenant.TenantId.HasValue || !await HasActionAsync(RoznamchaUpdateRoute, "EDIT", ct)) return Forbid();
         var ids = request.Ids.Where(x => x > 0).Distinct().ToArray();
         if (ids.Length == 0) return BadRequest(ApiResponse<object?>.Fail("Select at least one entry."));
-        var status = await _db.AccountsEntryStatuses.AsNoTracking().FirstOrDefaultAsync(x => x.Id == request.EntryStatusId && x.IsActive, ct);
+        var status = await RoznamchaStatusCatalog.Query(_db).FirstOrDefaultAsync(x => x.Id == request.EntryStatusId, ct);
         if (status is null) return BadRequest(ApiResponse<object?>.Fail("Selected status was not found."));
         var entries = await _db.RoznamchaEntries.Where(x => ids.Contains(x.Id) && !x.IsDeleted).ToListAsync(ct);
         if (entries.Count != ids.Length) return BadRequest(ApiResponse<object?>.Fail("One or more entries were not found."));
@@ -590,6 +609,9 @@ public sealed class AccountsRoznamchaController : ControllerBase
         var approved = status.Code.Equals("APPROVED", StringComparison.OrdinalIgnoreCase);
         foreach (var entry in entries)
         {
+            var processName = await RoznamchaStatusCatalog.ProcessForEntryAsync(_db, entry.RoznamchaTypeId, ct);
+            if (!await RoznamchaStatusCatalog.Query(_db, processName).AnyAsync(x => x.Id == request.EntryStatusId, ct))
+                return BadRequest(ApiResponse<object?>.Fail("Selected status is not configured for this entry's process."));
             if (entry.IsLocked && entry.EnterStatusId != request.EntryStatusId)
                 return BadRequest(ApiResponse<object?>.Fail($"Locked entry {entry.Ref ?? entry.Id.ToString()} cannot be changed."));
             entry.EnterStatusId = request.EntryStatusId;
@@ -695,7 +717,7 @@ public sealed class AccountsRoznamchaController : ControllerBase
 
     private Task<int?> ResolveRoznamchaTypeIdAsync(string code, CancellationToken ct) =>
         _db.AccountsRoznamchaTypes.AsNoTracking().Where(x => x.IsActive && x.Code == code)
-            .OrderByDescending(x => x.TenantId.HasValue).Select(x => (int?)x.Id).FirstOrDefaultAsync(ct);
+            .Select(x => (int?)x.Id).FirstOrDefaultAsync(ct);
 
     private async Task<IActionResult> GetRozEntry(long id, string typeCode, string route, CancellationToken ct)
     {
@@ -724,6 +746,7 @@ public sealed class AccountsRoznamchaController : ControllerBase
             var row = await _transactions.UpdateAsync(id, entryType, request, ct);
             return Ok(ApiResponse<RoznamchaEntryDto>.Ok(row, "Transaction updated successfully."));
         }
+        catch (DbUpdateConcurrencyException) { return Conflict(ApiResponse<object?>.Fail("This transaction or its linked transfer changed. Reload before editing again.")); }
         catch (KeyNotFoundException ex) { return NotFound(ApiResponse<object?>.Fail(ex.Message)); }
         catch (InvalidOperationException ex) { return BadRequest(ApiResponse<object?>.Fail(ex.Message)); }
     }
@@ -741,6 +764,7 @@ public sealed class AccountsRoznamchaController : ControllerBase
             await _transactions.SoftDeleteAsync(id, remarks, ct);
             return Ok(ApiResponse<object?>.Ok(null, "Transaction deleted successfully."));
         }
+        catch (DbUpdateConcurrencyException) { return Conflict(ApiResponse<object?>.Fail("This transaction or its linked transfer changed. Reload before deleting again.")); }
         catch (KeyNotFoundException ex) { return NotFound(ApiResponse<object?>.Fail(ex.Message)); }
         catch (InvalidOperationException ex) { return BadRequest(ApiResponse<object?>.Fail(ex.Message)); }
     }
@@ -755,8 +779,8 @@ public sealed class AccountsRoznamchaController : ControllerBase
     }
 
     private Task<int?> ResolveEntryStatusIdAsync(string code, CancellationToken ct) =>
-        _db.AccountsEntryStatuses.AsNoTracking().Where(x => x.IsActive && x.Code == code)
-            .OrderByDescending(x => x.TenantId.HasValue).Select(x => (int?)x.Id).FirstOrDefaultAsync(ct);
+        RoznamchaStatusCatalog.Query(_db).Where(x => x.Code == code)
+            .Select(x => (int?)x.Id).FirstOrDefaultAsync(ct);
 
     private async Task<bool> HasActionAsync(string route, string action, CancellationToken ct)
     {

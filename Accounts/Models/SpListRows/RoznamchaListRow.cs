@@ -4,6 +4,7 @@ namespace Accounts.Models.SpListRows;
 public sealed class RoznamchaListRow
 {
     public long Id { get; set; }
+    public Guid? InternalTransferGroupId { get; set; }
     public int? SNo { get; set; }
     public string? Ref { get; set; }
     public string? OldRef { get; set; }
@@ -31,6 +32,10 @@ public sealed class RoznamchaListRow
     public decimal? Qty { get; set; }
     public decimal? Rate { get; set; }
     public string? StatusName { get; set; }
+    public int? StatusId { get; set; }
+    public int? ProcessStatusId { get; set; }
+    public string? StatusColorCode { get; set; }
+    public string? StatusFontColor { get; set; }
     public bool IsDeleted { get; set; }
     public bool IsApproved { get; set; }
     public bool IsLocked { get; set; }
