@@ -415,6 +415,27 @@ public sealed class ReportFilterDto : ReportFilterRequest
 
 public sealed class ReportRowDto
 {
+    public long? Id { get; set; }
+    public int? SNo { get; set; }
+    public string? OldRef { get; set; }
+    public string? FromAccountNumber { get; set; }
+    public string? ToCategory { get; set; }
+    public string? ToAccountNumber { get; set; }
+    public string? TransType { get; set; }
+    public string? TransMode { get; set; }
+    public DateTime? CreatedOnUtc { get; set; }
+    public string? InstrumentNo { get; set; }
+    public string? TaxType { get; set; }
+    public decimal? TaxRate { get; set; }
+    public decimal? TaxAmount { get; set; }
+    public decimal? Adjustment { get; set; }
+    public decimal? Qty { get; set; }
+    public decimal? Rate { get; set; }
+    public string? Status { get; set; }
+    public string? StatusColorCode { get; set; }
+    public string? StatusFontColor { get; set; }
+    public string? Attachment { get; set; }
+    public string? Remarks { get; set; }
     public DateOnly Date { get; set; }
     public int? CategoryId { get; set; }
     public string? Category { get; set; }

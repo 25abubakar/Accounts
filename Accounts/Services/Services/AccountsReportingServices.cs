@@ -21,16 +21,29 @@ public sealed class AccountsReportService(ApplicationDbContext db, ICurrentUserS
         {
             x.Id, x.TransDate, x.RoznamchaTypeId, x.FromAccountId, x.ToAccountId,
             PkrAmount = (x.Amount ?? 0) + (x.Adjustment ?? 0), UsdAmount = x.UsdAmount ?? 0,
-            x.Ref, x.Descriptions
+            x.Ref, x.Descriptions, x.SNo, x.OldRef, x.TransTypeId, x.TransModeId,
+            x.CreatedOnUtc, x.InstrumentNo, x.TaxTypeId, x.TaxRate, x.TaxAmt,
+            x.Adjustment, x.Qty, x.Rate, x.EnterStatusId, x.Attachment, x.Remarks
         }).ToListAsync(ct);
         var referencedIds = entries.SelectMany(x => new[] { x.FromAccountId, x.ToAccountId }).Where(x => x.HasValue).Select(x => x!.Value).Distinct().ToArray();
         var accounts = await (from account in db.AccountsChartAccounts.AsNoTracking()
                               join category in db.AccountsCategories.AsNoTracking() on account.CategoryId equals category.Id into categoryRows
                               from category in categoryRows.DefaultIfEmpty()
                               where referencedIds.Contains(account.Id)
-                              select new { account.Id, account.AccountName, account.CategoryId, Category = category == null ? null : category.Name })
+                              select new { account.Id, account.AccountName, account.AccountNumber, account.CategoryId, Category = category == null ? null : category.Name })
             .ToDictionaryAsync(x => x.Id, ct);
         var types = await db.AccountsRoznamchaTypes.AsNoTracking().ToDictionaryAsync(x => x.Id, x => x.Name, ct);
+        var typeCodes = await db.AccountsRoznamchaTypes.AsNoTracking().ToDictionaryAsync(x => x.Id, x => x.Code, ct);
+        var transTypes = await db.AccountsTransTypes.AsNoTracking().ToDictionaryAsync(x => x.Id, x => x.Name, ct);
+        var transModes = await db.AccountsTransModes.AsNoTracking().ToDictionaryAsync(x => x.Id, x => x.Name, ct);
+        var taxTypes = await db.AccountsTaxTypes.AsNoTracking().ToDictionaryAsync(x => x.Id, x => x.Name, ct);
+        var statuses = await db.PlatformSettingStatuses.AsNoTracking().ToDictionaryAsync(x => x.Id, x => x.Name, ct);
+        var statusStyles = (await db.PlatformSettingProcessStatuses.AsNoTracking().Select(x => new
+        {
+            ProcessName = x.Process.Name, x.StatusId,
+            ColorCode = x.Color == null ? null : x.Color.ColorCode,
+            FontColor = x.Color == null ? null : x.Color.FontColor
+        }).ToListAsync(ct)).ToDictionary(x => (x.ProcessName.ToUpperInvariant(), x.StatusId));
         var rows = new List<(long EntryId, ReportRowDto Row)>();
         foreach (var entry in entries)
         {
@@ -40,8 +53,23 @@ public sealed class AccountsReportService(ApplicationDbContext db, ICurrentUserS
                 if (categoryIds is { Count: > 0 } && (!account.CategoryId.HasValue || !categoryIds.Contains(account.CategoryId.Value))) return;
                 if (accountIds is { Count: > 0 } && !accountIds.Contains(account.Id)) return;
                 var typeName = entry.RoznamchaTypeId.HasValue && types.TryGetValue(entry.RoznamchaTypeId.Value, out var resolvedType) ? resolvedType : null;
+                var typeCode = entry.RoznamchaTypeId.HasValue ? typeCodes.GetValueOrDefault(entry.RoznamchaTypeId.Value)?.ToUpperInvariant() : null;
+                var processName = typeCode is "PAYMENT" or "RECEIPT" ? typeCode : typeName?.ToUpperInvariant();
+                var style = entry.EnterStatusId.HasValue && processName != null ? statusStyles.GetValueOrDefault((processName, entry.EnterStatusId.Value)) : null;
                 var row = new ReportRowDto
                 {
+                    Id = entry.Id, SNo = entry.SNo, OldRef = entry.OldRef,
+                    CreatedOnUtc = entry.CreatedOnUtc, InstrumentNo = entry.InstrumentNo,
+                    TransType = entry.TransTypeId.HasValue ? transTypes.GetValueOrDefault(entry.TransTypeId.Value) : null,
+                    TransMode = entry.TransModeId.HasValue ? transModes.GetValueOrDefault(entry.TransModeId.Value) : null,
+                    TaxType = entry.TaxTypeId.HasValue ? taxTypes.GetValueOrDefault(entry.TaxTypeId.Value) : null,
+                    TaxRate = entry.TaxRate, TaxAmount = entry.TaxAmt, Adjustment = entry.Adjustment,
+                    Qty = entry.Qty, Rate = entry.Rate, Attachment = entry.Attachment, Remarks = entry.Remarks,
+                    Status = entry.EnterStatusId.HasValue ? statuses.GetValueOrDefault(entry.EnterStatusId.Value) : null,
+                    StatusColorCode = style?.ColorCode, StatusFontColor = style?.FontColor,
+                    FromAccountNumber = entry.FromAccountId.HasValue && accounts.TryGetValue(entry.FromAccountId.Value, out var sourceAccount) ? sourceAccount.AccountNumber : null,
+                    ToAccountNumber = entry.ToAccountId.HasValue && accounts.TryGetValue(entry.ToAccountId.Value, out var targetAccount) ? targetAccount.AccountNumber : null,
+                    ToCategory = entry.ToAccountId.HasValue && accounts.TryGetValue(entry.ToAccountId.Value, out var targetCategory) ? targetCategory.Category : null,
                     Date = entry.TransDate, CategoryId = account.CategoryId, Category = account.Category,
                     AccountId = account.Id, Account = account.AccountName, EntryTypeId = entry.RoznamchaTypeId ?? 0,
                     EntryType = typeName, Debit = debit ? entry.PkrAmount : 0, Credit = debit ? 0 : entry.PkrAmount,
@@ -191,6 +219,9 @@ public sealed class AccountsReportService(ApplicationDbContext db, ICurrentUserS
     {
         var name = request.Name?.Trim();
         if (string.IsNullOrWhiteSpace(name)) throw new InvalidOperationException("Filter name is required.");
+        if (name.Length > 160) throw new InvalidOperationException("Filter name must not exceed 160 characters.");
+        if (request.TypeId.HasValue && !await db.AccountsRoznamchaTypes.AsNoTracking().AnyAsync(x => x.Id == request.TypeId.Value && x.IsActive, ct))
+            throw new InvalidOperationException("Select a valid active report type.");
         if (await db.AccountsReportFilters.AsNoTracking().AnyAsync(x => x.Name == name && (!id.HasValue || x.Id != id.Value), ct))
             throw new InvalidOperationException("A report filter with this name already exists.");
 

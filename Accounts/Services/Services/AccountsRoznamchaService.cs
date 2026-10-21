@@ -7,31 +7,38 @@ namespace Accounts.Services.Services;
 
 public sealed class AccountsRoznamchaService(ApplicationDbContext db) : IAccountsRoznamchaService
 {
-    public async Task<IReadOnlyList<PaymentRozListRow>> ListPaymentRozAsync(
+    public Task<IReadOnlyList<PaymentRozListRow>> ListPaymentRozAsync(
         int tenantId,
         DateOnly dateFrom,
         DateOnly dateTo,
         CancellationToken cancellationToken = default) =>
-        await SpListQuery.ExecAsync<PaymentRozListRow>(
-            db,
-            "EXEC dbo.usp_Accounts_PaymentRoz_List @TenantId, @DateFrom, @DateTo",
-            cancellationToken,
-            SpListQuery.TenantId(tenantId),
-            SpListQuery.Date("@DateFrom", dateFrom),
-            SpListQuery.Date("@DateTo", dateTo));
+        ListTypedRozAsync(tenantId, "PAYMENT", dateFrom, dateTo, cancellationToken);
 
-    public async Task<IReadOnlyList<PaymentRozListRow>> ListReceiptRozAsync(
+    public Task<IReadOnlyList<PaymentRozListRow>> ListReceiptRozAsync(
         int tenantId,
         DateOnly dateFrom,
         DateOnly dateTo,
         CancellationToken cancellationToken = default) =>
-        await SpListQuery.ExecAsync<PaymentRozListRow>(
+        ListTypedRozAsync(tenantId, "RECEIPT", dateFrom, dateTo, cancellationToken);
+
+    private async Task<IReadOnlyList<PaymentRozListRow>> ListTypedRozAsync(
+        int tenantId, string typeCode, DateOnly dateFrom, DateOnly dateTo, CancellationToken cancellationToken)
+    {
+        var typeId = await ResolveRozTypeIdAsync(tenantId, typeCode, cancellationToken);
+        // A misconfigured PaymentRozTypeId must never make the payment endpoint
+        // expose receipt rows (or vice versa).
+        if (typeId is null || !await db.AccountsRoznamchaTypes.AsNoTracking()
+                .AnyAsync(type => type.Id == typeId.Value && type.Code == typeCode, cancellationToken))
+            return [];
+        return await SpListQuery.ExecAsync<PaymentRozListRow>(
             db,
-            "EXEC dbo.usp_Accounts_ReceiptRoz_List @TenantId, @DateFrom, @DateTo",
+            "EXEC dbo.usp_Accounts_PaymentRoz_List @TenantId, @DateFrom, @DateTo, @RoznamchaTypeId",
             cancellationToken,
             SpListQuery.TenantId(tenantId),
             SpListQuery.Date("@DateFrom", dateFrom),
-            SpListQuery.Date("@DateTo", dateTo));
+            SpListQuery.Date("@DateTo", dateTo),
+            SpListQuery.Int("@RoznamchaTypeId", typeId.Value));
+    }
 
     public async Task<IReadOnlyList<RoznamchaListRow>> ListRoznamchaAsync(
         int tenantId,
