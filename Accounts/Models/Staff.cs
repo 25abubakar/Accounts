@@ -9,6 +9,13 @@ namespace Accounts.Models
         [Key]
         public Guid StaffId { get; set; } = Guid.NewGuid();
 
+        /// <summary>Original numeric staff ID from an imported staff register; GUID remains the relational key.</summary>
+        public int? LegacyStaffId { get; set; }
+        /// <summary>Original vacancy ID, including inactive employment history; blank source stays null.</summary>
+        public int? LegacyVacancyId { get; set; }
+        /// <summary>Raw legacy source metadata only; never determines employment or login status.</summary>
+        public int? LegacyServiceStatusId { get; set; }
+
         // ── ITenantEntity ─────────────────────────────────────────────────
         /// <summary>FK to Tenants.Id — copied from the vacancy at hire time.</summary>
         public int TenantId { get; set; }

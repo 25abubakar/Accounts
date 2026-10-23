@@ -176,8 +176,8 @@ namespace Accounts.Services.Services
                     {
                         s.StaffId,
                         FullName = s.Person != null ? s.Person.FullName : "-",
-                        Email = s.Person != null ? s.Person.Email : null,
-                        Phone = s.Person != null ? s.Person.Phone : null,
+                        Email = s.Person != null ? s.Person.Contacts.Where(c => c.ContactType == "Email" && c.ContactValue.Trim() != "").OrderByDescending(c => c.IsPrimary).ThenBy(c => c.Id).Select(c => c.ContactValue).FirstOrDefault() : null,
+                        Phone = s.Person != null ? s.Person.Contacts.Where(c => c.ContactType == "Phone" && c.ContactValue.Trim() != "").OrderByDescending(c => c.IsPrimary).ThenBy(c => c.Id).Select(c => c.ContactValue).FirstOrDefault() : null,
                         PhotoUrl = s.Person != null ? s.Person.ProfilePhotoUrl : null,
                         PersonId = s.PersonId,
                         LoginId = s.LoginId,
@@ -228,8 +228,8 @@ namespace Accounts.Services.Services
                 {
                     s.StaffId,
                     FullName = s.Person != null ? s.Person.FullName : "-",
-                    Email    = s.Person != null ? s.Person.Email : null,
-                    Phone    = s.Person != null ? s.Person.Phone : null,
+                    Email    = s.Person != null ? s.Person.Contacts.Where(c => c.ContactType == "Email" && c.ContactValue.Trim() != "").OrderByDescending(c => c.IsPrimary).ThenBy(c => c.Id).Select(c => c.ContactValue).FirstOrDefault() : null,
+                    Phone    = s.Person != null ? s.Person.Contacts.Where(c => c.ContactType == "Phone" && c.ContactValue.Trim() != "").OrderByDescending(c => c.IsPrimary).ThenBy(c => c.Id).Select(c => c.ContactValue).FirstOrDefault() : null,
                     PhotoUrl = s.Person != null ? s.Person.ProfilePhotoUrl : null,
                     PersonId = s.PersonId,
                     LoginId = s.LoginId,
@@ -260,8 +260,8 @@ namespace Accounts.Services.Services
                         p.PersonId,
                         p.FullName,
                         LoginId = p.Staff != null ? p.Staff.LoginId : null,
-                        p.Email,
-                        Phone = p.Phone,
+                        Email = p.Contacts.Where(c => c.ContactType == "Email" && c.ContactValue.Trim() != "").OrderByDescending(c => c.IsPrimary).ThenBy(c => c.Id).Select(c => c.ContactValue).FirstOrDefault(),
+                        Phone = p.Contacts.Where(c => c.ContactType == "Phone" && c.ContactValue.Trim() != "").OrderByDescending(c => c.IsPrimary).ThenBy(c => c.Id).Select(c => c.ContactValue).FirstOrDefault(),
                         p.ProfilePhotoUrl,
                         IsHired = p.Staff != null,
                         StaffId = p.Staff != null ? p.Staff.StaffId : (Guid?)null,
@@ -306,8 +306,8 @@ namespace Accounts.Services.Services
                     p.PersonId,
                     p.FullName,
                     LoginId = p.Staff != null ? p.Staff.LoginId : null,
-                    p.Email,
-                    Phone = p.Phone,
+                    Email = p.Contacts.Where(c => c.ContactType == "Email" && c.ContactValue.Trim() != "").OrderByDescending(c => c.IsPrimary).ThenBy(c => c.Id).Select(c => c.ContactValue).FirstOrDefault(),
+                    Phone = p.Contacts.Where(c => c.ContactType == "Phone" && c.ContactValue.Trim() != "").OrderByDescending(c => c.IsPrimary).ThenBy(c => c.Id).Select(c => c.ContactValue).FirstOrDefault(),
                     p.ProfilePhotoUrl,
                     IsHired = p.Staff != null,
                     StaffId = p.Staff != null ? p.Staff.StaffId : (Guid?)null,
@@ -386,4 +386,3 @@ namespace Accounts.Services.Services
             Task.FromResult<IEnumerable<object>>(Array.Empty<object>());
     }
 }
- 

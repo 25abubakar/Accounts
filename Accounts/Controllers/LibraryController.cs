@@ -66,8 +66,7 @@ public sealed class LibraryController : ControllerBase
     [HttpGet("categories")]
     public async Task<IActionResult> GetCategories(CancellationToken ct)
     {
-        if (_tenant.IsSuperAdmin) return Ok(Array.Empty<LibraryCategoryDto>());
-        if (!_tenant.TenantId.HasValue || !await HasActionAsync(TypesRoute, "VIEW", ct)) return Forbid();
+        if (!await HasActionAsync(TypesRoute, "VIEW", ct)) return Forbid();
         var rows = await _db.LibraryCategories.AsNoTracking()
             .OrderBy(x => x.DisplayOrder == 0 ? int.MaxValue : x.DisplayOrder).ThenBy(x => x.Name)
             .Select(x => new LibraryCategoryDto(x.Id, x.Code, x.Name, x.Description, x.DisplayOrder, x.IsActive))
@@ -78,14 +77,14 @@ public sealed class LibraryController : ControllerBase
     [HttpPost("categories")]
     public async Task<IActionResult> CreateCategory([FromBody] SaveLibraryCategoryDto dto, CancellationToken ct)
     {
-        if (!_tenant.TenantId.HasValue || !await HasActionAsync(TypesRoute, "ADD", ct)) return Forbid();
+        if (!await HasActionAsync(TypesRoute, "ADD", ct)) return Forbid();
         var validation = ValidateCategory(dto);
         if (validation != null) return BadRequest(new { message = validation });
         var code = dto.Code.Trim().ToUpperInvariant();
         var name = dto.Name.Trim();
         if (await _db.LibraryCategories.AnyAsync(x => x.Code == code || x.Name == name, ct))
             return Conflict(new { message = "A library category with this code or name already exists." });
-        var row = new LibraryCategory { TenantId = _tenant.RequiredTenantId, Code = code, Name = name, Description = Clean(dto.Description), DisplayOrder = Math.Max(0, dto.DisplayOrder), IsActive = dto.IsActive };
+        var row = new LibraryCategory { Code = code, Name = name, Description = Clean(dto.Description), DisplayOrder = Math.Max(0, dto.DisplayOrder), IsActive = dto.IsActive };
         _db.LibraryCategories.Add(row);
         await _db.SaveChangesAsync(ct);
         return Ok(ToCategoryDto(row));
@@ -94,7 +93,7 @@ public sealed class LibraryController : ControllerBase
     [HttpPut("categories/{id:int}")]
     public async Task<IActionResult> UpdateCategory(int id, [FromBody] SaveLibraryCategoryDto dto, CancellationToken ct)
     {
-        if (!_tenant.TenantId.HasValue || !await HasActionAsync(TypesRoute, "EDIT", ct)) return Forbid();
+        if (!await HasActionAsync(TypesRoute, "EDIT", ct)) return Forbid();
         var validation = ValidateCategory(dto);
         if (validation != null) return BadRequest(new { message = validation });
         var row = await _db.LibraryCategories.SingleOrDefaultAsync(x => x.Id == id, ct);
@@ -111,7 +110,7 @@ public sealed class LibraryController : ControllerBase
     [HttpDelete("categories/{id:int}")]
     public async Task<IActionResult> DeleteCategory(int id, CancellationToken ct)
     {
-        if (!_tenant.TenantId.HasValue || !await HasActionAsync(TypesRoute, "DELETE", ct)) return Forbid();
+        if (!await HasActionAsync(TypesRoute, "DELETE", ct)) return Forbid();
         var row = await _db.LibraryCategories.SingleOrDefaultAsync(x => x.Id == id, ct);
         if (row == null) return NotFound(new { message = "Library category not found." });
         if (await _db.LibraryTypes.AnyAsync(x => x.LibraryCategoryId == id, ct))
@@ -124,10 +123,9 @@ public sealed class LibraryController : ControllerBase
     [HttpGet("types")]
     public async Task<IActionResult> GetTypes(CancellationToken ct)
     {
-        if (_tenant.IsSuperAdmin) return Ok(Array.Empty<LibraryTypeDto>());
-        if (!_tenant.TenantId.HasValue || !await HasActionAsync(TypesRoute, "VIEW", ct)) return Forbid();
+        if (!await HasActionAsync(TypesRoute, "VIEW", ct)) return Forbid();
 
-        var rows = await _db.LibraryTypes.AsNoTracking()
+        var rows = await _db.LibraryTypes.AsNoTracking().Where(x => x.ParentId == null)
             .OrderBy(x => x.DisplayOrder == 0 ? int.MaxValue : x.DisplayOrder)
             .ThenBy(x => x.Name)
             .Select(x => new LibraryTypeDto(x.Id, x.Code, x.Name, x.Description, x.DisplayOrder, x.IsHardCopyRequired, x.IsActive,
@@ -140,7 +138,7 @@ public sealed class LibraryController : ControllerBase
     [HttpPost("types")]
     public async Task<IActionResult> CreateType([FromBody] SaveLibraryTypeDto dto, CancellationToken ct)
     {
-        if (!_tenant.TenantId.HasValue || !await HasActionAsync(TypesRoute, "ADD", ct)) return Forbid();
+        if (!await HasActionAsync(TypesRoute, "ADD", ct)) return Forbid();
         var validation = ValidateType(dto);
         if (validation != null) return BadRequest(new { message = validation });
         if (dto.LibraryCategoryId.HasValue && !await _db.LibraryCategories.AnyAsync(x => x.Id == dto.LibraryCategoryId && x.IsActive, ct))
@@ -149,12 +147,11 @@ public sealed class LibraryController : ControllerBase
         var code = dto.Code.Trim().ToUpperInvariant();
         var name = dto.Name.Trim();
         var duplicate = await _db.LibraryTypes.AsNoTracking().AnyAsync(
-            x => x.TenantId == _tenant.RequiredTenantId && (x.Code == code || x.Name == name), ct);
+            x => x.ParentId == null && (x.Code == code || x.Name == name), ct);
         if (duplicate) return Conflict(new { message = "A library type with this code or name already exists." });
 
         var row = new LibraryType
         {
-            TenantId = _tenant.RequiredTenantId,
             LibraryCategoryId = dto.LibraryCategoryId,
             Code = code,
             Name = name,
@@ -172,19 +169,19 @@ public sealed class LibraryController : ControllerBase
     [HttpPut("types/{id:int}")]
     public async Task<IActionResult> UpdateType(int id, [FromBody] SaveLibraryTypeDto dto, CancellationToken ct)
     {
-        if (!_tenant.TenantId.HasValue || !await HasActionAsync(TypesRoute, "EDIT", ct)) return Forbid();
+        if (!await HasActionAsync(TypesRoute, "EDIT", ct)) return Forbid();
         var validation = ValidateType(dto);
         if (validation != null) return BadRequest(new { message = validation });
         if (dto.LibraryCategoryId.HasValue && !await _db.LibraryCategories.AnyAsync(x => x.Id == dto.LibraryCategoryId && x.IsActive, ct))
             return BadRequest(new { message = "Select an active library category." });
 
-        var row = await _db.LibraryTypes.SingleOrDefaultAsync(x => x.Id == id, ct);
+        var row = await _db.LibraryTypes.SingleOrDefaultAsync(x => x.Id == id && x.ParentId == null, ct);
         if (row == null) return NotFound(new { message = "Library type not found." });
 
         var code = dto.Code.Trim().ToUpperInvariant();
         var name = dto.Name.Trim();
         var duplicate = await _db.LibraryTypes.AsNoTracking().AnyAsync(
-            x => x.Id != id && x.TenantId == _tenant.RequiredTenantId && (x.Code == code || x.Name == name), ct);
+            x => x.Id != id && x.ParentId == null && (x.Code == code || x.Name == name), ct);
         if (duplicate) return Conflict(new { message = "A library type with this code or name already exists." });
 
         row.Code = code;
@@ -197,21 +194,21 @@ public sealed class LibraryController : ControllerBase
         row.UpdatedOnUtc = DateTime.UtcNow;
         await _db.SaveChangesAsync(ct);
         var count = await _db.LibraryDocuments.CountAsync(x => x.LibraryTypeId == row.Id && x.IsActive, ct);
-        var subTypeCount = await _db.LibrarySubTypes.CountAsync(x => x.LibraryTypeId == row.Id && x.IsActive, ct);
+        var subTypeCount = await _db.LibraryTypes.CountAsync(x => x.ParentId == row.Id && x.IsActive, ct);
         return Ok(ToTypeDto(row, count, subTypeCount));
     }
 
     [HttpDelete("types/{id:int}")]
     public async Task<IActionResult> DeleteType(int id, CancellationToken ct)
     {
-        if (!_tenant.TenantId.HasValue || !await HasActionAsync(TypesRoute, "DELETE", ct)) return Forbid();
-        var row = await _db.LibraryTypes.SingleOrDefaultAsync(x => x.Id == id, ct);
+        if (!await HasActionAsync(TypesRoute, "DELETE", ct)) return Forbid();
+        var row = await _db.LibraryTypes.SingleOrDefaultAsync(x => x.Id == id && x.ParentId == null, ct);
         if (row == null) return NotFound(new { message = "Library type not found." });
-        if (await _db.LibraryDocuments.AnyAsync(x => x.LibraryTypeId == id, ct))
+        if (await _db.LibraryDocuments.IgnoreQueryFilters().AnyAsync(x => x.LibraryTypeId == id, ct))
             return Conflict(new { message = "This type cannot be deleted while library documents are using it." });
-        if (await _db.LibrarySubTypes.AnyAsync(x => x.LibraryTypeId == id, ct))
+        if (await _db.LibraryTypes.AnyAsync(x => x.ParentId == id, ct))
             return Conflict(new { message = "This type cannot be deleted while sub types are using it." });
-        if (await _db.LibraryTemplates.AnyAsync(x => x.LibraryTypeId == id, ct))
+        if (await _db.LibraryTemplates.IgnoreQueryFilters().AnyAsync(x => x.LibraryTypeId == id, ct))
             return Conflict(new { message = "This type cannot be deleted while library templates are using it." });
         _db.LibraryTypes.Remove(row);
         await _db.SaveChangesAsync(ct);
@@ -221,10 +218,9 @@ public sealed class LibraryController : ControllerBase
     [HttpGet("sub-types")]
     public async Task<IActionResult> GetSubTypes([FromQuery] int? typeId, CancellationToken ct)
     {
-        if (_tenant.IsSuperAdmin) return Ok(Array.Empty<LibrarySubTypeDto>());
-        if (!_tenant.TenantId.HasValue || !await HasActionAsync(TypesRoute, "VIEW", ct)) return Forbid();
-        var query = _db.LibrarySubTypes.AsNoTracking().Include(x => x.LibraryType).AsQueryable();
-        if (typeId.HasValue) query = query.Where(x => x.LibraryTypeId == typeId.Value);
+        if (!await HasActionAsync(TypesRoute, "VIEW", ct)) return Forbid();
+        var query = _db.LibraryTypes.AsNoTracking().Where(x => x.ParentId != null).Include(x => x.ParentType).AsQueryable();
+        if (typeId.HasValue) query = query.Where(x => x.ParentId == typeId.Value);
         var rows = await query.OrderBy(x => x.DisplayOrder == 0 ? int.MaxValue : x.DisplayOrder).ThenBy(x => x.Name).ToListAsync(ct);
         return Ok(rows.Select(ToSubTypeDto));
     }
@@ -232,52 +228,52 @@ public sealed class LibraryController : ControllerBase
     [HttpPost("sub-types")]
     public async Task<IActionResult> CreateSubType([FromBody] SaveLibrarySubTypeDto dto, CancellationToken ct)
     {
-        if (!_tenant.TenantId.HasValue || !await HasActionAsync(TypesRoute, "ADD", ct)) return Forbid();
+        if (!await HasActionAsync(TypesRoute, "ADD", ct)) return Forbid();
         var validation = await ValidateSubTypeAsync(dto, ct);
         if (validation != null) return BadRequest(new { message = validation });
         var code = dto.Code.Trim().ToUpperInvariant();
         var name = dto.Name.Trim();
-        if (await _db.LibrarySubTypes.AnyAsync(x => x.LibraryTypeId == dto.LibraryTypeId && (x.Code == code || x.Name == name), ct))
+        if (await _db.LibraryTypes.AnyAsync(x => x.ParentId == dto.LibraryTypeId && (x.Code == code || x.Name == name), ct))
             return Conflict(new { message = "This sub type code or name already exists under the selected library type." });
-        var row = new LibrarySubType { TenantId = _tenant.RequiredTenantId, LibraryTypeId = dto.LibraryTypeId, Code = code, Name = name, Description = Clean(dto.Description), DisplayOrder = Math.Max(0, dto.DisplayOrder), IsActive = dto.IsActive };
-        _db.LibrarySubTypes.Add(row);
+        var row = new LibraryType { ParentId = dto.LibraryTypeId, Code = code, Name = name, Description = Clean(dto.Description), DisplayOrder = Math.Max(0, dto.DisplayOrder), IsActive = dto.IsActive };
+        _db.LibraryTypes.Add(row);
         await _db.SaveChangesAsync(ct);
-        row.LibraryType = await _db.LibraryTypes.AsNoTracking().SingleAsync(x => x.Id == row.LibraryTypeId, ct);
+        row.ParentType = await _db.LibraryTypes.AsNoTracking().SingleAsync(x => x.Id == row.ParentId, ct);
         return Ok(ToSubTypeDto(row));
     }
 
     [HttpPut("sub-types/{id:int}")]
     public async Task<IActionResult> UpdateSubType(int id, [FromBody] SaveLibrarySubTypeDto dto, CancellationToken ct)
     {
-        if (!_tenant.TenantId.HasValue || !await HasActionAsync(TypesRoute, "EDIT", ct)) return Forbid();
+        if (!await HasActionAsync(TypesRoute, "EDIT", ct)) return Forbid();
         var validation = await ValidateSubTypeAsync(dto, ct);
         if (validation != null) return BadRequest(new { message = validation });
-        var row = await _db.LibrarySubTypes.SingleOrDefaultAsync(x => x.Id == id, ct);
+        var row = await _db.LibraryTypes.SingleOrDefaultAsync(x => x.Id == id && x.ParentId != null, ct);
         if (row == null) return NotFound(new { message = "Library sub type not found." });
-        if (row.LibraryTypeId != dto.LibraryTypeId &&
-            (await _db.LibraryDocuments.AnyAsync(x => x.LibrarySubTypeId == id, ct) ||
-             await _db.LibraryTemplates.AnyAsync(x => x.LibrarySubTypeId == id, ct)))
+        if (row.ParentId != dto.LibraryTypeId &&
+            (await _db.LibraryDocuments.IgnoreQueryFilters().AnyAsync(x => x.LibrarySubTypeId == id, ct) ||
+             await _db.LibraryTemplates.IgnoreQueryFilters().AnyAsync(x => x.LibrarySubTypeId == id, ct)))
             return Conflict(new { message = "The parent type cannot be changed while library content uses this sub type." });
         var code = dto.Code.Trim().ToUpperInvariant();
         var name = dto.Name.Trim();
-        if (await _db.LibrarySubTypes.AnyAsync(x => x.Id != id && x.LibraryTypeId == dto.LibraryTypeId && (x.Code == code || x.Name == name), ct))
+        if (await _db.LibraryTypes.AnyAsync(x => x.Id != id && x.ParentId == dto.LibraryTypeId && (x.Code == code || x.Name == name), ct))
             return Conflict(new { message = "This sub type code or name already exists under the selected library type." });
-        row.LibraryTypeId = dto.LibraryTypeId; row.Code = code; row.Name = name; row.Description = Clean(dto.Description); row.DisplayOrder = Math.Max(0, dto.DisplayOrder); row.IsActive = dto.IsActive; row.UpdatedOnUtc = DateTime.UtcNow;
+        row.ParentId = dto.LibraryTypeId; row.Code = code; row.Name = name; row.Description = Clean(dto.Description); row.DisplayOrder = Math.Max(0, dto.DisplayOrder); row.IsActive = dto.IsActive; row.UpdatedOnUtc = DateTime.UtcNow;
         await _db.SaveChangesAsync(ct);
-        row.LibraryType = await _db.LibraryTypes.AsNoTracking().SingleAsync(x => x.Id == row.LibraryTypeId, ct);
+        row.ParentType = await _db.LibraryTypes.AsNoTracking().SingleAsync(x => x.Id == row.ParentId, ct);
         return Ok(ToSubTypeDto(row));
     }
 
     [HttpDelete("sub-types/{id:int}")]
     public async Task<IActionResult> DeleteSubType(int id, CancellationToken ct)
     {
-        if (!_tenant.TenantId.HasValue || !await HasActionAsync(TypesRoute, "DELETE", ct)) return Forbid();
-        var row = await _db.LibrarySubTypes.SingleOrDefaultAsync(x => x.Id == id, ct);
+        if (!await HasActionAsync(TypesRoute, "DELETE", ct)) return Forbid();
+        var row = await _db.LibraryTypes.SingleOrDefaultAsync(x => x.Id == id && x.ParentId != null, ct);
         if (row == null) return NotFound(new { message = "Library sub type not found." });
-        if (await _db.LibraryDocuments.AnyAsync(x => x.LibrarySubTypeId == id, ct) ||
-            await _db.LibraryTemplates.AnyAsync(x => x.LibrarySubTypeId == id, ct))
+        if (await _db.LibraryDocuments.IgnoreQueryFilters().AnyAsync(x => x.LibrarySubTypeId == id, ct) ||
+            await _db.LibraryTemplates.IgnoreQueryFilters().AnyAsync(x => x.LibrarySubTypeId == id, ct))
             return Conflict(new { message = "This sub type cannot be deleted while library content is using it." });
-        _db.LibrarySubTypes.Remove(row);
+        _db.LibraryTypes.Remove(row);
         await _db.SaveChangesAsync(ct);
         return Ok(new { message = "Library sub type deleted successfully." });
     }
@@ -299,7 +295,7 @@ public sealed class LibraryController : ControllerBase
             row.Id, row.DocumentReference ?? $"Doc-{row.Id}", row.LibraryTypeId, row.LibraryTypeName ?? string.Empty,
             row.LibrarySubTypeId, row.LibrarySubTypeName, row.Title, row.Description,
             row.OriginalFileName, row.ContentType, row.FileExtension, row.FileSizeBytes, row.IsActive,
-            row.CreatedOnUtc, $"/api/library/documents/{row.Id}/download")));
+            row.CreatedOnUtc, $"/api/library/documents/{row.Id}/download", row.AttachmentReference)));
     }
 
     [HttpGet("documents/picker")]
@@ -354,11 +350,8 @@ public sealed class LibraryController : ControllerBase
         var storedFileName = await SaveFileAsync(form.File!, ct);
         try
         {
-            await using var transaction = _db.Database.IsRelational()
-                ? await _db.Database.BeginTransactionAsync(ct)
-                : null;
             var extension = Path.GetExtension(form.File!.FileName).ToLowerInvariant();
-            var row = new LibraryDocument
+            var row = await SaveNewAssetAsync(() => new LibraryDocument
             {
                 TenantId = _tenant.RequiredTenantId,
                 LibraryTypeId = form.LibraryTypeId,
@@ -374,15 +367,7 @@ public sealed class LibraryController : ControllerBase
                 IsActive = form.IsActive,
                 UploadedByUserId = User.FindFirstValue(ClaimTypes.NameIdentifier),
                 CreatedOnUtc = DateTime.UtcNow
-            };
-            _db.LibraryDocuments.Add(row);
-            await _db.SaveChangesAsync(ct);
-            row.DocumentReference = $"Doc-{row.Id}";
-            await _db.SaveChangesAsync(ct);
-            row.LibraryType = await _db.LibraryTypes.AsNoTracking().SingleAsync(x => x.Id == row.LibraryTypeId, ct);
-            if (row.LibrarySubTypeId.HasValue)
-                row.LibrarySubType = await _db.LibrarySubTypes.AsNoTracking().SingleAsync(x => x.Id == row.LibrarySubTypeId, ct);
-            if (transaction != null) await transaction.CommitAsync(ct);
+            }, storedFileName, ct);
             return Ok(ToDocumentDto(row));
         }
         catch
@@ -425,9 +410,9 @@ public sealed class LibraryController : ControllerBase
             if (newStoredFileName != null) DeleteStoredFile(previousStoredFileName);
             row.LibraryType = await _db.LibraryTypes.AsNoTracking().SingleAsync(x => x.Id == row.LibraryTypeId, ct);
             row.LibrarySubType = row.LibrarySubTypeId.HasValue
-                ? await _db.LibrarySubTypes.AsNoTracking().SingleAsync(x => x.Id == row.LibrarySubTypeId, ct)
+                ? await _db.LibraryTypes.AsNoTracking().SingleAsync(x => x.Id == row.LibrarySubTypeId, ct)
                 : null;
-            return Ok(ToDocumentDto(row));
+            return Ok(ToDocumentDto(row, await GetDocumentAttachmentReferenceAsync(row.Id, ct)));
         }
         catch
         {
@@ -567,10 +552,7 @@ public sealed class LibraryController : ControllerBase
         var storedFileName = await SaveFileAsync(form.File!, ct);
         try
         {
-            await using var transaction = _db.Database.IsRelational()
-                ? await _db.Database.BeginTransactionAsync(ct)
-                : null;
-            var row = new LibraryDocument
+            var row = await SaveNewAssetAsync(() => new LibraryDocument
             {
                 TenantId = _tenant.RequiredTenantId,
                 LibraryTypeId = form.LibraryTypeId,
@@ -586,15 +568,7 @@ public sealed class LibraryController : ControllerBase
                 IsActive = form.IsActive,
                 UploadedByUserId = User.FindFirstValue(ClaimTypes.NameIdentifier),
                 CreatedOnUtc = DateTime.UtcNow
-            };
-            _db.LibraryDocuments.Add(row);
-            await _db.SaveChangesAsync(ct);
-            row.DocumentReference = $"Doc-{row.Id}";
-            await _db.SaveChangesAsync(ct);
-            row.LibraryType = await _db.LibraryTypes.AsNoTracking().SingleAsync(x => x.Id == row.LibraryTypeId, ct);
-            if (row.LibrarySubTypeId.HasValue)
-                row.LibrarySubType = await _db.LibrarySubTypes.AsNoTracking().SingleAsync(x => x.Id == row.LibrarySubTypeId, ct);
-            if (transaction != null) await transaction.CommitAsync(ct);
+            }, storedFileName, ct);
             return Ok(ToPictureDto(row));
         }
         catch
@@ -636,7 +610,7 @@ public sealed class LibraryController : ControllerBase
             if (newStoredFileName != null) DeleteStoredFile(previousStoredFileName);
             row.LibraryType = await _db.LibraryTypes.AsNoTracking().SingleAsync(x => x.Id == row.LibraryTypeId, ct);
             row.LibrarySubType = row.LibrarySubTypeId.HasValue
-                ? await _db.LibrarySubTypes.AsNoTracking().SingleAsync(x => x.Id == row.LibrarySubTypeId, ct)
+                ? await _db.LibraryTypes.AsNoTracking().SingleAsync(x => x.Id == row.LibrarySubTypeId, ct)
                 : null;
             return Ok(ToPictureDto(row));
         }
@@ -800,8 +774,8 @@ public sealed class LibraryController : ControllerBase
         if (form.Title.Trim().Length > 200) return "Picture name must be 200 characters or less.";
         if (!string.IsNullOrWhiteSpace(form.Description) && form.Description.Trim().Length > 1000)
             return "Remarks must be 1000 characters or less.";
-        if (!await _db.LibraryTypes.AnyAsync(x => x.Id == form.LibraryTypeId && x.IsActive, ct))
-            return "Select an active library type.";
+        var hierarchyError = await _library.ValidateHierarchyAsync(form.LibraryTypeId, form.LibrarySubTypeId, null, ct);
+        if (hierarchyError != null) return hierarchyError;
         if (requireFile && (form.File == null || form.File.Length == 0)) return "Select a picture to upload.";
         if (form.File is not { Length: > 0 }) return null;
         if (form.File.Length > MaximumFileSize) return "The selected picture is larger than the 50 MB limit.";
@@ -823,6 +797,37 @@ public sealed class LibraryController : ControllerBase
         if (dto.Content.Length > MaximumTemplateLength)
             return $"Template content must be {MaximumTemplateLength:N0} characters or less.";
         return null;
+    }
+
+    private async Task<LibraryDocument> SaveNewAssetAsync(
+        Func<LibraryDocument> createRow, string storedFileName, CancellationToken ct)
+    {
+        LibraryDocument? pending = null;
+        // SQL retries must own the whole transaction, not an individual SaveChanges.
+        return await _db.Database.CreateExecutionStrategy().ExecuteAsync(async () =>
+        {
+            if (pending != null) _db.Entry(pending).State = EntityState.Detached;
+            // The file name is generated once per upload. If commit succeeded but its
+            // acknowledgement was lost, return that record instead of inserting again.
+            var existing = await _db.LibraryDocuments.AsNoTracking()
+                .Include(x => x.LibraryType).Include(x => x.LibrarySubType)
+                .SingleOrDefaultAsync(x => x.TenantId == _tenant.RequiredTenantId && x.StoredFileName == storedFileName, ct);
+            if (existing != null) return existing;
+
+            await using var transaction = _db.Database.IsRelational() && _db.Database.CurrentTransaction == null
+                ? await _db.Database.BeginTransactionAsync(ct)
+                : null;
+            pending = createRow();
+            _db.LibraryDocuments.Add(pending);
+            await _db.SaveChangesAsync(ct);
+            pending.DocumentReference = $"Doc-{pending.Id}";
+            await _db.SaveChangesAsync(ct);
+            pending.LibraryType = await _db.LibraryTypes.AsNoTracking().SingleAsync(x => x.Id == pending.LibraryTypeId, ct);
+            if (pending.LibrarySubTypeId.HasValue)
+                pending.LibrarySubType = await _db.LibraryTypes.AsNoTracking().SingleAsync(x => x.Id == pending.LibrarySubTypeId, ct);
+            if (transaction != null) await transaction.CommitAsync(ct);
+            return pending;
+        });
     }
 
     private async Task<string> SaveFileAsync(IFormFile file, CancellationToken ct)
@@ -880,7 +885,7 @@ public sealed class LibraryController : ControllerBase
 
     private async Task<string?> ValidateSubTypeAsync(SaveLibrarySubTypeDto dto, CancellationToken ct)
     {
-        if (!await _db.LibraryTypes.AnyAsync(x => x.Id == dto.LibraryTypeId && x.IsActive, ct)) return "Select an active library type.";
+        if (!await _db.LibraryTypes.AnyAsync(x => x.Id == dto.LibraryTypeId && x.ParentId == null && x.IsActive, ct)) return "Select an active library type.";
         if (string.IsNullOrWhiteSpace(dto.Code)) return "Sub type code is required.";
         if (dto.Code.Trim().Length > 30) return "Sub type code must be 30 characters or less.";
         if (string.IsNullOrWhiteSpace(dto.Name)) return "Sub type name is required.";
@@ -950,14 +955,26 @@ public sealed class LibraryController : ControllerBase
         new(row.Id, row.Code, row.Name, row.Description, row.DisplayOrder, row.IsHardCopyRequired, row.IsActive,
             documentCount, subTypeCount, row.LibraryCategoryId, row.LibraryCategory?.Name);
 
-    private static LibrarySubTypeDto ToSubTypeDto(LibrarySubType row) =>
-        new(row.Id, row.LibraryTypeId, row.LibraryType?.Name ?? string.Empty, row.Code, row.Name, row.Description, row.DisplayOrder, row.IsActive);
+    private static LibrarySubTypeDto ToSubTypeDto(LibraryType row) =>
+        new(row.Id, row.ParentId!.Value, row.ParentType?.Name ?? string.Empty, row.Code, row.Name, row.Description, row.DisplayOrder, row.IsActive);
 
-    private static LibraryDocumentDto ToDocumentDto(LibraryDocument row) => new(
+    private async Task<string?> GetDocumentAttachmentReferenceAsync(long documentId, CancellationToken ct)
+    {
+        var references = await _db.RoznamchaLibraryDocuments.AsNoTracking()
+            .Where(link => link.LibraryDocumentId == documentId && link.TenantId == _tenant.RequiredTenantId &&
+                link.RoznamchaEntry != null && !link.RoznamchaEntry.IsDeleted &&
+                (link.RoznamchaEntry.RoznamchaTypeId == 1 || link.RoznamchaEntry.RoznamchaTypeId == 2) &&
+                link.RoznamchaEntry.Ref != null && link.RoznamchaEntry.Ref.Trim() != "")
+            .OrderBy(link => link.RoznamchaEntry!.TransDate).ThenBy(link => link.RoznamchaEntryId)
+            .Select(link => link.RoznamchaEntry!.Ref!).ToListAsync(ct);
+        return references.Count == 0 ? null : string.Join(", ", references);
+    }
+
+    private static LibraryDocumentDto ToDocumentDto(LibraryDocument row, string? attachmentReference = null) => new(
         row.Id, row.DocumentReference ?? $"Doc-{row.Id}", row.LibraryTypeId, row.LibraryType?.Name ?? string.Empty,
         row.LibrarySubTypeId, row.LibrarySubType?.Name, row.Title, row.Description,
         row.OriginalFileName, row.ContentType, row.FileExtension, row.FileSizeBytes, row.IsActive,
-        row.CreatedOnUtc, $"/api/library/documents/{row.Id}/download");
+        row.CreatedOnUtc, $"/api/library/documents/{row.Id}/download", attachmentReference);
 
     private static LibraryTemplateDto ToTemplateDto(LibraryTemplate row) => new(
         row.Id, row.LibraryTypeId, row.LibraryType?.Name ?? string.Empty, row.LibrarySubTypeId,
@@ -1006,7 +1023,7 @@ public sealed class SaveLibraryDocumentForm
 
 public sealed record LibraryDocumentDto(long Id, string DocumentReference, int LibraryTypeId, string LibraryTypeName,
     int? LibrarySubTypeId, string? LibrarySubTypeName, string Title, string? Description,
-    string OriginalFileName, string ContentType, string FileExtension, long FileSizeBytes, bool IsActive, DateTime CreatedOnUtc, string DownloadUrl);
+    string OriginalFileName, string ContentType, string FileExtension, long FileSizeBytes, bool IsActive, DateTime CreatedOnUtc, string DownloadUrl, string? AttachmentReference = null);
 
 public sealed record SaveLibraryTemplateDto(int LibraryTypeId, string Name, string? Description, string Content, bool IsActive = true, int? LibrarySubTypeId = null);
 public sealed record LibraryTemplateDto(long Id, int LibraryTypeId, string LibraryTypeName, int? LibrarySubTypeId,

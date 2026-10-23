@@ -13,6 +13,8 @@ public sealed class AttendanceRecord : ITenantEntity
     public DateOnly AttendanceDate { get; set; }
     public DateTime? EffectiveCheckOutUtc { get; set; }
     public int? AttendanceStatusId { get; set; }
+    /// <summary>Canonical Settings status; colors come from the independent Attendance process mapping.</summary>
+    public int? CanonicalStatusId { get; set; }
     public int? PlatformActionStatusId { get; set; }
     public int? CameraPlatformActionStatusId { get; set; }
     public int? AttendanceEntryTypeId { get; set; }
@@ -41,6 +43,7 @@ public sealed class AttendanceRecord : ITenantEntity
 
     public Person Person { get; set; } = null!;
     public ProcessStatusStyle? AttendanceStatus { get; set; }
+    public PlatformSettingStatus? CanonicalStatus { get; set; }
     public PlatformSettingActionStatus? PlatformActionStatus { get; set; }
     public PlatformSettingActionStatus? CameraPlatformActionStatus { get; set; }
     public AttendanceType? AttendanceEntryType { get; set; }

@@ -4,11 +4,10 @@ using System.ComponentModel.DataAnnotations.Schema;
 namespace Accounts.Models;
 
 [Table("LibraryCategories")]
-public sealed class LibraryCategory : ITenantEntity
+public sealed class LibraryCategory
 {
     [Key]
     public int Id { get; set; }
-    public int TenantId { get; set; }
     [Required, MaxLength(30)] public string Code { get; set; } = string.Empty;
     [Required, MaxLength(120)] public string Name { get; set; } = string.Empty;
     [MaxLength(500)] public string? Description { get; set; }
@@ -19,11 +18,11 @@ public sealed class LibraryCategory : ITenantEntity
 }
 
 [Table("LibraryTypes")]
-public sealed class LibraryType : ITenantEntity
+public sealed class LibraryType
 {
     [Key]
     public int Id { get; set; }
-    public int TenantId { get; set; }
+    public int? ParentId { get; set; }
     public int? LibraryCategoryId { get; set; }
     [Required, MaxLength(30)] public string Code { get; set; } = string.Empty;
     [Required, MaxLength(120)] public string Name { get; set; } = string.Empty;
@@ -35,25 +34,9 @@ public sealed class LibraryType : ITenantEntity
     public DateTime? UpdatedOnUtc { get; set; }
     public LibraryCategory? LibraryCategory { get; set; }
     public ICollection<LibraryDocument> Documents { get; set; } = new List<LibraryDocument>();
-    public ICollection<LibrarySubType> SubTypes { get; set; } = new List<LibrarySubType>();
+    public LibraryType? ParentType { get; set; }
+    public ICollection<LibraryType> SubTypes { get; set; } = new List<LibraryType>();
     public ICollection<LibraryTemplate> Templates { get; set; } = new List<LibraryTemplate>();
-}
-
-[Table("LibrarySubTypes")]
-public sealed class LibrarySubType : ITenantEntity
-{
-    [Key]
-    public int Id { get; set; }
-    public int TenantId { get; set; }
-    public int LibraryTypeId { get; set; }
-    [Required, MaxLength(30)] public string Code { get; set; } = string.Empty;
-    [Required, MaxLength(120)] public string Name { get; set; } = string.Empty;
-    [MaxLength(500)] public string? Description { get; set; }
-    public int DisplayOrder { get; set; }
-    public bool IsActive { get; set; } = true;
-    public DateTime CreatedOnUtc { get; set; } = DateTime.UtcNow;
-    public DateTime? UpdatedOnUtc { get; set; }
-    public LibraryType? LibraryType { get; set; }
 }
 
 [Table("LibraryDocuments")]
@@ -78,7 +61,7 @@ public sealed class LibraryDocument : ITenantEntity
     public DateTime CreatedOnUtc { get; set; } = DateTime.UtcNow;
     public DateTime? UpdatedOnUtc { get; set; }
     public LibraryType? LibraryType { get; set; }
-    public LibrarySubType? LibrarySubType { get; set; }
+    public LibraryType? LibrarySubType { get; set; }
     public LibraryHardCopyLocation? HardCopyLocation { get; set; }
     public ICollection<RoznamchaLibraryDocument> RoznamchaLinks { get; set; } = new List<RoznamchaLibraryDocument>();
 }
@@ -99,7 +82,7 @@ public sealed class LibraryTemplate : ITenantEntity
     public DateTime CreatedOnUtc { get; set; } = DateTime.UtcNow;
     public DateTime? UpdatedOnUtc { get; set; }
     public LibraryType? LibraryType { get; set; }
-    public LibrarySubType? LibrarySubType { get; set; }
+    public LibraryType? LibrarySubType { get; set; }
 }
 
 [Table("LibraryHardCopyLocations")]

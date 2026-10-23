@@ -11,6 +11,7 @@ public sealed class AttendanceDailyReportRow
     public string Designation { get; set; } = string.Empty;
     public DateOnly AttendanceDate { get; set; }
     public int? AttendanceStatusId { get; set; }
+    public bool IsCanonicalStatus { get; set; }
     public string? StatusName { get; set; }
     public string? StatusCode { get; set; }
     public string? StatusColorCode { get; set; }

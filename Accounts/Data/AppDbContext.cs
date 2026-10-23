@@ -40,7 +40,6 @@ namespace Accounts.Data
         public DbSet<SalaryScale>              SalaryScales             => Set<SalaryScale>();
         public DbSet<LibraryCategory>          LibraryCategories        => Set<LibraryCategory>();
         public DbSet<LibraryType>              LibraryTypes             => Set<LibraryType>();
-        public DbSet<LibrarySubType>           LibrarySubTypes          => Set<LibrarySubType>();
         public DbSet<LibraryDocument>          LibraryDocuments         => Set<LibraryDocument>();
         public DbSet<LibraryTemplate>          LibraryTemplates         => Set<LibraryTemplate>();
         public DbSet<LibraryHardCopyLocation>  LibraryHardCopyLocations => Set<LibraryHardCopyLocation>();
@@ -358,15 +357,6 @@ namespace Accounts.Data
                 _tenantService != null && !_tenantService.IsSuperAdmin && _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
             builder.Entity<SalaryPackage>().HasQueryFilter(row =>
                 _tenantService != null && !_tenantService.IsSuperAdmin && _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
-            builder.Entity<LibraryCategory>().HasQueryFilter(row =>
-                _tenantService != null && !_tenantService.IsSuperAdmin &&
-                _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
-            builder.Entity<LibraryType>().HasQueryFilter(row =>
-                _tenantService != null && !_tenantService.IsSuperAdmin &&
-                _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
-            builder.Entity<LibrarySubType>().HasQueryFilter(row =>
-                _tenantService != null && !_tenantService.IsSuperAdmin &&
-                _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
             builder.Entity<LibraryDocument>().HasQueryFilter(row =>
                 _tenantService != null && !_tenantService.IsSuperAdmin &&
                 _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
@@ -835,6 +825,7 @@ namespace Accounts.Data
             {
                 e.ToTable("Vacancies");
                 e.HasKey(x => x.VacancyId);
+                e.HasIndex(x => new { x.TenantId, x.LegacyVacancyId }).IsUnique().HasFilter("[LegacyVacancyId] IS NOT NULL");
                 e.Property(x => x.VacancyId).HasDefaultValueSql("NEWID()").ValueGeneratedNever();
                 e.Property(x => x.IsFilled).HasDefaultValue(false);
                 e.Property(x => x.CreatedDate).HasDefaultValueSql("SYSUTCDATETIME()");
@@ -854,6 +845,7 @@ namespace Accounts.Data
             {
                 e.ToTable("StaffVacancy");
                 e.HasKey(x => x.StaffId);
+                e.HasIndex(x => new { x.TenantId, x.LegacyStaffId }).IsUnique().HasFilter("[LegacyStaffId] IS NOT NULL");
                 e.Property(x => x.StaffId).HasDefaultValueSql("NEWID()").ValueGeneratedNever();
 
                 e.HasIndex(x => x.VacancyId).IsUnique();
@@ -870,6 +862,7 @@ namespace Accounts.Data
             {
                 e.ToTable("Persons");
                 e.HasKey(x => x.PersonId);
+                e.HasIndex(x => new { x.TenantId, x.LegacyPersonId }).IsUnique().HasFilter("[LegacyPersonId] IS NOT NULL");
                 e.Property(x => x.PersonId).HasDefaultValueSql("NEWID()").ValueGeneratedNever();
                 e.Property(x => x.CreatedDate).HasDefaultValueSql("SYSUTCDATETIME()");
                 e.Property(x => x.IdentityUserId).HasMaxLength(450).IsRequired();
@@ -1095,6 +1088,7 @@ namespace Accounts.Data
                 e.HasIndex(x => new { x.TenantId, x.AttendanceDate });
                 e.HasOne(x => x.Person).WithMany().HasForeignKey(x => x.PersonId).OnDelete(DeleteBehavior.Restrict);
                 e.HasOne(x => x.AttendanceStatus).WithMany().HasForeignKey(x => x.AttendanceStatusId).OnDelete(DeleteBehavior.Restrict);
+                e.HasOne(x => x.CanonicalStatus).WithMany().HasForeignKey(x => x.CanonicalStatusId).OnDelete(DeleteBehavior.Restrict);
                 e.HasOne(x => x.PlatformActionStatus).WithMany().HasForeignKey(x => x.PlatformActionStatusId).OnDelete(DeleteBehavior.Restrict);
                 e.HasOne(x => x.AttendanceEntryType).WithMany().HasForeignKey(x => x.AttendanceEntryTypeId).OnDelete(DeleteBehavior.Restrict);
                 e.HasOne(x => x.AttendanceWorkMode).WithMany(x => x.Records).HasForeignKey(x => x.AttendanceWorkModeId).OnDelete(DeleteBehavior.Restrict);
@@ -1518,6 +1512,8 @@ namespace Accounts.Data
                 e.Property(x => x.IsPrimary).HasDefaultValue(false);
                 e.Property(x => x.CreatedDate).HasDefaultValueSql("SYSUTCDATETIME()");
                 e.HasIndex(x => x.PersonId);
+                e.HasIndex(x => new { x.PersonId, x.ContactType, x.IsPrimary, x.Id })
+                    .IncludeProperties(x => x.ContactValue);
                 e.HasOne(x => x.Person)
                  .WithMany(x => x.Contacts)
                  .HasForeignKey(x => x.PersonId)
@@ -1738,10 +1734,9 @@ namespace Accounts.Data
 
             builder.Entity<LibraryCategory>(e =>
             {
-                e.HasIndex(x => new { x.TenantId, x.Code }).IsUnique();
-                e.HasIndex(x => new { x.TenantId, x.Name }).IsUnique();
-                e.HasIndex(x => new { x.TenantId, x.IsActive, x.DisplayOrder });
-                e.HasOne<Tenant>().WithMany().HasForeignKey(x => x.TenantId).OnDelete(DeleteBehavior.Restrict);
+                e.HasIndex(x => x.Code).IsUnique();
+                e.HasIndex(x => x.Name).IsUnique();
+                e.HasIndex(x => new { x.IsActive, x.DisplayOrder });
             });
 
             builder.Entity<PayrollBenefitDefinition>(e =>
@@ -1949,20 +1944,11 @@ namespace Accounts.Data
 
             builder.Entity<LibraryType>(e =>
             {
-                e.HasIndex(x => new { x.TenantId, x.Code }).IsUnique();
-                e.HasIndex(x => new { x.TenantId, x.Name }).IsUnique();
-                e.HasIndex(x => new { x.TenantId, x.IsActive, x.DisplayOrder });
-                e.HasOne<Tenant>().WithMany().HasForeignKey(x => x.TenantId).OnDelete(DeleteBehavior.Restrict);
+                e.HasIndex(x => new { x.ParentId, x.Code }).IsUnique().HasFilter(null);
+                e.HasIndex(x => new { x.ParentId, x.Name }).IsUnique().HasFilter(null);
+                e.HasIndex(x => new { x.ParentId, x.IsActive, x.DisplayOrder });
                 e.HasOne(x => x.LibraryCategory).WithMany().HasForeignKey(x => x.LibraryCategoryId).OnDelete(DeleteBehavior.Restrict);
-            });
-
-            builder.Entity<LibrarySubType>(e =>
-            {
-                e.HasIndex(x => new { x.TenantId, x.LibraryTypeId, x.Code }).IsUnique();
-                e.HasIndex(x => new { x.TenantId, x.LibraryTypeId, x.Name }).IsUnique();
-                e.HasIndex(x => new { x.TenantId, x.IsActive, x.DisplayOrder });
-                e.HasOne<Tenant>().WithMany().HasForeignKey(x => x.TenantId).OnDelete(DeleteBehavior.Restrict);
-                e.HasOne(x => x.LibraryType).WithMany(x => x.SubTypes).HasForeignKey(x => x.LibraryTypeId).OnDelete(DeleteBehavior.Restrict);
+                e.HasOne(x => x.ParentType).WithMany(x => x.SubTypes).HasForeignKey(x => x.ParentId).OnDelete(DeleteBehavior.Restrict);
             });
 
             builder.Entity<LibraryDocument>(e =>

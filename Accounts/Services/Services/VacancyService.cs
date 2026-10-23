@@ -269,7 +269,7 @@ namespace Accounts.Services.Services
             _db.Vacancies
                .Include(v => v.Organization).ThenInclude(o => o!.Parent).ThenInclude(p => p!.Parent)
                .Include(v => v.DesignationNav)
-               .Include(v => v.Staff).ThenInclude(s => s!.Person);
+               .Include(v => v.Staff).ThenInclude(s => s!.Person).ThenInclude(p => p!.Contacts);
 
         private static VacancyDto MapToDto(Vacancy v)
         {
@@ -295,8 +295,8 @@ namespace Accounts.Services.Services
                 {
                     StaffId = v.Staff.StaffId,
                     FullName = v.Staff.Person?.FullName ?? "-",
-                    Email = v.Staff.Person?.Email,
-                    Phone = v.Staff.Person?.Phone,
+                    Email = v.Staff.Person.GetPrimaryContact("Email"),
+                    Phone = v.Staff.Person.GetPrimaryContact("Phone"),
                     PhotoUrl = v.Staff.Person?.ProfilePhotoUrl,
                     VacancyId = v.Staff.VacancyId,
                     VacancyCode = v.VacancyCode,

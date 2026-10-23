@@ -1793,6 +1793,9 @@ namespace Accounts.Migrations
                     b.Property<long?>("Id")
                         .HasColumnType("bigint");
 
+                    b.Property<bool>("IsCanonicalStatus")
+                        .HasColumnType("bit");
+
                     b.Property<int?>("MissingCheckoutAfterShiftEndMinutes")
                         .HasColumnType("int");
 
@@ -2387,6 +2390,9 @@ namespace Accounts.Migrations
                         .HasMaxLength(1000)
                         .HasColumnType("nvarchar(1000)");
 
+                    b.Property<int?>("CanonicalStatusId")
+                        .HasColumnType("int");
+
                     b.Property<DateTime?>("CheckInUtc")
                         .HasColumnType("datetime2");
 
@@ -2453,6 +2459,8 @@ namespace Accounts.Migrations
                     b.HasIndex("AttendanceWorkModeId");
 
                     b.HasIndex("CameraPlatformActionStatusId");
+
+                    b.HasIndex("CanonicalStatusId");
 
                     b.HasIndex("PlatformActionStatusId");
 
@@ -4115,21 +4123,18 @@ namespace Accounts.Migrations
                         .HasMaxLength(120)
                         .HasColumnType("nvarchar(120)");
 
-                    b.Property<int>("TenantId")
-                        .HasColumnType("int");
-
                     b.Property<DateTime?>("UpdatedOnUtc")
                         .HasColumnType("datetime2");
 
                     b.HasKey("Id");
 
-                    b.HasIndex("TenantId", "Code")
+                    b.HasIndex("Code")
                         .IsUnique();
 
-                    b.HasIndex("TenantId", "Name")
+                    b.HasIndex("Name")
                         .IsUnique();
 
-                    b.HasIndex("TenantId", "IsActive", "DisplayOrder");
+                    b.HasIndex("IsActive", "DisplayOrder");
 
                     b.ToTable("LibraryCategories");
                 });
@@ -4292,61 +4297,6 @@ namespace Accounts.Migrations
                     b.ToTable("LibraryHardCopyLocations");
                 });
 
-            modelBuilder.Entity("Accounts.Models.LibrarySubType", b =>
-                {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("int");
-
-                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
-
-                    b.Property<string>("Code")
-                        .IsRequired()
-                        .HasMaxLength(30)
-                        .HasColumnType("nvarchar(30)");
-
-                    b.Property<DateTime>("CreatedOnUtc")
-                        .HasColumnType("datetime2");
-
-                    b.Property<string>("Description")
-                        .HasMaxLength(500)
-                        .HasColumnType("nvarchar(500)");
-
-                    b.Property<int>("DisplayOrder")
-                        .HasColumnType("int");
-
-                    b.Property<bool>("IsActive")
-                        .HasColumnType("bit");
-
-                    b.Property<int>("LibraryTypeId")
-                        .HasColumnType("int");
-
-                    b.Property<string>("Name")
-                        .IsRequired()
-                        .HasMaxLength(120)
-                        .HasColumnType("nvarchar(120)");
-
-                    b.Property<int>("TenantId")
-                        .HasColumnType("int");
-
-                    b.Property<DateTime?>("UpdatedOnUtc")
-                        .HasColumnType("datetime2");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("LibraryTypeId");
-
-                    b.HasIndex("TenantId", "IsActive", "DisplayOrder");
-
-                    b.HasIndex("TenantId", "LibraryTypeId", "Code")
-                        .IsUnique();
-
-                    b.HasIndex("TenantId", "LibraryTypeId", "Name")
-                        .IsUnique();
-
-                    b.ToTable("LibrarySubTypes");
-                });
-
             modelBuilder.Entity("Accounts.Models.LibraryTemplate", b =>
                 {
                     b.Property<long>("Id")
@@ -4440,7 +4390,7 @@ namespace Accounts.Migrations
                         .HasMaxLength(120)
                         .HasColumnType("nvarchar(120)");
 
-                    b.Property<int>("TenantId")
+                    b.Property<int?>("ParentId")
                         .HasColumnType("int");
 
                     b.Property<DateTime?>("UpdatedOnUtc")
@@ -4450,13 +4400,13 @@ namespace Accounts.Migrations
 
                     b.HasIndex("LibraryCategoryId");
 
-                    b.HasIndex("TenantId", "Code")
+                    b.HasIndex("ParentId", "Code")
                         .IsUnique();
 
-                    b.HasIndex("TenantId", "Name")
+                    b.HasIndex("ParentId", "Name")
                         .IsUnique();
 
-                    b.HasIndex("TenantId", "IsActive", "DisplayOrder");
+                    b.HasIndex("ParentId", "IsActive", "DisplayOrder");
 
                     b.ToTable("LibraryTypes");
                 });
@@ -6195,10 +6145,6 @@ namespace Accounts.Migrations
                     b.Property<DateTime?>("DateOfBirth")
                         .HasColumnType("datetime2");
 
-                    b.Property<string>("Email")
-                        .HasMaxLength(150)
-                        .HasColumnType("nvarchar(150)");
-
                     b.Property<string>("EmploymentStatus")
                         .IsRequired()
                         .HasMaxLength(30)
@@ -6269,6 +6215,9 @@ namespace Accounts.Migrations
                         .HasMaxLength(50)
                         .HasColumnType("nvarchar(50)");
 
+                    b.Property<int?>("LegacyPersonId")
+                        .HasColumnType("int");
+
                     b.Property<string>("MaritalStatus")
                         .HasMaxLength(50)
                         .HasColumnType("nvarchar(50)");
@@ -6280,10 +6229,6 @@ namespace Accounts.Migrations
                     b.Property<string>("PersonalEmail")
                         .HasMaxLength(256)
                         .HasColumnType("nvarchar(256)");
-
-                    b.Property<string>("Phone")
-                        .HasMaxLength(50)
-                        .HasColumnType("nvarchar(50)");
 
                     b.Property<string>("ProfilePhotoUrl")
                         .HasMaxLength(500)
@@ -6336,6 +6281,10 @@ namespace Accounts.Migrations
                     b.HasIndex("ReportsToPersonId");
 
                     b.HasIndex("TenantId");
+
+                    b.HasIndex("TenantId", "LegacyPersonId")
+                        .IsUnique()
+                        .HasFilter("[LegacyPersonId] IS NOT NULL");
 
                     b.ToTable("Persons", (string)null);
                 });
@@ -6420,6 +6369,10 @@ namespace Accounts.Migrations
                     b.HasKey("Id");
 
                     b.HasIndex("PersonId");
+
+                    b.HasIndex("PersonId", "ContactType", "IsPrimary", "Id");
+
+                    SqlServerIndexBuilderExtensions.IncludeProperties(b.HasIndex("PersonId", "ContactType", "IsPrimary", "Id"), new[] { "ContactValue" });
 
                     b.ToTable("PersonContacts", null, t =>
                         {
@@ -9759,6 +9712,15 @@ namespace Accounts.Migrations
                         .HasColumnType("uniqueidentifier")
                         .HasDefaultValueSql("NEWID()");
 
+                    b.Property<int?>("LegacyServiceStatusId")
+                        .HasColumnType("int");
+
+                    b.Property<int?>("LegacyStaffId")
+                        .HasColumnType("int");
+
+                    b.Property<int?>("LegacyVacancyId")
+                        .HasColumnType("int");
+
                     b.Property<string>("LoginId")
                         .HasMaxLength(50)
                         .HasColumnType("nvarchar(50)");
@@ -9787,6 +9749,10 @@ namespace Accounts.Migrations
                     b.HasIndex("VacancyId")
                         .IsUnique()
                         .HasFilter("[VacancyId] IS NOT NULL");
+
+                    b.HasIndex("TenantId", "LegacyStaffId")
+                        .IsUnique()
+                        .HasFilter("[LegacyStaffId] IS NOT NULL");
 
                     b.ToTable("StaffVacancy", (string)null);
                 });
@@ -10103,6 +10069,9 @@ namespace Accounts.Migrations
                         .HasMaxLength(100)
                         .HasColumnType("nvarchar(100)");
 
+                    b.Property<int?>("LegacyVacancyId")
+                        .HasColumnType("int");
+
                     b.Property<int>("OrganizationId")
                         .HasColumnType("int");
 
@@ -10121,6 +10090,10 @@ namespace Accounts.Migrations
                     b.HasIndex("OrganizationId");
 
                     b.HasIndex("TenantId");
+
+                    b.HasIndex("TenantId", "LegacyVacancyId")
+                        .IsUnique()
+                        .HasFilter("[LegacyVacancyId] IS NOT NULL");
 
                     b.ToTable("Vacancies", (string)null);
                 });
@@ -11088,6 +11061,11 @@ namespace Accounts.Migrations
                         .WithMany()
                         .HasForeignKey("CameraPlatformActionStatusId");
 
+                    b.HasOne("Accounts.Models.PlatformSettingStatus", "CanonicalStatus")
+                        .WithMany()
+                        .HasForeignKey("CanonicalStatusId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
                     b.HasOne("Accounts.Models.Person", "Person")
                         .WithMany()
                         .HasForeignKey("PersonId")
@@ -11118,6 +11096,8 @@ namespace Accounts.Migrations
                     b.Navigation("AttendanceWorkMode");
 
                     b.Navigation("CameraPlatformActionStatus");
+
+                    b.Navigation("CanonicalStatus");
 
                     b.Navigation("Person");
 
@@ -11431,18 +11411,9 @@ namespace Accounts.Migrations
                     b.Navigation("Invoice");
                 });
 
-            modelBuilder.Entity("Accounts.Models.LibraryCategory", b =>
-                {
-                    b.HasOne("Accounts.Models.Tenant", null)
-                        .WithMany()
-                        .HasForeignKey("TenantId")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
-                });
-
             modelBuilder.Entity("Accounts.Models.LibraryDocument", b =>
                 {
-                    b.HasOne("Accounts.Models.LibrarySubType", "LibrarySubType")
+                    b.HasOne("Accounts.Models.LibraryType", "LibrarySubType")
                         .WithMany()
                         .HasForeignKey("LibrarySubTypeId")
                         .OnDelete(DeleteBehavior.Restrict);
@@ -11481,26 +11452,9 @@ namespace Accounts.Migrations
                     b.Navigation("LibraryDocument");
                 });
 
-            modelBuilder.Entity("Accounts.Models.LibrarySubType", b =>
-                {
-                    b.HasOne("Accounts.Models.LibraryType", "LibraryType")
-                        .WithMany("SubTypes")
-                        .HasForeignKey("LibraryTypeId")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
-
-                    b.HasOne("Accounts.Models.Tenant", null)
-                        .WithMany()
-                        .HasForeignKey("TenantId")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
-
-                    b.Navigation("LibraryType");
-                });
-
             modelBuilder.Entity("Accounts.Models.LibraryTemplate", b =>
                 {
-                    b.HasOne("Accounts.Models.LibrarySubType", "LibrarySubType")
+                    b.HasOne("Accounts.Models.LibraryType", "LibrarySubType")
                         .WithMany()
                         .HasForeignKey("LibrarySubTypeId")
                         .OnDelete(DeleteBehavior.Restrict);
@@ -11529,13 +11483,14 @@ namespace Accounts.Migrations
                         .HasForeignKey("LibraryCategoryId")
                         .OnDelete(DeleteBehavior.Restrict);
 
-                    b.HasOne("Accounts.Models.Tenant", null)
-                        .WithMany()
-                        .HasForeignKey("TenantId")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
+                    b.HasOne("Accounts.Models.LibraryType", "ParentType")
+                        .WithMany("SubTypes")
+                        .HasForeignKey("ParentId")
+                        .OnDelete(DeleteBehavior.Restrict);
 
                     b.Navigation("LibraryCategory");
+
+                    b.Navigation("ParentType");
                 });
 
             modelBuilder.Entity("Accounts.Models.Menu", b =>

@@ -169,6 +169,7 @@ namespace Accounts.DTOs
     public class PersonDto
     {
         public Guid      PersonId      { get; set; }
+        public int? LegacyPersonId { get; set; }
         public string    LoginId       { get; set; } = string.Empty;
         public string    FullName      { get; set; } = string.Empty;
         public string?   Gender        { get; set; }

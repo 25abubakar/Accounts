@@ -13,7 +13,7 @@ using System.Text.Json;
 
 namespace Accounts.Services.Services;
 
-public sealed class AttendanceService : IAttendanceService
+public sealed partial class AttendanceService : IAttendanceService
 {
     private const string TimingHolidayTypeLookupCode = "TIMING_HOLIDAY_TYPE";
     private const string AttendanceStatusProcessName = "Attendance";
@@ -31,19 +31,22 @@ public sealed class AttendanceService : IAttendanceService
     private readonly IMemoryCache _cache;
     private readonly RbacService _rbac;
     private readonly PayrollGrossSalaryResolver _grossSalary;
+    private readonly TimeProvider _timeProvider;
 
     public AttendanceService(
         ApplicationDbContext db,
         AttendanceFinalizationService finalization,
         IMemoryCache cache,
         RbacService rbac,
-        PayrollGrossSalaryResolver grossSalary)
+        PayrollGrossSalaryResolver grossSalary,
+        TimeProvider? timeProvider = null)
     {
         _db = db;
         _finalization = finalization;
         _cache = cache;
         _rbac = rbac;
         _grossSalary = grossSalary;
+        _timeProvider = timeProvider ?? TimeProvider.System;
     }
 
     public async Task<MyAttendanceTodayDto> GetTodayAsync(string identityUserId, CancellationToken cancellationToken = default)
@@ -51,16 +54,17 @@ public sealed class AttendanceService : IAttendanceService
         await AttendanceRecordSchema.EnsureCameraColumnsAsync(_db, cancellationToken);
         var (person, localDate) = await ResolvePersonAsync(identityUserId, cancellationToken);
         var attendanceRule = await ResolveAttendanceRuleAsync(person, cancellationToken);
-        var policy = await LoadPolicyAsync(person.TenantId, cancellationToken);
-        var localNow = BusinessClock.Now(person.TimeZoneId);
-
-        await EvaluateStatusesAsync(person.TenantId, localDate.AddDays(-1), localDate, cancellationToken);
+        var localNow = PortalNow(person);
+        // Portal reads must not run the legacy tenant-wide evaluator or require
+        // AttendancePolicies. Resolve only this person's mapped approved rule.
         var records = await _db.AttendanceRecords.AsNoTracking()
             .Include(x => x.AttendanceEntryType)
             .Include(x => x.AttendanceWorkMode)
+            .Include(x => x.CanonicalStatus)
+            .Include(x => x.PlatformActionStatus).ThenInclude(x => x!.Status)
             .Include(x => x.AttendanceStatus).ThenInclude(x => x!.Status)
             .Where(x =>
-                x.PersonId == person.PersonId &&
+                x.TenantId == person.TenantId && x.PersonId == person.PersonId &&
                 (x.AttendanceDate == localDate ||
                  (x.AttendanceDate == localDate.AddDays(-1) && x.CheckInUtc != null && x.CheckOutUtc == null)))
             .OrderByDescending(x => x.AttendanceDate)
@@ -76,7 +80,7 @@ public sealed class AttendanceService : IAttendanceService
             var previousTiming = await ResolveEffectiveTimingAsync(
                 person, previousOpenRecord.AttendanceDate, attendanceRule, cancellationToken);
             var checkoutExpiryMinutes = attendanceRule?.MissingCheckoutAfterShiftEndMinutes
-                ?? policy.MissingCheckoutAfterShiftEndMinutes;
+                ?? 0;
 
             // Previous-date attendance is carried only while an overnight
             // checkout window is still active. Once expired, it must not
@@ -93,22 +97,19 @@ public sealed class AttendanceService : IAttendanceService
 
         var effectiveDate = record?.AttendanceDate ?? localDate;
         var timing = await ResolveEffectiveTimingAsync(person, effectiveDate, attendanceRule, cancellationToken);
-        return Map(person, record, localNow, timing, attendanceRule, policy.MissingCheckoutAfterShiftEndMinutes);
+        return Map(person, record, localNow, timing, attendanceRule);
     }
 
     public async Task<MyAttendanceTodayDto> CheckInAsync(string identityUserId, int? workModeId = null, CancellationToken cancellationToken = default)
     {
         await AttendanceRecordSchema.EnsureCameraColumnsAsync(_db, cancellationToken);
         var (person, localDate) = await ResolvePersonAsync(identityUserId, cancellationToken);
-        var attendanceRule = await ResolveAttendanceRuleAsync(person, cancellationToken)
-            ?? throw new InvalidOperationException("Your attendance rule has not been configured. Ask an attendance administrator to map your attendance type and shift.");
+        var attendanceRule = RequireApprovedPortalRule(await ResolveAttendanceRuleAsync(person, cancellationToken));
         EnsurePortalCheckInAllowed(attendanceRule);
 
-        var policy = await LoadPolicyAsync(person.TenantId, cancellationToken);
-        var localNow = BusinessClock.Now(person.TimeZoneId);
-        var beforeCheckInMinutes = attendanceRule.BeforeCheckInMinutes ?? policy.EarliestCheckInMinutesBefore;
-        var checkInAdjustMinutes = attendanceRule.CheckInAdjustMinutes ?? policy.OnTimeGraceMinutesAfter;
-        var absentAfterShiftStartMinutes = attendanceRule.AbsentAfterShiftStartMinutes ?? policy.AbsentAfterShiftStartMinutes;
+        var localNow = PortalNow(person);
+        var beforeCheckInMinutes = attendanceRule.BeforeCheckInMinutes!.Value;
+        var absentAfterShiftStartMinutes = attendanceRule.AbsentAfterShiftStartMinutes!.Value;
         var checkInContext = await ResolveCheckInContextAsync(
             person, attendanceRule, localDate, localNow, beforeCheckInMinutes,
             absentAfterShiftStartMinutes, cancellationToken);
@@ -121,24 +122,24 @@ public sealed class AttendanceService : IAttendanceService
             throw new InvalidOperationException($"You cannot check in before {shiftWindow.Start.AddMinutes(-beforeCheckInMinutes):dd MMM yyyy HH:mm}. Your shift starts at {shiftWindow.Start:dd MMM yyyy HH:mm}.");
         if (!attendanceRule.IsOpenAttendance && localNow > shiftWindow.Start.AddMinutes(absentAfterShiftStartMinutes))
             throw new InvalidOperationException($"The {absentAfterShiftStartMinutes}-minute check-in window has expired and attendance is marked absent.");
-        var record = await _db.AttendanceRecords.FirstOrDefaultAsync(x => x.PersonId == person.PersonId && x.AttendanceDate == effectiveDate, cancellationToken);
+        var record = await _db.AttendanceRecords.FirstOrDefaultAsync(x => x.TenantId == person.TenantId && x.PersonId == person.PersonId && x.AttendanceDate == effectiveDate, cancellationToken);
         if (record?.CheckInUtc is not null) throw new InvalidOperationException("You have already checked in today.");
+        if (record?.CheckOutUtc is not null) throw new InvalidOperationException("Attendance is already closed for this date.");
         var workMode = attendanceRule.EntryTypeCode == "REMOTE"
             ? await _db.AttendanceWorkModes.FirstOrDefaultAsync(x => x.Code == "REMOTE" && x.IsActive, cancellationToken)
             : workModeId.HasValue
                 ? await _db.AttendanceWorkModes.FirstOrDefaultAsync(x => x.Id == workModeId.Value && x.IsActive, cancellationToken)
                 : await _db.AttendanceWorkModes.FirstOrDefaultAsync(x => x.Code == "ONSITE" && x.IsActive, cancellationToken);
         if (workMode == null) throw new InvalidOperationException("Select a valid active work mode.");
-        record ??= new AttendanceRecord { TenantId = person.TenantId, PersonId = person.PersonId, AttendanceDate = effectiveDate, CreatedDate = localNow };
+        record ??= new AttendanceRecord { TenantId = person.TenantId, PersonId = person.PersonId, AttendanceDate = effectiveDate, CreatedDate = _timeProvider.GetUtcNow().UtcDateTime };
         record.AttendanceEntryTypeId = attendanceRule.AttendanceEntryTypeId;
         record.AttendanceWorkMode = workMode;
-        record.PlatformActionStatusId = attendanceRule.IsOpenAttendance || localNow <= shiftWindow.Start.AddMinutes(checkInAdjustMinutes)
-            ? policy.PlatformPresentStatusId : policy.PlatformLateStatusId;
         record.CheckInUtc = localNow;
-        record.ModifiedDate = localNow;
+        await ApplyPortalStatusAsync(record, timing, attendanceRule, cancellationToken);
+        record.ModifiedDate = _timeProvider.GetUtcNow().UtcDateTime;
         if (record.Id == 0) _db.AttendanceRecords.Add(record);
         await _db.SaveChangesAsync(cancellationToken);
-        await RecalculateAttendanceDependentsAsync(person.TenantId, effectiveDate, cancellationToken);
+        await RefreshPortalAttendanceAsync(person, effectiveDate, cancellationToken);
         return Map(person, record, localNow, timing, attendanceRule);
     }
 
@@ -146,10 +147,11 @@ public sealed class AttendanceService : IAttendanceService
     {
         await AttendanceRecordSchema.EnsureCameraColumnsAsync(_db, cancellationToken);
         var (person, localDate) = await ResolvePersonAsync(identityUserId, cancellationToken);
-        var attendanceRule = await ResolveAttendanceRuleAsync(person, cancellationToken);
-        var record = await _db.AttendanceRecords.Include(x => x.AttendanceEntryType).Include(x => x.AttendanceWorkMode)
+        var attendanceRule = RequireApprovedPortalRule(await ResolveAttendanceRuleAsync(person, cancellationToken));
+        EnsurePortalCheckInAllowed(attendanceRule);
+        var record = await _db.AttendanceRecords.Include(x => x.CanonicalStatus).Include(x => x.AttendanceEntryType).Include(x => x.AttendanceWorkMode)
             .Where(x =>
-                x.PersonId == person.PersonId &&
+                x.TenantId == person.TenantId && x.PersonId == person.PersonId &&
                 x.CheckInUtc != null &&
                 x.CheckOutUtc == null &&
                 x.AttendanceDate >= localDate.AddDays(-1) &&
@@ -159,10 +161,8 @@ public sealed class AttendanceService : IAttendanceService
             ?? throw new InvalidOperationException("Check in before starting a break.");
         var timing = await ResolveEffectiveTimingAsync(person, record.AttendanceDate, attendanceRule, cancellationToken);
         if (record.CheckOutUtc.HasValue) throw new InvalidOperationException("Attendance is already closed for today.");
-        var now = BusinessClock.Now(person.TimeZoneId);
-        var policy = await LoadPolicyAsync(person.TenantId, cancellationToken);
-        var checkoutExpiryMinutes = attendanceRule?.MissingCheckoutAfterShiftEndMinutes
-            ?? policy.MissingCheckoutAfterShiftEndMinutes;
+        var now = PortalNow(person);
+        var checkoutExpiryMinutes = attendanceRule.MissingCheckoutAfterShiftEndMinutes!.Value;
         if (IsMissingCheckoutExpired(record.AttendanceDate, timing, attendanceRule, person, now, checkoutExpiryMinutes))
         {
             if (record.BreakStartedUtc.HasValue)
@@ -171,10 +171,10 @@ public sealed class AttendanceService : IAttendanceService
                 record.BreakStartedUtc = null;
             }
 
-            record.PlatformActionStatusId = policy.PlatformAbsentStatusId;
-            record.ModifiedDate = now;
+            await ApplyPortalStatusAsync(record, timing, attendanceRule, cancellationToken, expired: true);
+            record.ModifiedDate = _timeProvider.GetUtcNow().UtcDateTime;
             await _db.SaveChangesAsync(cancellationToken);
-            await RecalculateAttendanceDependentsAsync(person.TenantId, record.AttendanceDate, cancellationToken);
+            await RefreshPortalAttendanceAsync(person, record.AttendanceDate, cancellationToken);
             return await GetTodayAsync(identityUserId, cancellationToken);
         }
 
@@ -184,7 +184,7 @@ public sealed class AttendanceService : IAttendanceService
             record.BreakStartedUtc = null;
         }
         else record.BreakStartedUtc = now;
-        record.ModifiedDate = now;
+        record.ModifiedDate = _timeProvider.GetUtcNow().UtcDateTime;
         await _db.SaveChangesAsync(cancellationToken);
         return Map(person, record, now, timing, attendanceRule);
     }
@@ -193,10 +193,11 @@ public sealed class AttendanceService : IAttendanceService
     {
         await AttendanceRecordSchema.EnsureCameraColumnsAsync(_db, cancellationToken);
         var (person, localDate) = await ResolvePersonAsync(identityUserId, cancellationToken);
-        var attendanceRule = await ResolveAttendanceRuleAsync(person, cancellationToken);
-        var record = await _db.AttendanceRecords.Include(x => x.AttendanceEntryType).Include(x => x.AttendanceWorkMode)
+        var attendanceRule = RequireApprovedPortalRule(await ResolveAttendanceRuleAsync(person, cancellationToken));
+        EnsurePortalCheckInAllowed(attendanceRule);
+        var record = await _db.AttendanceRecords.Include(x => x.CanonicalStatus).Include(x => x.AttendanceEntryType).Include(x => x.AttendanceWorkMode)
             .Where(x =>
-                x.PersonId == person.PersonId &&
+                x.TenantId == person.TenantId && x.PersonId == person.PersonId &&
                 x.CheckInUtc != null &&
                 x.CheckOutUtc == null &&
                 x.AttendanceDate >= localDate.AddDays(-1) &&
@@ -206,11 +207,8 @@ public sealed class AttendanceService : IAttendanceService
             ?? throw new InvalidOperationException("Check in before checking out.");
         var timing = await ResolveEffectiveTimingAsync(person, record.AttendanceDate, attendanceRule, cancellationToken);
         if (record.CheckOutUtc.HasValue) throw new InvalidOperationException("You have already checked out today.");
-        var now = BusinessClock.Now(person.TimeZoneId);
-        //var now = new DateTime(2026, 8, 21, 6, 0, 0);
-        var policy = await LoadPolicyAsync(person.TenantId, cancellationToken);
-        var checkoutExpiryMinutes = attendanceRule?.MissingCheckoutAfterShiftEndMinutes
-            ?? policy.MissingCheckoutAfterShiftEndMinutes;
+        var now = PortalNow(person);
+        var checkoutExpiryMinutes = attendanceRule.MissingCheckoutAfterShiftEndMinutes!.Value;
         if (IsMissingCheckoutExpired(record.AttendanceDate, timing, attendanceRule, person, now, checkoutExpiryMinutes))
         {
             if (record.BreakStartedUtc.HasValue)
@@ -219,10 +217,10 @@ public sealed class AttendanceService : IAttendanceService
                 record.BreakStartedUtc = null;
             }
 
-            record.PlatformActionStatusId = policy.PlatformAbsentStatusId;
-            record.ModifiedDate = now;
+            await ApplyPortalStatusAsync(record, timing, attendanceRule, cancellationToken, expired: true);
+            record.ModifiedDate = _timeProvider.GetUtcNow().UtcDateTime;
             await _db.SaveChangesAsync(cancellationToken);
-            await RecalculateAttendanceDependentsAsync(person.TenantId, record.AttendanceDate, cancellationToken);
+            await RefreshPortalAttendanceAsync(person, record.AttendanceDate, cancellationToken);
             return await GetTodayAsync(identityUserId, cancellationToken);
         }
 
@@ -231,10 +229,12 @@ public sealed class AttendanceService : IAttendanceService
             record.TotalBreakMinutes += Math.Max(0, (int)Math.Floor((now - record.BreakStartedUtc.Value).TotalMinutes));
             record.BreakStartedUtc = null;
         }
+        if (now < record.CheckInUtc!.Value) throw new InvalidOperationException("Checkout cannot be earlier than check-in.");
         record.CheckOutUtc = now;
-        record.ModifiedDate = now;
+        await ApplyPortalStatusAsync(record, timing, attendanceRule, cancellationToken);
+        record.ModifiedDate = _timeProvider.GetUtcNow().UtcDateTime;
         await _db.SaveChangesAsync(cancellationToken);
-        await RecalculateAttendanceDependentsAsync(person.TenantId, record.AttendanceDate, cancellationToken);
+        await RefreshPortalAttendanceAsync(person, record.AttendanceDate, cancellationToken);
         await _db.Entry(record).Reference(x => x.AttendanceStatus).LoadAsync(cancellationToken);
         return Map(person, record, now, timing, attendanceRule);
     }
@@ -700,7 +700,7 @@ public sealed class AttendanceService : IAttendanceService
             .Where(type =>
                 type.IsActive &&
                 type.TenantId == callerPerson.TenantId &&
-                (type.Code == CheckInOutAttendanceTypeCode || type.Code == LegacyCheckInOutAttendanceTypeCode))
+                (type.Code == CheckInOutAttendanceTypeCode || type.Code == LegacyCheckInOutAttendanceTypeCode || type.Code == "CHECKIN_OUT"))
             .Select(type => (int?)type.Id)
             .SingleOrDefaultAsync(cancellationToken);
 
@@ -1068,7 +1068,7 @@ public sealed class AttendanceService : IAttendanceService
         if (requestedDates.Length == 0)
             return;
 
-        var policy = await LoadPolicyAsync(tenantId, cancellationToken);
+        var policy = await LoadReportPolicyAsync(tenantId, cancellationToken);
         var tenantToday = BusinessClock.Today(policy.TimeZoneId);
         var finalizationMarkerKey = BuildFinalizationMarkerCacheKey(tenantId, year, month, requestedDates, personIdsHash);
         var includesToday = requestedDates.Contains(tenantToday);
@@ -1095,7 +1095,7 @@ public sealed class AttendanceService : IAttendanceService
         var monthEnd = monthStart.AddMonths(1).AddDays(-1);
         var today = tenantToday;
         var evalTo = monthEnd < today ? monthEnd : today;
-        if (monthStart <= evalTo)
+        if (policy.Id > 0 && monthStart <= evalTo)
             await EvaluateStatusesAsync(tenantId, monthStart, evalTo, cancellationToken);
 
         await _finalization.RefreshPeriodAsync(
@@ -1360,7 +1360,7 @@ public sealed class AttendanceService : IAttendanceService
         DateOnly[] requestedDates,
         CancellationToken cancellationToken)
     {
-        var policy = await LoadPolicyAsync(tenantId, cancellationToken);
+        var policy = await LoadReportPolicyAsync(tenantId, cancellationToken);
         var finalizations = await _db.AttendanceDailyFinalizations
             .IgnoreQueryFilters()
             .AsNoTracking()
@@ -1536,7 +1536,7 @@ public sealed class AttendanceService : IAttendanceService
             .AsNoTracking()
             .ToListAsync(cancellationToken);
 
-        var policy = await LoadPolicyAsync(tenantId, cancellationToken);
+        var policy = await LoadReportPolicyAsync(tenantId, cancellationToken);
         var today = BusinessClock.Today(policy.TimeZoneId);
         var isCurrentPeriod = year == today.Year && month == today.Month;
         _cache.Set(
@@ -2213,26 +2213,29 @@ public sealed class AttendanceService : IAttendanceService
 
     private async Task<Dictionary<string, MonthlyAttendanceChartLegendItemDto>> GetAttendanceDisplayStyleMapAsync(CancellationToken cancellationToken)
     {
-        var query = from actionStatus in _db.PlatformSettingActionStatuses.AsNoTracking()
-                    where actionStatus.Action.Name == "Attendance"
+        // Process Status on Settings / Configuration is the authoritative color mapping.
+        // Legacy action-status IDs remain untouched; never interpret them as master status IDs.
+        var query = from processStatus in _db.PlatformSettingProcessStatuses.AsNoTracking()
+                    where processStatus.Process.Name == AttendanceStatusProcessName
                     join crDb in _db.PlatformSettingStatusCrDbValues.AsNoTracking()
-                        on actionStatus.StatusId equals crDb.StatusId
+                        on processStatus.StatusId equals crDb.StatusId into crDbGroup
+                    from crDb in crDbGroup.DefaultIfEmpty()
                     select new MonthlyAttendanceChartLegendItemDto
                     {
-                        Id = actionStatus.Id,
-                        Code = crDb.DbValue ?? "",
-                        StatusName = actionStatus.Status.Name,
-                        ColorCode = actionStatus.Color != null ? actionStatus.Color.ColorCode : "#64748B",
-                        FontColor = actionStatus.Color != null ? actionStatus.Color.FontColor : "#FFFFFF",
+                        Id = processStatus.StatusId,
+                        // Missing CR/DB configuration must not hide a configured status/color.
+                        Code = crDb.DbValue ?? processStatus.Status.Name,
+                        StatusName = processStatus.Status.Name,
+                        ColorCode = processStatus.Color != null ? processStatus.Color.ColorCode : "#64748B",
+                        FontColor = processStatus.Color != null ? processStatus.Color.FontColor ?? "#000000" : "#FFFFFF",
                         FontSize = "12px",
-                        DisplayOrder = actionStatus.Id
+                        DisplayOrder = processStatus.Id
                     };
 
         var legend = await query.ToListAsync(cancellationToken);
 
         return legend
-            .Where(item => !string.IsNullOrWhiteSpace(item.Code))
-            .GroupBy(item => item.Code.Trim().ToUpperInvariant(), StringComparer.OrdinalIgnoreCase)
+            .GroupBy(item => item.StatusName.Trim(), StringComparer.OrdinalIgnoreCase)
             .ToDictionary(group => group.Key, group => group.First(), StringComparer.OrdinalIgnoreCase);
     }
 
@@ -2312,8 +2315,11 @@ public sealed class AttendanceService : IAttendanceService
             dateTo,
             cancellationToken);
 
-        var policy = await LoadPolicyAsync(tenantId, cancellationToken);
+        var policy = await LoadReportPolicyAsync(tenantId, cancellationToken);
         var legendItems = await GetAttendanceDisplayStyleMapByIdAsync(tenantId, cancellationToken);
+        var configuredStylesByName = (await GetAttendanceDisplayStyleMapAsync(cancellationToken)).Values
+            .GroupBy(style => style.StatusName.Trim(), StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(group => group.Key, group => group.First(), StringComparer.OrdinalIgnoreCase);
         var displayStylesByCode = legendItems.Values
             .Where(x => !string.IsNullOrWhiteSpace(x.Code))
             .GroupBy(x => x.Code.Trim(), StringComparer.OrdinalIgnoreCase)
@@ -2413,12 +2419,12 @@ public sealed class AttendanceService : IAttendanceService
             var exactStatusCode = source.StatusCode?.Trim().ToUpperInvariant();
 
             MonthlyAttendanceChartLegendItemDto displayStyle = null;
-            if (source.AttendanceStatusId.HasValue)
+            if (!source.IsCanonicalStatus && source.AttendanceStatusId.HasValue)
             {
                 legendItems.TryGetValue(source.AttendanceStatusId.Value, out displayStyle);
             }
 
-            if (displayStyle == null &&
+            if (!source.IsCanonicalStatus && displayStyle == null &&
                 TryGetAttendanceDisplayStyle(displayStylesByCode, exactStatusCode, out var styleByCode))
             {
                 displayStyle = styleByCode;
@@ -2428,6 +2434,12 @@ public sealed class AttendanceService : IAttendanceService
             var displayColor = displayStyle?.ColorCode ?? source.StatusColorCode;
             var displayFontColor = displayStyle?.FontColor ?? source.StatusFontColor;
             var displayFontSize = displayStyle?.FontSize ?? source.StatusFontSize ?? "12px";
+            if (configuredStylesByName.TryGetValue(displayName, out var configuredStyle))
+            {
+                // Apply only presentation. Preserve the entry's ID, status, punches and calculations.
+                displayColor = configuredStyle.ColorCode;
+                displayFontColor = configuredStyle.FontColor;
+            }
             var hasCameraCheckIn = cameraCheckInLocal.HasValue;
             var hasCameraCheckOut = cameraCheckOutLocal.HasValue;
             var hasValidCameraInterval = hasCameraCheckIn && hasCameraCheckOut &&
@@ -2511,6 +2523,12 @@ public sealed class AttendanceService : IAttendanceService
             var cameraStatusFontColor = (isNotRequired || isRemoteAttendance)
                 ? null
                 : cameraDisplayStyle?.FontColor ?? source.CameraStatusFontColor;
+            if (!string.IsNullOrWhiteSpace(cameraStatusName) &&
+                configuredStylesByName.TryGetValue(cameraStatusName, out var configuredCameraStyle))
+            {
+                cameraStatusColorCode = configuredCameraStyle.ColorCode;
+                cameraStatusFontColor = configuredCameraStyle.FontColor;
+            }
             var verifiedWorkingMinutes =
                 verification?.EffectiveCheckInUtc is DateTime effectiveStart &&
                 verification.EffectiveCheckOutUtc is DateTime effectiveEnd &&
@@ -2573,7 +2591,7 @@ public sealed class AttendanceService : IAttendanceService
                 ShiftStartTime = source.ShiftStartTime,
                 ShiftEndTime = source.ShiftEndTime,
                 Present = !isNotRequired && string.Equals(displayName, "Present", StringComparison.OrdinalIgnoreCase),
-                Absent = !isNotRequired && (string.Equals(displayName, "Absent", StringComparison.OrdinalIgnoreCase) || source.AttendanceStatusId == policy.PlatformAbsentStatusId),
+                Absent = !isNotRequired && (string.Equals(displayName, "Absent", StringComparison.OrdinalIgnoreCase) || !source.IsCanonicalStatus && source.AttendanceStatusId == policy.PlatformAbsentStatusId),
                 OnLeave = !isNotRequired && (string.Equals(displayName, "Leave", StringComparison.OrdinalIgnoreCase) || string.Equals(displayName, "Short Leave", StringComparison.OrdinalIgnoreCase)),
                 Remote = string.Equals(source.AttendanceWorkMode?.Trim(), "Remote", StringComparison.OrdinalIgnoreCase),
                 MissingCheckIn = missingCheckIn,
@@ -2732,27 +2750,19 @@ public sealed class AttendanceService : IAttendanceService
                 setting != null ? setting.MissingCheckoutAfterShiftEndMinutes : null,
                 setting != null ? setting.AccountLockAbsentDays : null,
                 setting != null ? setting.WeekendChargeValue : null,
-                setting != null ? setting.AdjustAbsentDays : null))
+                setting != null ? setting.AdjustAbsentDays : null,
+                setting != null ? setting.Id : null,
+                setting != null ? setting.ExtremeLateAfterMinutes : null,
+                setting != null ? setting.ExtremeEarlyDepartureAfterMinutes : null,
+                setting != null ? setting.PlatformLateStatusId : null,
+                setting != null ? setting.PlatformExtremeLateStatusId : null,
+                setting != null ? setting.PlatformEarlyDepartureStatusId : null,
+                setting != null ? setting.PlatformExtremeEarlyDepartureStatusId : null))
             .SingleOrDefaultAsync(cancellationToken);
 
     private static void EnsurePortalCheckInAllowed(EffectiveAttendanceRule attendanceRule)
     {
-        if (!attendanceRule.EntryTypeIsActive)
-            throw new InvalidOperationException("Your mapped attendance type is inactive. Ask an attendance administrator to update your attendance rule.");
-
-        var reason = attendanceRule.EntryTypeCode switch
-        {
-            "CHECK" or "CHECK_IN_OUT" or "REMOTE" => null,
-            "LOGIN" => "Your attendance is recorded through system login; manual check-in is not available.",
-            "MACHINE" => "Your attendance is recorded through the attendance machine; manual check-in is not available.",
-            "CAMERA" => "Your attendance is recorded through the camera system; manual check-in is not available.",
-            "STAFF_GUARD" => "Your attendance is recorded by attendance staff; manual check-in is not available.",
-            "SYSTEM_IP" => "Your attendance is recorded through the approved system/IP; manual check-in is not available.",
-            "NONE" => "Attendance is not required for your mapped attendance rule.",
-            "BY_SUPERVISOR" => "Your attendance must be recorded by your supervisor; manual check-in is not available.",
-            _ => "Your mapped attendance type does not support portal check-in."
-        };
-
+        var reason = PortalCheckInRestriction(attendanceRule);
         if (reason != null) throw new InvalidOperationException(reason);
     }
 
@@ -2762,10 +2772,12 @@ public sealed class AttendanceService : IAttendanceService
             return "Attendance rule is not configured. Ask an attendance administrator to map your attendance type and shift.";
         if (!attendanceRule.EntryTypeIsActive)
             return "The mapped attendance type is inactive. Ask an attendance administrator to update it.";
+        if (!attendanceRule.RuleSettingId.HasValue)
+            return "Your mapped attendance rule must be active and approved in Attendance Rules before check-in/check-out.";
 
         return attendanceRule.EntryTypeCode switch
         {
-            "CHECK" or "CHECK_IN_OUT" or "REMOTE" => null,
+            "CHECK" or "CHECK_IN_OUT" or "CHECKIN_OUT" or "REMOTE" => null,
             "LOGIN" => "Attendance is recorded through system login.",
             "MACHINE" => "Attendance is recorded through the attendance machine.",
             "CAMERA" => "Attendance is recorded through the camera system.",
@@ -2802,7 +2814,14 @@ public sealed class AttendanceService : IAttendanceService
         int? MissingCheckoutAfterShiftEndMinutes,
         int? AccountLockAbsentDays,
         decimal? WeekendChargeValue,
-        int? AdjustAbsentDays);
+        int? AdjustAbsentDays,
+        int? RuleSettingId,
+        int? ExtremeLateAfterMinutes,
+        int? ExtremeEarlyDepartureAfterMinutes,
+        int? PlatformLateStatusId,
+        int? PlatformExtremeLateStatusId,
+        int? PlatformEarlyDepartureStatusId,
+        int? PlatformExtremeEarlyDepartureStatusId);
 
     private sealed record CheckInContext(
         DateOnly AttendanceDate,
@@ -3304,13 +3323,18 @@ public sealed class AttendanceService : IAttendanceService
             .ToDictionaryAsync(schedule => schedule.ScheduleDate, cancellationToken);
         var dateFrom = new DateOnly(year, month, 1);
         var dateTo = dateFrom.AddMonths(1);
-        var records = await _db.AttendanceRecords.AsNoTracking().Include(r => r.PlatformActionStatus).ThenInclude(p => p.Status).Include(r => r.PlatformActionStatus).ThenInclude(p => p.Color)
+        var records = await _db.AttendanceRecords.AsNoTracking().Include(r => r.CanonicalStatus)
+            .Include(r => r.PlatformActionStatus).ThenInclude(p => p.Status).Include(r => r.PlatformActionStatus).ThenInclude(p => p.Color)
             .Where(r => r.PersonId == personId && r.AttendanceDate >= dateFrom && r.AttendanceDate < dateTo)
             .OrderByDescending(r => r.AttendanceDate).ToListAsync(cancellationToken);
         var statusCodes = await _db.PlatformSettingStatusCrDbValues.AsNoTracking()
             .ToDictionaryAsync(x => x.StatusId, x => x.DbValue, cancellationToken);
+        var configuredStyles = await GetAttendanceDisplayStyleMapAsync(cancellationToken);
         var rows = records.Select(r =>
         {
+            var statusId = r.CanonicalStatusId ?? r.PlatformActionStatus?.StatusId;
+            var statusName = r.CanonicalStatus?.Name ?? r.PlatformActionStatus?.Status?.Name;
+            configuredStyles.TryGetValue(statusName ?? string.Empty, out var configuredStyle);
             var end = r.CheckOutUtc;
             var gross = r.CheckInUtc.HasValue && end.HasValue ? Math.Max(0, (int)Math.Floor((end.Value - r.CheckInUtc.Value).TotalMinutes)) : 0;
             var worked = Math.Max(0, gross - r.TotalBreakMinutes);
@@ -3329,10 +3353,10 @@ public sealed class AttendanceService : IAttendanceService
                 CheckOut = r.CheckOutUtc.HasValue ? r.CheckOutUtc.Value.ToString("HH:mm") : null,
                 WorkingMinutes = worked, BreakMinutes = r.TotalBreakMinutes, RequiredMinutes = required,
                 ShortMinutes = r.CheckOutUtc.HasValue ? Math.Max(0, required - worked) : 0,
-                AttendanceStatusId = r.PlatformActionStatusId,
-                StatusCode = r.PlatformActionStatus?.StatusId != null && statusCodes.TryGetValue(r.PlatformActionStatus.StatusId, out var code) ? code : null,
-                StatusName = r.PlatformActionStatus?.Status?.Name,
-                StatusColorCode = r.PlatformActionStatus?.Color?.ColorCode
+                AttendanceStatusId = r.CanonicalStatusId ?? r.PlatformActionStatusId,
+                StatusCode = statusId.HasValue && statusCodes.TryGetValue(statusId.Value, out var code) ? code : null,
+                StatusName = statusName,
+                StatusColorCode = configuredStyle?.ColorCode ?? r.PlatformActionStatus?.Color?.ColorCode
             };
         }).ToList();
         return new MonthlyAttendanceReportDto { Employee = employee, Year = year, Month = month, Rows = rows };
@@ -3342,16 +3366,32 @@ public sealed class AttendanceService : IAttendanceService
     {
         var person = await _db.Persons.AsNoTracking().FirstOrDefaultAsync(x => x.IdentityUserId == identityUserId, cancellationToken)
             ?? throw new KeyNotFoundException("No employee profile is linked to this account.");
-        var localNow = BusinessClock.Now(person.TimeZoneId);
+        var localNow = PortalNow(person);
         return (person, DateOnly.FromDateTime(localNow));
     }
 
-    private async Task<AttendancePolicy> LoadPolicyAsync(int tenantId, CancellationToken cancellationToken) =>
-        await _db.AttendancePolicies.AsNoTracking()
+    private async Task<AttendancePolicy> LoadReportPolicyAsync(int tenantId, CancellationToken ct)
+    {
+        var legacy = await _db.AttendancePolicies.AsNoTracking()
             .Where(x => x.IsActive && (x.TenantId == tenantId || x.TenantId == null))
-            .OrderByDescending(x => x.TenantId == tenantId)
-            .FirstOrDefaultAsync(cancellationToken)
-        ?? throw new InvalidOperationException("No active attendance policy is configured for this company.");
+            .OrderByDescending(x => x.TenantId == tenantId).FirstOrDefaultAsync(ct);
+        if (legacy != null) return legacy;
+        var rule = await _db.AttendanceRuleSettings.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && x.IsActive && x.IsApproved)
+            .OrderByDescending(x => x.Id).FirstOrDefaultAsync(ct)
+            ?? throw new InvalidOperationException("No active approved attendance rule is configured for this company.");
+        // Read-only compatibility shape. Never seed a policy, approve a rule or invent tolerances.
+        // Per-entry-type settings returned by the report remain authoritative for each mapped row.
+        return new AttendancePolicy
+        {
+            TenantId = tenantId, TimeZoneId = "Asia/Karachi",
+            EarliestCheckInMinutesBefore = rule.BeforeCheckInMinutes,
+            OnTimeGraceMinutesAfter = rule.CheckInAdjustMinutes,
+            AbsentAfterShiftStartMinutes = rule.AbsentAfterShiftStartMinutes,
+            MissingCheckoutAfterShiftEndMinutes = rule.MissingCheckoutAfterShiftEndMinutes,
+            FullDayToleranceMinutes = rule.CheckOutAdjustMinutes
+        };
+    }
 
     private async Task EvaluateLiveStatusesAsync(
         int tenantId,
@@ -3359,8 +3399,12 @@ public sealed class AttendanceService : IAttendanceService
         DateOnly dateTo,
         CancellationToken cancellationToken)
     {
-        var policy = await LoadPolicyAsync(tenantId, cancellationToken);
-        var today = BusinessClock.Today(policy.TimeZoneId);
+        // Historical reads must not require or create the legacy policy/evaluator.
+        var zone = await _db.AttendancePolicies.AsNoTracking()
+            .Where(x => x.IsActive && (x.TenantId == tenantId || x.TenantId == null))
+            .OrderByDescending(x => x.TenantId == tenantId).Select(x => x.TimeZoneId)
+            .FirstOrDefaultAsync(cancellationToken);
+        var today = BusinessClock.Today(zone);
         var liveFrom = today.AddDays(-1);
         var from = dateFrom > liveFrom ? dateFrom : liveFrom;
         var to = dateTo < today ? dateTo : today;
@@ -3372,7 +3416,10 @@ public sealed class AttendanceService : IAttendanceService
 
     private async Task EvaluateStatusesAsync(int tenantId, DateOnly dateFrom, DateOnly dateTo, CancellationToken cancellationToken)
     {
-        var policy = await LoadPolicyAsync(tenantId, cancellationToken);
+        var policy = await LoadReportPolicyAsync(tenantId, cancellationToken);
+        // The legacy SQL evaluator requires a persisted legacy policy. Approved-rule
+        // finalization remains authoritative when the module uses the new configuration.
+        if (policy.Id == 0) return;
         var businessNow = BusinessClock.Now(policy.TimeZoneId);
         try
         {
@@ -3480,16 +3527,16 @@ public sealed class AttendanceService : IAttendanceService
                 (record?.AttendanceEntryTypeId == attendanceRule?.AttendanceEntryTypeId ? attendanceRule?.EntryTypeName : null)
             ,AttendanceWorkModeId = record?.AttendanceWorkModeId
             ,AttendanceWorkMode = record?.AttendanceWorkMode?.Name
-            ,AttendanceRuleConfigured = attendanceRule != null
+            ,AttendanceRuleConfigured = attendanceRule?.RuleSettingId.HasValue == true && attendanceRule.EntryTypeIsActive
             ,AttendanceTypeCode = attendanceRule?.EntryTypeCode
             ,AttendanceTypeName = attendanceRule?.EntryTypeName
             ,AttendanceShiftCode = attendanceRule?.ShiftCode
             ,IsOpenAttendance = attendanceRule?.IsOpenAttendance ?? false
             ,CanSelfCheckIn = checkInRestriction == null
-            ,CanCheckOut = record?.CheckInUtc.HasValue == true && !record.CheckOutUtc.HasValue && !openCheckoutExpired
-            ,CanToggleBreak = record?.CheckInUtc.HasValue == true && !record.CheckOutUtc.HasValue && !openCheckoutExpired
+            ,CanCheckOut = checkInRestriction == null && record?.CheckInUtc.HasValue == true && !record.CheckOutUtc.HasValue && !openCheckoutExpired
+            ,CanToggleBreak = checkInRestriction == null && record?.CheckInUtc.HasValue == true && !record.CheckOutUtc.HasValue && !openCheckoutExpired
             ,IsAttendanceClosed = record?.CheckOutUtc.HasValue == true || openCheckoutExpired
-            ,AttendanceStatus = record?.AttendanceStatus?.Status?.StatusName
+            ,AttendanceStatus = record?.CanonicalStatus?.Name ?? record?.PlatformActionStatus?.Status?.Name ?? record?.AttendanceStatus?.Status?.StatusName
             ,CheckInRestrictionReason = checkInRestriction
         };
     }

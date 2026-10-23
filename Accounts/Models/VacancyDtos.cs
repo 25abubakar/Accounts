@@ -96,6 +96,10 @@ namespace Accounts.Models
     public class StaffDto
     {
         public Guid StaffId { get; set; }
+        public int? LegacyStaffId { get; set; }
+        public int? LegacyPersonId { get; set; }
+        public int? LegacyVacancyId { get; set; }
+        public int? LegacyServiceStatusId { get; set; }
         public Guid? PersonId { get; set; }
         public string FullName { get; set; } = string.Empty;
         public string? Email { get; set; }
@@ -113,7 +117,7 @@ namespace Accounts.Models
         public string? GroupName { get; set; }
         public string? ShiftStartTime { get; set; }
         public string? ShiftEndTime { get; set; }
-        public DateTime JoiningDate { get; set; }
+        public DateTime? JoiningDate { get; set; }
 
         public string? JobTitle
         {

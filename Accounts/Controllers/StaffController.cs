@@ -202,14 +202,14 @@ namespace Accounts.Controllers
 
             var staff = await _db.StaffVacancies
                 .AsNoTracking()
-                .Include(s => s.Person)
+                .Include(s => s.Person).ThenInclude(p => p!.Contacts)
                 .Include(s => s.Vacancy)
                     .ThenInclude(v => v!.DesignationNav)
                 .Include(s => s.Vacancy)
                     .ThenInclude(v => v!.Organization)
                     .ThenInclude(o => o!.Parent)
                     .ThenInclude(p => p!.Parent)
-                .Where(s => s.LoginId == loginOrEmail || (s.Person != null && s.Person.Email == loginOrEmail))
+                .Where(s => s.LoginId == loginOrEmail || (s.Person != null && s.Person.Contacts.Any(c => c.ContactType == "Email" && c.ContactValue == loginOrEmail)))
                 .FirstOrDefaultAsync();
 
             if (staff == null) return NotFound(new { message = "Staff not found." });
@@ -223,8 +223,8 @@ namespace Accounts.Controllers
                 staffId     = staff.StaffId,
                 loginId     = staff.LoginId ?? staff.Vacancy?.VacancyCode,
                 fullName    = staff.Person?.FullName ?? "-",
-                email       = staff.Person?.Email,
-                phone       = staff.Person?.Phone,
+                email       = staff.Person.GetPrimaryContact("Email"),
+                phone       = staff.Person.GetPrimaryContact("Phone"),
                 photoUrl    = staff.Person?.ProfilePhotoUrl,
                 vacancyId   = staff.VacancyId,
                 vacancyCode = staff.Vacancy?.VacancyCode,

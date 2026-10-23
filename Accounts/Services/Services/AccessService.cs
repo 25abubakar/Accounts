@@ -54,6 +54,7 @@ namespace Accounts.Services.Services
         public async Task<IEnumerable<object>> GetDepartmentPersonsAsync(int deptId)
         {
             var persons = await _db.Persons
+                .Include(p => p.Contacts)
                 .Include(p => p.Staff).ThenInclude(s => s!.Vacancy)
                 .Where(p => p.Staff != null && p.Staff.Vacancy != null && p.Staff.Vacancy.OrganizationId == deptId)
                 .OrderBy(p => p.FullName)
@@ -65,7 +66,7 @@ namespace Accounts.Services.Services
                 staffId     = p.Staff?.StaffId,
                 fullName    = p.FullName,
                 loginId     = p.Staff?.LoginId,
-                email       = p.Email,
+                email       = p.GetPrimaryContact("Email"),
                 photoUrl    = p.ProfilePhotoUrl,
                 isHired     = p.Staff != null,
                 jobTitle    = p.Staff?.Vacancy?.JobTitle,

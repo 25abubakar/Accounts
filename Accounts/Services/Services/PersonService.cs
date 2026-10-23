@@ -44,14 +44,15 @@ namespace Accounts.Services.Services
         public async Task<IEnumerable<PersonDto>> GetUnassignedAsync() =>
             await LoadPersonsAsync("UNASSIGNED");
 
-        private async Task<List<PersonDto>> LoadPersonsAsync(string mode)
+        private async Task<List<PersonDto>> LoadPersonsAsync(string mode, Guid? personId = null)
         {
             var rows = await SpListQuery.ExecAsync<HrPersonListRow>(
                 _db,
-                "EXEC dbo.usp_Hr_Persons_List @TenantId, @Mode",
+                "EXEC dbo.usp_Hr_Persons_List @TenantId, @Mode, @PersonId",
                 CancellationToken.None,
                 SpListQuery.TenantId(_tenantService.RequiredTenantId),
-                SpListQuery.NVarChar("@Mode", mode));
+                SpListQuery.NVarChar("@Mode", mode),
+                new Microsoft.Data.SqlClient.SqlParameter("@PersonId", System.Data.SqlDbType.UniqueIdentifier) { Value = (object?)personId ?? DBNull.Value });
             return rows.Select(MapPersonRow).ToList();
         }
 
@@ -61,21 +62,33 @@ namespace Accounts.Services.Services
             {
                 AddressLine = row.CurrentAddressLine,
                 Country = row.CurrentCountry,
+                Province = row.CurrentProvince,
+                District = row.CurrentDistrict,
+                PostalCode = row.CurrentPostalCode,
                 City = row.CurrentCity
             };
             var permanent = new AddressResponseDto
             {
-                AddressLine = row.PermanentAddressLine ?? row.CurrentAddressLine,
-                Country = row.PermanentCountry ?? row.CurrentCountry,
-                City = row.PermanentCity ?? row.CurrentCity
+                AddressLine = row.PermanentAddressId.HasValue ? row.PermanentAddressLine : row.CurrentAddressLine,
+                Country = row.PermanentAddressId.HasValue ? row.PermanentCountry : row.CurrentCountry,
+                Province = row.PermanentAddressId.HasValue ? row.PermanentProvince : row.CurrentProvince,
+                District = row.PermanentAddressId.HasValue ? row.PermanentDistrict : row.CurrentDistrict,
+                PostalCode = row.PermanentAddressId.HasValue ? row.PermanentPostalCode : row.CurrentPostalCode,
+                City = row.PermanentAddressId.HasValue ? row.PermanentCity : row.CurrentCity
             };
             var same = string.Equals(current.AddressLine, permanent.AddressLine, StringComparison.OrdinalIgnoreCase)
                 && string.Equals(current.Country, permanent.Country, StringComparison.OrdinalIgnoreCase)
-                && string.Equals(current.City, permanent.City, StringComparison.OrdinalIgnoreCase);
+                && string.Equals(current.City, permanent.City, StringComparison.OrdinalIgnoreCase)
+                && string.Equals(current.Province, permanent.Province, StringComparison.OrdinalIgnoreCase)
+                && string.Equals(current.District, permanent.District, StringComparison.OrdinalIgnoreCase)
+                && string.Equals(current.PostalCode, permanent.PostalCode, StringComparison.OrdinalIgnoreCase);
 
             return new PersonDto
             {
                 PersonId = row.PersonId,
+                LegacyPersonId = row.LegacyPersonId,
+                StaffId = row.StaffId,
+                VacancyId = row.VacancyId,
                 LoginId = row.LoginId,
                 FullName = row.FullName,
                 Gender = row.Gender,
@@ -110,13 +123,7 @@ namespace Accounts.Services.Services
 
         public async Task<PersonDto?> GetByIdAsync(Guid id)
         {
-            var person = await _db.Persons.Include(p => p.Addresses)
-                .Include(p => p.Contacts)
-                .Include(p => p.Staff).ThenInclude(s => s!.Vacancy).ThenInclude(v => v!.DesignationNav)
-                .FirstOrDefaultAsync(p => p.PersonId == id);
-            if (person == null) return null;
-            var orgNodes = await _db.OrganizationTree.ToListAsync();
-            return MapToDto(person, orgNodes);
+            return (await LoadPersonsAsync("ALL", id)).SingleOrDefault();
         }
 
         public async Task<PersonDto?> GetByIdentityUserIdAsync(string identityUserId)
@@ -136,6 +143,7 @@ namespace Accounts.Services.Services
             var orgNodes = await _db.OrganizationTree.AsNoTracking().ToListAsync();
             var persons  = await _db.Persons.AsNoTracking()
                 .Include(p => p.Addresses)
+                .Include(p => p.Contacts)
                 .Include(p => p.Staff).ThenInclude(s => s!.Vacancy).ThenInclude(v => v!.DesignationNav)
                 .OrderByDescending(p => p.CreatedDate).ToListAsync();
             return persons.Select(p => MapToProfile(p, orgNodes));
@@ -145,6 +153,7 @@ namespace Accounts.Services.Services
         {
             var person = await _db.Persons.AsNoTracking()
                 .Include(p => p.Addresses)
+                .Include(p => p.Contacts)
                 .Include(p => p.Staff).ThenInclude(s => s!.Vacancy).ThenInclude(v => v!.DesignationNav)
                 .FirstOrDefaultAsync(p => p.PersonId == id);
             if (person == null) return null;
@@ -154,8 +163,9 @@ namespace Accounts.Services.Services
 
         public async Task<PersonHrProfileDto?> GetHrProfileAsync(Guid id)
         {
-            var profile = await _db.PersonHrProfileReadRows.AsNoTracking()
-                .FirstOrDefaultAsync(x => x.PersonId == id);
+            var profile = (await _db.PersonHrProfileReadRows.FromSqlInterpolated(
+                $"EXEC dbo.usp_Hr_PersonHrProfile_Get @TenantId={_tenantService.RequiredTenantId}, @PersonId={id}")
+                .IgnoreQueryFilters().AsNoTracking().ToListAsync()).SingleOrDefault();
             if (profile == null) return null;
 
             var educations = await _db.PersonEducations.AsNoTracking()
@@ -184,8 +194,6 @@ namespace Accounts.Services.Services
             person.MiddleName = middleName;
             person.LastName = lastName;
             person.FullName = dto.FullName.Trim();
-            person.Phone = dto.Phone?.Trim();
-            person.Email = dto.Email?.Trim();
             person.PersonalEmail = dto.PersonalEmail?.Trim();
             person.Gender = dto.Gender?.Trim();
             person.DateOfBirth = dto.DateOfBirth;
@@ -194,8 +202,8 @@ namespace Accounts.Services.Services
             person.ShiftEndTime = string.IsNullOrWhiteSpace(dto.ShiftEndTime) ? person.ShiftEndTime : dto.ShiftEndTime.Trim();
             person.TimeZoneId = string.IsNullOrWhiteSpace(dto.TimeZoneId) ? person.TimeZoneId : dto.TimeZoneId.Trim();
 
-            UpsertContact(person, "Phone", person.Phone, true);
-            UpsertContact(person, "Email", person.Email, true);
+            UpsertContact(person, "Phone", dto.Phone, true);
+            UpsertContact(person, "Email", dto.Email, true);
             UpsertContact(person, "PersonalEmail", person.PersonalEmail, false);
             UpsertContact(person, "Emergency", dto.EmergencyContactNo?.Trim(), true);
 
@@ -491,8 +499,6 @@ namespace Accounts.Services.Services
                 MiddleName     = middleName,
                 LastName       = lastName,
                 FullName       = dto.FullName.Trim(),
-                Phone          = dto.Phone?.Trim(),
-                Email          = email,
                 PersonalEmail  = dto.PersonalEmail?.Trim(),
                 Gender         = dto.Gender?.Trim(),
                 DateOfBirth    = dto.DateOfBirth,
@@ -604,6 +610,7 @@ namespace Accounts.Services.Services
             }
 
             var created = await _db.Persons.Include(p => p.Addresses)
+                .Include(p => p.Contacts)
                 .Include(p => p.Staff).ThenInclude(s => s!.Vacancy).ThenInclude(v => v!.DesignationNav)
                 .FirstOrDefaultAsync(p => p.PersonId == person.PersonId);
 
@@ -632,35 +639,16 @@ namespace Accounts.Services.Services
             person.DateOfBirth   = dto.DateOfBirth;
             person.MaritalStatus = dto.MaritalStatus?.Trim();
 
-            // ── Upsert Email in PersonContacts ─────────────────────────────────
+            UpsertContact(person, "Email", dto.Email, true);
             if (!string.IsNullOrWhiteSpace(dto.Email))
             {
-                var primaryEmail = person.Contacts.FirstOrDefault(c => c.ContactType == "Email" && c.IsPrimary);
-                if (primaryEmail != null)
-                {
-                    primaryEmail.ContactValue = dto.Email.Trim();
-                }
-                else
-                {
-                    person.Contacts.Add(new PersonContact
-                    {
-                        PersonId     = person.PersonId,
-                        ContactType  = "Email",
-                        ContactValue = dto.Email.Trim(),
-                        IsPrimary    = true,
-                        CreatedDate  = DateTime.UtcNow
-                    });
-                }
-                // Sync legacy Email column for backward compat
-                person.Email = dto.Email.Trim();
-
-                // Update Identity email
                 var iu = await _userManager.FindByIdAsync(person.IdentityUserId);
                 if (iu != null && !string.Equals(iu.Email, dto.Email.Trim(), StringComparison.OrdinalIgnoreCase))
                 {
-                    iu.Email           = dto.Email.Trim();
+                    iu.Email = dto.Email.Trim();
                     iu.NormalizedEmail = dto.Email.Trim().ToUpperInvariant();
-                    await _userManager.UpdateAsync(iu);
+                    var result = await _userManager.UpdateAsync(iu);
+                    if (!result.Succeeded) return (null, string.Join("; ", result.Errors.Select(e => e.Description)));
                 }
             }
 
@@ -689,28 +677,7 @@ namespace Accounts.Services.Services
                 });
             }
 
-            // ── Upsert Phone in PersonContacts ─────────────────────────────────
-            if (!string.IsNullOrWhiteSpace(dto.Phone))
-            {
-                var primaryPhone = person.Contacts.FirstOrDefault(c => c.ContactType == "Phone" && c.IsPrimary);
-                if (primaryPhone != null)
-                {
-                    primaryPhone.ContactValue = dto.Phone.Trim();
-                }
-                else
-                {
-                    person.Contacts.Add(new PersonContact
-                    {
-                        PersonId     = person.PersonId,
-                        ContactType  = "Phone",
-                        ContactValue = dto.Phone.Trim(),
-                        IsPrimary    = true,
-                        CreatedDate  = DateTime.UtcNow
-                    });
-                }
-                // Sync legacy Phone column for backward compat
-                person.Phone = dto.Phone.Trim();
-            }
+            UpsertContact(person, "Phone", dto.Phone, true);
 
             UpsertAddress(person, "Current",   dto.CurrentAddress);
             UpsertAddress(person, "Permanent", dto.PermanentAddress);
@@ -718,6 +685,7 @@ namespace Accounts.Services.Services
 
             var orgNodes = await _db.OrganizationTree.ToListAsync();
             var updated  = await _db.Persons.Include(p => p.Addresses)
+                .Include(p => p.Contacts)
                 .Include(p => p.Staff).ThenInclude(s => s!.Vacancy).ThenInclude(v => v!.DesignationNav)
                 .FirstOrDefaultAsync(p => p.PersonId == id);
             return (MapToDto(updated!, orgNodes), null);
@@ -1153,8 +1121,7 @@ namespace Accounts.Services.Services
         /// </summary>
         private async Task<bool> EmailExistsAsync(string email) =>
             await _userManager.FindByEmailAsync(email) != null
-            || await _db.Persons.AnyAsync(p => p.Email != null &&
-               p.Email.ToLower() == email.ToLower());
+            || await _db.Persons.AnyAsync(p => p.Contacts.Any(c => c.ContactType == "Email" && c.ContactValue.ToLower() == email.ToLower()));
 
         /// <summary>
         /// Builds the email domain from a company name.
@@ -1215,7 +1182,7 @@ namespace Accounts.Services.Services
                 c.ContactType == type && (!isPrimary || c.IsPrimary));
             if (string.IsNullOrWhiteSpace(value))
             {
-                if (existing != null) _db.PersonContacts.Remove(existing);
+                if (existing != null) { _db.PersonContacts.Remove(existing); person.Contacts.Remove(existing); }
                 return;
             }
             if (existing != null)
@@ -1307,9 +1274,9 @@ namespace Accounts.Services.Services
 
             return new PersonDto
             {
-                PersonId = p.PersonId, LoginId = p.Staff?.LoginId ?? "-", FullName = p.FullName,
+                PersonId = p.PersonId, LegacyPersonId = p.LegacyPersonId, LoginId = p.Staff?.LoginId ?? "-", FullName = p.FullName,
                 Gender = p.Gender, DateOfBirth = p.DateOfBirth, MaritalStatus = p.MaritalStatus,
-                Phone = p.Phone, Email = p.Email,
+                Phone = p.GetPrimaryContact("Phone"), Email = p.GetPrimaryContact("Email"),
                 PersonalEmail = p.PersonalEmail ?? p.Contacts.FirstOrDefault(c => c.ContactType == "PersonalEmail")?.ContactValue,
                 ShiftStartTime = p.ShiftStartTime, ShiftEndTime = p.ShiftEndTime, TimeZoneId = p.TimeZoneId,
                 PhotoUrl = p.ProfilePhotoUrl,
@@ -1342,7 +1309,7 @@ namespace Accounts.Services.Services
             {
                 PersonId = p.PersonId, LoginId = p.Staff?.LoginId ?? "-", FullName = p.FullName, Initials = initials,
                 Gender = p.Gender, DateOfBirth = p.DateOfBirth, MaritalStatus = p.MaritalStatus,
-                Phone = p.Phone, UserName = p.Email, PhotoUrl = p.ProfilePhotoUrl, RegisteredAt = p.CreatedDate,
+                Phone = p.GetPrimaryContact("Phone"), UserName = p.GetPrimaryContact("Email"), PhotoUrl = p.ProfilePhotoUrl, RegisteredAt = p.CreatedDate,
                 BranchId = branch?.Id, BranchName = branch?.Name, CompanyName = company?.Name,
                 CountryName = country?.Name, CountryFlag = country?.FlagUrl,
                 IsHired = p.Staff != null, IsActive = p.IsActive, StaffId = p.Staff?.StaffId, JoiningDate = null,
@@ -1459,8 +1426,8 @@ namespace Accounts.Services.Services
             {
                 PersonId = person.PersonId,
                 FullName = person.FullName,
-                Phone = person.Phone,
-                Email = person.Email,
+                Phone = person.GetPrimaryContact("Phone"),
+                Email = person.GetPrimaryContact("Email"),
                 PersonalEmail = person.PersonalEmail ?? person.Contacts.FirstOrDefault(c => c.ContactType == "PersonalEmail")?.ContactValue,
                 Gender = person.Gender,
                 DateOfBirth = person.DateOfBirth,

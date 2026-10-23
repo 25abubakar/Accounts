@@ -8,6 +8,8 @@ namespace Accounts.Models
     {
         [Key]
         public Guid PersonId { get; set; } = Guid.NewGuid();
+        /// <summary>Original Person Id from the source register; independent of staff/vacancy identifiers.</summary>
+        public int? LegacyPersonId { get; set; }
 
         // ── ITenantEntity ─────────────────────────────────────────────────
         /// <summary>FK to Tenants.Id — set on registration, never changed.</summary>
@@ -27,12 +29,6 @@ namespace Accounts.Models
 
         [MaxLength(60)]
         public string? LastName { get; set; }
-
-        [MaxLength(50)]
-        public string? Phone { get; set; }
-
-        [MaxLength(150)]
-        public string? Email { get; set; }
 
         [MaxLength(256)]
         public string? PersonalEmail { get; set; }

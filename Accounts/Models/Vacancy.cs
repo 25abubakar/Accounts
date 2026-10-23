@@ -9,6 +9,8 @@ namespace Accounts.Models
         [Key]
         public Guid VacancyId { get; set; } = Guid.NewGuid();
 
+        public int? LegacyVacancyId { get; set; }
+
         public int TenantId { get; set; }
 
         [Required]

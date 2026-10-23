@@ -29,7 +29,9 @@ namespace Accounts.Services.Services
                 "EXEC dbo.usp_Hr_Staff_List @TenantId",
                 CancellationToken.None,
                 SpListQuery.TenantId(_tenantService.RequiredTenantId));
-            return rows.Select(MapStaffRow);
+            var numbers = await _db.Persons.AsNoTracking().Where(x => x.LegacyPersonId != null)
+                .ToDictionaryAsync(x => x.PersonId, x => x.LegacyPersonId);
+            return rows.Select(row => { var dto = MapStaffRow(row); dto.LegacyPersonId = numbers.GetValueOrDefault(row.PersonId); return dto; });
         }
 
         public async Task<StaffDto?> GetByIdAsync(Guid id)
@@ -263,7 +265,7 @@ namespace Accounts.Services.Services
 
         private IQueryable<StaffVacancy> WithIncludes() =>
             _db.StaffVacancies
-               .Include(s => s.Person)
+               .Include(s => s.Person).ThenInclude(p => p!.Contacts)
                .Include(s => s.Vacancy)
                    .ThenInclude(v => v!.DesignationNav)
                .Include(s => s.Vacancy)
@@ -275,6 +277,9 @@ namespace Accounts.Services.Services
         private static StaffDto MapStaffRow(HrStaffListRow row) => new()
         {
             StaffId = row.StaffId,
+            LegacyStaffId = row.LegacyStaffId,
+            LegacyVacancyId = row.LegacyVacancyId,
+            LegacyServiceStatusId = row.LegacyServiceStatusId,
             PersonId = row.PersonId,
             FullName = row.FullName,
             Email = row.Email,
@@ -311,24 +316,28 @@ namespace Accounts.Services.Services
             return new StaffDto
             {
                 StaffId     = s.StaffId,
+                LegacyStaffId = s.LegacyStaffId,
+                LegacyPersonId = s.Person?.LegacyPersonId,
+                LegacyVacancyId = s.LegacyVacancyId,
+                LegacyServiceStatusId = s.LegacyServiceStatusId,
                 PersonId    = s.PersonId,
                 FullName    = s.Person?.FullName ?? "-",
-                Email       = s.Person?.Email,
-                Phone       = s.Person?.Phone,
+                Email       = s.Person.GetPrimaryContact("Email"),
+                Phone       = s.Person.GetPrimaryContact("Phone"),
                 PhotoUrl    = s.Person?.ProfilePhotoUrl,
                 IsActive    = s.Person?.IsActive ?? false,
                 LoginId     = s.LoginId,
                 VacancyId   = s.VacancyId,
-                VacancyCode = s.Vacancy?.VacancyCode,
+                VacancyCode = s.Vacancy?.VacancyCode ?? s.Person?.LastVacancyCode,
                 JobTitle    = s.Vacancy?.ResolvedJobTitle,
-                Department  = s.Vacancy?.Department ?? department?.Name,
-                BranchName  = branch?.Name,
-                CompanyName = company?.Name,
-                CountryName = country?.Name,
+                Department  = s.Vacancy?.Department ?? department?.Name ?? s.Person?.LastDepartment,
+                BranchName  = branch?.Name ?? s.Person?.LastBranchName,
+                CompanyName = company?.Name ?? s.Person?.LastCompanyName,
+                CountryName = country?.Name ?? s.Person?.LastCountryName,
                 GroupName   = group?.Name,
                 ShiftStartTime = s.Person?.ShiftStartTime,
                 ShiftEndTime   = s.Person?.ShiftEndTime,
-                JoiningDate = DateTime.UtcNow
+                JoiningDate = s.Person?.LastJoiningDate
             };
         }
     }

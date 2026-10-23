@@ -298,9 +298,6 @@ public sealed class RoznamchaService(
         {
             TenantId = current.TenantId,
             SNo = await db.RoznamchaEntries.CountAsync(ct) + 1,
-            Ref = entryTypeId == 1
-                ? await references.PaymentReferenceAsync(current.TenantId, ct)
-                : await references.ReceiptReferenceAsync(current.TenantId, ct),
             RoznamchaTypeId = await ResolveRoznamchaTypeIdAsync(entryTypeId, ct)
                 ?? throw new InvalidOperationException("The requested Payment/Receipt type is not configured."),
             TransTypeId = request.TransactionTypeId ?? entryTypeId,
@@ -311,6 +308,10 @@ public sealed class RoznamchaService(
         Apply(row, request, net, tax, isUsd);
         await ExecuteInTransactionAsync(async () =>
         {
+            await AcquireJournalReferenceLockAsync(ct);
+            row.Ref = entryTypeId == 1
+                ? await references.PaymentReferenceAsync(current.TenantId, ct)
+                : await references.ReceiptReferenceAsync(current.TenantId, ct);
             var counterpart = isTransfer ? await NewTransferCounterpartAsync(row, entryTypeId, ct) : null;
             db.RoznamchaEntries.Add(row);
             if (counterpart != null)
@@ -689,6 +690,7 @@ public sealed class RoznamchaService(
 
     private async Task<RoznamchaEntry> NewTransferCounterpartAsync(RoznamchaEntry row, int entryTypeId, CancellationToken ct)
     {
+        await AcquireJournalReferenceLockAsync(ct);
         var counterpart = new RoznamchaEntry
         {
             TenantId = row.TenantId,
@@ -701,6 +703,20 @@ public sealed class RoznamchaService(
         };
         await CopyTransferCounterpartAsync(row, counterpart, entryTypeId, ct);
         return counterpart;
+    }
+
+    private async Task AcquireJournalReferenceLockAsync(CancellationToken ct)
+    {
+        if (!db.Database.IsSqlServer()) return;
+        if (db.Database.CurrentTransaction == null)
+            throw new InvalidOperationException("Journal reference allocation requires an active transaction.");
+        var resource = $"Accounts:RoznamchaReference:{current.TenantId}";
+        await db.Database.ExecuteSqlInterpolatedAsync($"""
+            DECLARE @result int;
+            EXEC @result = sys.sp_getapplock @Resource={resource},
+                @LockMode='Exclusive', @LockOwner='Transaction', @LockTimeout=15000;
+            IF @result < 0 THROW 51000, 'Could not allocate a journal reference. Please retry.', 1;
+            """, ct);
     }
 
     private async Task CopyTransferCounterpartAsync(RoznamchaEntry source, RoznamchaEntry target, int sourceType, CancellationToken ct)

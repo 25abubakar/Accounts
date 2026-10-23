@@ -11,6 +11,9 @@ public sealed class HrDesignationListRow
 public sealed class HrStaffListRow
 {
     public Guid StaffId { get; set; }
+    public int? LegacyStaffId { get; set; }
+    public int? LegacyVacancyId { get; set; }
+    public int? LegacyServiceStatusId { get; set; }
     public Guid PersonId { get; set; }
     public string FullName { get; set; } = "";
     public string? Email { get; set; }
@@ -28,7 +31,7 @@ public sealed class HrStaffListRow
     public string? GroupName { get; set; }
     public string? ShiftStartTime { get; set; }
     public string? ShiftEndTime { get; set; }
-    public DateTime JoiningDate { get; set; }
+    public DateTime? JoiningDate { get; set; }
 }
 
 public sealed class HrVacancyListRow
@@ -75,6 +78,9 @@ public sealed class HrReportToListRow
 public sealed class HrPersonListRow
 {
     public Guid PersonId { get; set; }
+    public int? LegacyPersonId { get; set; }
+    public Guid? StaffId { get; set; }
+    public Guid? VacancyId { get; set; }
     public string LoginId { get; set; } = "-";
     public string FullName { get; set; } = "";
     public string? Gender { get; set; }
@@ -103,14 +109,22 @@ public sealed class HrPersonListRow
     public string? Department { get; set; }
     public string? CurrentAddressLine { get; set; }
     public string? CurrentCountry { get; set; }
+    public string? CurrentProvince { get; set; }
+    public string? CurrentDistrict { get; set; }
+    public string? CurrentPostalCode { get; set; }
     public string? CurrentCity { get; set; }
     public string? PermanentAddressLine { get; set; }
+    public Guid? PermanentAddressId { get; set; }
     public string? PermanentCountry { get; set; }
+    public string? PermanentProvince { get; set; }
+    public string? PermanentDistrict { get; set; }
+    public string? PermanentPostalCode { get; set; }
     public string? PermanentCity { get; set; }
 }
 
 public sealed class LibraryDocumentListRow
 {
+    public string? AttachmentReference { get; set; }
     public long Id { get; set; }
     public int TenantId { get; set; }
     public string? DocumentReference { get; set; }

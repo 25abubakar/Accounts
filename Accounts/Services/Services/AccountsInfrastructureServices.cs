@@ -4,6 +4,7 @@ using Accounts.DTOs;
 using Accounts.Services.Interfaces;
 using Microsoft.AspNetCore.Http;
 using Microsoft.EntityFrameworkCore;
+using System.Globalization;
 
 namespace Accounts.Services.Services;
 
@@ -62,14 +63,46 @@ public sealed class ReferenceGeneratorService(ApplicationDbContext db) : IRefere
 
     private async Task<string> JournalReferenceAsync(int tenantId, string marker, CancellationToken ct)
     {
-        var prefix = await TenantPrefixAsync(tenantId, ct);
+        var prefix = JournalTenantPrefix(await TenantPrefixAsync(tenantId, ct));
         var starts = $"{prefix}{marker}-";
+        var typeId = marker == "DB" ? 1 : 2;
         var refs = await db.RoznamchaEntries.IgnoreQueryFilters().AsNoTracking()
-            .Where(x => x.TenantId == tenantId && x.Ref != null && x.Ref.StartsWith(starts))
+            .Where(x => x.TenantId == tenantId && x.Ref != null && x.RoznamchaTypeId == typeId)
             .Select(x => x.Ref!)
             .ToListAsync(ct);
-        return $"{starts}{NextNumericSuffix(refs):00000}";
+        return ContinueJournalReference(refs, starts, marker);
     }
+
+    public static string ContinueJournalReference(IEnumerable<string> references, string defaultPrefix, string marker)
+    {
+        long maximum = 0;
+        var width = 5;
+        foreach (var reference in references)
+        {
+            var value = reference.Trim();
+            var separator = value.LastIndexOf('-');
+            if (separator <= 0) continue;
+            var series = value[..separator];
+            var suffix = value[(separator + 1)..];
+            // Imported rows can contain a reference from the opposite journal.
+            // Never allow a CR reference to advance DB numbering, or vice versa.
+            if (!series.EndsWith(marker, StringComparison.OrdinalIgnoreCase) ||
+                suffix.Length == 0 || !suffix.All(char.IsAsciiDigit) ||
+                !long.TryParse(suffix, NumberStyles.None, CultureInfo.InvariantCulture, out var number) || number <= maximum)
+                continue;
+            maximum = number;
+            width = suffix.Length;
+        }
+        // Continue the number across imported/older aliases, but always emit the
+        // owner-confirmed journal prefix. Existing records are never rewritten.
+        return defaultPrefix + checked(maximum + 1).ToString("D" + width, CultureInfo.InvariantCulture);
+    }
+
+    public static string JournalTenantPrefix(string tenantCode) => tenantCode.Trim().ToUpperInvariant() switch
+    {
+        "SAA" or "SAASC" => "SA",
+        var code => code
+    };
 
     private async Task<string> TenantPrefixAsync(int tenantId, CancellationToken ct)
     {

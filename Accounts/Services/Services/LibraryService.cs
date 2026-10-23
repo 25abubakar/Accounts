@@ -14,14 +14,14 @@ public sealed class LibraryService(
         int typeId, int? subTypeId, int? categoryId, CancellationToken ct = default)
     {
         var type = await db.LibraryTypes.AsNoTracking()
-            .Where(x => x.Id == typeId && x.IsActive)
+            .Where(x => x.Id == typeId && x.ParentId == null && x.IsActive)
             .Select(x => new { x.LibraryCategoryId })
             .FirstOrDefaultAsync(ct);
         if (type == null) return "Select an active library type.";
         if (categoryId.HasValue && type.LibraryCategoryId != categoryId)
             return "The selected library type does not belong to the selected category.";
-        if (subTypeId.HasValue && !await db.LibrarySubTypes.AsNoTracking()
-                .AnyAsync(x => x.Id == subTypeId && x.LibraryTypeId == typeId && x.IsActive, ct))
+        if (subTypeId.HasValue && !await db.LibraryTypes.AsNoTracking()
+                .AnyAsync(x => x.Id == subTypeId && x.ParentId == typeId && x.IsActive, ct))
             return "The selected library sub type does not belong to the selected type.";
         return null;
     }

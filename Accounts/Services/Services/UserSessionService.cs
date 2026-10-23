@@ -205,7 +205,7 @@ namespace Accounts.Services.Services
              {
                  PersonId = person.PersonId,
                  FullName = person.FullName,
-                 Email = person.Email,
+                 Email = person.Contacts.Where(c => c.ContactType == "Email" && c.ContactValue.Trim() != "").OrderByDescending(c => c.IsPrimary).ThenBy(c => c.Id).Select(c => c.ContactValue).FirstOrDefault(),
                  TimeZoneId = person.TimeZoneId,
                  ProfilePhotoUrl = person.ProfilePhotoUrl,
                  StaffId = staff != null ? staff.StaffId : null,

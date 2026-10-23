@@ -176,10 +176,10 @@ public sealed class AttendanceController : ControllerBase
                           join type in _db.AppLookupTypes on lookup.LookupTypeId equals type.LookupTypeId
                           where type.LookupTypeCode == "TIMING_HOLIDAY_TYPE" && lookup.IsActive
                           join status in _db.PlatformSettingStatuses on lookup.DisplayText equals status.Name
-                          join actionStatus in _db.PlatformSettingActionStatuses on status.Id equals actionStatus.StatusId
-                          join action in _db.PlatformSettingActions on actionStatus.ActionId equals action.Id
-                          join color in _db.PlatformSettingColors on actionStatus.ColorId equals color.Id
-                          where action.Name == "Attendance"
+                          join processStatus in _db.PlatformSettingProcessStatuses on status.Id equals processStatus.StatusId
+                          join process in _db.PlatformSettingProcesses on processStatus.ProcessId equals process.Id
+                          join color in _db.PlatformSettingColors on processStatus.ColorId equals color.Id
+                          where process.Name == "Attendance"
                           select new AttendanceHolidayColorMapDto
                           {
                               Id = lookup.LookupValueId,

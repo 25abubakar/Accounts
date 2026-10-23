@@ -187,6 +187,15 @@ public sealed class AttendanceFinalizationService(
                     false))
                 .ToDictionaryAsync(status => status.Id, cancellationToken);
 
+        var canonicalStatusIds = records.Where(record => record.CanonicalStatusId.HasValue)
+            .Select(record => record.CanonicalStatusId!.Value).Distinct().ToArray();
+        var canonicalStatuses = canonicalStatusIds.Length == 0
+            ? new Dictionary<int, StatusRow>()
+            : await db.PlatformSettingStatuses.AsNoTracking()
+                .Where(status => canonicalStatusIds.Contains(status.Id))
+                .Select(status => new StatusRow(status.Id, status.Name, status.Name, false))
+                .ToDictionaryAsync(status => status.Id, cancellationToken);
+
         var existingRows = await db.Set<AttendanceDailyFinalization>()
             .IgnoreQueryFilters()
             .Where(row =>
@@ -239,9 +248,9 @@ public sealed class AttendanceFinalizationService(
                 var effectiveCheckIn = attendance?.EffectiveCheckInUtc ?? attendance?.CheckInUtc;
                 var effectiveCheckOut = attendance?.EffectiveCheckOutUtc ?? attendance?.CheckOutUtc;
                 var isExplicitAbsent = !isNotRequired &&
-                    IsAbsentAttendance(attendance, statuses, platformStatuses);
+                    IsAbsentAttendance(attendance, statuses, platformStatuses, canonicalStatuses);
                 var isExcused = isNotRequired ||
-                    (!isExplicitAbsent && IsExcusedAttendance(attendance, statuses));
+                    (!isExplicitAbsent && IsExcusedAttendance(attendance, statuses, canonicalStatuses));
                 var calculation = AttendanceDailyFinalizationCalculator.Calculate(
                     new AttendanceDayCalculationInput(
                         isWorkingDay,
@@ -506,9 +515,12 @@ public sealed class AttendanceFinalizationService(
     private static bool IsAbsentAttendance(
         AttendanceRecord? attendance,
         IReadOnlyDictionary<int, StatusRow> processStatuses,
-        IReadOnlyDictionary<int, StatusRow> platformStatuses)
+        IReadOnlyDictionary<int, StatusRow> platformStatuses,
+        IReadOnlyDictionary<int, StatusRow> canonicalStatuses)
     {
         if (attendance is null) return false;
+        if (attendance.CanonicalStatusId is int canonicalId && canonicalStatuses.TryGetValue(canonicalId, out var canonical))
+            return IsAbsentStatus(canonical);
 
         if (attendance.AttendanceStatusId is int processStatusId &&
             processStatuses.TryGetValue(processStatusId, out var processStatus) &&
@@ -532,10 +544,16 @@ public sealed class AttendanceFinalizationService(
 
     private static bool IsExcusedAttendance(
         AttendanceRecord? attendance,
-        IReadOnlyDictionary<int, StatusRow> statuses)
+        IReadOnlyDictionary<int, StatusRow> statuses,
+        IReadOnlyDictionary<int, StatusRow> canonicalStatuses)
     {
-        if (attendance?.AttendanceStatusId is not int statusId ||
-            !statuses.TryGetValue(statusId, out var status))
+        if (attendance == null) return false;
+        StatusRow? status = null;
+        if (attendance?.CanonicalStatusId is int canonicalId)
+            canonicalStatuses.TryGetValue(canonicalId, out status);
+        else if (attendance?.AttendanceStatusId is int statusId)
+            statuses.TryGetValue(statusId, out status);
+        if (status == null)
             return false;
 
         var code = Normalize(status.Code);
