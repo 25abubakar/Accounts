@@ -86,7 +86,10 @@ public sealed class AssessmentController : ControllerBase
         await AssessmentSchema.EnsureCurrentAsync(_db);
 
         var people = await _db.Persons.AsNoTracking()
-            .Where(person => person.TenantId == tenantId && person.IsActive && person.Staff != null)
+            .Where(person => person.TenantId == tenantId && person.Staff != null &&
+                (person.IsActive || _db.StaffAssessments.Any(item => item.TenantId == tenantId &&
+                    item.SubjectPersonId == person.PersonId && item.AssessmentYear == assessmentYear &&
+                    item.AssessmentMonth == assessmentMonth)))
             .Select(person => new
             {
                 person.PersonId,
@@ -97,12 +100,12 @@ public sealed class AssessmentController : ControllerBase
                     ? (person.Staff.Vacancy.Organization != null && person.Staff.Vacancy.Organization.Label == "Department"
                         ? person.Staff.Vacancy.Organization.Name
                         : person.Staff.Vacancy.Department)
-                    : null,
+                    : person.LastDepartment,
                 JobTitle = person.Staff.Vacancy != null
                     ? (person.Staff.Vacancy.DesignationNav != null
                         ? person.Staff.Vacancy.DesignationNav.Name
                         : person.Staff.Vacancy.JobTitle)
-                    : null
+                    : person.LastJobTitle
             })
             .ToListAsync(ct);
 
@@ -133,7 +136,7 @@ public sealed class AssessmentController : ControllerBase
         var rows = orderedPeople.Select((person, index) =>
         {
             latestByPerson.TryGetValue(person.PersonId, out var assessment);
-            var submitted = assessment != null && (assessment.IsLocked || assessment.Rating.HasValue);
+            var submitted = assessment?.IsLocked == true;
             var posted = assessment?.IsFinalApproved == true && assessment.IsPostedToPayroll;
             return new AssessmentFinalListRow
             {
@@ -153,7 +156,7 @@ public sealed class AssessmentController : ControllerBase
                 IsLocked = submitted,
                 SubmittedDateUtc = assessment?.SubmittedDateUtc,
                 AssessorPersonId = assessment?.AssessorPersonId,
-                AssessorName = assessment != null && assessorNames.TryGetValue(assessment.AssessorPersonId, out var assessorName)
+                AssessorName = assessment?.AssessorPersonId is Guid assessorId && assessorNames.TryGetValue(assessorId, out var assessorName)
                     ? assessorName
                     : "-",
                 IsFinalApproved = assessment?.IsFinalApproved ?? false,
@@ -205,18 +208,23 @@ public sealed class AssessmentController : ControllerBase
             .ThenByDescending(item => item.Id)
             .FirstOrDefaultAsync(ct);
 
-        if (assessment == null || !assessment.IsLocked || !assessment.Rating.HasValue || !assessment.Amount.HasValue)
-            return Conflict(new { message = "This employee has not submitted a marked assessment for the selected month." });
+        if (assessment == null || !assessment.Rating.HasValue || !assessment.Amount.HasValue)
+            return Conflict(new { message = "This employee does not have a marked assessment for the selected month." });
         if (assessment.IsFinalApproved || assessment.IsPostedToPayroll)
             return Conflict(new { message = "This assessment is already finally approved and posted to payroll; it can no longer be changed." });
         if (assessment.Amount.Value != amount && string.IsNullOrWhiteSpace(remarks))
             return BadRequest(new { message = "Remarks are required when changing the assessment amount." });
 
-        assessment.Amount = amount;
-        assessment.Remarks = remarks;
-        assessment.ModifiedDateUtc = now;
-
-        await _db.SaveChangesAsync(ct);
+        // Recheck approval/posting in the UPDATE itself, not only in the earlier read.
+        var updated = await _db.StaffAssessments
+            .Where(item => item.Id == assessment.Id && item.TenantId == tenantId &&
+                !item.IsFinalApproved && !item.IsPostedToPayroll)
+            .ExecuteUpdateAsync(setters => setters
+                .SetProperty(item => item.Amount, amount)
+                .SetProperty(item => item.Remarks, remarks)
+                .SetProperty(item => item.ModifiedDateUtc, now), ct);
+        if (updated == 0)
+            return Conflict(new { message = "This assessment was approved or posted while you were editing. Refresh the grid; no amount was changed." });
         return Ok(new
         {
             message = "Assessment amount updated.",
@@ -477,7 +485,7 @@ public sealed class AssessmentController : ControllerBase
         var saved = await _db.StaffAssessments.AsNoTracking()
             .Where(item => item.TenantId == tenantId.Value && item.AssessmentYear == assessmentYear &&
                            item.AssessmentMonth == assessmentMonth && visibleIds.Contains(item.SubjectPersonId))
-            .Select(item => new { item.Id, item.SubjectPersonId, item.AssessorPersonId, item.Rating, item.Amount, item.IsLocked, item.SubmittedDateUtc })
+            .Select(item => new { item.Id, item.SubjectPersonId, item.AssessorPersonId, item.Rating, item.Amount, item.IsLocked, item.SubmittedDateUtc, item.IsFinalApproved, item.IsPostedToPayroll })
             .ToListAsync(ct);
         var savedByPerson = saved.GroupBy(item => item.SubjectPersonId)
             .ToDictionary(group => group.Key, group => group
@@ -486,6 +494,8 @@ public sealed class AssessmentController : ControllerBase
                 .ThenByDescending(item => item.Id).First());
         var canEditAssessments = !isTenantAdmin && current != null &&
             await HasStaffMenuActionAsync(current.StaffId, "/assessment/mark", "EDIT", ct);
+        var teamComplete = visibleIds.Count > 0 && visibleIds.All(id => savedByPerson.GetValueOrDefault(id)?.Rating != null);
+        var teamLocked = teamComplete || saved.Any(item => item.AssessorPersonId == current?.PersonId && item.IsLocked && item.Rating != null);
         return Ok(visible.Select((person, index) => new
         {
             id = index + 1,
@@ -503,13 +513,21 @@ public sealed class AssessmentController : ControllerBase
             rating = savedByPerson.GetValueOrDefault(person.PersonId)?.Rating,
             amount = savedByPerson.GetValueOrDefault(person.PersonId)?.Amount,
             bonusAmount = savedByPerson.GetValueOrDefault(person.PersonId)?.Amount,
-            canEdit = canEditAssessments && windowOpen && savedByPerson.GetValueOrDefault(person.PersonId)?.Rating == null && savedByPerson.GetValueOrDefault(person.PersonId)?.IsLocked != true,
+            canEdit = canEditAssessments && windowOpen && !teamLocked &&
+                savedByPerson.GetValueOrDefault(person.PersonId)?.IsFinalApproved != true &&
+                savedByPerson.GetValueOrDefault(person.PersonId)?.IsPostedToPayroll != true &&
+                (savedByPerson.GetValueOrDefault(person.PersonId)?.Rating == null ||
+                 savedByPerson.GetValueOrDefault(person.PersonId)?.AssessorPersonId == current?.PersonId),
+            teamComplete,
             assessmentWindowOpen = windowOpen,
             openDay = configuredOpenDay,
             closeDay = configuredCloseDay,
             openDate = cycle.OpenDate,
             closeDate = cycle.CloseDate,
-            isLocked = savedByPerson.GetValueOrDefault(person.PersonId)?.IsLocked == true || savedByPerson.GetValueOrDefault(person.PersonId)?.Rating != null,
+            isLocked = teamLocked || savedByPerson.GetValueOrDefault(person.PersonId)?.IsFinalApproved == true ||
+                savedByPerson.GetValueOrDefault(person.PersonId)?.IsPostedToPayroll == true ||
+                (savedByPerson.GetValueOrDefault(person.PersonId)?.Rating != null &&
+                 savedByPerson.GetValueOrDefault(person.PersonId)?.AssessorPersonId != current?.PersonId),
             submittedDateUtc = savedByPerson.GetValueOrDefault(person.PersonId)?.SubmittedDateUtc
         }));
     }
@@ -583,24 +601,30 @@ public sealed class AssessmentController : ControllerBase
             return Conflict(new { message = $"Position {duplicateInRequest.Key.Rating} is repeated in {duplicateInRequest.Key.Department}. Give each employee in that department a unique position." });
 
         IActionResult result;
+        var teamCompleteAfterSave = false;
         try
         {
             var strategy = _db.Database.CreateExecutionStrategy();
             result = await strategy.ExecuteAsync<IActionResult>(async () =>
             {
-                await using var transaction = await _db.Database.BeginTransactionAsync(IsolationLevel.Serializable, ct);
+                await using var transaction = _db.Database.CurrentTransaction == null
+                    ? await _db.Database.BeginTransactionAsync(IsolationLevel.Serializable, ct) : null;
                 var periodAssessments = await _db.StaffAssessments
                     .Where(item => item.TenantId == assessor.TenantId && item.AssessmentYear == dto.Year &&
                         item.AssessmentMonth == dto.Month)
                     .ToListAsync(ct);
 
+                if (periodAssessments.Any(item => item.AssessorPersonId == assessor.PersonId && item.IsLocked && item.Rating.HasValue) ||
+                    (allowed.Count > 0 && allowed.All(id => periodAssessments.Any(item => item.SubjectPersonId == id && item.Rating.HasValue))))
+                    return Conflict(new { message = "Your team assessment is complete and locked for this period. No rows were changed." });
                 if (periodAssessments.Any(item => requestedSubjectIds.Contains(item.SubjectPersonId) &&
-                    (item.IsLocked || item.Rating.HasValue)))
-                    return Conflict(new { message = "One or more employees were already assessed by their primary or alternative reporter. Refresh the grid; no rows were saved." });
+                    (item.IsFinalApproved || item.IsPostedToPayroll || item.IsLocked ||
+                     (item.AssessorPersonId != assessor.PersonId && item.Rating.HasValue))))
+                    return Conflict(new { message = "One or more employees were finalized or assessed by another reporter. Refresh the grid; no rows were saved." });
 
                 var requestedPositions = dto.Items.Select(item => item.Rating).ToHashSet();
                 var conflictingPosition = periodAssessments.FirstOrDefault(item =>
-                    item.Rating.HasValue && requestedPositions.Contains(item.Rating.Value) &&
+                    !requestedSubjectIds.Contains(item.SubjectPersonId) && item.Rating.HasValue && requestedPositions.Contains(item.Rating.Value) &&
                     departmentByPerson.TryGetValue(item.SubjectPersonId, out var department) &&
                     dto.Items.Any(request => request.Rating == item.Rating.Value &&
                         departmentByPerson[request.SubjectPersonId] == department));
@@ -627,17 +651,32 @@ public sealed class AssessmentController : ControllerBase
                             CreatedDateUtc = submittedAt
                         };
                         _db.StaffAssessments.Add(assessment);
+                        periodAssessments.Add(assessment);
                     }
                     assessment.Rating = (byte)item.Rating;
                     assessment.Amount = amount;
-                    assessment.IsLocked = true;
-                    assessment.SubmittedDateUtc = submittedAt;
+                    assessment.IsLocked = false;
                     assessment.ModifiedDateUtc = submittedAt;
                 }
 
+                teamCompleteAfterSave = allowed.Count > 0 && allowed.All(id =>
+                    periodAssessments.Any(item => item.SubjectPersonId == id && item.Rating.HasValue));
+                if (teamCompleteAfterSave)
+                {
+                    foreach (var assessment in periodAssessments.Where(item => item.AssessorPersonId == assessor.PersonId &&
+                        allowed.Contains(item.SubjectPersonId) && item.Rating.HasValue))
+                    {
+                        assessment.IsLocked = true;
+                        assessment.SubmittedDateUtc ??= submittedAt;
+                        assessment.ModifiedDateUtc = submittedAt;
+                    }
+                }
                 await _db.SaveChangesAsync(ct);
-                await transaction.CommitAsync(ct);
-                return Ok(new { message = $"{dto.Items.Count} monthly assessment(s) saved and locked.", savedCount = dto.Items.Count });
+                if (transaction != null) await transaction.CommitAsync(ct);
+                return Ok(new { message = teamCompleteAfterSave
+                    ? "All team assessments are saved and locked for this period."
+                    : "Assessment saved. You can update it until every team member has been assessed.",
+                    savedCount = dto.Items.Count, teamComplete = teamCompleteAfterSave });
             });
         }
         catch (DbUpdateException)
@@ -650,10 +689,7 @@ public sealed class AssessmentController : ControllerBase
             .Where(item => item.TenantId == assessor.TenantId && item.AssessmentYear == dto.Year &&
                 item.AssessmentMonth == dto.Month && item.Rating.HasValue)
             .Select(item => item.SubjectPersonId).ToHashSetAsync(ct);
-        var incomplete = await _db.StaffAssessments.AsNoTracking().AnyAsync(item =>
-            item.TenantId == assessor.TenantId && item.AssessorPersonId == assessor.PersonId &&
-            item.AssessmentYear == dto.Year && item.AssessmentMonth == dto.Month &&
-            item.Rating == null && !item.IsLocked && !submittedSubjects.Contains(item.SubjectPersonId), ct);
+        var incomplete = allowed.Any(id => !submittedSubjects.Contains(id));
         if (!incomplete)
         {
             var cycleEntityId = AssessmentReminderEntityId(dto.Year, dto.Month, assessor.PersonId);

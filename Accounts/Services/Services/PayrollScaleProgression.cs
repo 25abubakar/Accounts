@@ -5,7 +5,7 @@ namespace Accounts.Services.Services;
 /// <summary>
 /// Current pay + optional auto scale upgrade when Max is exceeded after another service year.
 /// Increment years are counted from the scale application date (ScaleDate), falling back to DOJ.
-/// Service years = completed anniversary years + 1 (first year on the scale already earns 1× INC).
+/// Service years = completed anniversaries. No annual increment before the first anniversary.
 /// When BAS + years×INC would pass Max, the employee stays at Max through that year; the next
 /// service year moves them to the next ladder scale (e.g. RLT-10 → RLT-11) and applies remaining years there.
 /// </summary>
@@ -43,8 +43,7 @@ public static class PayrollScaleProgression
         if (completedYears < 0)
             completedYears = 0;
 
-        // First service year (completedYears == 0) still gets 1× INC.
-        return Math.Max(0, completedYears + 1 - Math.Max(0, applyAfterYears ?? 0));
+        return Math.Max(0, completedYears - Math.Max(0, applyAfterYears ?? 0));
     }
 
     public static Result Resolve(

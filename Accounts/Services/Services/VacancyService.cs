@@ -202,17 +202,15 @@ namespace Accounts.Services.Services
             var orgNode = await _db.OrganizationTree.FindAsync(dto.OrganizationId);
             if (orgNode == null) return (null, $"Organization node {dto.OrganizationId} not found.");
 
-            var (newDesignationId, designationForCode, error) = await ResolveDesignationAsync(dto);
+            var (newDesignationId, _, error) = await ResolveDesignationAsync(dto);
             if (error != null) return (null, error);
-
-            var needsNewCode = vacancy.DesignationId != newDesignationId || vacancy.OrganizationId != dto.OrganizationId;
 
             vacancy.DesignationId = newDesignationId;
             vacancy.Department = dto.Department;
             vacancy.OrganizationId = dto.OrganizationId;
 
-            if (needsNewCode)
-                vacancy.VacancyCode = await _codeService.GenerateAsync(dto.OrganizationId, designationForCode!);
+            // The saved reference identifies this position throughout its history.
+            // Generate codes only in create flows, never when editing a position.
 
             await _db.SaveChangesAsync();
 

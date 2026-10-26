@@ -20,7 +20,10 @@ public sealed class PayrollCalculationService(
         CancellationToken cancellationToken)
     {
         ValidatePeriod(year, month);
-        var attendance = await attendanceService.GetDeductionReportAsync(
+        var businessToday = DateOnly.FromDateTime(DateTime.UtcNow.AddHours(5));
+        var attendance = new DateOnly(year, month, 1) > businessToday
+            ? new AttendanceDeductionReportDto { Year = year, Month = month }
+            : await attendanceService.GetDeductionReportAsync(
             identityUserId,
             organizationWide: true,
             year,
@@ -59,8 +62,8 @@ public sealed class PayrollCalculationService(
 
         // Phase 1: persist + resolve components in dbo.usp_Payroll_GenerateMonthly
         // (RunNumber PayRoll-{month}-{year}, identity PayrollLines.Id like old tblStaffPayRoll).
-        // PreviewAsync still uses BuildLinesAsync (no persist). Scale auto-upgrade / HR write
-        // remains C#-only in Preview reconstruction for now — Generate SP uses stored CurrentPay.
+        // Preview and Generate both resolve selected-month salary through the shared SQL
+        // projection. Neither preview nor Generate rewrites HR scale placement.
         var runIdParam = new SqlParameter("@PayrollRunId", SqlDbType.BigInt)
         {
             Direction = ParameterDirection.Output
@@ -109,6 +112,10 @@ public sealed class PayrollCalculationService(
         if (payrollRunId <= 0)
             throw new InvalidOperationException("Payroll generate did not return a run id.");
 
+        // Explicit Generate replaces the imported display; retain the original source for audit.
+        await db.PayrollLines.Where(line => line.PayrollRunId == payrollRunId && line.TenantId == tenantId && line.UseSourceSnapshot)
+            .ExecuteUpdateAsync(setters => setters.SetProperty(line => line.UseSourceSnapshot, false), cancellationToken);
+
         // SP mutated rows outside the change tracker — detach stale payroll entities then reload.
         foreach (var entry in db.ChangeTracker.Entries<PayrollLine>().ToArray())
             entry.State = EntityState.Detached;
@@ -137,6 +144,9 @@ public sealed class PayrollCalculationService(
             ],
             cancellationToken);
 
+        await db.PayrollLines.Where(line => line.PayrollRunId == payrollRunId && line.TenantId == tenant.RequiredTenantId && line.UseSourceSnapshot)
+            .ExecuteUpdateAsync(setters => setters.SetProperty(line => line.UseSourceSnapshot, false), cancellationToken);
+
         var trackedLines = db.ChangeTracker.Entries<PayrollLine>()
             .Where(entry => entry.Entity.PayrollRunId == payrollRunId)
             .ToArray();
@@ -146,6 +156,7 @@ public sealed class PayrollCalculationService(
 
     public static void Recalculate(PayrollLine line)
     {
+        line.UseSourceSnapshot = false;
         line.ScaleBasicSalary = Money(line.ScaleBasicSalary);
         line.IncrementSalary = Money(line.IncrementSalary);
         line.MaxSalary = Money(line.MaxSalary);
@@ -191,7 +202,7 @@ public sealed class PayrollCalculationService(
         line.TaxableIncome = Money(line.BasicSalary + line.AllowanceAmount + line.SalaryAdjustment + line.AssessmentAmount + line.BonusAmount + line.OvertimeAmount);
         line.GrossPay = line.TaxableIncome;
         line.TotalDeduction = Money(effectiveAttendanceDeduction + line.StaffBenefitDeduction + line.TaxAmount + line.EmployeeEobiAmount + line.OtherDeduction + additionalAdjustmentDeduction);
-        line.NetPay = Money(Math.Max(0, line.GrossPay - line.TotalDeduction));
+        line.NetPay = Money(Math.Max(0, line.GrossPay - line.TotalDeduction + (line.PeriodAdjustmentAmount ?? 0m)));
     }
 
     private async Task<IReadOnlyList<PayrollLine>> BuildLinesAsync(
@@ -223,6 +234,22 @@ public sealed class PayrollCalculationService(
                 .ToDictionaryAsync(x => x.Id, cancellationToken);
         var scales = await db.SalaryScales.AsNoTracking().Where(x => x.IsActive).ToListAsync(cancellationToken);
         var scaleById = scales.ToDictionary(x => x.Id);
+        // One SQL projection owns annual salary progression for both Preview and Create.
+        var projectedSalaries = await db.Database.SqlQuery<PayrollSalaryProjection>($"""
+            SELECT hr.PersonId, p.SalaryScaleId, p.ScaleBasic, p.YearlyIncrement, p.MaxSalary,
+                p.CurrentPay, p.EffectiveScaleDate
+            FROM dbo.PersonHrProfiles hr
+            LEFT JOIN dbo.SalaryPackages pkg ON pkg.Id=hr.SalaryPackageId
+                AND pkg.TenantId=hr.TenantId AND pkg.IsActive=1
+            OUTER APPLY (SELECT TOP(1) s.Id FROM dbo.SalaryScales s
+                WHERE s.TenantId=hr.TenantId AND s.IsActive=1
+                    AND (s.Id=pkg.SalaryScaleId OR (pkg.Id IS NULL AND s.ScaleName=hr.Scale))
+                ORDER BY s.Id) sc
+            CROSS APPLY dbo.fn_Payroll_ScaleProjection(hr.TenantId,sc.Id,
+                CAST(COALESCE(hr.ScaleDate,hr.JoiningDate) AS date),{periodEnd},
+                hr.BasicSalary,hr.IncrementSalary,hr.MaxSalary) p
+            WHERE hr.TenantId={tenant.RequiredTenantId}
+            """).ToDictionaryAsync(x => x.PersonId, cancellationToken);
         var scaleByName = scales
             .Where(x => !string.IsNullOrWhiteSpace(x.ScaleName))
             .GroupBy(x => x.ScaleName.Trim(), StringComparer.OrdinalIgnoreCase)
@@ -231,6 +258,8 @@ public sealed class PayrollCalculationService(
             .Include(x => x.AllowanceType)
             .Include(x => x.ShiftLookupValue)
             .ToListAsync(cancellationToken);
+        var payrollShifts = await db.AppLookupValues.AsNoTracking().Where(x => x.IsActive)
+            .ToDictionaryAsync(x => x.LookupValueId, x => x.ValueCode, cancellationToken);
         var contractTypes = await db.ContractTypes.AsNoTracking()
             .Where(x => x.IsActive)
             .ToListAsync(cancellationToken);
@@ -298,6 +327,10 @@ public sealed class PayrollCalculationService(
             .Where(x => x.IsActive && x.TaxYear == payrollTaxYear)
             .OrderBy(x => x.FromAmount)
             .ToListAsync(cancellationToken);
+        var staffTaxes = (await db.PayrollStaffTaxes.AsNoTracking()
+            .Where(x => x.IsActive && x.DateFrom <= periodEnd && x.DateTo >= periodStart)
+            .OrderByDescending(x => x.DateFrom).ThenByDescending(x => x.Id)
+            .ToListAsync(cancellationToken)).GroupBy(x => x.PersonId).ToDictionary(x => x.Key, x => x.First());
         var attendanceByPerson = attendance.Rows.ToDictionary(x => x.PersonId);
         var now = DateTime.UtcNow;
         var result = new List<PayrollLine>(employees.Count);
@@ -315,27 +348,16 @@ public sealed class PayrollCalculationService(
             else if (!string.IsNullOrWhiteSpace(profile?.Scale))
                 scaleByName.TryGetValue(profile.Scale.Trim(), out scale);
 
-            var incrementAnchor = PayrollScaleProgression.ResolveIncrementAnchor(
-                profile?.ScaleDate,
-                profile?.JoiningDate);
-            // First service year earns 1× INC; at Max the next scale-year auto-upgrades (e.g. RLT-10 → RLT-11).
-            // Years count from ScaleDate when set (when this scale was applied), not full DOJ tenure.
-            var progression = PayrollScaleProgression.Resolve(
-                scale,
-                scales,
-                incrementAnchor,
-                periodEnd,
-                profile?.BasicSalary,
-                profile?.IncrementSalary,
-                profile?.MaxSalary);
-            scale = progression.EffectiveScale ?? scale;
-            var scaleBasic = progression.ScaleBasic;
-            var incrementSalary = progression.YearlyIncrement;
-            var maxSalary = progression.MaxSalary;
-            var currentPay = progression.CurrentPay;
+            projectedSalaries.TryGetValue(employee.PersonId, out var progression);
+            if (progression?.SalaryScaleId is int effectiveId && scaleById.TryGetValue(effectiveId, out var effectiveScale))
+                scale = effectiveScale;
+            var scaleBasic = progression?.ScaleBasic ?? 0m;
+            var incrementSalary = progression?.YearlyIncrement ?? 0m;
+            var maxSalary = progression?.MaxSalary ?? 0m;
+            var currentPay = progression?.CurrentPay ?? 0m;
             var basicSalary = Money(currentPay > 0 ? currentPay : scaleBasic);
             var effectiveScaleName = scale?.ScaleName ?? profile?.Scale;
-            var lineScaleDate = progression.Upgraded && progression.EffectiveScaleDate.HasValue
+            var lineScaleDate = progression?.EffectiveScaleDate.HasValue == true
                 ? progression.EffectiveScaleDate
                 : profile?.ScaleDate is DateTime existingScaleDate
                     ? DateOnly.FromDateTime(existingScaleDate)
@@ -349,6 +371,10 @@ public sealed class PayrollCalculationService(
 
             designationByStaff.TryGetValue(employee.StaffId, out var designationId);
             shiftByStaff.TryGetValue(employee.StaffId, out var shiftCode);
+            if (profile?.PayrollShiftLookupValueId is int payrollShiftId
+                && (!profile.PayrollShiftEffectiveFrom.HasValue || profile.PayrollShiftEffectiveFrom <= periodEnd)
+                && payrollShifts.TryGetValue(payrollShiftId, out var payrollShiftCode))
+                shiftCode = payrollShiftCode;
             var packageAllowanceRefs = ParsePackageRefs(package?.AllowanceReference);
             var scaleAllowances = allowances.Where(x =>
                 IsPayrollCashAllowance(x) &&
@@ -461,7 +487,9 @@ public sealed class PayrollCalculationService(
             var pendingDays = attendanceRow?.PendingReviewDays ?? 0;
             var salaryAdjustment = Money(Math.Max(0, profile?.SalaryAdjustment ?? 0));
             var taxableMonthly = basicSalary + allowanceAmount + salaryAdjustment + assessmentAmount + bonusAmount + overtime;
-            var tax = CalculateMonthlyTax(taxableMonthly, taxSlabs);
+            var tax = staffTaxes.TryGetValue(employee.PersonId, out var staffTax)
+                ? Money(Math.Max(0, staffTax.MonthlyNetTax))
+                : CalculateMonthlyTax(taxableMonthly, taxSlabs);
             decimal employeeEobi = 0;
             decimal employerEobi = 0;
             if (eobiPeople.Contains(employee.PersonId))
@@ -495,6 +523,8 @@ public sealed class PayrollCalculationService(
                 IncrementSalary = incrementSalary,
                 MaxSalary = maxSalary,
                 CurrentPay = currentPay,
+                PeriodAdjustmentAmount = profile?.PeriodAdjustmentAmount,
+                PeriodAdjustmentRemarks = profile?.PeriodAdjustmentRemarks,
                 BasicSalary = basicSalary,
                 GeneralAllowanceAmount = generalAllowance,
                 ApptAllowanceAmount = apptAllowance,
@@ -538,7 +568,8 @@ public sealed class PayrollCalculationService(
     /// COMMISSION and other typed allowances remain cash payroll components.
     /// </summary>
     public static bool IsPayrollCashAllowance(PayScaleAllowance allowance) =>
-        !IsAllowanceType(allowance, "PROFICIENCY");
+        !IsAllowanceType(allowance, "PROFICIENCY")
+        && (!IsAllowanceType(allowance, "APPT") || allowance.AllowanceCategory.Equals("APPT", StringComparison.OrdinalIgnoreCase));
 
     private static (decimal Employee, decimal Employer) ResolveEobiShares(
         IReadOnlyList<PayrollBenefitRule> eobiRules,
@@ -610,7 +641,7 @@ public sealed class PayrollCalculationService(
     private static bool IsAllowanceScaleApplicable(PayScaleAllowance allowance, int? salaryScaleId)
     {
         var category = allowance.AllowanceCategory.Trim().ToUpperInvariant();
-        if (category is "SHIFT" or "NIGHT")
+        if (category is "APPT" or "SHIFT" or "NIGHT")
             return !allowance.SalaryScaleId.HasValue || allowance.SalaryScaleId == salaryScaleId;
         return salaryScaleId.HasValue && allowance.SalaryScaleId == salaryScaleId;
     }

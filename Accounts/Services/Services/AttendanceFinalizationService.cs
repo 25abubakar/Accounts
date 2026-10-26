@@ -9,6 +9,82 @@ public sealed class AttendanceFinalizationService(
     ApplicationDbContext db,
     ILogger<AttendanceFinalizationService> logger)
 {
+    // Synchronize only expired, open attendance statuses. No policy, mapping,
+    // schedule, punch, or financial value is created/changed by this operation.
+    public async Task<int> ExpireMissingCheckoutStatusesAsync(
+        int tenantId, DateOnly dateFrom, DateOnly dateTo,
+        IReadOnlyCollection<Guid>? scopedPersonIds = null,
+        CancellationToken cancellationToken = default)
+    {
+        if (scopedPersonIds is { Count: 0 }) return 0;
+        var query =
+            from record in db.AttendanceRecords.IgnoreQueryFilters().AsNoTracking()
+            join person in db.Persons.IgnoreQueryFilters().AsNoTracking() on record.PersonId equals person.PersonId
+            join staff in db.StaffVacancies.IgnoreQueryFilters().AsNoTracking() on person.PersonId equals staff.PersonId
+            join map in db.AttendanceMapRules.IgnoreQueryFilters().AsNoTracking() on staff.StaffId equals map.StaffId
+            join type in db.AttendanceTypes.IgnoreQueryFilters().AsNoTracking() on map.AttendanceEntryTypeId equals type.Id
+            join rule in db.AttendanceRuleSettings.IgnoreQueryFilters().AsNoTracking() on type.Id equals rule.AttendanceEntryTypeId
+            where record.TenantId == tenantId && person.TenantId == tenantId && staff.TenantId == tenantId &&
+                  map.TenantId == tenantId && type.TenantId == tenantId && rule.TenantId == tenantId &&
+                  person.IsActive && type.IsActive && rule.IsActive && rule.IsApproved && !map.IsOpenAttendance &&
+                  record.AttendanceDate >= dateFrom && record.AttendanceDate <= dateTo &&
+                  record.CheckInUtc != null && record.CheckOutUtc == null && record.EffectiveCheckOutUtc == null
+            select new
+            {
+                Record = record, staff.StaffId, MapId = map.Id, RuleId = rule.Id,
+                map.TimeFrom, map.TimeTo, person.TimeZoneId, type.Code,
+                rule.MissingCheckoutAfterShiftEndMinutes,
+                StatusName = record.CanonicalStatus != null ? record.CanonicalStatus.Name :
+                    record.PlatformActionStatus != null ? record.PlatformActionStatus.Status.Name :
+                    record.AttendanceStatus != null ? record.AttendanceStatus.Status.StatusName : null
+            };
+        if (scopedPersonIds != null)
+            query = query.Where(item => scopedPersonIds.Contains(item.Record.PersonId));
+        var candidates = (await query.ToListAsync(cancellationToken))
+            .GroupBy(item => item.Record.Id)
+            .Select(group => group.OrderByDescending(item => item.MapId).ThenByDescending(item => item.RuleId).First())
+            .ToList();
+        if (candidates.Count == 0) return 0;
+        var absentId = await db.PlatformSettingStatuses.AsNoTracking()
+            .Where(status => status.IsActive && status.Name == "Absent")
+            .Select(status => (int?)status.Id).SingleOrDefaultAsync(cancellationToken);
+        if (!absentId.HasValue) return 0; // Never invent a status/configuration.
+        var staffIds = candidates.Select(item => item.StaffId).Distinct().ToArray();
+        var schedules = await db.EmployeeTimingSchedules.IgnoreQueryFilters().AsNoTracking()
+            .Where(item => item.TenantId == tenantId && staffIds.Contains(item.StaffId) &&
+                           item.ScheduleDate >= dateFrom && item.ScheduleDate <= dateTo)
+            .ToDictionaryAsync(item => (item.StaffId, item.ScheduleDate), cancellationToken);
+        var changed = 0;
+        foreach (var item in candidates)
+        {
+            // Preserve leave/off/holiday, absence, manual review and unknown statuses.
+            if (Normalize(item.StatusName) is not ("P" or "PRESENT" or "TP" or "TPRESENT" or
+                "LATE" or "1HRLATE" or "2HRLATE" or "1HOURLATE" or "2HOURLATE")) continue;
+            if (IsNotRequiredEntryType(item.Code)) continue;
+            var record = item.Record;
+            schedules.TryGetValue((item.StaffId, record.AttendanceDate), out var schedule);
+            if (!(schedule?.IsOn ?? !IsWeekend(record.AttendanceDate))) continue;
+            var from = schedule?.TimeFrom ?? item.TimeFrom;
+            var to = schedule?.TimeTo ?? item.TimeTo;
+            if (!TimeOnly.TryParse(from, out _) || !TimeOnly.TryParse(to, out _)) continue;
+            if (!MissingCheckoutDeadlinePassed(record.AttendanceDate, from, to,
+                item.MissingCheckoutAfterShiftEndMinutes, BusinessClock.Now(item.TimeZoneId))) continue;
+            // Guard against a checkout or manual status correction arriving concurrently.
+            changed += await db.AttendanceRecords.IgnoreQueryFilters()
+                .Where(current => current.TenantId == tenantId && current.Id == record.Id &&
+                    current.CheckInUtc == record.CheckInUtc && current.CheckOutUtc == null && current.EffectiveCheckOutUtc == null &&
+                    current.CanonicalStatusId == record.CanonicalStatusId && current.AttendanceStatusId == record.AttendanceStatusId &&
+                    current.PlatformActionStatusId == record.PlatformActionStatusId)
+                .ExecuteUpdateAsync(setters => setters
+                    .SetProperty(current => current.CanonicalStatusId, absentId)
+                    .SetProperty(current => current.ModifiedDate, (DateTime?)DateTime.UtcNow), cancellationToken);
+        }
+        return changed;
+    }
+
+    private static bool MissingCheckoutDeadlinePassed(DateOnly date, string from, string to, int minutes, DateTime localNow) =>
+        localNow > ResolveShiftWindow(date, from, to).End.AddMinutes(Math.Max(0, minutes));
+
     public async Task<IReadOnlyDictionary<int, int>> RefreshCurrentPeriodsAsync(CancellationToken cancellationToken = default)
     {
         var tenants = await db.Tenants.AsNoTracking()
@@ -82,6 +158,9 @@ public sealed class AttendanceFinalizationService(
         var dateTo = monthEnd < today ? monthEnd : today;
         if (monthStart > dateTo)
             return 0;
+
+        var expiredStatuses = await ExpireMissingCheckoutStatusesAsync(
+            tenantId, monthStart, dateTo, scopedPersonIds, cancellationToken);
 
         var personFilter = scopedPersonIds is { Count: > 0 }
             ? scopedPersonIds.ToHashSet()
@@ -295,7 +374,7 @@ public sealed class AttendanceFinalizationService(
         if (changed > 0)
             await SaveFinalizationsWithDuplicateRetryAsync(tenantId, monthStart, dateTo, cancellationToken);
 
-        return changed;
+        return changed + expiredStatuses;
     }
 
     private async Task SaveFinalizationsWithDuplicateRetryAsync(

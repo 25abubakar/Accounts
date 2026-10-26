@@ -68,6 +68,13 @@ public class PersonHrProfile : ITenantEntity
     /// Use to top scale+allowances up to a contracted package (e.g. +3000 → 50k). Not auto-calculated.
     /// </summary>
     [Column(TypeName = "decimal(18,2)")] public decimal? SalaryAdjustment { get; set; }
+    /// <summary>Signed recurring period adjustment to net pay, separate from taxable salary add-ons.</summary>
+    [Column(TypeName = "decimal(18,2)")] public decimal? PeriodAdjustmentAmount { get; set; }
+    [MaxLength(1000)] public string? PeriodAdjustmentRemarks { get; set; }
+    /// <summary>Payroll allowance eligibility only; never changes attendance schedules/rules.</summary>
+    public int? PayrollShiftLookupValueId { get; set; }
+    public DateOnly? PayrollShiftEffectiveFrom { get; set; }
+    [ForeignKey(nameof(PayrollShiftLookupValueId))] public AppLookupValue? PayrollShiftLookupValue { get; set; }
     [Column(TypeName = "decimal(18,2)")] public decimal? AccountsPerDay { get; set; }
     [Column(TypeName = "decimal(18,2)")] public decimal? AccountsPerHour { get; set; }
 

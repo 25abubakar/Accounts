@@ -57,8 +57,11 @@ public sealed class PayrollGrossSalaryResolver(ApplicationDbContext db)
             .GroupBy(x => x.ScaleName.Trim(), StringComparer.OrdinalIgnoreCase)
             .ToDictionary(x => x.Key, x => x.First(), StringComparer.OrdinalIgnoreCase);
         var allowances = await db.PayScaleAllowances.AsNoTracking()
+            .Include(x => x.AllowanceType)
             .Include(x => x.ShiftLookupValue)
             .ToListAsync(cancellationToken);
+        var payrollShifts=await db.AppLookupValues.AsNoTracking().Where(x=>x.IsActive)
+            .ToDictionaryAsync(x=>x.LookupValueId,x=>x.ValueCode,cancellationToken);
         var tadas = await db.PayScaleTadas.AsNoTracking().ToListAsync(cancellationToken);
         var designationByStaff = await db.StaffVacancies.AsNoTracking()
             .Where(x => staffIds.Contains(x.StaffId) && x.Vacancy != null)
@@ -107,13 +110,18 @@ public sealed class PayrollGrossSalaryResolver(ApplicationDbContext db)
 
             designationByStaff.TryGetValue(employee.StaffId, out var designationId);
             shiftByStaff.TryGetValue(employee.StaffId, out var shiftCode);
+            if(profile?.PayrollShiftLookupValueId is int payrollShiftId
+                && (!profile.PayrollShiftEffectiveFrom.HasValue || profile.PayrollShiftEffectiveFrom<=periodEnd)
+                && payrollShifts.TryGetValue(payrollShiftId,out var payrollShiftCode))shiftCode=payrollShiftCode;
             var packageAllowanceRefs = ParsePackageRefs(package?.AllowanceReference);
             var scaleAllowances = allowances.Where(x =>
+                PayrollCalculationService.IsPayrollCashAllowance(x) &&
                 IsAllowanceApplicable(x, designationId, shiftCode) &&
                 IsAllowanceScaleApplicable(x, scale?.Id) &&
                 IsPackageAllowanceAllowed(x, packageAllowanceRefs)).ToList();
             var hasScaleAllowanceConfiguration = scale != null && allowances.Any(x =>
                 x.SalaryScaleId == scale.Id &&
+                PayrollCalculationService.IsPayrollCashAllowance(x) &&
                 !x.AllowanceCategory.Equals("SHIFT", StringComparison.OrdinalIgnoreCase) &&
                 !x.AllowanceCategory.Equals("NIGHT", StringComparison.OrdinalIgnoreCase));
 
@@ -185,7 +193,7 @@ public sealed class PayrollGrossSalaryResolver(ApplicationDbContext db)
     private static bool IsAllowanceScaleApplicable(PayScaleAllowance allowance, int? salaryScaleId)
     {
         var category = allowance.AllowanceCategory.Trim().ToUpperInvariant();
-        if (category is "SHIFT" or "NIGHT")
+        if (category is "APPT" or "SHIFT" or "NIGHT")
             return !allowance.SalaryScaleId.HasValue || allowance.SalaryScaleId == salaryScaleId;
         return salaryScaleId.HasValue && allowance.SalaryScaleId == salaryScaleId;
     }

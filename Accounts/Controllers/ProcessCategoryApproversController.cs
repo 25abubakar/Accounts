@@ -6,6 +6,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
 using System.Data;
 using System.Data.Common;
 using System.Security.Claims;
@@ -48,10 +49,10 @@ public sealed class ProcessCategoryApproversController : ControllerBase
             """
             SELECT Id, Code, Name, DisplayOrder
             FROM dbo.ProcessWorkflowCategories
-            WHERE IsActive = 1
+            WHERE IsActive = 1 AND (TenantId IS NULL OR TenantId = @tenantId)
             ORDER BY DisplayOrder
             """,
-            null,
+            command => AddParameter(command, "@tenantId", tenantId),
             reader => new CategoryRow
             {
                 Id = reader.GetInt32(reader.GetOrdinal("Id")),
@@ -75,12 +76,12 @@ public sealed class ProcessCategoryApproversController : ControllerBase
                     per.ProfilePhotoUrl
                 FROM dbo.ProcessCategoryApprovers pca
                 JOIN dbo.ProcessWorkflowCategories cat ON cat.Id = pca.CategoryId
-                JOIN dbo.StaffVacancy sv               ON sv.StaffId = pca.StaffId
-                JOIN dbo.Persons per                   ON per.PersonId = sv.PersonId
+                JOIN dbo.StaffVacancy sv               ON sv.StaffId = pca.StaffId AND sv.TenantId = pca.TenantId
+                JOIN dbo.Persons per                   ON per.PersonId = sv.PersonId AND per.TenantId = pca.TenantId
                 LEFT JOIN dbo.Vacancies v              ON v.VacancyId = sv.VacancyId
                 LEFT JOIN dbo.OrganizationTree org     ON org.Id = v.OrganizationId AND org.Label = N'Department'
                 LEFT JOIN dbo.JobTitles jt             ON jt.Id = v.JobTitleId
-                WHERE pca.TenantId = @tenantId
+                WHERE pca.TenantId = @tenantId AND (cat.TenantId IS NULL OR cat.TenantId = @tenantId)
                 ORDER BY cat.DisplayOrder, per.FullName
                 """,
                 command => AddParameter(command, "@tenantId", tenantId),
@@ -163,11 +164,11 @@ public sealed class ProcessCategoryApproversController : ControllerBase
                     org.Name          AS Department,
                     jt.TitleName      AS Designation
                 FROM dbo.StaffVacancy sv
-                JOIN dbo.Persons per            ON per.PersonId  = sv.PersonId
+                JOIN dbo.Persons per            ON per.PersonId  = sv.PersonId AND per.TenantId = sv.TenantId
                 LEFT JOIN dbo.Vacancies v       ON v.VacancyId = sv.VacancyId
                 LEFT JOIN dbo.OrganizationTree org ON org.Id = v.OrganizationId AND org.Label = N'Department'
                 LEFT JOIN dbo.JobTitles jt      ON jt.Id = v.JobTitleId
-                WHERE sv.TenantId = @tenantId AND per.IsActive = 1
+                WHERE sv.TenantId = @tenantId AND per.IsActive = 1 AND sv.VacancyId IS NOT NULL
                 ORDER BY per.FullName
                 """,
                 command => AddParameter(command, "@tenantId", tenantId),
@@ -197,13 +198,13 @@ public sealed class ProcessCategoryApproversController : ControllerBase
             return Unauthorized();
 
         var categoryExists = await ExistsAsync(
-            "SELECT 1 FROM dbo.ProcessWorkflowCategories WHERE Id = @categoryId AND IsActive = 1",
-            command => AddParameter(command, "@categoryId", dto.CategoryId), ct);
+            "SELECT 1 FROM dbo.ProcessWorkflowCategories WHERE Id = @categoryId AND IsActive = 1 AND (TenantId IS NULL OR TenantId = @tenantId)",
+            command => { AddParameter(command, "@categoryId", dto.CategoryId); AddParameter(command, "@tenantId", tenantId); }, ct);
         if (!categoryExists)
             return BadRequest(new { message = "Category not found." });
 
         var staffExists = await ExistsAsync(
-            "SELECT 1 FROM dbo.StaffVacancy WHERE StaffId = @staffId AND TenantId = @tenantId",
+            "SELECT 1 FROM dbo.StaffVacancy sv JOIN dbo.Persons per ON per.PersonId=sv.PersonId AND per.TenantId=sv.TenantId WHERE sv.StaffId = @staffId AND sv.TenantId = @tenantId AND per.IsActive=1 AND sv.VacancyId IS NOT NULL",
             command =>
             {
                 AddParameter(command, "@staffId", dto.StaffId);
@@ -428,6 +429,7 @@ public sealed class ProcessCategoryApproversController : ControllerBase
             await using var command = connection.CreateCommand();
             command.CommandText = sql;
             command.CommandType = CommandType.Text;
+            command.Transaction = _db.Database.CurrentTransaction?.GetDbTransaction();
             configure?.Invoke(command);
 
             var rows = new List<T>();
@@ -452,6 +454,7 @@ public sealed class ProcessCategoryApproversController : ControllerBase
             await using var command = connection.CreateCommand();
             command.CommandText = sql;
             command.CommandType = CommandType.Text;
+            command.Transaction = _db.Database.CurrentTransaction?.GetDbTransaction();
             configure(command);
             return await command.ExecuteScalarAsync(ct) != null;
         }

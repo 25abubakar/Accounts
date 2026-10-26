@@ -95,6 +95,7 @@ namespace Accounts.Models
 
     public class StaffDto
     {
+        public bool RequiresPasswordSetup { get; set; }
         public Guid StaffId { get; set; }
         public int? LegacyStaffId { get; set; }
         public int? LegacyPersonId { get; set; }

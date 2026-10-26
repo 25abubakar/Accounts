@@ -60,50 +60,80 @@ namespace Accounts.Services.Services
 
         public async Task<(StaffDto? Staff, string? Error)> HirePersonAsync(Guid vacancyId, Guid personId)
         {
-            var vacancy = await _db.Vacancies.FindAsync(vacancyId);
-            if (vacancy == null) return (null, $"Vacancy {vacancyId} not found.");
-            if (vacancy.IsFilled) return (null, $"Vacancy '{vacancy.VacancyCode}' is already filled.");
-
-            var person = await _db.Persons.FindAsync(personId);
-            if (person == null) return (null, $"Person {personId} not found.");
-
-            if (await _db.StaffVacancies.AnyAsync(s => s.PersonId == personId))
-                return (null, $"Person '{person.FullName}' is already hired.");
-
-            var identityUser = await _db.Users.FindAsync(person.IdentityUserId);
-
-            var staff = new StaffVacancy
-            {
-                StaffId    = Guid.NewGuid(),
-                VacancyId  = vacancyId,
-                PersonId   = personId,
-                LoginId    = identityUser?.UserName,
-                TenantId   = vacancy.TenantId   // inherit TenantId from the vacancy
-            };
-
-            _db.StaffVacancies.Add(staff);
-            var staffAttendanceMenuId = await _db.Menus
-                .Where(menu => menu.IsActive && menu.Route == "/attendance/staff")
-                .Select(menu => (int?)menu.Id)
-                .FirstOrDefaultAsync();
-            if (staffAttendanceMenuId.HasValue)
-            {
-                _db.StaffMenuAccesses.Add(new StaffMenuAccess
-                {
-                    StaffId = staff.StaffId,
-                    MenuId = staffAttendanceMenuId.Value,
-                    IsAllow = true,
-                    GrantedBy = "System: Staff Attendance",
-                    GrantedDate = DateTime.UtcNow
-                });
-            }
-            vacancy.IsFilled = true;
-            await _db.SaveChangesAsync();
-
-            var created = await WithIncludes().FirstOrDefaultAsync(s => s.StaffId == staff.StaffId);
-            return (MapToDto(created!), null);
+            if (_db.Database.CurrentTransaction != null) return await HirePersonCoreAsync(vacancyId, personId);
+            return await _db.Database.CreateExecutionStrategy().ExecuteAsync(() => HirePersonCoreAsync(vacancyId, personId));
         }
 
+        private async Task<(StaffDto? Staff, string? Error)> HirePersonCoreAsync(Guid vacancyId, Guid personId)
+        {
+            await using var transaction = _db.Database.CurrentTransaction == null
+                ? await _db.Database.BeginTransactionAsync(System.Data.IsolationLevel.Serializable)
+                : null;
+            var tenantId = _tenantService.RequiredTenantId;
+            // Lock the selected position and person until this atomic assignment is saved.
+            var vacancy = await _db.Vacancies.FromSqlInterpolated(
+                $"SELECT * FROM dbo.Vacancies WITH(UPDLOCK,HOLDLOCK) WHERE VacancyId={vacancyId} AND TenantId={tenantId}")
+                .SingleOrDefaultAsync();
+            if (vacancy == null) return (null, $"Vacancy {vacancyId} not found.");
+            if (vacancy.IsFilled || await _db.StaffVacancies.AnyAsync(x => x.VacancyId == vacancyId))
+                return (null, $"Vacancy '{vacancy.VacancyCode}' is already filled.");
+
+            var person = await _db.Persons.FromSqlInterpolated(
+                $"SELECT * FROM dbo.Persons WITH(UPDLOCK,HOLDLOCK) WHERE PersonId={personId} AND TenantId={tenantId}")
+                .SingleOrDefaultAsync();
+            if (person == null) return (null, $"Person {personId} not found.");
+            var former = person.EmploymentStatus.Equals("Fired", StringComparison.OrdinalIgnoreCase)
+                || person.EmploymentStatus.Equals("Retired", StringComparison.OrdinalIgnoreCase);
+            var staff = await _db.StaffVacancies.SingleOrDefaultAsync(x => x.PersonId == personId);
+            if (staff != null && (staff.VacancyId.HasValue || !former))
+                return (null, $"Person '{person.FullName}' is already hired.");
+            if (!person.IsActive && !former)
+                return (null, "Activate this registered person before hiring.");
+
+            var identityUser = await _db.Users.SingleOrDefaultAsync(x => x.Id == person.IdentityUserId && x.TenantId == tenantId);
+            if (identityUser == null) return (null, "The person's account is missing from this company.");
+            if (former && (identityUser.IsSuperAdmin || identityUser.IsTenantAdmin))
+                return (null, "An administrator account cannot be assigned through employee rejoin.");
+
+            if (former) await PreserveEmploymentEndingAsync(person, staff);
+            var newAssignment = staff == null;
+            if (staff == null)
+            {
+                staff = new StaffVacancy
+                {
+                    StaffId = Guid.NewGuid(), PersonId = personId, TenantId = tenantId,
+                    LoginId = person.LastLoginId ?? identityUser.UserName
+                };
+                _db.StaffVacancies.Add(staff);
+            }
+            staff.VacancyId = vacancyId;
+            person.IsActive = true;
+            person.EmploymentStatus = "Hired";
+            person.TerminationDateUtc = null;
+            person.TerminationReason = null;
+            identityUser.LockoutEnabled = true;
+            identityUser.LockoutEnd = null;
+            identityUser.SecurityStamp = Guid.NewGuid().ToString();
+
+            var staffAttendanceMenuId = await _db.Menus
+                .Where(menu => menu.IsActive && menu.Route == "/attendance/staff")
+                .Select(menu => (int?)menu.Id).FirstOrDefaultAsync();
+            if (newAssignment && staffAttendanceMenuId.HasValue && !await _db.StaffMenuAccesses.AnyAsync(x =>
+                    x.StaffId == staff.StaffId && x.MenuId == staffAttendanceMenuId.Value))
+                _db.StaffMenuAccesses.Add(new StaffMenuAccess
+                {
+                    StaffId = staff.StaffId, MenuId = staffAttendanceMenuId.Value, IsAllow = true,
+                    GrantedBy = "System: Staff Attendance", GrantedDate = DateTime.UtcNow
+                });
+            vacancy.IsFilled = true;
+            await _db.SaveChangesAsync();
+            if (transaction != null) await transaction.CommitAsync();
+
+            var created = await WithIncludes().FirstAsync(s => s.StaffId == staff.StaffId);
+            var dto = MapToDto(created);
+            dto.RequiresPasswordSetup = string.IsNullOrEmpty(identityUser.PasswordHash);
+            return (dto, null);
+        }
         public async Task<(StaffDto? Staff, string? Error)> UpdateAsync(Guid id, UpdateStaffDto dto)
         {
             _ = dto;
@@ -228,8 +258,26 @@ namespace Accounts.Services.Services
                 identityUser.SecurityStamp = Guid.NewGuid().ToString();
             }
 
+            await PreserveEmploymentEndingAsync(staff.Person, staff, vacancy?.VacancyId);
             await _db.SaveChangesAsync(cancellationToken);
             return (true, $"{staff.Person.FullName} marked as {normalizedStatus}. The position is now vacant.");
+        }
+
+        private async Task PreserveEmploymentEndingAsync(Person person, StaffVacancy? staff, Guid? vacancyId = null)
+        {
+            if (await _db.PersonEmploymentHistories.AnyAsync(x => x.PersonId == person.PersonId
+                && x.EmploymentStatus == person.EmploymentStatus && x.EndingDateUtc == person.TerminationDateUtc)) return;
+            _db.PersonEmploymentHistories.Add(new PersonEmploymentHistory
+            {
+                TenantId = person.TenantId, PersonId = person.PersonId, StaffId = staff?.StaffId,
+                VacancyId = vacancyId ?? staff?.VacancyId, OrganizationId = person.LastOrganizationId,
+                LoginId = staff?.LoginId ?? person.LastLoginId, VacancyCode = person.LastVacancyCode,
+                JobTitle = person.LastJobTitle, Department = person.LastDepartment,
+                BranchName = person.LastBranchName, CompanyName = person.LastCompanyName,
+                CountryName = person.LastCountryName, JoiningDate = person.LastJoiningDate,
+                EmploymentStatus = person.EmploymentStatus, EndingDateUtc = person.TerminationDateUtc,
+                EndingReason = person.TerminationReason
+            });
         }
 
         public async Task<(bool Success, string Message)> DeleteAsync(Guid id)

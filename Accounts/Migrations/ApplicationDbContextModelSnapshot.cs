@@ -5662,6 +5662,11 @@ namespace Accounts.Migrations
 
             modelBuilder.Entity("Accounts.Models.PayrollLine", b =>
                 {
+                    b.Property<string>("SourceSnapshotJson")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<bool>("UseSourceSnapshot")
+                        .HasColumnType("bit");
                     b.Property<long>("Id")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("bigint");
@@ -5801,6 +5806,9 @@ namespace Accounts.Migrations
 
                     b.Property<decimal>("SalaryAdjustment")
                         .HasColumnType("decimal(18,2)");
+
+                    b.Property<decimal?>("PeriodAdjustmentAmount").HasColumnType("decimal(18,2)");
+                    b.Property<string>("PeriodAdjustmentRemarks").HasMaxLength(1000).HasColumnType("nvarchar(1000)");
 
                     b.Property<string>("Scale")
                         .HasMaxLength(80)
@@ -6449,6 +6457,36 @@ namespace Accounts.Migrations
                     b.ToTable("PersonEducations", (string)null);
                 });
 
+            modelBuilder.Entity("Accounts.Models.PersonEmploymentHistory", b =>
+                {
+                    b.Property<long>("Id").ValueGeneratedOnAdd().HasColumnType("bigint");
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<long>("Id"));
+                    b.Property<int>("TenantId").HasColumnType("int");
+                    b.Property<Guid>("PersonId").HasColumnType("uniqueidentifier");
+                    b.Property<Guid?>("StaffId").HasColumnType("uniqueidentifier");
+                    b.Property<Guid?>("VacancyId").HasColumnType("uniqueidentifier");
+                    b.Property<int?>("OrganizationId").HasColumnType("int");
+                    b.Property<string>("LoginId").HasMaxLength(50).HasColumnType("nvarchar(50)");
+                    b.Property<string>("VacancyCode").HasMaxLength(50).HasColumnType("nvarchar(50)");
+                    b.Property<string>("JobTitle").HasMaxLength(100).HasColumnType("nvarchar(100)");
+                    b.Property<string>("Department").HasMaxLength(100).HasColumnType("nvarchar(100)");
+                    b.Property<string>("BranchName").HasMaxLength(150).HasColumnType("nvarchar(150)");
+                    b.Property<string>("CompanyName").HasMaxLength(150).HasColumnType("nvarchar(150)");
+                    b.Property<string>("CountryName").HasMaxLength(150).HasColumnType("nvarchar(150)");
+                    b.Property<string>("EmploymentStatus").IsRequired().HasMaxLength(30).HasColumnType("nvarchar(30)");
+                    b.Property<DateTime?>("JoiningDate").HasColumnType("datetime2");
+                    b.Property<DateTime?>("EndingDateUtc").HasColumnType("datetime2");
+                    b.Property<string>("EndingReason").HasMaxLength(500).HasColumnType("nvarchar(500)");
+                    b.Property<DateTime>("CreatedOnUtc").ValueGeneratedOnAdd().HasColumnType("datetime2").HasDefaultValueSql("SYSUTCDATETIME()");
+                    b.Property<string>("CreatedByUserId").HasMaxLength(450).HasColumnType("nvarchar(450)");
+                    b.HasKey("Id");
+                    b.HasIndex("PersonId", "EndingDateUtc");
+                    b.HasIndex("TenantId", "EmploymentStatus", "EndingDateUtc");
+                    b.ToTable("PersonEmploymentHistory");
+                    b.HasOne("Accounts.Models.Person", "Person").WithMany().HasForeignKey("PersonId").OnDelete(DeleteBehavior.Cascade).IsRequired();
+                    b.Navigation("Person");
+                });
+
             modelBuilder.Entity("Accounts.Models.PersonExperience", b =>
                 {
                     b.Property<Guid>("ExperienceId")
@@ -6672,8 +6710,14 @@ namespace Accounts.Migrations
                         .HasMaxLength(80)
                         .HasColumnType("nvarchar(80)");
 
+                    b.Property<decimal?>("PeriodAdjustmentAmount").HasColumnType("decimal(18,2)");
+                    b.Property<string>("PeriodAdjustmentRemarks").HasMaxLength(1000).HasColumnType("nvarchar(1000)");
+
                     b.Property<decimal?>("SalaryAdjustment")
                         .HasColumnType("decimal(18,2)");
+
+                    b.Property<int?>("PayrollShiftLookupValueId").HasColumnType("int");
+                    b.Property<DateOnly?>("PayrollShiftEffectiveFrom").HasColumnType("date");
 
                     b.Property<int?>("SalaryPackageId")
                         .HasColumnType("int");
@@ -6725,6 +6769,7 @@ namespace Accounts.Migrations
                     b.HasKey("PersonId");
 
                     b.HasIndex("SalaryPackageId");
+                    b.HasIndex("PayrollShiftLookupValueId");
 
                     b.HasIndex("TenantId");
 
@@ -9478,7 +9523,7 @@ namespace Accounts.Migrations
                     b.Property<int>("AssessmentYear")
                         .HasColumnType("int");
 
-                    b.Property<Guid>("AssessorPersonId")
+                    b.Property<Guid?>("AssessorPersonId")
                         .HasColumnType("uniqueidentifier");
 
                     b.Property<DateTime>("CreatedDateUtc")
@@ -9520,6 +9565,9 @@ namespace Accounts.Migrations
                         .HasMaxLength(500)
                         .HasColumnType("nvarchar(500)");
 
+                    b.Property<string>("SourceSnapshotJson")
+                        .HasColumnType("nvarchar(max)");
+
                     b.Property<Guid>("SubjectPersonId")
                         .HasColumnType("uniqueidentifier");
 
@@ -9532,7 +9580,7 @@ namespace Accounts.Migrations
                     b.HasKey("Id");
 
                     b.HasIndex("TenantId", "AssessorPersonId", "SubjectPersonId", "AssessmentYear", "AssessmentMonth")
-                        .IsUnique();
+                        .IsUnique().HasFilter(null);
 
                     b.ToTable("StaffAssessments", "dbo");
                 });
@@ -11945,6 +11993,10 @@ namespace Accounts.Migrations
 
             modelBuilder.Entity("Accounts.Models.PersonHrProfile", b =>
                 {
+                    b.HasOne("Accounts.Models.AppLookupValue", "PayrollShiftLookupValue")
+                        .WithMany().HasForeignKey("PayrollShiftLookupValueId");
+                    b.Navigation("PayrollShiftLookupValue");
+
                     b.HasOne("Accounts.Models.Person", "Person")
                         .WithOne()
                         .HasForeignKey("Accounts.Models.PersonHrProfile", "PersonId")

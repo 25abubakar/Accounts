@@ -8,7 +8,9 @@ public sealed class StaffAssessment : ITenantEntity
 {
     [Key] public long Id { get; set; }
     public int TenantId { get; set; }
-    public Guid AssessorPersonId { get; set; }
+    public Guid? AssessorPersonId { get; set; }
+    /// <summary>Original imported cells, retaining blanks independently of operational approval flags.</summary>
+    public string? SourceSnapshotJson { get; set; }
     public Guid SubjectPersonId { get; set; }
     public int AssessmentYear { get; set; }
     public byte AssessmentMonth { get; set; }

@@ -2046,6 +2046,8 @@ public sealed class PayAndAllowancesController(
         },
         lines = lines.OrderBy(x => x.FullName).Select(x => new
         {
+            x.SourceSnapshotJson,
+            x.UseSourceSnapshot,
             x.Id,
             x.PersonId,
             x.StaffId,
@@ -2075,6 +2077,8 @@ public sealed class PayAndAllowancesController(
             x.TransportAllowanceAmount,
             x.AllowanceAmount,
             x.SalaryAdjustment,
+            x.PeriodAdjustmentAmount,
+            x.PeriodAdjustmentRemarks,
             x.EmployerBenefitAmount,
             x.StaffBenefitDeduction,
             x.AssessmentAmount,

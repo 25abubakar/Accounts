@@ -255,6 +255,10 @@ public sealed class PayrollRun : ITenantEntity
 [Table("PayrollLines")]
 public sealed class PayrollLine : ITenantEntity
 {
+    /// <summary>Lossless legacy payroll source, including blank cells and signed adjustments.</summary>
+    public string? SourceSnapshotJson { get; set; }
+    /// <summary>Display the imported source until an explicit payroll recalculation replaces it.</summary>
+    public bool UseSourceSnapshot { get; set; }
     [Key] public long Id { get; set; }
     public int TenantId { get; set; }
     public long PayrollRunId { get; set; }
@@ -288,6 +292,8 @@ public sealed class PayrollLine : ITenantEntity
     [Column(TypeName = "decimal(18,2)")] public decimal AllowanceAmount { get; set; }
     /// <summary>Copied from PersonHrProfiles.SalaryAdjustment at generate time.</summary>
     [Column(TypeName = "decimal(18,2)")] public decimal SalaryAdjustment { get; set; }
+    [Column(TypeName = "decimal(18,2)")] public decimal? PeriodAdjustmentAmount { get; set; }
+    [MaxLength(1000)] public string? PeriodAdjustmentRemarks { get; set; }
     [Column(TypeName = "decimal(18,2)")] public decimal AssessmentAmount { get; set; }
     [Column(TypeName = "decimal(18,2)")] public decimal EmployerBenefitAmount { get; set; }
     [Column(TypeName = "decimal(18,2)")] public decimal StaffBenefitDeduction { get; set; }

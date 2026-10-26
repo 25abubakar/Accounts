@@ -138,6 +138,13 @@ namespace Accounts.Controllers
                     return BadRequest(new { message = "The alternative reporter must be an active staff member holding a role above the employee's role in the saved reporting hierarchy." });
             }
 
+            if (dto.ReportsToPersonId.HasValue)
+            {
+                var eligiblePrimary = await ResolveEligiblePrimaryReporterIdsAsync(personId, ct);
+                if (!eligiblePrimary.Contains(dto.ReportsToPersonId.Value))
+                    return BadRequest(new { message = "Select an active eligible reporting manager. Agent/Bell Boy roles, self-reporting and circular relationships are not allowed." });
+            }
+
             foreach (var selectedManagerId in new[] { dto.ReportsToPersonId, dto.AlternativeReportsToPersonId })
             {
                 if (!selectedManagerId.HasValue) continue;
@@ -167,8 +174,15 @@ namespace Accounts.Controllers
             });
         }
 
+        [HttpGet("{personId:guid}/primary-candidates")]
+        public Task<IActionResult> GetPrimaryCandidates(Guid personId, CancellationToken ct) =>
+            GetReporterCandidates(personId, false, ct);
+
         [HttpGet("{personId:guid}/alternative-candidates")]
-        public async Task<IActionResult> GetAlternativeCandidates(Guid personId, CancellationToken ct)
+        public Task<IActionResult> GetAlternativeCandidates(Guid personId, CancellationToken ct) =>
+            GetReporterCandidates(personId, true, ct);
+
+        private async Task<IActionResult> GetReporterCandidates(Guid personId, bool alternative, CancellationToken ct)
         {
             if (!await HasReportToActionAsync("VIEW", ct)) return Forbid();
 
@@ -179,7 +193,11 @@ namespace Accounts.Controllers
                 if (!visiblePersonIds.Contains(personId)) return Forbid();
             }
 
-            var candidateIds = await ResolveEligibleAlternativeReporterIdsAsync(personId, ct);
+            var candidateIds = alternative
+                ? await ResolveEligibleAlternativeReporterIdsAsync(personId, ct)
+                : await ResolveEligiblePrimaryReporterIdsAsync(personId, ct);
+            if (!fullAccess)
+                candidateIds.IntersectWith(await ResolveVisibleReportToPersonIdsAsync(includeSelf: true, ct));
             var rows = await _db.Persons.AsNoTracking()
                 .Where(p => candidateIds.Contains(p.PersonId))
                 .Select(p => new
@@ -201,20 +219,51 @@ namespace Accounts.Controllers
             return Ok(rows);
         }
 
-        private async Task<HashSet<Guid>> ResolveEligibleAlternativeReporterIdsAsync(Guid personId, CancellationToken ct)
-        {
-            var staff = await _db.Persons.AsNoTracking()
+        private Task<List<AlternativeReporterStaffRow>> LoadReporterStaffAsync(CancellationToken ct) =>
+            _db.Persons.AsNoTracking()
                 .Where(p => p.Staff != null && p.Staff.Vacancy != null && p.IsActive)
                 .Select(p => new AlternativeReporterStaffRow
                 {
                     PersonId = p.PersonId,
                     ReportsToPersonId = p.ReportsToPersonId,
-                    JobTitleId = p.Staff!.Vacancy!.JobTitleId,
+                    AlternativeReportsToPersonId = p.AlternativeReportsToPersonId,
+                    JobTitleId = p.Staff!.Vacancy!.DesignationId,
                     JobTitleName = p.Staff.Vacancy.DesignationNav != null
-                        ? p.Staff.Vacancy.DesignationNav.Name
-                        : p.Staff.Vacancy.JobTitle
-                })
-                .ToListAsync(ct);
+                        ? p.Staff.Vacancy.DesignationNav.Name : p.Staff.Vacancy.JobTitle
+                }).ToListAsync(ct);
+
+        private async Task<HashSet<Guid>> ResolveEligiblePrimaryReporterIdsAsync(Guid personId, CancellationToken ct)
+        {
+            var staff = await LoadReporterStaffAsync(ct);
+            if (!staff.Any(x => x.PersonId == personId)) return new HashSet<Guid>();
+            return staff.Where(x => IsEligibleManager(x) && !CreatesCycle(personId, x.PersonId, staff))
+                .Select(x => x.PersonId).ToHashSet();
+        }
+
+        private static bool IsEligibleManager(AlternativeReporterStaffRow row) =>
+            !string.IsNullOrWhiteSpace(row.JobTitleName)
+            && !row.JobTitleName.Trim().Equals("Agent", StringComparison.OrdinalIgnoreCase)
+            && !row.JobTitleName.Trim().Equals("Bell Boy", StringComparison.OrdinalIgnoreCase);
+
+        private static bool CreatesCycle(Guid personId, Guid managerId, List<AlternativeReporterStaffRow> staff)
+        {
+            var byId = staff.ToDictionary(x => x.PersonId);
+            var visited = new HashSet<Guid>();
+            var pending = new Stack<Guid>();
+            pending.Push(managerId);
+            while (pending.TryPop(out var current))
+            {
+                if (current == personId) return true;
+                if (!visited.Add(current) || !byId.TryGetValue(current, out var row)) continue;
+                if (row.ReportsToPersonId.HasValue) pending.Push(row.ReportsToPersonId.Value);
+                if (row.AlternativeReportsToPersonId.HasValue) pending.Push(row.AlternativeReportsToPersonId.Value);
+            }
+            return false;
+        }
+
+        private async Task<HashSet<Guid>> ResolveEligibleAlternativeReporterIdsAsync(Guid personId, CancellationToken ct)
+        {
+            var staff = await LoadReporterStaffAsync(ct);
 
             var target = staff.SingleOrDefault(p => p.PersonId == personId)
                 ?? throw new KeyNotFoundException("The employee does not have an active staff assignment.");
@@ -254,7 +303,8 @@ namespace Accounts.Controllers
             }
 
             return staff
-                .Where(p => p.PersonId != personId && RoleKey(p) is { } role && eligibleRoleKeys.Contains(role))
+                .Where(p => IsEligibleManager(p) && !CreatesCycle(personId, p.PersonId, staff)
+                    && RoleKey(p) is { } role && eligibleRoleKeys.Contains(role))
                 .Select(p => p.PersonId)
                 .ToHashSet();
         }
@@ -271,6 +321,7 @@ namespace Accounts.Controllers
         {
             public Guid PersonId { get; init; }
             public Guid? ReportsToPersonId { get; init; }
+            public Guid? AlternativeReportsToPersonId { get; init; }
             public int? JobTitleId { get; init; }
             public string? JobTitleName { get; init; }
         }

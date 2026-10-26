@@ -2306,6 +2306,8 @@ public sealed partial class AttendanceService : IAttendanceService
         DateOnly dateTo,
         CancellationToken cancellationToken)
     {
+        await _finalization.ExpireMissingCheckoutStatusesAsync(
+            tenantId, dateFrom, dateTo, visiblePersonIds, cancellationToken);
         var sqlRows = await LoadDailyReportRowsAsync(
             tenantId,
             visiblePersonIds,
@@ -3321,6 +3323,8 @@ public sealed partial class AttendanceService : IAttendanceService
             .ToDictionaryAsync(schedule => schedule.ScheduleDate, cancellationToken);
         var dateFrom = new DateOnly(year, month, 1);
         var dateTo = dateFrom.AddMonths(1);
+        await _finalization.ExpireMissingCheckoutStatusesAsync(
+            person.TenantId, dateFrom, dateTo.AddDays(-1), new[] { personId }, cancellationToken);
         var records = await _db.AttendanceRecords.AsNoTracking().Include(r => r.CanonicalStatus)
             .Include(r => r.PlatformActionStatus).ThenInclude(p => p.Status).Include(r => r.PlatformActionStatus).ThenInclude(p => p.Color)
             .Where(r => r.PersonId == personId && r.AttendanceDate >= dateFrom && r.AttendanceDate < dateTo)

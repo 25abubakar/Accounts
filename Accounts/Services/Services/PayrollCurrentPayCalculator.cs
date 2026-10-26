@@ -2,7 +2,7 @@ namespace Accounts.Services.Services;
 
 /// <summary>
 /// Server-authoritative CurrentPay helpers. Prefer <see cref="PayrollScaleProgression"/> for
-/// DOJ service years (first year = 1× INC) and Max → next-scale upgrades.
+/// Completed anniversary years and Max → next-scale upgrades.
 /// This type remains for installment-month splitting and simple Cap math.
 /// </summary>
 public static class PayrollCurrentPayCalculator
