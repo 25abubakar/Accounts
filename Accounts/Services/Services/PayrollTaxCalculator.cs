@@ -59,11 +59,12 @@ public static class PayrollTaxCalculator
         if (slab == null)
             return PayrollTaxBreakdown.None(annualTaxable);
 
-        if (slab.RatePercentage <= 0 && slab.FixedTaxAmount <= 0)
+        var fixedTaxAmount = slab.FixedTaxAmount ?? 0m;
+        if (slab.RatePercentage <= 0 && fixedTaxAmount <= 0)
             return PayrollTaxBreakdown.TaxFree(annualTaxable, slab.SlabName);
 
         var excess = Money(Math.Max(0m, annualTaxable - slab.FromAmount));
-        var annualTax = Money(slab.FixedTaxAmount + excess * slab.RatePercentage / 100m);
+        var annualTax = Money(fixedTaxAmount + excess * slab.RatePercentage / 100m);
         var monthlyTax = Money(annualTax / 12m);
 
         return new PayrollTaxBreakdown(
@@ -71,7 +72,7 @@ public static class PayrollTaxCalculator
             SlabName: slab.SlabName,
             ExcessBase: slab.FromAmount,
             ExcessAmount: excess,
-            FixedTaxAmount: slab.FixedTaxAmount,
+            FixedTaxAmount: fixedTaxAmount,
             RatePercentage: slab.RatePercentage,
             AnnualTax: annualTax,
             MonthlyTax: monthlyTax,

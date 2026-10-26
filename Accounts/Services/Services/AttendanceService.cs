@@ -153,7 +153,6 @@ public sealed partial class AttendanceService : IAttendanceService
             .Where(x =>
                 x.TenantId == person.TenantId && x.PersonId == person.PersonId &&
                 x.CheckInUtc != null &&
-                x.CheckOutUtc == null &&
                 x.AttendanceDate >= localDate.AddDays(-1) &&
                 x.AttendanceDate <= localDate)
             .OrderByDescending(x => x.AttendanceDate)
@@ -199,7 +198,6 @@ public sealed partial class AttendanceService : IAttendanceService
             .Where(x =>
                 x.TenantId == person.TenantId && x.PersonId == person.PersonId &&
                 x.CheckInUtc != null &&
-                x.CheckOutUtc == null &&
                 x.AttendanceDate >= localDate.AddDays(-1) &&
                 x.AttendanceDate <= localDate)
             .OrderByDescending(x => x.AttendanceDate)

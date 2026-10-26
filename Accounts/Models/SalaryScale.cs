@@ -63,7 +63,7 @@ public class SalaryScale : ITenantEntity
     public decimal GrossSalary { get; set; }
 
     [Column(TypeName = "decimal(18,2)")]
-    public decimal CurrentPay { get; set; }
+    public decimal? CurrentPay { get; set; }
 
     [Column(TypeName = "decimal(18,2)")]
     public decimal MedicalAllowance { get; set; }

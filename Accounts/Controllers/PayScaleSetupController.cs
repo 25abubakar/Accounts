@@ -471,6 +471,7 @@ public sealed class PayScaleSetupController(
     }
     private async Task<string?> ValidateRuleRegistration(RuleRegistrationSave x, CancellationToken ct)
     {
+        if (x.DateFrom == default) return "Date From is required.";
         if (string.IsNullOrWhiteSpace(x.Name)) return "Rule name is required.";
         var ruleType = x.RuleType?.Trim() ?? "";
         var allowed = await db.AppLookupValues.AsNoTracking()
@@ -482,7 +483,7 @@ public sealed class PayScaleSetupController(
             allowed = ["PayScale", "Allowances", "TADA", "Leave"];
         if (!allowed.Any(v => v.Equals(ruleType, StringComparison.OrdinalIgnoreCase)))
             return "Select a valid rule type.";
-        if (x.DateTo.Date < x.DateFrom.Date) return "DateTo must be on or after DateFrom.";
+        if (x.DateTo.HasValue && x.DateTo.Value.Date < x.DateFrom.Date) return "DateTo must be on or after DateFrom.";
         return null;
     }
     private static string? ValidateRule(PayRuleSave x) => string.IsNullOrWhiteSpace(x.Code) || string.IsNullOrWhiteSpace(x.Name) ? "Rule code and name are required." : x.FixedWorkingDays is < 0 or > 31 || x.WorkingHoursPerDay is <= 0 or > 24 || x.OvertimeMultiplier is < 0 or > 10 ? "Enter valid working days, hours and overtime multiplier." : null;
@@ -521,11 +522,11 @@ public sealed class PayScaleSetupController(
         x.PayType = Clean(d.PayType);
         x.PayValue = d.PayValue;
         x.AllowanceCategory = category;
-        var basis = string.Equals(x.PayType, "Basic", StringComparison.OrdinalIgnoreCase) ? scale?.BasicSalary ?? 0m
-            : string.Equals(x.PayType, "Gross", StringComparison.OrdinalIgnoreCase) ? scale?.GrossSalary ?? 0m
-            : string.Equals(x.PayType, "CurrentPay", StringComparison.OrdinalIgnoreCase) ? scale?.CurrentPay ?? 0m : 0m;
+        decimal? basis = string.Equals(x.PayType, "Basic", StringComparison.OrdinalIgnoreCase) ? scale?.BasicSalary
+            : string.Equals(x.PayType, "Gross", StringComparison.OrdinalIgnoreCase) ? scale?.GrossSalary
+            : string.Equals(x.PayType, "CurrentPay", StringComparison.OrdinalIgnoreCase) ? scale?.CurrentPay : null;
         x.CalculatedValue = x.RateType?.Contains("Percentage", StringComparison.OrdinalIgnoreCase) == true
-            ? Math.Round(basis * x.PayValue / 100m, 2, MidpointRounding.AwayFromZero)
+            ? basis.HasValue ? Math.Round(basis.Value * x.PayValue / 100m, 2, MidpointRounding.AwayFromZero) : null
             : Math.Round(x.PayValue, 2, MidpointRounding.AwayFromZero);
     }
     private static void Apply(PayScaleTada x, TadaSave d, SalaryScale scale, string tadaTypeName)
@@ -689,7 +690,7 @@ public sealed class PayScaleSetupController(
         .SingleOrDefaultAsync(ct);
 }
 
-public sealed record RuleRegistrationSave(string RuleType, string Name, DateTime DateFrom, DateTime DateTo);
+public sealed record RuleRegistrationSave(string RuleType, string Name, DateTime DateFrom, DateTime? DateTo = null);
 public sealed record PayRuleSave(string Code, string Name, string WorkingDaysBasis, int FixedWorkingDays, decimal WorkingHoursPerDay, decimal OvertimeMultiplier, string RoundingMode, bool IsActive, string? Description, string? RuleType = null, DateTime? DateFrom = null, DateTime? DateTo = null);
 public sealed record PlatformMasterSave(string Code, string Name, int DisplayOrder, bool IsActive, string? AllowanceCategory = null);
 public sealed record SalaryPackageSave(
@@ -720,6 +721,6 @@ public sealed record LeaveSave(
     string? ValueType = null,
     string? Type = null,
     decimal ApplicableValue = 0);
-public sealed record AllowanceRowDto(int Id, string AllowanceRef, string AllowName, int? SalaryScaleId, string? Scale, int AllowanceTypeId, string AllowanceType, string? ContractType, string? FrequencyType, string? RateType, string? PayType, decimal PayValue, decimal CalculatedValue, string AllowanceCategory, int? DesignationId, string? DesignationName, int? ShiftLookupValueId, string? ShiftCode, string? ShiftName);
+public sealed record AllowanceRowDto(int Id, string AllowanceRef, string AllowName, int? SalaryScaleId, string? Scale, int AllowanceTypeId, string AllowanceType, string? ContractType, string? FrequencyType, string? RateType, string? PayType, decimal PayValue, decimal? CalculatedValue, string AllowanceCategory, int? DesignationId, string? DesignationName, int? ShiftLookupValueId, string? ShiftCode, string? ShiftName);
 public sealed record TadaRowDto(int Id, string TadaRef, string Name, int SalaryScaleId, string SalaryScaleName, int TadaTypeId, string TadaType, string? ContractType, string? FrequencyType, string? RateType, decimal PayValue, decimal CalculatedValue);
 public sealed record LeaveRowDto(int Id, string LeaveRef, string Name, int SalaryScaleId, string SalaryScaleName, int LeaveTypeId, string LeaveType, string? ContractType, string? FrequencyType, string? RateType, decimal TotalLeave, string? ApplicableType, decimal ApplicableAfter, string? ValueType, string? Type, decimal ApplicableValue);

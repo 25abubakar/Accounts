@@ -89,7 +89,7 @@ public sealed class StaffMonthlyEobiService(
         var eobiBenefit = await db.PayrollBenefitRules.AsNoTracking()
             .Include(x => x.Parameters)
             .Where(x => x.BenefitsType == "EOBI"
-                && !x.IsIneligible
+                && x.IsIneligible != true
                 && (x.ValidFrom == null || x.ValidFrom <= periodEnd)
                 && (x.ValidTo == null || x.ValidTo >= periodStart)
                 && (x.Wef == null || x.Wef <= periodEnd))
@@ -178,7 +178,7 @@ public sealed class StaffMonthlyEobiService(
 
             var scaleBasic = Money(profile?.BasicSalary is > 0 ? profile.BasicSalary.Value : scale?.BasicSalary ?? 0);
             var currentPay = Money(profile?.CurrentPay is > 0 ? profile.CurrentPay.Value
-                : scale?.CurrentPay is > 0 ? scale.CurrentPay
+                : scale?.CurrentPay is > 0 ? scale.CurrentPay.Value
                 : scaleBasic);
             var basicSalary = Money(currentPay > 0 ? currentPay : scaleBasic);
 

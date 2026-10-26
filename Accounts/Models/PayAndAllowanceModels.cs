@@ -39,19 +39,19 @@ public sealed class PayrollBenefitRule : ITenantEntity
     [MaxLength(30)] public string? Frequency { get; set; }
     public DateOnly? ValidFrom { get; set; }
     public DateOnly? ValidTo { get; set; }
-    [Column(TypeName = "decimal(18,2)")] public decimal MaximumExpense { get; set; }
+    [Column(TypeName = "decimal(18,2)")] public decimal? MaximumExpense { get; set; }
     [MaxLength(30)] public string? ServiceStatus { get; set; }
     [MaxLength(500)] public string? Scale { get; set; }
     public DateOnly? Wef { get; set; }
-    [Column(TypeName = "decimal(9,2)")] public decimal MinimumService { get; set; }
+    [Column(TypeName = "decimal(9,2)")] public decimal? MinimumService { get; set; }
     /// <summary>Optional salary floor (e.g. 50000). 0 = no salary filter. Used with or without Scale CSV.</summary>
     [Column(TypeName = "decimal(18,2)")] public decimal MinimumSalary { get; set; }
-    [Column(TypeName = "decimal(18,2)")] public decimal MaximumPh { get; set; }
-    [Column(TypeName = "decimal(18,2)")] public decimal MinimumPh { get; set; }
-    public bool IsIneligible { get; set; }
+    [Column(TypeName = "decimal(18,2)")] public decimal? MaximumPh { get; set; }
+    [Column(TypeName = "decimal(18,2)")] public decimal? MinimumPh { get; set; }
+    public bool? IsIneligible { get; set; }
     [MaxLength(30)] public string? ShareType { get; set; }
-    [Column(TypeName = "decimal(18,2)")] public decimal CompanyShare { get; set; }
-    [Column(TypeName = "decimal(18,2)")] public decimal StaffShare { get; set; }
+    [Column(TypeName = "decimal(18,2)")] public decimal? CompanyShare { get; set; }
+    [Column(TypeName = "decimal(18,2)")] public decimal? StaffShare { get; set; }
     public int? OrganizationId { get; set; }
     [MaxLength(120)] public string? CompanyName { get; set; }
     public DateTime CreatedOnUtc { get; set; } = DateTime.UtcNow;
@@ -95,13 +95,19 @@ public sealed class PayrollBenefitParameter : ITenantEntity
     public int BenefitRuleId { get; set; }
     [Required, MaxLength(30)] public string Reference { get; set; } = string.Empty;
     [Required, MaxLength(120)] public string Name { get; set; } = string.Empty;
-    [Column(TypeName = "decimal(9,2)")] public decimal MinimumService { get; set; }
+    public DateOnly? PeriodFrom { get; set; }
+    public DateOnly? PeriodTo { get; set; }
+    [MaxLength(120)] public string? Entitled { get; set; }
+    [MaxLength(30)] public string? Frequency { get; set; }
+    [Column(TypeName = "decimal(18,2)")] public decimal? MaximumPh { get; set; }
+    [Column(TypeName = "decimal(18,2)")] public decimal? MinimumPh { get; set; }
+    [Column(TypeName = "decimal(9,2)")] public decimal? MinimumService { get; set; }
     [Required, MaxLength(30)] public string AmountType { get; set; } = "PH";
-    [Required, MaxLength(30)] public string PayType { get; set; } = "Basic";
-    [Column(TypeName = "decimal(18,2)")] public decimal Amount { get; set; }
-    [Column(TypeName = "decimal(9,4)")] public decimal Percentage { get; set; }
-    [Column(TypeName = "decimal(18,2)")] public decimal CompanyShare { get; set; }
-    [Column(TypeName = "decimal(18,2)")] public decimal StaffShare { get; set; }
+    [MaxLength(30)] public string? PayType { get; set; }
+    [Column(TypeName = "decimal(18,2)")] public decimal? Amount { get; set; }
+    [Column(TypeName = "decimal(9,4)")] public decimal? Percentage { get; set; }
+    [Column(TypeName = "decimal(18,2)")] public decimal? CompanyShare { get; set; }
+    [Column(TypeName = "decimal(18,2)")] public decimal? StaffShare { get; set; }
     public DateTime CreatedOnUtc { get; set; } = DateTime.UtcNow;
     public DateTime? UpdatedOnUtc { get; set; }
     public PayrollBenefitRule? BenefitRule { get; set; }
@@ -339,7 +345,7 @@ public sealed class PayrollTaxSlab : ITenantEntity
     [Column(TypeName = "decimal(18,2)")] public decimal? ToAmount { get; set; }
     /// <summary>PlatformTypes.RateTypes name (e.g. Percentage).</summary>
     [MaxLength(80)] public string? RateType { get; set; }
-    [Column(TypeName = "decimal(18,2)")] public decimal FixedTaxAmount { get; set; }
+    [Column(TypeName = "decimal(18,2)")] public decimal? FixedTaxAmount { get; set; }
     [Column(TypeName = "decimal(9,4)")] public decimal RatePercentage { get; set; }
     /// <summary>Optional total tax display field from legacy Tax Rules grid.</summary>
     [Column(TypeName = "decimal(18,2)")] public decimal? TotTax { get; set; }
@@ -353,6 +359,8 @@ public sealed class PayrollTaxSlab : ITenantEntity
 public sealed class PayrollStaffTax : ITenantEntity
 {
     [Key] public long Id { get; set; }
+    /// <summary>Repeated legacy Id from the Staff Tax register; not the tax-row key or HR staff key.</summary>
+    public long? LegacyStaffTaxId { get; set; }
     public int TenantId { get; set; }
     public Guid PersonId { get; set; }
     public Guid StaffId { get; set; }
@@ -370,7 +378,7 @@ public sealed class PayrollStaffTax : ITenantEntity
     [Column(TypeName = "decimal(18,2)")] public decimal ExtraAmount { get; set; }
     [Column(TypeName = "decimal(18,2)")] public decimal TaxableIncome { get; set; }
     [Column(TypeName = "decimal(18,2)")] public decimal TaxAmount { get; set; }
-    [Column(TypeName = "decimal(18,2)")] public decimal TaxAdjustment { get; set; }
+    [Column(TypeName = "decimal(18,2)")] public decimal? TaxAdjustment { get; set; }
     [Column(TypeName = "decimal(18,2)")] public decimal NetTax { get; set; }
     public int PayMonth { get; set; } = 12;
     [Column(TypeName = "decimal(18,2)")] public decimal MonthlyTaxAmt { get; set; }
@@ -450,7 +458,7 @@ public sealed class PayScaleRuleRegistration : ITenantEntity
     [Required, MaxLength(30)] public string RuleType { get; set; } = string.Empty;
     [Required, MaxLength(120)] public string Name { get; set; } = string.Empty;
     public DateTime DateFrom { get; set; }
-    public DateTime DateTo { get; set; }
+    public DateTime? DateTo { get; set; }
     public DateTime CreatedOnUtc { get; set; } = DateTime.UtcNow;
     public DateTime? UpdatedOnUtc { get; set; }
 }
@@ -493,7 +501,7 @@ public sealed class PayScaleAllowance : ITenantEntity
     [MaxLength(50)] public string? RateType { get; set; }
     [MaxLength(50)] public string? PayType { get; set; }
     [Column(TypeName = "decimal(18,4)")] public decimal PayValue { get; set; }
-    [Column(TypeName = "decimal(18,2)")] public decimal CalculatedValue { get; set; }
+    [Column(TypeName = "decimal(18,2)")] public decimal? CalculatedValue { get; set; }
     [Required, MaxLength(20)] public string AllowanceCategory { get; set; } = "GENERAL";
     public DateTime CreatedOnUtc { get; set; } = DateTime.UtcNow;
     public DateTime? UpdatedOnUtc { get; set; }

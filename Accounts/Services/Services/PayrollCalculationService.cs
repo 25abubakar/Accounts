@@ -254,7 +254,7 @@ public sealed class PayrollCalculationService(
             .Include(x => x.Parameters)
             .Include(x => x.OrganizationScopes)
             .Include(x => x.ContractScopes)
-            .Where(x => x.BenefitsType != "Bonus" && x.BenefitsType != "EOBI" && !x.IsIneligible)
+            .Where(x => x.BenefitsType != "Bonus" && x.BenefitsType != "EOBI" && x.IsIneligible != true)
             .ToListAsync(cancellationToken);
         var organizationNodes = await db.OrganizationTree.AsNoTracking().ToDictionaryAsync(x => x.Id, cancellationToken);
         var bonusLines = await db.PayrollBonusLines.AsNoTracking().Include(x => x.BonusRun)
@@ -278,7 +278,7 @@ public sealed class PayrollCalculationService(
         var eobiBenefitRules = await db.PayrollBenefitRules.AsNoTracking()
             .Include(x => x.Parameters)
             .Where(x => x.BenefitsType == "EOBI"
-                && !x.IsIneligible
+                && x.IsIneligible != true
                 && (x.ValidFrom == null || x.ValidFrom <= periodEnd)
                 && (x.ValidTo == null || x.ValidTo >= periodStart)
                 && (x.Wef == null || x.Wef <= periodEnd))
@@ -363,24 +363,24 @@ public sealed class PayrollCalculationService(
 
             var apptAllowance = Money(scaleAllowances
                 .Where(x => x.AllowanceCategory.Equals("APPT", StringComparison.OrdinalIgnoreCase))
-                .Sum(x => x.CalculatedValue));
+                .Sum(x => x.CalculatedValue) ?? 0m);
             var nightAllowance = Money(scaleAllowances
                 .Where(x => IsAllowanceType(x, "NIGHT") || x.AllowanceCategory.Equals("NIGHT", StringComparison.OrdinalIgnoreCase))
-                .Sum(x => x.CalculatedValue));
+                .Sum(x => x.CalculatedValue) ?? 0m);
             var shiftAllowance = Money(scaleAllowances
                 .Where(x =>
                     x.AllowanceCategory.Equals("SHIFT", StringComparison.OrdinalIgnoreCase) &&
                     !IsAllowanceType(x, "NIGHT"))
-                .Sum(x => x.CalculatedValue));
+                .Sum(x => x.CalculatedValue) ?? 0m);
             var medicalAllowance = Money(scaleAllowances
                 .Where(x => IsAllowanceType(x, "MED"))
-                .Sum(x => x.CalculatedValue));
+                .Sum(x => x.CalculatedValue) ?? 0m);
             var telephoneAllowance = Money(scaleAllowances
                 .Where(x => IsAllowanceType(x, "TEL"))
-                .Sum(x => x.CalculatedValue));
+                .Sum(x => x.CalculatedValue) ?? 0m);
             var transportAllowance = Money(scaleAllowances
                 .Where(x => IsAllowanceType(x, "TPT"))
-                .Sum(x => x.CalculatedValue));
+                .Sum(x => x.CalculatedValue) ?? 0m);
             var hasMedicalAllowanceConfiguration = scaleAllowances.Any(x => IsAllowanceType(x, "MED"));
             var hasTransportAllowanceConfiguration = scaleAllowances.Any(x => IsAllowanceType(x, "TPT"));
             var generalAllowance = Money(scaleAllowances
@@ -391,7 +391,7 @@ public sealed class PayrollCalculationService(
                     !IsAllowanceType(x, "MED") &&
                     !IsAllowanceType(x, "TEL") &&
                     !IsAllowanceType(x, "TPT"))
-                .Sum(x => x.CalculatedValue));
+                .Sum(x => x.CalculatedValue) ?? 0m);
             // Legacy salary scales carry MED/TPT directly. A typed Allowance rule
             // overrides that component; otherwise keep the saved scale component.
             if (!hasMedicalAllowanceConfiguration)
@@ -431,18 +431,18 @@ public sealed class PayrollCalculationService(
             foreach (var rule in applicableBenefits)
             {
                 var parameters = rule.Parameters.Where(parameter =>
-                    serviceMonths >= parameter.MinimumService).ToList();
+                    serviceMonths >= (parameter.MinimumService ?? 0)).ToList();
                 if (parameters.Count == 0)
                 {
-                    employerBenefits += ResolveShare(rule.CompanyShare, rule.ShareType, basicSalary);
-                    staffBenefits += ResolveShare(rule.StaffShare, rule.ShareType, basicSalary);
+                    employerBenefits += ResolveShare(rule.CompanyShare ?? 0, rule.ShareType, basicSalary);
+                    staffBenefits += ResolveShare(rule.StaffShare ?? 0, rule.ShareType, basicSalary);
                 }
                 else
                 {
                     foreach (var parameter in parameters)
                     {
-                        employerBenefits += ResolveShare(parameter.CompanyShare, parameter.AmountType, basicSalary);
-                        staffBenefits += ResolveShare(parameter.StaffShare, parameter.AmountType, basicSalary);
+                        employerBenefits += ResolveShare(parameter.CompanyShare ?? 0, parameter.AmountType, basicSalary);
+                        staffBenefits += ResolveShare(parameter.StaffShare ?? 0, parameter.AmountType, basicSalary);
                     }
                 }
             }
@@ -560,8 +560,8 @@ public sealed class PayrollCalculationService(
         if (chosen != null)
         {
             var parameter = chosen.Parameters.OrderByDescending(x => x.Id).FirstOrDefault();
-            var employee = Money(parameter?.StaffShare ?? chosen.StaffShare);
-            var employer = Money(parameter?.CompanyShare ?? chosen.CompanyShare);
+            var employee = Money(parameter?.StaffShare ?? chosen.StaffShare ?? 0);
+            var employer = Money(parameter?.CompanyShare ?? chosen.CompanyShare ?? 0);
             if (employee > 0 || employer > 0)
                 return (employee, employer);
         }
@@ -683,7 +683,7 @@ public sealed class PayrollCalculationService(
         }
 
         // Min_Service is completed months from DOJ (e.g. 6 / 12 / 24).
-        if (serviceMonths < rule.MinimumService) return false;
+        if (serviceMonths < (rule.MinimumService ?? 0)) return false;
         if (rule.MinimumSalary > 0 && effectiveCurrentPay < rule.MinimumSalary)
             return false;
 

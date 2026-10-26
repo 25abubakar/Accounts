@@ -1769,7 +1769,7 @@ namespace Accounts.Data
             });
             builder.Entity<PayrollBenefitParameter>(e =>
             {
-                e.HasIndex(x => new { x.TenantId, x.Reference }).IsUnique();
+                e.HasIndex(x => new { x.TenantId, x.Reference });
                 e.HasIndex(x => new { x.TenantId, x.BenefitRuleId, x.Name }).IsUnique();
                 e.HasOne(x => x.BenefitRule).WithMany(x => x.Parameters).HasForeignKey(x => x.BenefitRuleId).OnDelete(DeleteBehavior.Restrict);
                 e.HasOne<Tenant>().WithMany().HasForeignKey(x => x.TenantId).OnDelete(DeleteBehavior.Restrict);
@@ -1833,7 +1833,10 @@ namespace Accounts.Data
             {
                 e.Property(x => x.SlabName).HasMaxLength(80).IsRequired();
                 e.Property(x => x.RateType).HasMaxLength(80);
-                e.HasIndex(x => new { x.TenantId, x.TaxYear, x.FromAmount }).IsUnique();
+                // Retain inactive historical bands alongside the current active set,
+                // including owner-imported rules with an intentionally blank year.
+                e.HasIndex(x => new { x.TenantId, x.TaxYear, x.FromAmount })
+                    .IsUnique().HasFilter("[IsActive] = 1");
                 e.HasOne<Tenant>().WithMany().HasForeignKey(x => x.TenantId).OnDelete(DeleteBehavior.Restrict);
             });
             builder.Entity<PayrollStaffTax>(e =>

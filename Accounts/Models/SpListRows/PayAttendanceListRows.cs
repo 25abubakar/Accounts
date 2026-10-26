@@ -12,18 +12,18 @@ public sealed class PayBenefitRuleListRow
     public string? Frequency { get; set; }
     public DateOnly? ValidFrom { get; set; }
     public DateOnly? ValidTo { get; set; }
-    public decimal MaxExp { get; set; }
+    public decimal? MaxExp { get; set; }
     public string? SerStatus { get; set; }
     public string? Scale { get; set; }
     public DateOnly? Wef { get; set; }
-    public decimal MinService { get; set; }
+    public decimal? MinService { get; set; }
     public decimal MinSalary { get; set; }
-    public decimal MaxPh { get; set; }
-    public decimal MinPh { get; set; }
-    public bool Ineligible { get; set; }
+    public decimal? MaxPh { get; set; }
+    public decimal? MinPh { get; set; }
+    public bool? Ineligible { get; set; }
     public string? ShareType { get; set; }
-    public decimal CovShare { get; set; }
-    public decimal StaffShare { get; set; }
+    public decimal? CovShare { get; set; }
+    public decimal? StaffShare { get; set; }
     public int? OrganizationId { get; set; }
     public string? CompName { get; set; }
 }
@@ -35,17 +35,19 @@ public sealed class PayBenefitParameterListRow
     public string Name { get; set; } = "";
     public string Ref { get; set; } = "";
     public string? Entitled { get; set; }
+    public DateOnly? PdFrom { get; set; }
+    public DateOnly? PdTo { get; set; }
     public int BenefitId { get; set; }
     public string? FreqId { get; set; }
-    public decimal MinSer { get; set; }
+    public decimal? MinSer { get; set; }
     public string AmtType { get; set; } = "";
-    public string PayTypeId { get; set; } = "";
-    public decimal Amount { get; set; }
-    public decimal Percentage { get; set; }
-    public decimal MaxPh { get; set; }
-    public decimal MinPh { get; set; }
-    public decimal CoyShare { get; set; }
-    public decimal StaffShare { get; set; }
+    public string? PayTypeId { get; set; }
+    public decimal? Amount { get; set; }
+    public decimal? Percentage { get; set; }
+    public decimal? MaxPh { get; set; }
+    public decimal? MinPh { get; set; }
+    public decimal? CoyShare { get; set; }
+    public decimal? StaffShare { get; set; }
     public string BenefitsType { get; set; } = "";
     public int? BonusMonth { get; set; }
     public DateOnly? InstallmentStart { get; set; }
@@ -69,8 +71,8 @@ public sealed class PayBonusRuleListRow
     public DateOnly? ValidTo { get; set; }
     public string? Scale { get; set; }
     public string? Frequency { get; set; }
-    public decimal maximumExpense { get; set; }
-    public decimal MinimumService { get; set; }
+    public decimal? maximumExpense { get; set; }
+    public decimal? MinimumService { get; set; }
     public decimal MinimumSalary { get; set; }
     public int? OrganizationId { get; set; }
     public string? Company { get; set; }
@@ -213,6 +215,7 @@ public sealed class PayStaffMonthlyEobiListRow
 public sealed class PayStaffTaxListRow
 {
     public long id { get; set; }
+    public long? staffTaxId { get; set; }
     public string taxId { get; set; } = "";
     public Guid personId { get; set; }
     public Guid staffGuid { get; set; }
@@ -228,7 +231,7 @@ public sealed class PayStaffTaxListRow
     public decimal maxSalary { get; set; }
     public decimal incomePay { get; set; }
     public int taxMonths { get; set; }
-    public decimal adjustment { get; set; }
+    public decimal? adjustment { get; set; }
     public decimal taxableIncome { get; set; }
     public decimal taxAmount { get; set; }
     public decimal monthlyTaxAmt { get; set; }
@@ -270,10 +273,10 @@ public sealed class PayTaxSlabListRow
     public string SlabName { get; set; } = "";
     public decimal FromAmount { get; set; }
     public decimal? ToAmount { get; set; }
-    public string RateType { get; set; } = "";
-    public decimal FixedTaxAmount { get; set; }
+    public string? RateType { get; set; }
+    public decimal? FixedTaxAmount { get; set; }
     public decimal RatePercentage { get; set; }
-    public decimal TotTax { get; set; }
+    public decimal? TotTax { get; set; }
     public bool IsActive { get; set; }
     public DateTime CreatedOnUtc { get; set; }
     public DateTime? UpdatedOnUtc { get; set; }
@@ -298,7 +301,7 @@ public sealed class PaySalaryScaleListRow
     public decimal MaximumSalary { get; set; }
     public decimal YearlyIncrement { get; set; }
     public decimal GrossSalary { get; set; }
-    public decimal CurrentPay { get; set; }
+    public decimal? CurrentPay { get; set; }
     public decimal MedicalAllowance { get; set; }
     public decimal TravellingAllowance { get; set; }
     public decimal Other { get; set; }
@@ -330,7 +333,7 @@ public sealed class PayAllowanceListRow
     public string? RateType { get; set; }
     public string? PayType { get; set; }
     public decimal PayValue { get; set; }
-    public decimal CalculatedValue { get; set; }
+    public decimal? CalculatedValue { get; set; }
     public string AllowanceCategory { get; set; } = "";
     public int? DesignationId { get; set; }
     public string? DesignationName { get; set; }

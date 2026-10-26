@@ -217,6 +217,11 @@ public sealed class StaffTaxService(
             row = new PayrollStaffTax
             {
                 TenantId = tenant.RequiredTenantId,
+                LegacyStaffTaxId = await db.PayrollStaffTaxes.AsNoTracking()
+                    .Where(x => x.PersonId == request.PersonId && x.LegacyStaffTaxId != null)
+                    .OrderByDescending(x => x.Id)
+                    .Select(x => x.LegacyStaffTaxId)
+                    .FirstOrDefaultAsync(cancellationToken),
                 CreatedOnUtc = now,
                 TaxRef = await NextTaxRefAsync(cancellationToken)
             };
@@ -428,7 +433,7 @@ public sealed class StaffTaxService(
     private static decimal ResolveMonthlyPay(PersonHrProfile? profile, SalaryScale? scale)
     {
         var current = profile?.CurrentPay is > 0 ? profile.CurrentPay.Value
-            : scale?.CurrentPay is > 0 ? scale.CurrentPay
+            : scale?.CurrentPay is > 0 ? scale.CurrentPay.Value
             : 0;
         var basic = profile?.BasicSalary is > 0 ? profile.BasicSalary.Value
             : scale?.BasicSalary ?? 0;

@@ -73,7 +73,7 @@ public sealed class PayrollBonusController(
         var rule = await db.PayrollBenefitRules.Include(x => x.Parameters).ThenInclude(x => x.BonusDistribution)
             .SingleOrDefaultAsync(x => x.Id == request.BenefitRuleId && x.BenefitsType == "Bonus", ct);
         if (rule == null) return NotFound(new { message = "Selected bonus benefit rule was not found." });
-        if (rule.IsIneligible) return BadRequest(new { message = "Selected bonus rule is marked ineligible." });
+        if (rule.IsIneligible == true) return BadRequest(new { message = "Selected bonus rule is marked ineligible." });
 
         var hasDistribution = rule.Parameters.Any(parameter => parameter.BonusDistribution != null);
         if (!hasDistribution)
@@ -556,7 +556,7 @@ public sealed class PayrollBonusController(
     /// <summary>
     /// Legacy StaffBonus compared Max_Exp to installment total when present, else T-Bonus total.
     /// </summary>
-    private static string? ValidateMaximumExpense(decimal maximumExpense, PayrollBonusRun run)
+    private static string? ValidateMaximumExpense(decimal? maximumExpense, PayrollBonusRun run)
     {
         if (maximumExpense <= 0) return null;
         var eligible = run.Lines.Where(x => x.IsValid && !x.IsInactive).ToList();

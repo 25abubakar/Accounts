@@ -119,18 +119,18 @@ public sealed class PayrollGrossSalaryResolver(ApplicationDbContext db)
 
             var apptAllowance = Money(scaleAllowances
                 .Where(x => x.AllowanceCategory.Equals("APPT", StringComparison.OrdinalIgnoreCase))
-                .Sum(x => x.CalculatedValue));
+                .Sum(x => x.CalculatedValue) ?? 0m);
             var shiftAllowance = Money(scaleAllowances
                 .Where(x =>
                     x.AllowanceCategory.Equals("SHIFT", StringComparison.OrdinalIgnoreCase) ||
                     x.AllowanceCategory.Equals("NIGHT", StringComparison.OrdinalIgnoreCase))
-                .Sum(x => x.CalculatedValue));
+                .Sum(x => x.CalculatedValue) ?? 0m);
             var generalAllowance = Money(scaleAllowances
                 .Where(x =>
                     !x.AllowanceCategory.Equals("APPT", StringComparison.OrdinalIgnoreCase) &&
                     !x.AllowanceCategory.Equals("SHIFT", StringComparison.OrdinalIgnoreCase) &&
                     !x.AllowanceCategory.Equals("NIGHT", StringComparison.OrdinalIgnoreCase))
-                .Sum(x => x.CalculatedValue));
+                .Sum(x => x.CalculatedValue) ?? 0m);
             if (!hasScaleAllowanceConfiguration)
                 generalAllowance = Money(generalAllowance + (scale?.MedicalAllowance ?? 0) + (scale?.TravellingAllowance ?? 0) + (scale?.Other ?? 0));
             if (scale != null)

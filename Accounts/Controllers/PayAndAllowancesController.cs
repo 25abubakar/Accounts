@@ -1002,7 +1002,8 @@ public sealed class PayAndAllowancesController(
     private static object MapStaffTax(PayrollStaffTax row) => new
     {
         id = row.Id,
-        taxId = row.TaxRef,
+        staffTaxId = row.LegacyStaffTaxId,
+        taxId = row.Id.ToString(),
         personId = row.PersonId,
         staffGuid = row.StaffId,
         staffId = row.StaffNumber,
@@ -1663,9 +1664,8 @@ public sealed class PayAndAllowancesController(
 
     private static TaxSlabSave NormalizeTaxSlab(TaxSlabSave dto, string? existingTaxYear = null)
     {
-        var year = DateTime.UtcNow.Year;
-        var fallback = string.IsNullOrWhiteSpace(existingTaxYear) ? $"{year}-{year + 1}" : existingTaxYear.Trim();
-        dto.TaxYear = string.IsNullOrWhiteSpace(dto.TaxYear) ? fallback : dto.TaxYear.Trim();
+        // Blank years are explicitly supported; never invent a fiscal year on save/edit.
+        dto.TaxYear = dto.TaxYear == null ? existingTaxYear?.Trim() ?? string.Empty : dto.TaxYear.Trim();
         dto.SlabName = (dto.SlabName ?? string.Empty).Trim();
         dto.RateType = string.IsNullOrWhiteSpace(dto.RateType) ? null : dto.RateType.Trim();
         return dto;
@@ -1673,7 +1673,6 @@ public sealed class PayAndAllowancesController(
 
     private async Task<string?> ValidateTaxAsync(TaxSlabSave x, CancellationToken ct)
     {
-        if (string.IsNullOrWhiteSpace(x.TaxYear)) return "Tax year is required.";
         if (string.IsNullOrWhiteSpace(x.SlabName)) return "Slab name is required.";
         if (x.FromAmount < 0 || (x.ToAmount.HasValue && x.ToAmount.Value < x.FromAmount) || x.FixedTaxAmount < 0 || x.RatePercentage is < 0 or > 100)
             return "Enter a valid tax range and rate.";
@@ -1745,6 +1744,8 @@ public sealed class PayAndAllowancesController(
         if (x.BenefitRuleId <= 0 || string.IsNullOrWhiteSpace(x.Name)) return "Benefits Rule and Name are required.";
         if (x.MinimumService < 0 || x.Amount < 0 || x.Percentage < 0 || x.CompanyShare < 0 || x.StaffShare < 0) return "Parameter values cannot be negative.";
         if (x.Percentage > 100) return "Percentage cannot be greater than 100.";
+        if (x.PeriodTo < x.PeriodFrom) return "Period To cannot be before Period From.";
+        if (x.MaximumPh < 0 || x.MinimumPh < 0) return "PH limits cannot be negative.";
         return null;
     }
     private static string? ValidateBonusDistribution(string benefitType, BonusDistributionSave? x)
@@ -1810,7 +1811,8 @@ public sealed class PayAndAllowancesController(
     private static void ApplyBenefitRule(PayrollBenefitRule row, BenefitRuleSave x)
     {
         var isBonus = x.BenefitsType.Equals("Bonus", StringComparison.OrdinalIgnoreCase);
-        row.BenefitReference = BuildBenefitReference(x.Scale);
+        if (string.IsNullOrWhiteSpace(row.BenefitReference))
+            row.BenefitReference = BuildBenefitReference(x.Scale);
         row.BenefitsType = x.BenefitsType.Trim();
         row.Name = x.Name.Trim();
         row.Company = Clean(x.Company);
@@ -1830,8 +1832,8 @@ public sealed class PayAndAllowancesController(
         row.IsIneligible = x.IsIneligible;
         row.ShareType = Clean(x.ShareType);
         // Bonus uses Bonus Distribution on parameters — company/staff share fields do not apply.
-        row.CompanyShare = isBonus ? 0 : x.CompanyShare;
-        row.StaffShare = isBonus ? 0 : x.StaffShare;
+        row.CompanyShare = isBonus ? null : x.CompanyShare;
+        row.StaffShare = isBonus ? null : x.StaffShare;
         row.OrganizationId = x.OrganizationId;
         row.CompanyName = Clean(x.CompanyName);
     }
@@ -1840,18 +1842,25 @@ public sealed class PayAndAllowancesController(
         var isBonus = benefitType.Equals("Bonus", StringComparison.OrdinalIgnoreCase);
         row.Name = x.Name.Trim();
         row.MinimumService = x.MinimumService;
+        row.PeriodFrom = x.PeriodFrom;
+        row.PeriodTo = x.PeriodTo;
+        row.Entitled = Clean(x.Entitled);
+        row.Frequency = Clean(x.Frequency);
+        row.MaximumPh = x.MaximumPh;
+        row.MinimumPh = x.MinimumPh;
         var isEobi = benefitType.Equals("EOBI", StringComparison.OrdinalIgnoreCase);
         // EOBI shares are fixed values and do not use the generic Amount Type or
-        // Pay Type selectors. Ignore stale/client-supplied values for this type.
+        // Pay Type selectors. Preserve imported amount-type metadata without using
+        // it for EOBI calculation; ignore stale amount/percentage/pay-type values.
         var amountType = x.AmountType?.Trim() ?? string.Empty;
         var isFigure = amountType.Equals("Figure", StringComparison.OrdinalIgnoreCase);
         var isPayReference = amountType.Equals("Pay Ref", StringComparison.OrdinalIgnoreCase);
-        row.AmountType = isEobi ? string.Empty : amountType;
-        row.Amount = !isEobi && isFigure ? x.Amount : 0;
-        row.Percentage = !isEobi && isPayReference ? x.Percentage : 0;
-        row.PayType = !isEobi && isPayReference ? x.PayType?.Trim() ?? string.Empty : string.Empty;
-        row.CompanyShare = isBonus ? 0 : x.CompanyShare;
-        row.StaffShare = isBonus ? 0 : x.StaffShare;
+        row.AmountType = isEobi ? (string.IsNullOrEmpty(amountType) ? row.AmountType : amountType) : amountType;
+        row.Amount = !isEobi && isFigure ? x.Amount : null;
+        row.Percentage = !isEobi && isPayReference ? x.Percentage : null;
+        row.PayType = !isEobi && isPayReference ? Clean(x.PayType) : null;
+        row.CompanyShare = isBonus ? null : x.CompanyShare;
+        row.StaffShare = isBonus ? null : x.StaffShare;
     }
     private PayrollBonusDistribution CreateBonusDistribution(int benefitParameterId, BonusDistributionSave source, DateOnly? ruleValidFrom = null)
     {
@@ -2110,7 +2119,7 @@ public sealed class TaxSlabSave
     public decimal FromAmount { get; set; }
     public decimal? ToAmount { get; set; }
     public string? RateType { get; set; }
-    public decimal FixedTaxAmount { get; set; }
+    public decimal? FixedTaxAmount { get; set; }
     public decimal RatePercentage { get; set; }
     public decimal? TotTax { get; set; }
     public bool IsActive { get; set; } = true;
@@ -2136,6 +2145,6 @@ public sealed record StaffTaxSyncSave(DateOnly? DateFrom, DateOnly? DateTo);
 public sealed record EobiEligibilitySave(Guid PersonId, string? EobiNumber, DateOnly EffectiveFrom, DateOnly? EffectiveTo, bool IsEligible, string? Remarks);
 public sealed record StaffMonthlyEobiCreateSave(int Year, int Month);
 public sealed record StaffMonthlyEobiUpdateSave(string? EobiRef);
-public sealed record BenefitRuleSave(string BenefitsType, string Name, string? Company, string? Entitled, string? Contract, string? Frequency, DateOnly? ValidFrom, DateOnly? ValidTo, decimal MaximumExpense, string? ServiceStatus, string? Scale, DateOnly? Wef, decimal MinimumService, decimal MinimumSalary, decimal MaximumPh, decimal MinimumPh, bool IsIneligible, string? ShareType, decimal CompanyShare, decimal StaffShare, int? OrganizationId, string? CompanyName);
-public sealed record BenefitParameterSave(int BenefitRuleId, string Name, decimal MinimumService, string? AmountType, string? PayType, decimal Amount, decimal Percentage, decimal CompanyShare, decimal StaffShare, BonusDistributionSave? BonusDistribution);
+public sealed record BenefitRuleSave(string BenefitsType, string Name, string? Company, string? Entitled, string? Contract, string? Frequency, DateOnly? ValidFrom, DateOnly? ValidTo, decimal? MaximumExpense, string? ServiceStatus, string? Scale, DateOnly? Wef, decimal? MinimumService, decimal MinimumSalary, decimal? MaximumPh, decimal? MinimumPh, bool? IsIneligible, string? ShareType, decimal? CompanyShare, decimal? StaffShare, int? OrganizationId, string? CompanyName);
+public sealed record BenefitParameterSave(int BenefitRuleId, string Name, decimal? MinimumService, string? AmountType, string? PayType, decimal? Amount, decimal? Percentage, decimal? CompanyShare, decimal? StaffShare, BonusDistributionSave? BonusDistribution, DateOnly? PeriodFrom = null, DateOnly? PeriodTo = null, string? Entitled = null, string? Frequency = null, decimal? MaximumPh = null, decimal? MinimumPh = null);
 public sealed record BonusDistributionSave(int? Month, DateOnly? InstallmentStart, DateOnly? InstallmentEnd, decimal BasicPercentage, decimal ServicePercentage, decimal ServiceYears, decimal AssessmentPercentage, decimal AttendancePercentage, decimal LeavePercentage, decimal DisciplinePercentage, int Installments);

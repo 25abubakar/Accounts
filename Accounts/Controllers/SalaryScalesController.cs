@@ -106,7 +106,7 @@ public sealed class SalaryScalesController : ControllerBase
             MaximumSalary = dto.MaximumSalary,
             YearlyIncrement = dto.YearlyIncrement,
             GrossSalary = dto.GrossSalary,
-            CurrentPay = dto.CurrentPay ?? dto.GrossSalary,
+            CurrentPay = dto.CurrentPay,
             MedicalAllowance = dto.MedicalAllowance,
             TravellingAllowance = dto.TravellingAllowance,
             Other = dto.Other,
@@ -154,7 +154,7 @@ public sealed class SalaryScalesController : ControllerBase
         scale.MaximumSalary = dto.MaximumSalary;
         scale.YearlyIncrement = dto.YearlyIncrement;
         scale.GrossSalary = dto.GrossSalary;
-        scale.CurrentPay = dto.CurrentPay ?? dto.GrossSalary;
+        scale.CurrentPay = dto.CurrentPay;
         scale.MedicalAllowance = dto.MedicalAllowance;
         scale.TravellingAllowance = dto.TravellingAllowance;
         scale.Other = dto.Other;
@@ -327,7 +327,7 @@ public sealed class SalaryScaleDto
     public decimal MaximumSalary { get; set; }
     public decimal YearlyIncrement { get; set; }
     public decimal GrossSalary { get; set; }
-    public decimal CurrentPay { get; set; }
+    public decimal? CurrentPay { get; set; }
     public decimal MedicalAllowance { get; set; }
     public decimal TravellingAllowance { get; set; }
     public decimal Other { get; set; }

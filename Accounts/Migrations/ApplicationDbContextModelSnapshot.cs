@@ -4644,7 +4644,7 @@ namespace Accounts.Migrations
                     b.Property<int>("AllowanceTypeId")
                         .HasColumnType("int");
 
-                    b.Property<decimal>("CalculatedValue")
+                    b.Property<decimal?>("CalculatedValue")
                         .HasColumnType("decimal(18,2)");
 
                     b.Property<string>("ContractType")
@@ -4805,7 +4805,7 @@ namespace Accounts.Migrations
                     b.Property<DateTime>("DateFrom")
                         .HasColumnType("datetime2");
 
-                    b.Property<DateTime>("DateTo")
+                    b.Property<DateTime?>("DateTo")
                         .HasColumnType("datetime2");
 
                     b.Property<string>("Name")
@@ -4970,7 +4970,7 @@ namespace Accounts.Migrations
 
                     SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
 
-                    b.Property<decimal>("Amount")
+                    b.Property<decimal?>("Amount")
                         .HasColumnType("decimal(18,2)");
 
                     b.Property<string>("AmountType")
@@ -4981,13 +4981,27 @@ namespace Accounts.Migrations
                     b.Property<int>("BenefitRuleId")
                         .HasColumnType("int");
 
-                    b.Property<decimal>("CompanyShare")
+                    b.Property<decimal?>("CompanyShare")
                         .HasColumnType("decimal(18,2)");
 
                     b.Property<DateTime>("CreatedOnUtc")
                         .HasColumnType("datetime2");
 
-                    b.Property<decimal>("MinimumService")
+                    b.Property<string>("Entitled")
+                        .HasMaxLength(120)
+                        .HasColumnType("nvarchar(120)");
+
+                    b.Property<string>("Frequency")
+                        .HasMaxLength(30)
+                        .HasColumnType("nvarchar(30)");
+
+                    b.Property<decimal?>("MaximumPh")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<decimal?>("MinimumPh")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<decimal?>("MinimumService")
                         .HasColumnType("decimal(9,2)");
 
                     b.Property<string>("Name")
@@ -4996,19 +5010,24 @@ namespace Accounts.Migrations
                         .HasColumnType("nvarchar(120)");
 
                     b.Property<string>("PayType")
-                        .IsRequired()
                         .HasMaxLength(30)
                         .HasColumnType("nvarchar(30)");
 
-                    b.Property<decimal>("Percentage")
+                    b.Property<decimal?>("Percentage")
                         .HasColumnType("decimal(9,4)");
+
+                    b.Property<DateOnly?>("PeriodFrom")
+                        .HasColumnType("date");
+
+                    b.Property<DateOnly?>("PeriodTo")
+                        .HasColumnType("date");
 
                     b.Property<string>("Reference")
                         .IsRequired()
                         .HasMaxLength(30)
                         .HasColumnType("nvarchar(30)");
 
-                    b.Property<decimal>("StaffShare")
+                    b.Property<decimal?>("StaffShare")
                         .HasColumnType("decimal(18,2)");
 
                     b.Property<int>("TenantId")
@@ -5021,8 +5040,7 @@ namespace Accounts.Migrations
 
                     b.HasIndex("BenefitRuleId");
 
-                    b.HasIndex("TenantId", "Reference")
-                        .IsUnique();
+                    b.HasIndex("TenantId", "Reference");
 
                     b.HasIndex("TenantId", "BenefitRuleId", "Name")
                         .IsUnique();
@@ -5056,7 +5074,7 @@ namespace Accounts.Migrations
                         .HasMaxLength(120)
                         .HasColumnType("nvarchar(120)");
 
-                    b.Property<decimal>("CompanyShare")
+                    b.Property<decimal?>("CompanyShare")
                         .HasColumnType("decimal(18,2)");
 
                     b.Property<string>("Contract")
@@ -5074,22 +5092,22 @@ namespace Accounts.Migrations
                         .HasMaxLength(30)
                         .HasColumnType("nvarchar(30)");
 
-                    b.Property<bool>("IsIneligible")
+                    b.Property<bool?>("IsIneligible")
                         .HasColumnType("bit");
 
-                    b.Property<decimal>("MaximumExpense")
+                    b.Property<decimal?>("MaximumExpense")
                         .HasColumnType("decimal(18,2)");
 
-                    b.Property<decimal>("MaximumPh")
+                    b.Property<decimal?>("MaximumPh")
                         .HasColumnType("decimal(18,2)");
 
-                    b.Property<decimal>("MinimumPh")
+                    b.Property<decimal?>("MinimumPh")
                         .HasColumnType("decimal(18,2)");
 
                     b.Property<decimal>("MinimumSalary")
                         .HasColumnType("decimal(18,2)");
 
-                    b.Property<decimal>("MinimumService")
+                    b.Property<decimal?>("MinimumService")
                         .HasColumnType("decimal(9,2)");
 
                     b.Property<string>("Name")
@@ -5112,7 +5130,7 @@ namespace Accounts.Migrations
                         .HasMaxLength(30)
                         .HasColumnType("nvarchar(30)");
 
-                    b.Property<decimal>("StaffShare")
+                    b.Property<decimal?>("StaffShare")
                         .HasColumnType("decimal(18,2)");
 
                     b.Property<int>("TenantId")
@@ -5978,6 +5996,9 @@ namespace Accounts.Migrations
                     b.Property<bool>("IsActive")
                         .HasColumnType("bit");
 
+                    b.Property<long?>("LegacyStaffTaxId")
+                        .HasColumnType("bigint");
+
                     b.Property<decimal>("MonthlyNetTax")
                         .HasColumnType("decimal(18,2)");
 
@@ -6003,7 +6024,7 @@ namespace Accounts.Migrations
                         .HasMaxLength(50)
                         .HasColumnType("nvarchar(50)");
 
-                    b.Property<decimal>("TaxAdjustment")
+                    b.Property<decimal?>("TaxAdjustment")
                         .HasColumnType("decimal(18,2)");
 
                     b.Property<decimal>("TaxAmount")
@@ -6082,7 +6103,7 @@ namespace Accounts.Migrations
                     b.Property<DateTime>("CreatedOnUtc")
                         .HasColumnType("datetime2");
 
-                    b.Property<decimal>("FixedTaxAmount")
+                    b.Property<decimal?>("FixedTaxAmount")
                         .HasColumnType("decimal(18,2)");
 
                     b.Property<decimal>("FromAmount")
@@ -6123,7 +6144,8 @@ namespace Accounts.Migrations
                     b.HasKey("Id");
 
                     b.HasIndex("TenantId", "TaxYear", "FromAmount")
-                        .IsUnique();
+                        .IsUnique()
+                        .HasFilter("[IsActive] = 1");
 
                     b.ToTable("PayrollTaxSlabs");
                 });
@@ -8287,7 +8309,7 @@ namespace Accounts.Migrations
                         .HasColumnType("datetime2")
                         .HasDefaultValueSql("SYSUTCDATETIME()");
 
-                    b.Property<decimal>("CurrentPay")
+                    b.Property<decimal?>("CurrentPay")
                         .HasColumnType("decimal(18,2)");
 
                     b.Property<int>("DisplayOrder")
