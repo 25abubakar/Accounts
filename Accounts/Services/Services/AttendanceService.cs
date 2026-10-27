@@ -2306,6 +2306,8 @@ public sealed partial class AttendanceService : IAttendanceService
         DateOnly dateTo,
         CancellationToken cancellationToken)
     {
+        await _finalization.EnsureNonWorkingDayRecordsAsync(
+            tenantId, dateFrom, dateTo, visiblePersonIds, cancellationToken);
         await _finalization.ExpireMissingCheckoutStatusesAsync(
             tenantId, dateFrom, dateTo, visiblePersonIds, cancellationToken);
         var sqlRows = await LoadDailyReportRowsAsync(

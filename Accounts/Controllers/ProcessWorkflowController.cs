@@ -7,6 +7,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.Filters;
 using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
 using System.Data;
 using System.Security.Claims;
 
@@ -16,7 +17,7 @@ namespace Accounts.Controllers;
 [Route("api/process-workflow")]
 [Authorize]
 [ProcessWorkflowExceptionFilter]
-public sealed class ProcessWorkflowController : ControllerBase
+public sealed partial class ProcessWorkflowController : ControllerBase
 {
     private readonly ApplicationDbContext _db;
     private readonly ITenantService _tenant;
@@ -299,6 +300,7 @@ public sealed class ProcessWorkflowController : ControllerBase
         try
         {
             await using var command = connection.CreateCommand();
+            command.Transaction = (SqlTransaction?)_db.Database.CurrentTransaction?.GetDbTransaction();
             command.CommandText = procedure;
             command.CommandType = CommandType.StoredProcedure;
             command.CommandTimeout = 30;
@@ -328,6 +330,7 @@ public sealed class ProcessWorkflowController : ControllerBase
         try
         {
             await using var command = connection.CreateCommand();
+            command.Transaction = (SqlTransaction?)_db.Database.CurrentTransaction?.GetDbTransaction();
             command.CommandText = procedure;
             command.CommandType = CommandType.StoredProcedure;
             command.CommandTimeout = 30;

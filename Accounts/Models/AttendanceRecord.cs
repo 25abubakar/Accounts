@@ -8,6 +8,8 @@ public sealed class AttendanceRecord : ITenantEntity
 {
     [Key, DatabaseGenerated(DatabaseGeneratedOption.Identity)]
     public long Id { get; set; }
+    /// <summary>System-derived non-working status; may be reconciled when Timing Chart changes to Day On.</summary>
+    public bool IsSystemGeneratedNonWorkingDay { get; set; }
     public int TenantId { get; set; }
     public Guid PersonId { get; set; }
     public DateOnly AttendanceDate { get; set; }

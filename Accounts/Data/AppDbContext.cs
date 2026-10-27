@@ -34,6 +34,7 @@ namespace Accounts.Data
         public DbSet<PersonHrProfile>          PersonHrProfiles         => Set<PersonHrProfile>();
         public DbSet<PersonEducation>          PersonEducations         => Set<PersonEducation>();
         public DbSet<PersonExperience>         PersonExperiences        => Set<PersonExperience>();
+        public DbSet<PersonEmploymentHistory> PersonEmploymentHistories => Set<PersonEmploymentHistory>();
         public DbSet<PersonHrProfileReadRow>   PersonHrProfileReadRows  => Set<PersonHrProfileReadRow>();
         public DbSet<Designation>              Designations             => Set<Designation>();
         public DbSet<Designation>              JobTitles                => Set<Designation>();
@@ -695,6 +696,16 @@ namespace Accounts.Data
             });
 
             // ——— Person: TenantId FK ————————————————————————————————————————————
+            builder.Entity<PersonEmploymentHistory>(e =>
+            {
+                e.HasQueryFilter(row => _tenantService != null && !_tenantService.IsSuperAdmin &&
+                    _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
+                e.Property(x => x.CreatedOnUtc).HasDefaultValueSql("SYSUTCDATETIME()");
+                e.HasIndex(x => new { x.PersonId, x.EndingDateUtc });
+                e.HasIndex(x => new { x.TenantId, x.EmploymentStatus, x.EndingDateUtc });
+                e.HasOne(x => x.Person).WithMany().HasForeignKey(x => x.PersonId).OnDelete(DeleteBehavior.Cascade);
+            });
+
             builder.Entity<Person>(e =>
             {
                 e.Property(x => x.TenantId).IsRequired();
@@ -1663,7 +1674,7 @@ namespace Accounts.Data
             {
                 row.TenantId, row.AssessorPersonId, row.SubjectPersonId,
                 row.AssessmentYear, row.AssessmentMonth
-            }).IsUnique();
+            }).IsUnique().HasFilter(null);
             builder.Entity<AssessmentBonusRule>().HasIndex(row => row.TenantId).IsUnique();
             builder.Entity<AssessmentSchedule>().HasIndex(row => new { row.TenantId, row.AssessmentYear, row.AssessmentMonth }).IsUnique();
 

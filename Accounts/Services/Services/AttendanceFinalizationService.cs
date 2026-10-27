@@ -9,6 +9,29 @@ public sealed class AttendanceFinalizationService(
     ApplicationDbContext db,
     ILogger<AttendanceFinalizationService> logger)
 {
+    public async Task<int> EnsureNonWorkingDayRecordsAsync(
+        int tenantId, DateOnly dateFrom, DateOnly dateTo,
+        IReadOnlyCollection<Guid>? scopedPersonIds = null,
+        CancellationToken cancellationToken = default)
+    {
+        if (tenantId <= 0 || scopedPersonIds is { Count: 0 }) return 0;
+        var today = BusinessClock.Today("Asia/Karachi");
+        var currentMonth = new DateOnly(today.Year, today.Month, 1);
+        if (dateFrom < currentMonth) dateFrom = currentMonth;
+        if (dateTo > today) dateTo = today;
+        if (dateFrom > dateTo) return 0;
+        var scopeJson = scopedPersonIds == null ? null : System.Text.Json.JsonSerializer.Serialize(scopedPersonIds);
+        // Explicit tenant/person scope is enforced inside SQL, including scheduler calls without request claims.
+        var changed = await db.Database.SqlQueryRaw<int>(
+            "EXEC dbo.usp_Attendance_EnsureNonWorkingDayRecords @TenantId, @DateFrom, @DateTo, @PersonIds",
+            new Microsoft.Data.SqlClient.SqlParameter("@TenantId", tenantId),
+            new Microsoft.Data.SqlClient.SqlParameter("@DateFrom", dateFrom.ToDateTime(TimeOnly.MinValue)),
+            new Microsoft.Data.SqlClient.SqlParameter("@DateTo", dateTo.ToDateTime(TimeOnly.MinValue)),
+            new Microsoft.Data.SqlClient.SqlParameter("@PersonIds", (object?)scopeJson ?? DBNull.Value))
+            .ToListAsync(cancellationToken);
+        return changed.Single();
+    }
+
     // Synchronize only expired, open attendance statuses. No policy, mapping,
     // schedule, punch, or financial value is created/changed by this operation.
     public async Task<int> ExpireMissingCheckoutStatusesAsync(
@@ -159,6 +182,8 @@ public sealed class AttendanceFinalizationService(
         if (monthStart > dateTo)
             return 0;
 
+        var generatedOffDays = await EnsureNonWorkingDayRecordsAsync(
+            tenantId, monthStart, dateTo, scopedPersonIds, cancellationToken);
         var expiredStatuses = await ExpireMissingCheckoutStatusesAsync(
             tenantId, monthStart, dateTo, scopedPersonIds, cancellationToken);
 
@@ -374,7 +399,7 @@ public sealed class AttendanceFinalizationService(
         if (changed > 0)
             await SaveFinalizationsWithDuplicateRetryAsync(tenantId, monthStart, dateTo, cancellationToken);
 
-        return changed + expiredStatuses;
+        return changed + expiredStatuses + generatedOffDays;
     }
 
     private async Task SaveFinalizationsWithDuplicateRetryAsync(

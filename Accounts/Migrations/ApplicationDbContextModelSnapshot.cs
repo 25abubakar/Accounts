@@ -2353,6 +2353,8 @@ namespace Accounts.Migrations
 
             modelBuilder.Entity("Accounts.Models.AttendanceRecord", b =>
                 {
+                    b.Property<bool>("IsSystemGeneratedNonWorkingDay")
+                        .HasColumnType("bit");
                     b.Property<long>("Id")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("bigint");
