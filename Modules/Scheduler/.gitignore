@@ -1,0 +1,10 @@
+bin/
+obj/
+.packages/
+Frontend/dist/
+Frontend/.vite/
+Verification/bin/
+Verification/obj/
+Verification/*.log
+Verification/existing-source-baseline.json
+wwwroot/assets/

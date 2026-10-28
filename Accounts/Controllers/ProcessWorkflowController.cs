@@ -178,7 +178,14 @@ public sealed partial class ProcessWorkflowController : ControllerBase
         if (dto.Title.Trim().Length > 200)
             return BadRequest(new { message = "Title cannot exceed 200 characters." });
 
-        object? result = null;
+        var result = await SaveReportAsync(dto, ct);
+        await PublishProcessChangedAsync("submitted");
+        return Ok(result);
+    }
+
+    private async Task<ProcessReportSubmissionResultDto?> SaveReportAsync(SubmitProcessReportDto dto, CancellationToken ct)
+    {
+        ProcessReportSubmissionResultDto? result = null;
         await WithCommandAsync("dbo.usp_ProcessReport_Submit", async command =>
         {
             AddScope(command);
@@ -194,15 +201,14 @@ public sealed partial class ProcessWorkflowController : ControllerBase
                 string.IsNullOrWhiteSpace(dto.SourceRecordId) ? DBNull.Value : dto.SourceRecordId.Trim();
             await using var reader = await command.ExecuteReaderAsync(ct);
             if (await reader.ReadAsync(ct))
-                result = new
+                result = new ProcessReportSubmissionResultDto
                 {
-                    id = reader.GetInt64(reader.GetOrdinal("Id")),
-                    requestNumber = DbString(reader, "RequestNumber"),
-                    rowVersion = reader.GetString(reader.GetOrdinal("RowVersion"))
+                    Id = reader.GetInt64(reader.GetOrdinal("Id")),
+                    RequestNumber = DbString(reader, "RequestNumber"),
+                    RowVersion = reader.GetString(reader.GetOrdinal("RowVersion"))
                 };
         }, ct);
-        await PublishProcessChangedAsync("submitted");
-        return Ok(result);
+        return result;
     }
 
     [HttpPost("tasks/{reportId:long}/actions")]

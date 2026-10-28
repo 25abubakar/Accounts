@@ -19,10 +19,54 @@ public sealed class AttendanceCorrectionRequestContextDto
     public string? Reason { get; set; }
     public string? ReportingManagerName { get; set; }
     public IReadOnlyList<AttendanceCorrectionStatusDto> Statuses { get; set; } = [];
+    public IReadOnlyList<AttendanceCorrectionStatusDto> LeaveTypes { get; set; } = [];
 }
 
 public sealed class AttendanceCorrectionStatusDto
 {
     public int Id { get; set; }
     public string Name { get; set; } = string.Empty;
+}
+
+public sealed class SubmitAttendanceRequestDto
+{
+    public DateOnly AttendanceDate { get; set; }
+    [Required] public string Type { get; set; } = "Status";
+    public int? RequestedStatusId { get; set; }
+    public TimeOnly? TimeFrom { get; set; }
+    public TimeOnly? TimeTo { get; set; }
+    public string? MealStatus { get; set; }
+    public DateOnly? DateTo { get; set; }
+    public int? LeaveTypeId { get; set; }
+    [Required, StringLength(2000)] public string Remarks { get; set; } = string.Empty;
+}
+
+public sealed class AttendanceRequestDetailsDto
+{
+    public string Type { get; set; } = "Status";
+    public DateOnly Date { get; set; }
+    public DateOnly? DateTo { get; set; }
+    public int? LeaveTypeId { get; set; }
+    public string? LeaveType { get; set; }
+    public Guid PersonId { get; set; }
+    public long? AttendanceId { get; set; }
+    public string CurrentStatus { get; set; } = string.Empty;
+    public int? RequestedStatusId { get; set; }
+    public string? RequestedStatus { get; set; }
+    public TimeOnly? TimeFrom { get; set; }
+    public TimeOnly? TimeTo { get; set; }
+    public int? Minutes { get; set; }
+    public string Remarks { get; set; } = string.Empty;
+}
+
+public sealed class AttendanceRequestHistoryDto
+{
+    public long Id { get; set; }
+    public string? RequestNumber { get; set; }
+    public string FullName { get; set; } = string.Empty;
+    public string? EmployeeNumber { get; set; }
+    public AttendanceRequestDetailsDto Details { get; set; } = new();
+    public string Status { get; set; } = string.Empty;
+    public string StatusCode { get; set; } = string.Empty;
+    public bool IsApproved { get; set; }
 }

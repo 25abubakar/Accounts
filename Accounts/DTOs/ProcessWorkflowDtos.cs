@@ -1,5 +1,12 @@
 namespace Accounts.DTOs;
 
+public sealed class ProcessReportSubmissionResultDto
+{
+    public long Id { get; set; }
+    public string? RequestNumber { get; set; }
+    public string RowVersion { get; set; } = string.Empty;
+}
+
 public sealed class ProcessLookupDto
 {
     public string LookupType { get; set; } = string.Empty;

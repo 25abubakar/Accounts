@@ -266,6 +266,7 @@ namespace Accounts.Controllers
                 // E-mail / Reminders / Annual Reports (DB-seeded; keep seed catalog aligned)
                 new("E-mail",               "Mail",               null,                          null,                 82, new()),
                 new("LT Email",             "MailOpen",           "/email/lt-email",             "E-mail",              1, new()),
+                new("Fax",                  "Printer",            "/email/fax",                  "E-mail",              2, new()),
                 new("Reminders",            "Bell",               null,                          null,                 83, new()),
                 new("Receivable",           "Wallet",             "/reminders/receivable",       "Reminders",           1, new()),
                 new("Payable",              "Banknote",           "/reminders/payable",          "Reminders",           2, new()),

@@ -1,0 +1,5 @@
+{
+  "extends":"../../../Frontend/Frontend-Accounts/tsconfig.app.json",
+  "compilerOptions":{"tsBuildInfoFile":"./obj/scheduler-ui.tsbuildinfo","incremental":false,"types":[],"skipLibCheck":true},
+  "include":["../../../Frontend/Frontend-Accounts/src/pages/scheduler/**/*.tsx","./scheduler-env.d.ts"]
+}
