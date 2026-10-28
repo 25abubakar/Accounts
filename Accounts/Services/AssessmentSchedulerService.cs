@@ -5,31 +5,17 @@ using Microsoft.EntityFrameworkCore;
 
 namespace Accounts.Services;
 
-public sealed class AssessmentSchedulerService(IServiceScopeFactory scopeFactory, ILogger<AssessmentSchedulerService> logger) : BackgroundService
+public sealed class AssessmentSchedulerService(ApplicationDbContext db, RbacService rbac, ILogger<AssessmentSchedulerService> logger)
 {
     private readonly SemaphoreSlim _runGate = new(1, 1);
-    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
-    {
-        try
-        {
-            await RunNowAsync(stoppingToken);
-            using var timer = new PeriodicTimer(TimeSpan.FromHours(1));
-            while (await timer.WaitForNextTickAsync(stoppingToken)) await RunNowAsync(stoppingToken);
-        }
-        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { }
-    }
-
-    public async Task RunNowAsync(CancellationToken ct = default)
+    public async Task RunTenantAsync(int requestedTenantId, bool generate, bool reminders, CancellationToken ct = default)
     {
         if (!await _runGate.WaitAsync(0, ct)) return;
         try
         {
-            await using var scope = scopeFactory.CreateAsyncScope();
-            var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
-            var rbac = scope.ServiceProvider.GetRequiredService<RbacService>();
-            await AssessmentSchema.EnsureCurrentAsync(db);
-            var tenants = await db.Tenants.AsNoTracking().Where(x => x.IsActive).Select(x => x.Id).ToListAsync(ct);
-            var org = await db.OrganizationTree.IgnoreQueryFilters().AsNoTracking().Select(x => new { x.Id, x.ParentId }).ToListAsync(ct);
+            var tenants = await db.Tenants.AsNoTracking().Where(x => x.Id==requestedTenantId && x.IsActive).Select(x => x.Id).ToListAsync(ct);
+            // OrganizationTree is shared location metadata; all staff and assessment queries below are explicitly tenant-scoped.
+            var org = await db.OrganizationTree.AsNoTracking().Select(x => new { x.Id, x.ParentId }).ToListAsync(ct);
             var children = org.Where(x => x.ParentId.HasValue).GroupBy(x => x.ParentId!.Value).ToDictionary(x => x.Key, x => x.Select(y => y.Id).ToList());
             var assessmentMenuId = await db.Menus.AsNoTracking()
                 .Where(x => x.IsActive && x.Route == "/assessment/mark")
@@ -53,7 +39,13 @@ public sealed class AssessmentSchedulerService(IServiceScopeFactory scopeFactory
                 var previousMonth = new DateOnly(today.Year, today.Month, 1).AddMonths(-1);
                 var previousCycle = await ResolveCycleAsync(db, tenantId, previousMonth.Year, previousMonth.Month, rule, ct);
                 var cycle = currentCycle.Contains(today) ? currentCycle : previousCycle.Contains(today) ? previousCycle : (AssessmentCycle?)null;
-                if (!cycle.HasValue) continue;
+                if (!cycle.HasValue)
+                {
+                    if(reminders)
+                        await db.AppNotes.IgnoreQueryFilters().Where(x=>x.TenantId==tenantId&&x.EntityType=="ASSESSMENT_REMINDER"&&x.IsActive)
+                            .ExecuteUpdateAsync(set=>set.SetProperty(x=>x.IsActive,false).SetProperty(x=>x.EndDateUtc,DateTime.UtcNow).SetProperty(x=>x.UpdatedOnUtc,DateTime.UtcNow),ct);
+                    continue;
+                }
 
                 var people = await db.Persons.IgnoreQueryFilters().AsNoTracking().Where(x => x.TenantId == tenantId && x.IsActive && x.IdentityUserId != null && x.Staff != null && x.Staff.Vacancy != null)
                     .Select(x => new PersonRow(x.PersonId, x.IdentityUserId!, x.Staff!.StaffId, x.Staff.Vacancy!.OrganizationId,
@@ -76,9 +68,11 @@ public sealed class AssessmentSchedulerService(IServiceScopeFactory scopeFactory
                         subjects = lower.Where(x => Rank(x.JobTitle) == directRank).ToList();
                     }
                     var existing = await db.StaffAssessments.IgnoreQueryFilters().Where(x => x.TenantId == tenantId && x.AssessorPersonId == assessor.PersonId && x.AssessmentYear == cycle.Value.Year && x.AssessmentMonth == cycle.Value.Month).ToListAsync(ct);
-                    foreach (var subject in subjects.Where(x => existing.All(y => y.SubjectPersonId != x.PersonId)))
+                    foreach (var subject in subjects.Where(x => generate && existing.All(y => y.SubjectPersonId != x.PersonId)))
                         db.StaffAssessments.Add(new StaffAssessment { TenantId = tenantId, AssessorPersonId = assessor.PersonId, SubjectPersonId = subject.PersonId, AssessmentYear = cycle.Value.Year, AssessmentMonth = (byte)cycle.Value.Month, CreatedDateUtc = DateTime.UtcNow });
                     await db.SaveChangesAsync(ct);
+
+                    if(!reminders)continue;
 
                     var submittedSubjectIds = await db.StaffAssessments.IgnoreQueryFilters().AsNoTracking()
                         .Where(x => x.TenantId == tenantId && x.AssessmentYear == cycle.Value.Year &&
@@ -117,8 +111,8 @@ public sealed class AssessmentSchedulerService(IServiceScopeFactory scopeFactory
                 }
             }
         }
-        catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
-        catch (Exception ex) { logger.LogError(ex, "Assessment scheduler execution failed."); }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+        catch (Exception ex) { logger.LogError(ex, "Assessment scheduler execution failed for tenant {TenantId}.",requestedTenantId);throw; }
         finally { _runGate.Release(); }
     }
 

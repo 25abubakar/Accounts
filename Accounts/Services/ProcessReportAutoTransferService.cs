@@ -5,25 +5,9 @@ namespace Accounts.Services;
 
 public sealed class ProcessReportAutoTransferService(
     IServiceScopeFactory scopeFactory,
-    ILogger<ProcessReportAutoTransferService> logger) : BackgroundService
+    ILogger<ProcessReportAutoTransferService> logger)
 {
-    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
-    {
-        try
-        {
-            await RunAsync(stoppingToken);
-            using var timer = new PeriodicTimer(TimeSpan.FromMinutes(5));
-            while (await timer.WaitForNextTickAsync(stoppingToken))
-                await RunAsync(stoppingToken);
-        }
-        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
-        {
-            // Host shutdown and debugger restarts cancel PeriodicTimer by design.
-            // Treat that cancellation as a clean worker stop, not an application error.
-        }
-    }
-
-    private async Task RunAsync(CancellationToken ct)
+    public async Task RunAsync(CancellationToken ct)
     {
         try
         {
@@ -36,10 +20,11 @@ public sealed class ProcessReportAutoTransferService(
                 "EXEC dbo.usp_ProcessReport_AutoTransferOverdue",
                 ct);
         }
-        catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
         catch (Exception error)
         {
             logger.LogError(error, "Unable to auto-transfer overdue process reports.");
+            throw;
         }
     }
 }

@@ -1,3 +1,4 @@
+using Accounts.Data;
 using Accounts.DTOs;
 using Accounts.Services.Interfaces;
 using Accounts.Services.Services;
@@ -5,74 +6,24 @@ using Microsoft.EntityFrameworkCore;
 
 namespace Accounts.Services;
 
-public sealed class AttendanceFinalizationScheduler(
-    IServiceScopeFactory scopeFactory,
-    IRealtimePublisher realtime,
-    ILogger<AttendanceFinalizationScheduler> logger) : BackgroundService
+// The Windows scheduler invokes one tenant at a time. No startup/hourly loop remains here.
+public sealed class AttendanceFinalizationScheduler(ApplicationDbContext db,
+    AttendanceFinalizationService service, IRealtimePublisher realtime, ILogger<AttendanceFinalizationScheduler> logger)
 {
-    private readonly SemaphoreSlim _runGate = new(1, 1);
-
-    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    public async Task<int> RunTenantAsync(int tenantId, CancellationToken ct)
     {
-        try
-        {
-            await RunNowAsync(stoppingToken);
-            using var timer = new PeriodicTimer(TimeSpan.FromHours(1));
-            while (await timer.WaitForNextTickAsync(stoppingToken))
-                await RunNowAsync(stoppingToken);
-        }
-        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
-        {
-        }
-    }
-
-    public async Task RunNowAsync(CancellationToken cancellationToken = default)
-    {
-        if (!await _runGate.WaitAsync(0, cancellationToken))
-            return;
-
-        try
-        {
-            await using var scope = scopeFactory.CreateAsyncScope();
-            var service = scope.ServiceProvider.GetRequiredService<AttendanceFinalizationService>();
-            var db = scope.ServiceProvider.GetRequiredService<Accounts.Data.ApplicationDbContext>();
-            var changesByTenant = await service.RefreshCurrentPeriodsAsync(cancellationToken);
-            foreach (var change in changesByTenant)
-            {
-                var timeZoneId = await db.AttendancePolicies.IgnoreQueryFilters().AsNoTracking()
-                    .Where(policy => policy.IsActive && (policy.TenantId == change.Key || policy.TenantId == null))
-                    .OrderByDescending(policy => policy.TenantId == change.Key)
-                    .Select(policy => policy.TimeZoneId)
-                    .FirstOrDefaultAsync(cancellationToken);
-                var today = BusinessClock.Today(timeZoneId);
-                logger.LogInformation(
-                    "Attendance finalizer created or updated {Count} daily rows for tenant {TenantId}.",
-                    change.Value,
-                    change.Key);
-                await realtime.PublishEventToTenantAsync(
-                    change.Key,
-                    RealtimeEventDto.Create(
-                        RealtimeEventTypes.DeductionChanged,
-                        "deduction",
-                        "attendance-finalized",
-                        change.Key,
-                        data: new Dictionary<string, string>
-                        {
-                            ["year"] = today.Year.ToString(),
-                            ["month"] = today.Month.ToString()
-                        }));
-            }
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-        }
-        catch (Exception exception)
-        {
-            logger.LogError(exception, "Hourly attendance finalization failed.");
-        }
-        finally
-        {
-            _runGate.Release();
-        }
+        if (!await db.Tenants.AsNoTracking().AnyAsync(x => x.Id == tenantId && x.IsActive, ct))
+            throw new InvalidOperationException("The scheduled tenant is not active.");
+        var zone = await db.AttendancePolicies.IgnoreQueryFilters().AsNoTracking()
+            .Where(x => x.IsActive && (x.TenantId == tenantId || x.TenantId == null))
+            .OrderByDescending(x => x.TenantId == tenantId).Select(x => x.TimeZoneId).FirstOrDefaultAsync(ct);
+        var today = BusinessClock.Today(zone);
+        var changes = await service.RefreshPeriodAsync(tenantId, today.Year, today.Month, ct);
+        if (changes > 0)
+            await realtime.PublishEventToTenantAsync(tenantId, RealtimeEventDto.Create(
+                RealtimeEventTypes.DeductionChanged, "deduction", "attendance-finalized", tenantId,
+                data: new Dictionary<string, string> { ["year"] = today.Year.ToString(), ["month"] = today.Month.ToString() }));
+        logger.LogInformation("Attendance finalizer updated {Count} rows for tenant {TenantId}.", changes, tenantId);
+        return changes;
     }
 }

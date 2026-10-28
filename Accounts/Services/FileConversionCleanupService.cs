@@ -5,24 +5,9 @@ namespace Accounts.Services;
 public sealed class FileConversionCleanupService(
     IWebHostEnvironment environment,
     IOptions<FileConversionOptions> options,
-    ILogger<FileConversionCleanupService> logger) : BackgroundService
+    ILogger<FileConversionCleanupService> logger)
 {
-    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
-    {
-        try
-        {
-            await CleanupAsync(stoppingToken);
-            using var timer = new PeriodicTimer(TimeSpan.FromMinutes(15));
-            while (await timer.WaitForNextTickAsync(stoppingToken))
-                await CleanupAsync(stoppingToken);
-        }
-        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
-        {
-            // Host shutdown / debugger restart cancels PeriodicTimer by design.
-        }
-    }
-
-    private Task CleanupAsync(CancellationToken cancellationToken)
+    public Task RunAsync(CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
         var root = Path.Combine(environment.ContentRootPath, "App_Data", "file-conversion-temp");
@@ -34,8 +19,13 @@ public sealed class FileConversionCleanupService(
             cancellationToken.ThrowIfCancellationRequested();
             try
             {
-                if (Directory.GetLastWriteTimeUtc(directory) < cutoff)
-                    Directory.Delete(directory, recursive: true);
+                var resolved = Path.GetFullPath(directory);
+                var approvedRoot = Path.GetFullPath(root).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+                if (!resolved.StartsWith(approvedRoot, StringComparison.OrdinalIgnoreCase) ||
+                    (File.GetAttributes(resolved) & FileAttributes.ReparsePoint) != 0)
+                    throw new InvalidOperationException("Conversion cleanup target is outside the approved directory or is a link.");
+                if (Directory.GetLastWriteTimeUtc(resolved) < cutoff)
+                    Directory.Delete(resolved, recursive: true);
             }
             catch (Exception exception)
             {

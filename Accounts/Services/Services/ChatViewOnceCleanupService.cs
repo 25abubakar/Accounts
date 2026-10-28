@@ -6,37 +6,9 @@ namespace Accounts.Services.Services;
 public sealed class ChatViewOnceCleanupService(
     IServiceScopeFactory scopeFactory,
     IWebHostEnvironment environment,
-    ILogger<ChatViewOnceCleanupService> logger) : BackgroundService
+    ILogger<ChatViewOnceCleanupService> logger)
 {
-    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
-    {
-        while (!stoppingToken.IsCancellationRequested)
-        {
-            try
-            {
-                await ExpireBatchAsync(stoppingToken);
-            }
-            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
-            {
-                return;
-            }
-            catch (Exception exception)
-            {
-                logger.LogError(exception, "View Once cleanup failed; it will retry on the next cycle.");
-            }
-
-            try
-            {
-                await Task.Delay(TimeSpan.FromHours(1), stoppingToken);
-            }
-            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
-            {
-                return;
-            }
-        }
-    }
-
-    private async Task ExpireBatchAsync(CancellationToken cancellationToken)
+    public async Task RunAsync(CancellationToken cancellationToken)
     {
         await using var scope = scopeFactory.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
@@ -79,6 +51,9 @@ public sealed class ChatViewOnceCleanupService(
         if (string.IsNullOrWhiteSpace(relativePath)) return;
         var normalized = relativePath.Replace('/', Path.DirectorySeparatorChar);
         var primary = Path.Combine(environment.ContentRootPath, "App_Data", "chat-uploads", normalized);
+        var privateRoot = Path.GetFullPath(Path.Combine(environment.ContentRootPath, "App_Data", "chat-uploads")) + Path.DirectorySeparatorChar;
+        if (!Path.GetFullPath(primary).StartsWith(privateRoot, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("Chat cleanup path is outside the approved upload directory.");
         if (File.Exists(primary))
         {
             File.Delete(primary);
@@ -87,6 +62,9 @@ public sealed class ChatViewOnceCleanupService(
 
         var webRoot = environment.WebRootPath ?? Path.Combine(environment.ContentRootPath, "wwwroot");
         var legacy = Path.Combine(webRoot, "chat-uploads", normalized);
+        var legacyRoot = Path.GetFullPath(Path.Combine(webRoot, "chat-uploads")) + Path.DirectorySeparatorChar;
+        if (!Path.GetFullPath(legacy).StartsWith(legacyRoot, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("Chat cleanup path is outside the approved legacy directory.");
         if (File.Exists(legacy)) File.Delete(legacy);
     }
 }
