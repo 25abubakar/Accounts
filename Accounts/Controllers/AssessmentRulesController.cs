@@ -2,6 +2,7 @@
 using Accounts.Models;
 using Accounts.Services.Interfaces;
 using Accounts.Services.Services;
+using Accounts.Services.Scheduler;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -14,7 +15,7 @@ namespace Accounts.Controllers;
 public sealed class AssessmentRulesController(
     ApplicationDbContext db,
     ITenantService tenant,
-    TenantPermissionService tenantPermissions) : ControllerBase
+    TenantPermissionService tenantPermissions,SchedulerDefinitionPlan scheduler) : ControllerBase
 {
     [HttpGet]
     public async Task<IActionResult> Get(CancellationToken ct)
@@ -42,6 +43,7 @@ public sealed class AssessmentRulesController(
             OpenDay = (byte)dto.OpenDay, CloseDay = (byte)dto.CloseDay,
             IsActive = dto.IsActive, CreatedDateUtc = DateTime.UtcNow };
         db.AssessmentBonusRules.Add(row); await db.SaveChangesAsync(ct);
+        await scheduler.RuleChangedAsync(tenant.RequiredTenantId,ct);
         return Ok(new { row.Id, message = "Assessment bonus rule created." });
     }
 
@@ -58,6 +60,7 @@ public sealed class AssessmentRulesController(
         row.OpenDay = (byte)dto.OpenDay; row.CloseDay = (byte)dto.CloseDay;
         row.AppliesToHigherRanks = true; row.IsActive = dto.IsActive;
         row.ModifiedDateUtc = DateTime.UtcNow; await db.SaveChangesAsync(ct);
+        await scheduler.RuleChangedAsync(tenant.RequiredTenantId,ct);
         return Ok(new { message = "Assessment bonus rule updated." });
     }
 
@@ -68,6 +71,7 @@ public sealed class AssessmentRulesController(
         var row = await db.AssessmentBonusRules.SingleOrDefaultAsync(item => item.Id == id, ct);
         if (row == null) return NotFound();
         db.AssessmentBonusRules.Remove(row); await db.SaveChangesAsync(ct);
+        await scheduler.RuleChangedAsync(tenant.RequiredTenantId,ct);
         return NoContent();
     }
 

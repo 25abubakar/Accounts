@@ -8,7 +8,7 @@ namespace Accounts.Services.Scheduler;
 
 public sealed class SchedulerHealthJob(SchedulerDbContext db) : IModuleJob
 {
-    public ModuleJobInfo Info => new("System.Health","System","Scheduler health check",true,"Checks scheduler database connectivity.");
+    public ModuleJobInfo Info => new("System.Health","System","Scheduler health check",true,"Internal database connectivity diagnostic.",SystemOnly:true);
     public async Task<string> ExecuteAsync(int tenantId,CancellationToken ct)
     {
         await db.Database.SqlQueryRaw<int>("SELECT 1 AS Value").SingleAsync(ct);

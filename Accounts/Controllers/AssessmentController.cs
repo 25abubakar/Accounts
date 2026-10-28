@@ -5,6 +5,7 @@ using Accounts.Models.SpListRows;
 using Accounts.Services.Interfaces;
 using Accounts.Services.Services;
 using Accounts.Services;
+using Accounts.Services.Scheduler;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -24,7 +25,7 @@ public sealed class AssessmentController : ControllerBase
     private readonly IOrganizationDataScopeService _dataScope;
     private readonly ITenantService _tenant;
     private readonly TenantPermissionService _tenantPermissions;
-    private readonly AssessmentSchedulerService _assessmentScheduler;
+    private readonly SchedulerDefinitionPlan _assessmentScheduler;
     private readonly PayrollCalculationService _payroll;
 
     public AssessmentController(
@@ -33,7 +34,7 @@ public sealed class AssessmentController : ControllerBase
         IOrganizationDataScopeService dataScope,
         ITenantService tenant,
         TenantPermissionService tenantPermissions,
-        AssessmentSchedulerService assessmentScheduler,
+        SchedulerDefinitionPlan assessmentScheduler,
         PayrollCalculationService payroll)
     {
         _db = db;
@@ -784,10 +785,11 @@ public sealed class AssessmentController : ControllerBase
         if (row == null) { row = new AssessmentSchedule { TenantId = _tenant.TenantId.Value, AssessmentYear = today.Year, AssessmentMonth = (byte)today.Month, CreatedDateUtc = DateTime.UtcNow, CreatedByUserId = User.FindFirstValue(ClaimTypes.NameIdentifier) }; _db.AssessmentSchedules.Add(row); }
         row.OpenDay = (byte)dto.OpenDate.Day; row.CloseDay = rule.CloseDay; row.IsManualOverride = true; row.IsActive = true;
         await _db.SaveChangesAsync(ct);
-        await _assessmentScheduler.RunNowAsync(CancellationToken.None);
+        var generationQueued=await _assessmentScheduler.QueueAssessmentAsync(_tenant.RequiredTenantId,ct);
         var generated = await _db.StaffAssessments.AsNoTracking().CountAsync(x => x.AssessmentYear == today.Year && x.AssessmentMonth == today.Month, ct);
         var cycle = AssessmentCycleWindow.Create(today.Year, today.Month, row.OpenDay, row.CloseDay);
-        return Ok(new { message = $"Assessment entry is scheduled from {cycle.OpenDate:dd MMM yyyy} through {cycle.CloseDate:dd MMM yyyy}.", generatedRows = generated });
+        return Ok(new { message = $"Assessment entry is scheduled from {cycle.OpenDate:dd MMM yyyy} through {cycle.CloseDate:dd MMM yyyy}."+
+            (generationQueued?" Generation has been queued for the scheduler worker.":" Enable/configure the monthly generation job to generate entries."), generatedRows = generated,generationQueued });
     }
 
     private async Task<(AssessmentCycle Cycle, bool IsManualOverride)> ResolveCycleAsync(

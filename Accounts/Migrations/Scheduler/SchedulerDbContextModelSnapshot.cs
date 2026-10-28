@@ -51,6 +51,13 @@ namespace Accounts.Migrations.Scheduler
                     b.Property<int>("IntervalDays")
                         .HasColumnType("int");
 
+                    b.Property<int>("IntervalMinutes")
+                        .HasColumnType("int");
+
+                    b.Property<string>("ManagedKey")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
                     b.Property<string>("MisfirePolicy")
                         .IsRequired()
                         .HasMaxLength(20)
@@ -119,6 +126,10 @@ namespace Accounts.Migrations.Scheduler
 
                     b.HasIndex("TenantId", "CreationKey")
                         .IsUnique();
+
+                    b.HasIndex("TenantId", "ManagedKey")
+                        .IsUnique()
+                        .HasFilter("[ManagedKey] IS NOT NULL");
 
                     b.ToTable("SchedulerDefinitions", (string)null);
                 });
@@ -218,6 +229,33 @@ namespace Accounts.Migrations.Scheduler
                     b.HasIndex("ScheduleId");
 
                     b.ToTable("SchedulerCommands", (string)null);
+                });
+
+            modelBuilder.Entity("Accounts.Models.Scheduler.SchedulerRealtimeEvent", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime>("CreatedUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<DateTime?>("DeliveredUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("PayloadJson")
+                        .IsRequired()
+                        .HasMaxLength(8000)
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<int>("TenantId")
+                        .HasColumnType("int");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("DeliveredUtc", "CreatedUtc");
+
+                    b.ToTable("SchedulerRealtimeEvents", (string)null);
                 });
 
             modelBuilder.Entity("Accounts.Models.Scheduler.ScheduleRun", b =>

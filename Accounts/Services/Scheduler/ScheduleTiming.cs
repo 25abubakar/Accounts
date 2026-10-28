@@ -5,7 +5,7 @@ namespace Accounts.Services.Scheduler;
 
 public static class ScheduleTiming
 {
-    public static readonly string[] Modes = ["Hourly", "Daily", "Weekly", "Monthly", "IntervalDays", "Once"];
+    public static readonly string[] Modes = ["IntervalMinutes", "Hourly", "Daily", "Weekly", "Monthly", "IntervalDays", "Once"];
     public static TimeZoneInfo Pakistan => TimeZoneInfo.FindSystemTimeZoneById("Asia/Karachi");
     public static DateTime LocalNow => TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, Pakistan);
     public static DateTime StartUtc(ScheduleDefinition value) => ToUtc(value.StartLocal);
@@ -16,6 +16,7 @@ public static class ScheduleTiming
         if (!Modes.Contains(value.Mode)) return "Choose a supported schedule frequency.";
         if (!TimeOnly.TryParseExact(value.Time, "HH:mm", out _)) return "Time must use HH:mm format.";
         if (value.IntervalDays is < 1 or > 365) return "Interval must be 1–365 days.";
+        if (value.IntervalMinutes is < 1 or > 1440) return "Minute interval must be 1–1440.";
         if (value.DayOfMonth is < 1 or > 31 || value.DayOfWeek is < 0 or > 6) return "Choose a valid day.";
         if (value.StartLocal.Year is < 2020 or > 2100 || value.StartLocal.Kind != DateTimeKind.Unspecified) return "Start must be a local Pakistan date/time without a UTC suffix.";
         if (value.MisfirePolicy is not ("RunOnce" or "Skip")) return "Choose RunOnce or Skip for missed executions.";
@@ -29,10 +30,10 @@ public static class ScheduleTiming
         var anchor = StartUtc(value);
         afterUtc = DateTime.SpecifyKind(afterUtc, DateTimeKind.Utc);
         if (value.Mode == "Once") return anchor > afterUtc ? anchor : null;
-        if (value.Mode == "IntervalDays")
+        if (value.Mode is "IntervalDays" or "IntervalMinutes")
         {
             if (anchor > afterUtc) return anchor;
-            var interval = TimeSpan.FromDays(value.IntervalDays).Ticks;
+            var interval = value.Mode=="IntervalDays" ? TimeSpan.FromDays(value.IntervalDays).Ticks : TimeSpan.FromMinutes(value.IntervalMinutes).Ticks;
             return anchor.AddTicks(((afterUtc.Ticks - anchor.Ticks) / interval + 1) * interval);
         }
         var lower = afterUtc >= anchor ? afterUtc : anchor.AddTicks(-1);

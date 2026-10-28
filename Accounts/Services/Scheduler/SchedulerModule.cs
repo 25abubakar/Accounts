@@ -14,6 +14,7 @@ public static class SchedulerModule
     {
         services.AddSchedulerStorage(configuration);
         services.AddScoped<SchedulerAccessFilter>();
+        services.AddHostedService<SchedulerRealtimeRelay>();
         services.AddAuthorization(options => options.AddPolicy("SchedulerAdmin", policy => policy.RequireAuthenticatedUser()
             .RequireAssertion(context => context.User.HasClaim("is_tenant_admin", "true") || context.User.IsInRole("TenantAdmin"))));
         return services;
@@ -31,9 +32,17 @@ public static class SchedulerModule
         services.AddDbContext<SchedulerDbContext>(options => options.UseSqlServer(scheduler));
         services.AddScoped<BusinessReadConnection>();
         services.AddScoped<IModuleJob, SchedulerHealthJob>();
-        services.AddScoped<IModuleJob, AttendanceStatusCheck>();
-        services.AddScoped<IModuleJob, AssessmentCycleCheck>();
+        services.AddScoped<IModuleJob, AttendanceFinalizationJob>();
+        services.AddScoped<IModuleJob, AssessmentGenerationJob>();
+        services.AddScoped<IModuleJob, AssessmentRemindersJob>();
+        services.AddScoped<IModuleJob, ProcessAutoTransferJob>();
+        services.AddScoped<IModuleJob, ChatExpiryJob>();
+        services.AddScoped<IModuleJob, ConversionCleanupJob>();
+        services.AddScoped<IModuleJob, IdempotencyExpiryJob>();
+        services.AddScoped<ScheduledTenantContext>();
+        services.AddScoped<SchedulerDefinitionPlan>();
         services.AddSingleton<ScheduleSynchronizer>();
+        services.AddSingleton<SchedulerCalendar>();
         services.AddScoped<ModuleJobDispatcher>();
         services.AddSingleton<SchedulerQueue>();
         return services;

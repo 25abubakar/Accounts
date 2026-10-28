@@ -6,7 +6,7 @@ using Microsoft.EntityFrameworkCore;
 namespace Accounts.Services.Scheduler;
 
 public sealed class ModuleJobDispatcher(SchedulerDbContext db, IEnumerable<IModuleJob> handlers,
-    SchedulerStorage storage, ILogger<ModuleJobDispatcher> logger)
+    SchedulerStorage storage, ILogger<ModuleJobDispatcher> logger, ScheduledTenantContext? executionTenant=null)
 {
     public async Task ExecuteAsync(long runId, CancellationToken ct)
     {
@@ -15,9 +15,10 @@ public sealed class ModuleJobDispatcher(SchedulerDbContext db, IEnumerable<IModu
         var definition = await db.Definitions.IgnoreQueryFilters().AsNoTracking()
             .SingleOrDefaultAsync(x => x.Id == candidate.ScheduleId && x.TenantId == candidate.TenantId, ct);
         if (definition == null) return;
+        var handler = handlers.SingleOrDefault(x => x.Info.Key == definition.Handler);
         // Also prevents two different definitions of the same tenant/handler overlapping.
         await using var lease = await SchedulerSqlLease.TryAcquireAsync(storage.SchedulerConnection,
-            $"AccountsScheduler:Handler:{definition.TenantId}:{definition.Handler}", ct);
+            $"AccountsScheduler:Handler:{definition.TenantId}:{handler?.Info.ConcurrencyKey??definition.Handler}", ct);
         if (lease == null) return;
         var current = await db.Definitions.IgnoreQueryFilters().AsNoTracking()
             .SingleOrDefaultAsync(x => x.Id == definition.Id && x.TenantId == definition.TenantId, ct);
@@ -27,6 +28,11 @@ public sealed class ModuleJobDispatcher(SchedulerDbContext db, IEnumerable<IModu
         var now = DateTime.UtcNow;
         var recovering = run.Status == "Running" && run.LeaseUntilUtc <= now;
         if (!recovering && (run.Status is not ("Queued" or "RetryScheduled") || run.NextAttemptUtc > now)) return;
+        if(handler==null||handler.Info.SystemOnly!=(definition.TenantId==0))
+        {
+            run.Status="Failed";run.Error="The handler is unavailable or has an invalid system/tenant scope.";
+            run.FinishedUtc=now;run.NextAttemptUtc=null;run.LeaseUntilUtc=null;await db.SaveChangesAsync(ct);return;
+        }
         if (!run.IsManual && (!definition.Enabled || run.ScheduleRevision != definition.Revision))
         {
             run.Status = "Cancelled"; run.Result = "Schedule was disabled or changed before execution.";
@@ -45,8 +51,17 @@ public sealed class ModuleJobDispatcher(SchedulerDbContext db, IEnumerable<IModu
         timeout.CancelAfter(TimeSpan.FromSeconds(definition.TimeoutSeconds));
         try
         {
-            var handler = handlers.SingleOrDefault(x => x.Info.Key == definition.Handler)
-                ?? throw new InvalidOperationException("The registered module handler is unavailable.");
+            if (definition.TenantId>0)
+            {
+                await using var connection=new Microsoft.Data.SqlClient.SqlConnection(storage.BusinessConnection);
+                await connection.OpenAsync(timeout.Token);
+                await using var command=connection.CreateCommand();
+                command.CommandText="SELECT COUNT(*) FROM dbo.Tenants WHERE Id=@tenant AND IsActive=1";
+                command.Parameters.AddWithValue("@tenant",definition.TenantId);
+                if(Convert.ToInt32(await command.ExecuteScalarAsync(timeout.Token))!=1)
+                    throw new InvalidOperationException("The scheduled tenant is inactive or unavailable.");
+            }
+            if(executionTenant!=null)executionTenant.Id=definition.TenantId;
             run.Result = await handler.ExecuteAsync(definition.TenantId, timeout.Token);
             run.Status = "Succeeded";
         }

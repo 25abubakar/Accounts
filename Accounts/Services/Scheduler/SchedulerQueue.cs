@@ -4,7 +4,7 @@ using Microsoft.EntityFrameworkCore;
 
 namespace Accounts.Services.Scheduler;
 
-public sealed class SchedulerQueue(IServiceScopeFactory scopes, SchedulerStorage storage, ScheduleSynchronizer synchronizer)
+public sealed class SchedulerQueue(IServiceScopeFactory scopes, SchedulerStorage storage, ScheduleSynchronizer synchronizer,SchedulerCalendar calendar)
 {
     public async Task<IReadOnlyList<long>> CollectAsync(CancellationToken ct)
     {
@@ -13,7 +13,7 @@ public sealed class SchedulerQueue(IServiceScopeFactory scopes, SchedulerStorage
         await using var scope = scopes.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<SchedulerDbContext>();
         var changed = await db.Definitions.IgnoreQueryFilters().Where(x => x.RuntimeRevision != x.Revision)
-            .Select(x => x.Id).Take(100).ToListAsync(ct);
+            .OrderBy(x=>x.UpdatedUtc).Select(x => x.Id).Take(100).ToListAsync(ct);
         foreach (var id in changed) await synchronizer.ApplyAsync(id, ct);
 
         var now = DateTime.UtcNow;
@@ -51,7 +51,7 @@ public sealed class SchedulerQueue(IServiceScopeFactory scopes, SchedulerStorage
                         Occurrence = occurrence, ScheduledUtc = scheduled, ScheduleRevision = definition.Revision,
                         Status = "Queued", NextAttemptUtc = now });
             }
-            definition.NextRunUtc = ScheduleTiming.NextAfter(definition, now);
+            definition.NextRunUtc = await calendar.NextAfterAsync(definition, now,ct);
             try { await db.SaveChangesAsync(ct); await transaction.CommitAsync(ct); }
             catch (DbUpdateConcurrencyException) { await transaction.RollbackAsync(ct); db.ChangeTracker.Clear(); }
         }

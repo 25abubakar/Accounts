@@ -1,45 +1,14 @@
-using Microsoft.Extensions.Options;
-
 namespace Accounts.Idempotency;
 
-public sealed class IdempotencyCleanupService(
-    IServiceScopeFactory scopeFactory,
-    TimeProvider timeProvider,
-    IOptions<IdempotencyOptions> options,
-    ILogger<IdempotencyCleanupService> logger) : BackgroundService
+public sealed class IdempotencyCleanupService(IServiceScopeFactory scopes, TimeProvider timeProvider,
+    ILogger<IdempotencyCleanupService> logger)
 {
-    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    public async Task<int> RunAsync(CancellationToken ct)
     {
-        var interval = TimeSpan.FromMinutes(options.Value.CleanupIntervalMinutes);
-        using var timer = new PeriodicTimer(interval, timeProvider);
-
-        try
-        {
-            while (await timer.WaitForNextTickAsync(stoppingToken))
-            {
-                try
-                {
-                    await using var scope = scopeFactory.CreateAsyncScope();
-                    var store = scope.ServiceProvider.GetRequiredService<IIdempotencyStore>();
-                    var deleted = await store.DeleteExpiredAsync(
-                        timeProvider.GetUtcNow().UtcDateTime,
-                        stoppingToken);
-                    if (deleted > 0)
-                        logger.LogInformation("Deleted {Count} expired idempotency records.", deleted);
-                }
-                catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
-                {
-                    break;
-                }
-                catch (Exception exception)
-                {
-                    logger.LogError(exception, "Idempotency cleanup failed.");
-                }
-            }
-        }
-        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
-        {
-            // Host shutdown / debugger restart cancels PeriodicTimer by design.
-        }
+        await using var scope = scopes.CreateAsyncScope();
+        var store = scope.ServiceProvider.GetRequiredService<IIdempotencyStore>();
+        var count = await store.DeleteExpiredAsync(timeProvider.GetUtcNow().UtcDateTime, ct);
+        logger.LogInformation("Deleted {Count} expired idempotency records.", count);
+        return count;
     }
 }

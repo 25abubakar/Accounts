@@ -20,7 +20,7 @@ public sealed class SchedulerController(SchedulerDbContext db,SchedulerTenant te
     [HttpGet("csrf")]
     public IActionResult Csrf([FromServices] IAntiforgery antiforgery)=>Ok(new{token=antiforgery.GetAndStoreTokens(HttpContext).RequestToken});
     [HttpGet("catalog")]
-    public IActionResult Catalog()=>Ok(handlers.Select(x=>x.Info));
+    public IActionResult Catalog()=>Ok(handlers.Select(x=>x.Info).Where(x=>!x.SystemOnly));
     [HttpGet("jobs")]
     public async Task<IActionResult> Jobs(CancellationToken ct)
     {
@@ -57,11 +57,20 @@ public sealed class SchedulerController(SchedulerDbContext db,SchedulerTenant te
         }).ToListAsync(ct));
     }
     [HttpPost("preview")]
-    public IActionResult Preview(ScheduleEdit input)
+    public async Task<IActionResult> Preview(ScheduleEdit input,[FromServices] SchedulerCalendar calendar,[FromQuery] Guid? scheduleId,CancellationToken ct)
     {
         var error=ScheduleTiming.Validate(input);if(error!=null)return BadRequest(new{message=error});
-        var value=new ScheduleDefinition {TenantId=tenant.Id};Apply(value,input);
-        return Ok(ScheduleTiming.Preview(value,DateTime.UtcNow));
+        var value=new ScheduleDefinition {TenantId=tenant.Id};
+        if(scheduleId.HasValue)
+        {
+            var saved=await db.Definitions.AsNoTracking().SingleOrDefaultAsync(x=>x.Id==scheduleId,ct);
+            if(saved==null)return NotFound();
+            if(saved.Handler==input.Handler)value.ManagedKey=saved.ManagedKey;
+        }
+        Apply(value,input);
+        var times=new List<DateTime>();var next=await calendar.NextAfterAsync(value,DateTime.UtcNow,ct);
+        while(next.HasValue&&times.Count<5){times.Add(next.Value);next=await calendar.NextAfterAsync(value,next.Value,ct);}
+        return Ok(times);
     }
     [HttpPost("jobs")]
     public async Task<IActionResult> Create(ScheduleEdit input,CancellationToken ct)
@@ -107,7 +116,7 @@ public sealed class SchedulerController(SchedulerDbContext db,SchedulerTenant te
         return Accepted(new{queued=true});
     }
     private string? Validate(ScheduleEdit input)=>ScheduleTiming.Validate(input)??
-        (handlers.Any(x=>x.Info.Key==input.Handler)?null:"Choose a registered module job.");
+        (handlers.Any(x=>x.Info.Key==input.Handler&&!x.Info.SystemOnly)?null:"Choose a registered tenant module job.");
     private bool Version(ScheduleDefinition value,string? version)
     {
         try {var bytes=Convert.FromBase64String(version??"");if(bytes.Length!=8)return false;db.Entry(value).Property(x=>x.RowVersion).OriginalValue=bytes;return true;}
@@ -121,10 +130,12 @@ public sealed class SchedulerController(SchedulerDbContext db,SchedulerTenant te
     }
     private static void Apply(ScheduleDefinition value,ScheduleEdit input)
     {
+        if(value.Handler.Length>0&&value.Handler!=input.Handler)value.ManagedKey=null;
         value.Name=input.Name.Trim();value.Handler=input.Handler;value.Mode=input.Mode;value.IntervalDays=input.IntervalDays;
         value.DayOfMonth=input.DayOfMonth;value.DayOfWeek=input.DayOfWeek;value.Time=input.Time;value.StartLocal=input.StartLocal;
         value.MisfirePolicy=input.MisfirePolicy;value.Enabled=input.Enabled;value.TimeoutSeconds=input.TimeoutSeconds;
         value.RetryCount=input.RetryCount;if(value.CreationKey==Guid.Empty)value.CreationKey=input.CreationKey;
+        value.IntervalMinutes=input.IntervalMinutes;
     }
 }
 public sealed record EnableSchedule(bool Enabled,string RowVersion);

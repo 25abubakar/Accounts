@@ -10,6 +10,8 @@ public sealed class ScheduleDefinition
     [MaxLength(100)] public string Handler { get; set; } = "";
     [MaxLength(30)] public string Mode { get; set; } = "Daily";
     public int IntervalDays { get; set; } = 15;
+    public int IntervalMinutes { get; set; } = 5;
+    [MaxLength(100)] public string? ManagedKey { get; set; }
     public int DayOfMonth { get; set; } = 1;
     public int DayOfWeek { get; set; } = 1;
     [MaxLength(5)] public string Time { get; set; } = "09:00";
