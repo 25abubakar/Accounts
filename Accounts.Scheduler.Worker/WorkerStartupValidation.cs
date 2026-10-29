@@ -1,5 +1,7 @@
 using Accounts.Data;
 using Accounts.Models.Scheduler;
+using Accounts.Services.Interfaces;
+using Accounts.Services.Scheduler;
 using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 
@@ -21,6 +23,9 @@ public sealed class WorkerStartupValidation(IServiceScopeFactory scopes) : IHost
         await business.OpenAsync(ct);
         if (!await db.Database.CanConnectAsync(ct) || (await db.Database.GetPendingMigrationsAsync(ct)).Any())
             throw new InvalidOperationException("Scheduler database is unavailable or migrations are pending. Run --migrate before starting.");
+        await scope.ServiceProvider.GetRequiredService<SchedulerSqlStore>().InitializeAsync(
+            new SqlConnectionStringBuilder(storage.BusinessConnection).InitialCatalog,
+            scope.ServiceProvider.GetServices<IModuleJob>().Select(x=>x.Info),migrate,ct);
         scope.ServiceProvider.GetRequiredService<ILogger<WorkerStartupValidation>>()
             .LogInformation("Accounts Scheduler SQL connectivity and schema checks passed.");
     }

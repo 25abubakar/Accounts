@@ -4,11 +4,11 @@ using Accounts.Services.Interfaces;
 using Accounts.Services.Services;
 using Microsoft.EntityFrameworkCore;
 
-namespace Accounts.Services;
+namespace Accounts.Services.Scheduler.Jobs;
 
 // The Windows scheduler invokes one tenant at a time. No startup/hourly loop remains here.
-public sealed class AttendanceFinalizationScheduler(ApplicationDbContext db,
-    AttendanceFinalizationService service, IRealtimePublisher realtime, ILogger<AttendanceFinalizationScheduler> logger)
+public sealed class AttendanceFinalizationJobService(ApplicationDbContext db,
+    AttendanceFinalizationService service, IRealtimePublisher realtime, ILogger<AttendanceFinalizationJobService> logger)
 {
     public async Task<int> RunTenantAsync(int tenantId, CancellationToken ct)
     {

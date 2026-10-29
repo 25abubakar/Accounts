@@ -2353,8 +2353,6 @@ namespace Accounts.Migrations
 
             modelBuilder.Entity("Accounts.Models.AttendanceRecord", b =>
                 {
-                    b.Property<bool>("IsSystemGeneratedNonWorkingDay")
-                        .HasColumnType("bit");
                     b.Property<long>("Id")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("bigint");
@@ -2413,6 +2411,9 @@ namespace Accounts.Migrations
                         .HasColumnType("datetime2");
 
                     b.Property<bool>("HasVerificationAnomaly")
+                        .HasColumnType("bit");
+
+                    b.Property<bool>("IsSystemGeneratedNonWorkingDay")
                         .HasColumnType("bit");
 
                     b.Property<DateTime?>("ModifiedDate")
@@ -3838,6 +3839,295 @@ namespace Accounts.Migrations
                     b.HasIndex("TenantId", "EffectiveFrom");
 
                     b.ToTable("EobiSettings");
+                });
+
+            modelBuilder.Entity("Accounts.Models.FaxAttachmentMetadata", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("ContentType")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<string>("DisplayName")
+                        .IsRequired()
+                        .HasMaxLength(220)
+                        .HasColumnType("nvarchar(220)");
+
+                    b.Property<int?>("PageCount")
+                        .HasColumnType("int");
+
+                    b.Property<string>("Sha256")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<long>("SizeBytes")
+                        .HasColumnType("bigint");
+
+                    b.Property<int>("SortOrder")
+                        .HasColumnType("int");
+
+                    b.Property<int>("TenantId")
+                        .HasColumnType("int");
+
+                    b.Property<Guid>("TransmissionId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TransmissionId");
+
+                    b.ToTable("FaxAttachmentMetadata");
+                });
+
+            modelBuilder.Entity("Accounts.Models.FaxRecipient", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("CreatedByUserId")
+                        .IsRequired()
+                        .HasMaxLength(450)
+                        .HasColumnType("nvarchar(450)");
+
+                    b.Property<string>("Department")
+                        .HasMaxLength(120)
+                        .HasColumnType("nvarchar(120)");
+
+                    b.Property<string>("FaxNumber")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)");
+
+                    b.Property<bool>("IsActive")
+                        .HasColumnType("bit");
+
+                    b.Property<bool>("IsVerified")
+                        .HasColumnType("bit");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(160)
+                        .HasColumnType("nvarchar(160)");
+
+                    b.Property<string>("NormalizedFaxNumber")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)");
+
+                    b.Property<string>("OrganizationName")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<byte[]>("RowVersion")
+                        .IsConcurrencyToken()
+                        .IsRequired()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("rowversion");
+
+                    b.Property<int>("TenantId")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime?>("UpdatedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<DateTime?>("VerifiedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("VerifiedByUserId")
+                        .HasMaxLength(450)
+                        .HasColumnType("nvarchar(450)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TenantId", "NormalizedFaxNumber")
+                        .IsUnique();
+
+                    b.ToTable("FaxRecipients");
+                });
+
+            modelBuilder.Entity("Accounts.Models.FaxStatusEvent", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("ActorUserId")
+                        .HasMaxLength(450)
+                        .HasColumnType("nvarchar(450)");
+
+                    b.Property<string>("Detail")
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)");
+
+                    b.Property<DateTime>("OccurredAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("PreviousStatus")
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)");
+
+                    b.Property<string>("ProviderEventReference")
+                        .HasMaxLength(160)
+                        .HasColumnType("nvarchar(160)");
+
+                    b.Property<string>("Source")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)");
+
+                    b.Property<int>("TenantId")
+                        .HasColumnType("int");
+
+                    b.Property<Guid>("TransmissionId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TransmissionId");
+
+                    b.HasIndex("TenantId", "ProviderEventReference")
+                        .IsUnique()
+                        .HasFilter("[ProviderEventReference] IS NOT NULL");
+
+                    b.ToTable("FaxStatusEvents");
+                });
+
+            modelBuilder.Entity("Accounts.Models.FaxTransmission", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime?>("AcceptedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("AppointmentExternalId")
+                        .HasMaxLength(120)
+                        .HasColumnType("nvarchar(120)");
+
+                    b.Property<int>("AttachmentCount")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("CreatedByUserId")
+                        .IsRequired()
+                        .HasMaxLength(450)
+                        .HasColumnType("nvarchar(450)");
+
+                    b.Property<DateTime?>("DeliveredAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("FailureCode")
+                        .HasMaxLength(80)
+                        .HasColumnType("nvarchar(80)");
+
+                    b.Property<string>("FailureSummary")
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)");
+
+                    b.Property<Guid>("IdempotencyKey")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime?>("LastCheckedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<int?>("OrganizationId")
+                        .HasColumnType("int");
+
+                    b.Property<int?>("PageCount")
+                        .HasColumnType("int");
+
+                    b.Property<string>("PatientDisplayName")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<string>("PatientExternalId")
+                        .HasMaxLength(120)
+                        .HasColumnType("nvarchar(120)");
+
+                    b.Property<string>("Provider")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)");
+
+                    b.Property<string>("ProviderFaxId")
+                        .HasMaxLength(160)
+                        .HasColumnType("nvarchar(160)");
+
+                    b.Property<string>("RecipientFaxNumber")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)");
+
+                    b.Property<Guid>("RecipientId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("RecipientName")
+                        .IsRequired()
+                        .HasMaxLength(160)
+                        .HasColumnType("nvarchar(160)");
+
+                    b.Property<string>("RecipientOrganization")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<string>("Reference")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)");
+
+                    b.Property<Guid?>("ResubmissionOfId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<byte[]>("RowVersion")
+                        .IsConcurrencyToken()
+                        .IsRequired()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("rowversion");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)");
+
+                    b.Property<string>("Subject")
+                        .IsRequired()
+                        .HasMaxLength(160)
+                        .HasColumnType("nvarchar(160)");
+
+                    b.Property<int>("TenantId")
+                        .HasColumnType("int");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("RecipientId");
+
+                    b.HasIndex("Provider", "ProviderFaxId")
+                        .IsUnique()
+                        .HasFilter("[ProviderFaxId] IS NOT NULL");
+
+                    b.HasIndex("TenantId", "IdempotencyKey")
+                        .IsUnique();
+
+                    b.ToTable("FaxTransmissions");
                 });
 
             modelBuilder.Entity("Accounts.Models.Feature", b =>
@@ -5664,11 +5954,6 @@ namespace Accounts.Migrations
 
             modelBuilder.Entity("Accounts.Models.PayrollLine", b =>
                 {
-                    b.Property<string>("SourceSnapshotJson")
-                        .HasColumnType("nvarchar(max)");
-
-                    b.Property<bool>("UseSourceSnapshot")
-                        .HasColumnType("bit");
                     b.Property<long>("Id")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("bigint");
@@ -5799,6 +6084,13 @@ namespace Accounts.Migrations
                     b.Property<int>("PendingReviewDays")
                         .HasColumnType("int");
 
+                    b.Property<decimal?>("PeriodAdjustmentAmount")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<string>("PeriodAdjustmentRemarks")
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)");
+
                     b.Property<Guid>("PersonId")
                         .HasColumnType("uniqueidentifier");
 
@@ -5808,9 +6100,6 @@ namespace Accounts.Migrations
 
                     b.Property<decimal>("SalaryAdjustment")
                         .HasColumnType("decimal(18,2)");
-
-                    b.Property<decimal?>("PeriodAdjustmentAmount").HasColumnType("decimal(18,2)");
-                    b.Property<string>("PeriodAdjustmentRemarks").HasMaxLength(1000).HasColumnType("nvarchar(1000)");
 
                     b.Property<string>("Scale")
                         .HasMaxLength(80)
@@ -5824,6 +6113,9 @@ namespace Accounts.Migrations
 
                     b.Property<decimal>("ShiftAllowanceAmount")
                         .HasColumnType("decimal(18,2)");
+
+                    b.Property<string>("SourceSnapshotJson")
+                        .HasColumnType("nvarchar(max)");
 
                     b.Property<decimal>("StaffBenefitDeduction")
                         .HasColumnType("decimal(18,2)");
@@ -5851,6 +6143,9 @@ namespace Accounts.Migrations
 
                     b.Property<DateTime?>("UpdatedOnUtc")
                         .HasColumnType("datetime2");
+
+                    b.Property<bool>("UseSourceSnapshot")
+                        .HasColumnType("bit");
 
                     b.Property<int>("Year")
                         .HasColumnType("int");
@@ -6461,32 +6756,86 @@ namespace Accounts.Migrations
 
             modelBuilder.Entity("Accounts.Models.PersonEmploymentHistory", b =>
                 {
-                    b.Property<long>("Id").ValueGeneratedOnAdd().HasColumnType("bigint");
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
                     SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<long>("Id"));
-                    b.Property<int>("TenantId").HasColumnType("int");
-                    b.Property<Guid>("PersonId").HasColumnType("uniqueidentifier");
-                    b.Property<Guid?>("StaffId").HasColumnType("uniqueidentifier");
-                    b.Property<Guid?>("VacancyId").HasColumnType("uniqueidentifier");
-                    b.Property<int?>("OrganizationId").HasColumnType("int");
-                    b.Property<string>("LoginId").HasMaxLength(50).HasColumnType("nvarchar(50)");
-                    b.Property<string>("VacancyCode").HasMaxLength(50).HasColumnType("nvarchar(50)");
-                    b.Property<string>("JobTitle").HasMaxLength(100).HasColumnType("nvarchar(100)");
-                    b.Property<string>("Department").HasMaxLength(100).HasColumnType("nvarchar(100)");
-                    b.Property<string>("BranchName").HasMaxLength(150).HasColumnType("nvarchar(150)");
-                    b.Property<string>("CompanyName").HasMaxLength(150).HasColumnType("nvarchar(150)");
-                    b.Property<string>("CountryName").HasMaxLength(150).HasColumnType("nvarchar(150)");
-                    b.Property<string>("EmploymentStatus").IsRequired().HasMaxLength(30).HasColumnType("nvarchar(30)");
-                    b.Property<DateTime?>("JoiningDate").HasColumnType("datetime2");
-                    b.Property<DateTime?>("EndingDateUtc").HasColumnType("datetime2");
-                    b.Property<string>("EndingReason").HasMaxLength(500).HasColumnType("nvarchar(500)");
-                    b.Property<DateTime>("CreatedOnUtc").ValueGeneratedOnAdd().HasColumnType("datetime2").HasDefaultValueSql("SYSUTCDATETIME()");
-                    b.Property<string>("CreatedByUserId").HasMaxLength(450).HasColumnType("nvarchar(450)");
+
+                    b.Property<string>("BranchName")
+                        .HasMaxLength(150)
+                        .HasColumnType("nvarchar(150)");
+
+                    b.Property<string>("CompanyName")
+                        .HasMaxLength(150)
+                        .HasColumnType("nvarchar(150)");
+
+                    b.Property<string>("CountryName")
+                        .HasMaxLength(150)
+                        .HasColumnType("nvarchar(150)");
+
+                    b.Property<string>("CreatedByUserId")
+                        .HasMaxLength(450)
+                        .HasColumnType("nvarchar(450)");
+
+                    b.Property<DateTime>("CreatedOnUtc")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("datetime2")
+                        .HasDefaultValueSql("SYSUTCDATETIME()");
+
+                    b.Property<string>("Department")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<string>("EmploymentStatus")
+                        .IsRequired()
+                        .HasMaxLength(30)
+                        .HasColumnType("nvarchar(30)");
+
+                    b.Property<DateTime?>("EndingDateUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("EndingReason")
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)");
+
+                    b.Property<string>("JobTitle")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<DateTime?>("JoiningDate")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("LoginId")
+                        .HasMaxLength(50)
+                        .HasColumnType("nvarchar(50)");
+
+                    b.Property<int?>("OrganizationId")
+                        .HasColumnType("int");
+
+                    b.Property<Guid>("PersonId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid?>("StaffId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<int>("TenantId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("VacancyCode")
+                        .HasMaxLength(50)
+                        .HasColumnType("nvarchar(50)");
+
+                    b.Property<Guid?>("VacancyId")
+                        .HasColumnType("uniqueidentifier");
+
                     b.HasKey("Id");
+
                     b.HasIndex("PersonId", "EndingDateUtc");
+
                     b.HasIndex("TenantId", "EmploymentStatus", "EndingDateUtc");
+
                     b.ToTable("PersonEmploymentHistory");
-                    b.HasOne("Accounts.Models.Person", "Person").WithMany().HasForeignKey("PersonId").OnDelete(DeleteBehavior.Cascade).IsRequired();
-                    b.Navigation("Person");
                 });
 
             modelBuilder.Entity("Accounts.Models.PersonExperience", b =>
@@ -6686,6 +7035,19 @@ namespace Accounts.Migrations
                         .HasMaxLength(50)
                         .HasColumnType("nvarchar(50)");
 
+                    b.Property<DateOnly?>("PayrollShiftEffectiveFrom")
+                        .HasColumnType("date");
+
+                    b.Property<int?>("PayrollShiftLookupValueId")
+                        .HasColumnType("int");
+
+                    b.Property<decimal?>("PeriodAdjustmentAmount")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<string>("PeriodAdjustmentRemarks")
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)");
+
                     b.Property<string>("PoliceStation")
                         .HasMaxLength(150)
                         .HasColumnType("nvarchar(150)");
@@ -6712,14 +7074,8 @@ namespace Accounts.Migrations
                         .HasMaxLength(80)
                         .HasColumnType("nvarchar(80)");
 
-                    b.Property<decimal?>("PeriodAdjustmentAmount").HasColumnType("decimal(18,2)");
-                    b.Property<string>("PeriodAdjustmentRemarks").HasMaxLength(1000).HasColumnType("nvarchar(1000)");
-
                     b.Property<decimal?>("SalaryAdjustment")
                         .HasColumnType("decimal(18,2)");
-
-                    b.Property<int?>("PayrollShiftLookupValueId").HasColumnType("int");
-                    b.Property<DateOnly?>("PayrollShiftEffectiveFrom").HasColumnType("date");
 
                     b.Property<int?>("SalaryPackageId")
                         .HasColumnType("int");
@@ -6770,8 +7126,9 @@ namespace Accounts.Migrations
 
                     b.HasKey("PersonId");
 
-                    b.HasIndex("SalaryPackageId");
                     b.HasIndex("PayrollShiftLookupValueId");
+
+                    b.HasIndex("SalaryPackageId");
 
                     b.HasIndex("TenantId");
 
@@ -9582,7 +9939,7 @@ namespace Accounts.Migrations
                     b.HasKey("Id");
 
                     b.HasIndex("TenantId", "AssessorPersonId", "SubjectPersonId", "AssessmentYear", "AssessmentMonth")
-                        .IsUnique().HasFilter(null);
+                        .IsUnique();
 
                     b.ToTable("StaffAssessments", "dbo");
                 });
@@ -11463,6 +11820,39 @@ namespace Accounts.Migrations
                         .IsRequired();
                 });
 
+            modelBuilder.Entity("Accounts.Models.FaxAttachmentMetadata", b =>
+                {
+                    b.HasOne("Accounts.Models.FaxTransmission", "Transmission")
+                        .WithMany("Attachments")
+                        .HasForeignKey("TransmissionId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Transmission");
+                });
+
+            modelBuilder.Entity("Accounts.Models.FaxStatusEvent", b =>
+                {
+                    b.HasOne("Accounts.Models.FaxTransmission", "Transmission")
+                        .WithMany("Events")
+                        .HasForeignKey("TransmissionId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Transmission");
+                });
+
+            modelBuilder.Entity("Accounts.Models.FaxTransmission", b =>
+                {
+                    b.HasOne("Accounts.Models.FaxRecipient", "Recipient")
+                        .WithMany()
+                        .HasForeignKey("RecipientId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Recipient");
+                });
+
             modelBuilder.Entity("Accounts.Models.GeneratedInvoice", b =>
                 {
                     b.HasOne("Accounts.Models.Tenant", null)
@@ -11963,6 +12353,17 @@ namespace Accounts.Migrations
                     b.Navigation("Person");
                 });
 
+            modelBuilder.Entity("Accounts.Models.PersonEmploymentHistory", b =>
+                {
+                    b.HasOne("Accounts.Models.Person", "Person")
+                        .WithMany()
+                        .HasForeignKey("PersonId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Person");
+                });
+
             modelBuilder.Entity("Accounts.Models.PersonExperience", b =>
                 {
                     b.HasOne("Accounts.Models.Person", "Person")
@@ -11996,8 +12397,8 @@ namespace Accounts.Migrations
             modelBuilder.Entity("Accounts.Models.PersonHrProfile", b =>
                 {
                     b.HasOne("Accounts.Models.AppLookupValue", "PayrollShiftLookupValue")
-                        .WithMany().HasForeignKey("PayrollShiftLookupValueId");
-                    b.Navigation("PayrollShiftLookupValue");
+                        .WithMany()
+                        .HasForeignKey("PayrollShiftLookupValueId");
 
                     b.HasOne("Accounts.Models.Person", "Person")
                         .WithOne()
@@ -12009,6 +12410,8 @@ namespace Accounts.Migrations
                         .WithMany()
                         .HasForeignKey("SalaryPackageId")
                         .OnDelete(DeleteBehavior.Restrict);
+
+                    b.Navigation("PayrollShiftLookupValue");
 
                     b.Navigation("Person");
 
@@ -13143,6 +13546,13 @@ namespace Accounts.Migrations
             modelBuilder.Entity("Accounts.Models.Designation", b =>
                 {
                     b.Navigation("Vacancies");
+                });
+
+            modelBuilder.Entity("Accounts.Models.FaxTransmission", b =>
+                {
+                    b.Navigation("Attachments");
+
+                    b.Navigation("Events");
                 });
 
             modelBuilder.Entity("Accounts.Models.Feature", b =>

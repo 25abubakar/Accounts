@@ -22,10 +22,11 @@ namespace Accounts.Migrations.Scheduler
 
             SqlServerModelBuilderExtensions.UseIdentityColumns(modelBuilder);
 
+            modelBuilder.HasSequence("SchedulerRunNumber");
+
             modelBuilder.Entity("Accounts.Models.Scheduler.ScheduleDefinition", b =>
                 {
                     b.Property<Guid>("Id")
-                        .ValueGeneratedOnAdd()
                         .HasColumnType("uniqueidentifier");
 
                     b.Property<DateTime>("CreatedUtc")
@@ -120,27 +121,15 @@ namespace Accounts.Migrations.Scheduler
 
                     b.HasKey("Id");
 
-                    b.HasIndex("Enabled", "NextRunUtc");
+                    b.ToTable((string)null);
 
-                    b.HasIndex("Enabled", "UpdatedUtc");
-
-                    b.HasIndex("TenantId", "CreationKey")
-                        .IsUnique();
-
-                    b.HasIndex("TenantId", "ManagedKey")
-                        .IsUnique()
-                        .HasFilter("[ManagedKey] IS NOT NULL");
-
-                    b.ToTable("SchedulerDefinitions", (string)null);
+                    b.ToView("vw_SchedulerDefinitions", (string)null);
                 });
 
             modelBuilder.Entity("Accounts.Models.Scheduler.ScheduleRun", b =>
                 {
                     b.Property<long>("Id")
-                        .ValueGeneratedOnAdd()
                         .HasColumnType("bigint");
-
-                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<long>("Id"));
 
                     b.Property<int>("Attempt")
                         .HasColumnType("int");
@@ -192,22 +181,14 @@ namespace Accounts.Migrations.Scheduler
 
                     b.HasKey("Id");
 
-                    b.HasIndex("ScheduleId");
+                    b.ToTable((string)null);
 
-                    b.HasIndex("Status", "NextAttemptUtc");
-
-                    b.HasIndex("TenantId", "StartedUtc");
-
-                    b.HasIndex("TenantId", "ScheduleId", "Occurrence")
-                        .IsUnique();
-
-                    b.ToTable("SchedulerRuns", (string)null);
+                    b.ToView("vw_SchedulerRuns", (string)null);
                 });
 
             modelBuilder.Entity("Accounts.Models.Scheduler.SchedulerCommand", b =>
                 {
                     b.Property<Guid>("Id")
-                        .ValueGeneratedOnAdd()
                         .HasColumnType("uniqueidentifier");
 
                     b.Property<DateTime>("CreatedUtc")
@@ -224,17 +205,14 @@ namespace Accounts.Migrations.Scheduler
 
                     b.HasKey("Id");
 
-                    b.HasIndex("DispatchedUtc");
+                    b.ToTable((string)null);
 
-                    b.HasIndex("ScheduleId");
-
-                    b.ToTable("SchedulerCommands", (string)null);
+                    b.ToView("vw_SchedulerCommands", (string)null);
                 });
 
             modelBuilder.Entity("Accounts.Models.Scheduler.SchedulerRealtimeEvent", b =>
                 {
                     b.Property<Guid>("Id")
-                        .ValueGeneratedOnAdd()
                         .HasColumnType("uniqueidentifier");
 
                     b.Property<DateTime>("CreatedUtc")
@@ -253,27 +231,242 @@ namespace Accounts.Migrations.Scheduler
 
                     b.HasKey("Id");
 
-                    b.HasIndex("DeliveredUtc", "CreatedUtc");
+                    b.ToTable((string)null);
 
-                    b.ToTable("SchedulerRealtimeEvents", (string)null);
+                    b.ToView("vw_SchedulerRealtimeEvents", (string)null);
                 });
 
-            modelBuilder.Entity("Accounts.Models.Scheduler.ScheduleRun", b =>
+            modelBuilder.Entity("Accounts.Models.Scheduler.SchedulerTaskRecord", b =>
                 {
-                    b.HasOne("Accounts.Models.Scheduler.ScheduleDefinition", null)
-                        .WithMany()
-                        .HasForeignKey("ScheduleId")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
+                    b.Property<long>("RecordId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<long>("RecordId"));
+
+                    b.Property<int?>("Attempt")
+                        .HasColumnType("int");
+
+                    b.Property<string>("ConcurrencyKey")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<DateTime>("CreatedUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<Guid?>("CreationKey")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<int?>("DayOfMonth")
+                        .HasColumnType("int");
+
+                    b.Property<int?>("DayOfWeek")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime?>("DeliveredUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("Description")
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)");
+
+                    b.Property<DateTime?>("DispatchedUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<bool?>("Enabled")
+                        .HasColumnType("bit");
+
+                    b.Property<Guid>("EntityId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("Error")
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)");
+
+                    b.Property<DateTime?>("FinishedUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("Handler")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<int?>("IntervalDays")
+                        .HasColumnType("int");
+
+                    b.Property<int?>("IntervalMinutes")
+                        .HasColumnType("int");
+
+                    b.Property<bool?>("IsManual")
+                        .HasColumnType("bit");
+
+                    b.Property<Guid?>("LeaseOwner")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime?>("LeaseUntilUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("ManagedKey")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<string>("MisfirePolicy")
+                        .HasMaxLength(20)
+                        .HasColumnType("nvarchar(20)");
+
+                    b.Property<string>("Mode")
+                        .HasMaxLength(30)
+                        .HasColumnType("nvarchar(30)");
+
+                    b.Property<string>("Module")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<string>("Name")
+                        .HasMaxLength(120)
+                        .HasColumnType("nvarchar(120)");
+
+                    b.Property<DateTime?>("NextAttemptUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<DateTime?>("NextRunUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("Occurrence")
+                        .HasMaxLength(140)
+                        .HasColumnType("nvarchar(140)");
+
+                    b.Property<long?>("ParentRecordId")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("PayloadJson")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<bool?>("ReadOnly")
+                        .HasColumnType("bit");
+
+                    b.Property<string>("RecordKind")
+                        .IsRequired()
+                        .HasMaxLength(12)
+                        .HasColumnType("nvarchar(12)");
+
+                    b.Property<string>("Result")
+                        .HasMaxLength(2500)
+                        .HasColumnType("nvarchar(2500)");
+
+                    b.Property<int?>("RetryCount")
+                        .HasColumnType("int");
+
+                    b.Property<int?>("Revision")
+                        .HasColumnType("int");
+
+                    b.Property<byte[]>("RowVersion")
+                        .IsConcurrencyToken()
+                        .IsRequired()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("rowversion");
+
+                    b.Property<long?>("RunNumber")
+                        .HasColumnType("bigint");
+
+                    b.Property<int?>("RuntimeRevision")
+                        .HasColumnType("int");
+
+                    b.Property<int?>("ScheduleRevision")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime?>("ScheduledUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("SettingValue")
+                        .HasMaxLength(256)
+                        .HasColumnType("nvarchar(256)");
+
+                    b.Property<DateTime?>("StartLocal")
+                        .HasColumnType("datetime2");
+
+                    b.Property<DateTime?>("StartedUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("Status")
+                        .HasMaxLength(30)
+                        .HasColumnType("nvarchar(30)");
+
+                    b.Property<bool?>("SystemOnly")
+                        .HasColumnType("bit");
+
+                    b.Property<int>("TenantId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("Time")
+                        .HasMaxLength(5)
+                        .HasColumnType("nvarchar(5)");
+
+                    b.Property<string>("TimeZone")
+                        .HasMaxLength(80)
+                        .HasColumnType("nvarchar(80)");
+
+                    b.Property<int?>("TimeoutSeconds")
+                        .HasColumnType("int");
+
+                    b.Property<string>("UpdatedBy")
+                        .HasMaxLength(450)
+                        .HasColumnType("nvarchar(450)");
+
+                    b.Property<DateTime>("UpdatedUtc")
+                        .HasColumnType("datetime2");
+
+                    b.HasKey("RecordId");
+
+                    b.HasIndex("Handler")
+                        .IsUnique()
+                        .HasFilter("[RecordKind]='CATALOG'");
+
+                    b.HasIndex("Name")
+                        .IsUnique()
+                        .HasFilter("[RecordKind]='SETTING'");
+
+                    b.HasIndex("RunNumber")
+                        .IsUnique()
+                        .HasFilter("[RecordKind]='RUN'");
+
+                    b.HasIndex("ParentRecordId", "Occurrence")
+                        .IsUnique()
+                        .HasFilter("[RecordKind]='RUN'");
+
+                    b.HasIndex("ParentRecordId", "TenantId");
+
+                    b.HasIndex("RecordKind", "EntityId")
+                        .IsUnique();
+
+                    b.HasIndex("TenantId", "CreationKey")
+                        .IsUnique()
+                        .HasFilter("[RecordKind]='JOB'");
+
+                    b.HasIndex("TenantId", "ManagedKey")
+                        .IsUnique()
+                        .HasFilter("[RecordKind]='JOB' AND [ManagedKey] IS NOT NULL");
+
+                    b.HasIndex("RecordKind", "DeliveredUtc", "CreatedUtc");
+
+                    b.HasIndex("RecordKind", "DispatchedUtc", "CreatedUtc");
+
+                    b.HasIndex("RecordKind", "Enabled", "NextRunUtc");
+
+                    b.HasIndex("RecordKind", "Status", "NextAttemptUtc", "LeaseUntilUtc");
+
+                    b.HasIndex("TenantId", "RecordKind", "ParentRecordId", "RecordId");
+
+                    b.ToTable("SchedulerTasks", (string)null);
                 });
 
-            modelBuilder.Entity("Accounts.Models.Scheduler.SchedulerCommand", b =>
+            modelBuilder.Entity("Accounts.Models.Scheduler.SchedulerTaskRecord", b =>
                 {
-                    b.HasOne("Accounts.Models.Scheduler.ScheduleDefinition", null)
+                    b.HasOne("Accounts.Models.Scheduler.SchedulerTaskRecord", null)
                         .WithMany()
-                        .HasForeignKey("ScheduleId")
+                        .HasForeignKey("ParentRecordId", "TenantId")
+                        .HasPrincipalKey("RecordId", "TenantId")
                         .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
+                        .HasConstraintName("FK_SchedulerTasks_Parent");
                 });
 #pragma warning restore 612, 618
         }

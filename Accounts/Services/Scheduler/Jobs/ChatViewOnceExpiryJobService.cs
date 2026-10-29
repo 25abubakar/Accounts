@@ -1,12 +1,12 @@
 using Accounts.Data;
 using Microsoft.EntityFrameworkCore;
 
-namespace Accounts.Services.Services;
+namespace Accounts.Services.Scheduler.Jobs;
 
-public sealed class ChatViewOnceCleanupService(
+public sealed class ChatViewOnceExpiryJobService(
     IServiceScopeFactory scopeFactory,
     IWebHostEnvironment environment,
-    ILogger<ChatViewOnceCleanupService> logger)
+    ILogger<ChatViewOnceExpiryJobService> logger)
 {
     public async Task RunAsync(CancellationToken cancellationToken)
     {

@@ -1,11 +1,11 @@
 using Microsoft.Extensions.Options;
 
-namespace Accounts.Services;
+namespace Accounts.Services.Scheduler.Jobs;
 
-public sealed class FileConversionCleanupService(
+public sealed class ConversionFileCleanupJobService(
     IWebHostEnvironment environment,
     IOptions<FileConversionOptions> options,
-    ILogger<FileConversionCleanupService> logger)
+    ILogger<ConversionFileCleanupJobService> logger)
 {
     public Task RunAsync(CancellationToken cancellationToken)
     {

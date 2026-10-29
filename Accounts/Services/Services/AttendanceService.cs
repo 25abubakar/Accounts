@@ -1446,12 +1446,12 @@ public sealed partial class AttendanceService : IAttendanceService
             if (closedPunches && (finalization.IsFullDayAbsent || isAbsentState))
                 return true;
 
-            // Check-in without checkout: status/money must be chargeable Absent, not open review.
+            // Check-in without checkout after its deadline is incomplete evidence:
+            // keep it in review and block payroll consumption instead of charging a full absence.
             if (record.CheckInUtc.HasValue && !record.CheckOutUtc.HasValue)
             {
-                if (isPendingReview)
-                    return true;
-                if (isAbsentState && (!finalization.IsFinalized || finalization.ShortMinutes <= 0))
+                if (isAbsentState || !isPendingReview || finalization.IsFinalized ||
+                    finalization.IsFullDayAbsent || finalization.ShortMinutes > 0)
                     return true;
             }
         }
@@ -2400,25 +2400,27 @@ public sealed partial class AttendanceService : IAttendanceService
             var nowLocal = BusinessClock.Now(source.TimeZoneId);
             var checkInAbsentDeadline = shiftWindow.Start.AddMinutes(absentAfterShiftStartMinutes);
             var checkoutMissingDeadline = shiftWindow.End.AddMinutes(missingCheckoutAfterMinutes);
-            var missingCheckIn = source.Id.HasValue && !source.CheckInUtc.HasValue &&
-                statusCode?.Equals("L", StringComparison.OrdinalIgnoreCase) != true &&
+            var exactStatusName = source.StatusName?.Trim();
+            var exactStatusCode = source.StatusCode?.Trim().ToUpperInvariant();
+            var isNotRequired = source.AttendanceEntryType?.Equals("Not Required", StringComparison.OrdinalIgnoreCase) == true ||
+                source.AttendanceEntryType?.Equals("NONE", StringComparison.OrdinalIgnoreCase) == true;
+            var isExcusedStatus = exactStatusName is not null &&
+                (exactStatusName.Equals("Leave", StringComparison.OrdinalIgnoreCase) ||
+                 exactStatusName.Equals("Short Leave", StringComparison.OrdinalIgnoreCase) ||
+                 exactStatusName.Equals("Holiday", StringComparison.OrdinalIgnoreCase) ||
+                 exactStatusName.Equals("Day Off", StringComparison.OrdinalIgnoreCase) ||
+                 exactStatusName.Equals("Not Required", StringComparison.OrdinalIgnoreCase));
+            var missingCheckIn = !source.CheckInUtc.HasValue &&
+                !isNotRequired && !isExcusedStatus &&
                 !isScheduledOff &&
                 nowLocal >= checkInAbsentDeadline;
             var missingCheckOut = source.CheckInUtc.HasValue &&
                 !source.CheckOutUtc.HasValue &&
+                !isNotRequired && !isExcusedStatus &&
                 !isScheduledOff &&
                 nowLocal >= checkoutMissingDeadline;
-            var absentByRule = !isScheduledOff &&
-                (missingCheckOut ||
-                 (late > absentAfterShiftStartMinutes) ||
-                 !hasValidClosedInterval && source.CheckOutUtc.HasValue ||
-                 (early > earlyCheckoutAbsentMinutes));
-
             var todayLocal = DateOnly.FromDateTime(nowLocal);
-            var isNotRequired = source.AttendanceEntryType?.Equals("Not Required", StringComparison.OrdinalIgnoreCase) == true || source.AttendanceEntryType?.Equals("NONE", StringComparison.OrdinalIgnoreCase) == true;
             var isRemoteAttendance = source.AttendanceWorkMode?.Equals("Remote", StringComparison.OrdinalIgnoreCase) == true;
-            var exactStatusName = source.StatusName?.Trim();
-            var exactStatusCode = source.StatusCode?.Trim().ToUpperInvariant();
 
             MonthlyAttendanceChartLegendItemDto displayStyle = null;
             if (!source.IsCanonicalStatus && source.AttendanceStatusId.HasValue)
@@ -2433,6 +2435,16 @@ public sealed partial class AttendanceService : IAttendanceService
             }
 
             var displayName = displayStyle?.StatusName?.Trim() ?? exactStatusName ?? exactStatusCode ?? "-";
+            // The SQL report expands every visible employee/date, including days
+            // without an AttendanceRecord. Derive the canonical visible state from
+            // the same rule deadlines so missing rows do not render as a blank.
+            if (missingCheckIn)
+                displayName = "Absent";
+            else if (missingCheckOut)
+                displayName = "Pending Review";
+            else if (displayName == "-" && hasValidClosedInterval)
+                displayName = "Present";
+
             var displayColor = displayStyle?.ColorCode ?? source.StatusColorCode;
             var displayFontColor = displayStyle?.FontColor ?? source.StatusFontColor;
             var displayFontSize = displayStyle?.FontSize ?? source.StatusFontSize ?? "12px";
@@ -2441,7 +2453,11 @@ public sealed partial class AttendanceService : IAttendanceService
                 // Apply only presentation. Preserve the entry's ID, status, punches and calculations.
                 displayColor = configuredStyle.ColorCode;
                 displayFontColor = configuredStyle.FontColor;
+                displayFontSize = configuredStyle.FontSize;
             }
+            var displayCode = configuredStylesByName.TryGetValue(displayName, out var effectiveStyle)
+                ? effectiveStyle.Code?.Trim().ToUpperInvariant()
+                : displayStyle?.Code?.Trim().ToUpperInvariant() ?? exactStatusCode;
             var hasCameraCheckIn = cameraCheckInLocal.HasValue;
             var hasCameraCheckOut = cameraCheckOutLocal.HasValue;
             var hasValidCameraInterval = hasCameraCheckIn && hasCameraCheckOut &&
@@ -2582,7 +2598,7 @@ public sealed partial class AttendanceService : IAttendanceService
                 OvertimeMinutes = source.CheckOutUtc.HasValue ? Math.Max(0, working - required) : 0,
                 AttendanceStatusId = source.AttendanceStatusId,
                 AttendanceStatus = displayName,
-                StatusCode = displayStyle?.Code?.Trim().ToUpperInvariant() ?? exactStatusCode,
+                StatusCode = displayCode,
                 StatusColorCode = displayColor,
                 StatusFontColor = displayFontColor,
                 StatusFontSize = displayFontSize,

@@ -530,6 +530,17 @@ public sealed class PayAndAllowancesController(
             line.IsAttendanceAdjustmentApproved = false;
             line.AttendanceAdjustmentRemarks = adjustmentRemarks;
         }
+        line.PeriodAdjustmentAmount = dto.PeriodAdjustmentAmount;
+        line.PeriodAdjustmentRemarks = Clean(dto.PeriodAdjustmentRemarks);
+
+        var profile = await db.PersonHrProfiles.SingleOrDefaultAsync(x => x.TenantId == line.TenantId && x.PersonId == line.PersonId, ct);
+        if (profile != null)
+        {
+            profile.PeriodAdjustmentAmount = dto.PeriodAdjustmentAmount;
+            profile.PeriodAdjustmentRemarks = Clean(dto.PeriodAdjustmentRemarks);
+            profile.ModifiedDate = DateTime.UtcNow;
+        }
+
         line.OtherDeduction = dto.OtherDeduction;
         line.Remarks = Clean(dto.Remarks);
         line.UpdatedOnUtc = DateTime.UtcNow;
@@ -589,6 +600,8 @@ public sealed class PayAndAllowancesController(
             line.IsApproved,
             line.IsPaid,
             line.PaidOnUtc,
+            line.PeriodAdjustmentAmount,
+            line.PeriodAdjustmentRemarks,
             line.Remarks
         });
     }
@@ -2111,7 +2124,7 @@ public sealed record PayBenefitSave(string Code, string Name, string Calculation
 public sealed record PayBonusSave(string Code, string Name, string CalculationType, decimal Amount, decimal Percentage, string Frequency, bool IsTaxable, bool IsActive, string? Description);
 public sealed record PayrollRunSave(int Year, int Month, string? RunNumber, DateOnly PayDate, string Status, string? Notes);
 public sealed record PayrollApprovalPinDto(string PinCode);
-public sealed record PayrollLineSave(decimal AllowanceAmount, decimal EmployerBenefitAmount, decimal StaffBenefitDeduction, decimal BonusAmount, decimal OvertimeAmount, decimal AttendanceDeduction, decimal AttendanceAdjustment, string? AttendanceAdjustmentRemarks, decimal TaxAmount, decimal EmployeeEobiAmount, decimal EmployerEobiAmount, decimal OtherDeduction, string? Remarks);
+public sealed record PayrollLineSave(decimal AllowanceAmount, decimal EmployerBenefitAmount, decimal StaffBenefitDeduction, decimal BonusAmount, decimal OvertimeAmount, decimal AttendanceDeduction, decimal AttendanceAdjustment, string? AttendanceAdjustmentRemarks, decimal TaxAmount, decimal EmployeeEobiAmount, decimal EmployerEobiAmount, decimal OtherDeduction, string? Remarks, decimal? PeriodAdjustmentAmount = null, string? PeriodAdjustmentRemarks = null);
 public sealed record PayrollGridStyleRuleDto(int Id, string Category, string ColumnKey, string Caption, string BackgroundColor, string FontColor, int DisplayOrder, bool IsActive);
 public sealed record PayrollGridStyleRuleSave(string? Caption, string BackgroundColor, string FontColor, int DisplayOrder, bool IsActive);
 public sealed record PayrollGridStyleRuleCreate(string Category, string ColumnKey, string? Caption, string BackgroundColor, string FontColor, int DisplayOrder = 0, bool IsActive = true);

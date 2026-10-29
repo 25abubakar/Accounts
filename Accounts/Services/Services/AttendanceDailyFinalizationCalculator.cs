@@ -7,7 +7,8 @@ public sealed record AttendanceDayCalculationInput(
     bool IsExcused,
     int RequiredMinutes,
     DateTime LocalNow,
-    DateTime FinalizationDeadlineLocal,
+    DateTime MissingCheckInDeadlineLocal,
+    DateTime MissingCheckoutDeadlineLocal,
     DateTime? CheckInLocal,
     DateTime? CheckOutLocal,
     int BreakMinutes,
@@ -74,17 +75,19 @@ public static class AttendanceDailyFinalizationCalculator
         if (input.IsExplicitAbsent)
             return Final(AttendanceFinalizationStates.Absent, true, true, required, 0, 0, 0, 0);
 
-        // Align with EvaluateStatuses: check-in without checkout past deadline = chargeable Absent.
+        // A started shift remains in progress until the configured missing-checkout
+        // deadline. After that it needs correction/review; it is not a proven
+        // full-day absence and must not create a final payroll deduction.
         if (input.CheckOutLocal.HasValue ||
-            (input.CheckInLocal.HasValue && input.LocalNow >= input.FinalizationDeadlineLocal))
+            (input.CheckInLocal.HasValue && input.LocalNow >= input.MissingCheckoutDeadlineLocal))
         {
-            return Final(AttendanceFinalizationStates.Absent, true, true, required, 0, 0, 0, 0);
+            return Open(AttendanceFinalizationStates.PendingReview, required);
         }
 
         if (input.CheckInLocal.HasValue)
             return Open(AttendanceFinalizationStates.InProgress, required);
 
-        if (input.LocalNow >= input.FinalizationDeadlineLocal)
+        if (input.LocalNow >= input.MissingCheckInDeadlineLocal)
             return Final(AttendanceFinalizationStates.Absent, true, true, required, 0, 0, 0, 0);
 
         return Open(AttendanceFinalizationStates.Open, required);

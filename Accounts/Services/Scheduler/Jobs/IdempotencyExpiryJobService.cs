@@ -1,7 +1,8 @@
-namespace Accounts.Idempotency;
+using Accounts.Idempotency;
+namespace Accounts.Services.Scheduler.Jobs;
 
-public sealed class IdempotencyCleanupService(IServiceScopeFactory scopes, TimeProvider timeProvider,
-    ILogger<IdempotencyCleanupService> logger)
+public sealed class IdempotencyExpiryJobService(IServiceScopeFactory scopes, TimeProvider timeProvider,
+    ILogger<IdempotencyExpiryJobService> logger)
 {
     public async Task<int> RunAsync(CancellationToken ct)
     {

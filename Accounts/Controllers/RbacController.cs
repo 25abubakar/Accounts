@@ -503,7 +503,34 @@ namespace Accounts.Controllers
                 return BadRequest(new { message = "No overrides provided." });
             var result = await _rbac.BulkApplyOverridesToStaffAsync(request.StaffIds, request.Overrides, CurrentUserId);
             if (result.UsersUpdated == 0) return BadRequest(new { message = result.Message });
-            return Ok(new { message = result.Message, usersUpdated = result.UsersUpdated, saved = result.Saved, skipped = result.Skipped });
+
+            // Return the authoritative committed permission keys with the save response.
+            // This prevents a browser-cached GET /overrides response from reporting a
+            // false verification failure immediately after a successful transaction.
+            var savedStaffIds = request.StaffIds.Where(id => id != Guid.Empty).Distinct().ToArray();
+            var savedGrants = await _db.StaffMenuAccesses.AsNoTracking()
+                .Include(grant => grant.AccessFeatures).ThenInclude(access => access.Feature)
+                .Where(grant => savedStaffIds.Contains(grant.StaffId) && grant.IsAllow)
+                .ToListAsync();
+            var persistedPermissionKeysByStaff = savedStaffIds.ToDictionary(
+                staffId => staffId.ToString(),
+                staffId => savedGrants.Where(grant => grant.StaffId == staffId)
+                    .SelectMany(grant => new[] { $"MENU_{grant.MenuId}" }
+                        .Concat(grant.AccessFeatures
+                            .Where(access => access.IsAllow && access.Feature != null)
+                            .Select(access => access.Feature!.FeatureKey)))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .OrderBy(key => key)
+                    .ToArray());
+
+            return Ok(new
+            {
+                message = result.Message,
+                usersUpdated = result.UsersUpdated,
+                saved = result.Saved,
+                skipped = result.Skipped,
+                persistedPermissionKeysByStaff
+            });
         }
 
         /// <summary>

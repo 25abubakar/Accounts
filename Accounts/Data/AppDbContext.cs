@@ -159,6 +159,10 @@ namespace Accounts.Data
         public DbSet<ChatBlock> ChatBlocks => Set<ChatBlock>();
         public DbSet<ChatRuleSetting> ChatRuleSettings => Set<ChatRuleSetting>();
         public DbSet<IdempotencyRecord> IdempotencyRecords => Set<IdempotencyRecord>();
+        public DbSet<FaxRecipient> FaxRecipients => Set<FaxRecipient>();
+        public DbSet<FaxTransmission> FaxTransmissions => Set<FaxTransmission>();
+        public DbSet<FaxAttachmentMetadata> FaxAttachmentMetadata => Set<FaxAttachmentMetadata>();
+        public DbSet<FaxStatusEvent> FaxStatusEvents => Set<FaxStatusEvent>();
 
         // ── Accounts / ROZ billing ledger ──────────────────────────────────────
         public DbSet<RoznamchaEntry> RoznamchaEntries => Set<RoznamchaEntry>();
@@ -212,9 +216,72 @@ namespace Accounts.Data
         public DbSet<AnnualReportHeader> AnnualReportHeaders => Set<AnnualReportHeader>();
         public DbSet<AnnualReportLine> AnnualReportLines => Set<AnnualReportLine>();
 
+        // ── OCR EOB Module ────────────────────────────────────────────────────
+        // New tables (created by AddOcrEobModule migration):
+        public DbSet<OcrUploadedRecord>  OcrUploadedRecords  => Set<OcrUploadedRecord>();
+        public DbSet<OcrDocHeader>       OcrDocHeaders       => Set<OcrDocHeader>();
+        public DbSet<OcrPatientDetail>   OcrPatientDetails   => Set<OcrPatientDetail>();
+        public DbSet<OcrProcedureDetail> OcrProcedureDetails => Set<OcrProcedureDetail>();
+        public DbSet<OcrGrpAmtDetail>    OcrGrpAmtDetails    => Set<OcrGrpAmtDetail>();
+        public DbSet<OcrProRemDetail>    OcrProRemDetails    => Set<OcrProRemDetail>();
+        public DbSet<OcrTotalClaimInfo>  OcrTotalClaimInfos  => Set<OcrTotalClaimInfo>();
+        public DbSet<EobGrpCodeRule>     EobGrpCodeRules     => Set<EobGrpCodeRule>();
+        // View (no migration):
+        public DbSet<OcrDocumentView>    OcrDocumentViews    => Set<OcrDocumentView>();
+
+        // ── Billing Domain (existing SQL tables — NO migrations) ──────────────
+        public DbSet<BillingPatient>        BillingPatients       => Set<BillingPatient>();
+        public DbSet<BillingPerson>         BillingPersons        => Set<BillingPerson>();
+        public DbSet<BillingAppointment>    BillingAppointments   => Set<BillingAppointment>();
+        public DbSet<BillingClaim>          BillingClaims         => Set<BillingClaim>();
+        public DbSet<BillingApptCodeView>   BillingApptCodeViews  => Set<BillingApptCodeView>();
+        public DbSet<BillingApptCode>       BillingApptCodes      => Set<BillingApptCode>();
+        public DbSet<BillingPaymentRow>     BillingPaymentRows    => Set<BillingPaymentRow>();
+        public DbSet<BillingClaimEobDoc>    BillingClaimEobDocs   => Set<BillingClaimEobDoc>();
+        public DbSet<BillingClaimsLog>      BillingClaimsLogs     => Set<BillingClaimsLog>();
+        public DbSet<BillingCarrier>        BillingCarriers       => Set<BillingCarrier>();
+        public DbSet<BillingBaseInsurance>  BillingBaseInsurances => Set<BillingBaseInsurance>();
+        public DbSet<BillingInsuranceNew>   BillingInsuranceNews  => Set<BillingInsuranceNew>();
+        public DbSet<BillingProcedureCode>  BillingProcedureCodes => Set<BillingProcedureCode>();
+        public DbSet<BillingDocumentProcess> BillingDocumentProcesses => Set<BillingDocumentProcess>();
+
         protected override void OnModelCreating(ModelBuilder builder)
         {
             base.OnModelCreating(builder);
+
+
+            // -- OCR EOB: keyless view and billing-domain tables (no migrations) --
+            builder.Entity<OcrDocumentView>().ToView("vgetOcrUploadedDocsDetails").HasNoKey();
+            builder.Entity<BillingApptCodeView>().ToView("vgetApptCodes").HasNoKey();
+            // Billing domain tables already exist in SQL -- exclude from migrations:
+            builder.Entity<BillingPatient>().ToTable("tblPatient").HasKey(x => x.PatientId);
+            builder.Entity<BillingPerson>().ToTable("tblPerson").HasKey(x => x.PersonId);
+            builder.Entity<BillingAppointment>().ToTable("tblAppointment").HasKey(x => x.AppointmentId);
+            builder.Entity<BillingClaim>().ToTable("tblInsPTClaims").HasKey(x => x.ClaimId);
+            builder.Entity<BillingApptCode>().ToTable("tblApptCodes").HasKey(x => x.ApptCodeId);
+            builder.Entity<BillingPaymentRow>().ToTable("tblClaimCodeAmountDetails").HasKey(x => x.Id);
+            builder.Entity<BillingClaimEobDoc>().ToTable("tblClaimEobDocuments").HasKey(x => x.Id);
+            builder.Entity<BillingClaimsLog>().ToTable("tblClaimsLog").HasKey(x => x.Id);
+            builder.Entity<BillingCarrier>().ToTable("tblCarrier").HasKey(x => x.CarrierId);
+            builder.Entity<BillingBaseInsurance>().ToTable("tblBaseDetailsOfInsurance").HasKey(x => x.Id);
+            builder.Entity<BillingInsuranceNew>().ToTable("tblInsuranceNew").HasKey(x => x.Id);
+            builder.Entity<BillingProcedureCode>().ToTable("tblProcedureCodes").HasKey(x => x.ProcCodeId);
+            builder.Entity<BillingDocumentProcess>().ToTable("tblDocumentsProcess").HasKey(x => x.Id);
+            builder.Entity<FaxRecipient>().HasQueryFilter(row =>
+                _tenantService != null && !_tenantService.IsSuperAdmin && _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
+            builder.Entity<FaxTransmission>().HasQueryFilter(row =>
+                _tenantService != null && !_tenantService.IsSuperAdmin && _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
+            builder.Entity<FaxAttachmentMetadata>().HasQueryFilter(row =>
+                _tenantService != null && !_tenantService.IsSuperAdmin && _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
+            builder.Entity<FaxStatusEvent>().HasQueryFilter(row =>
+                _tenantService != null && !_tenantService.IsSuperAdmin && _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
+            builder.Entity<FaxRecipient>().HasIndex(x => new { x.TenantId, x.NormalizedFaxNumber }).IsUnique();
+            builder.Entity<FaxTransmission>().HasIndex(x => new { x.TenantId, x.IdempotencyKey }).IsUnique();
+            builder.Entity<FaxTransmission>().HasIndex(x => new { x.Provider, x.ProviderFaxId }).IsUnique().HasFilter("[ProviderFaxId] IS NOT NULL");
+            builder.Entity<FaxStatusEvent>().HasIndex(x => new { x.TenantId, x.ProviderEventReference }).IsUnique().HasFilter("[ProviderEventReference] IS NOT NULL");
+            builder.Entity<FaxTransmission>().HasOne(x => x.Recipient).WithMany().HasForeignKey(x => x.RecipientId).OnDelete(DeleteBehavior.Restrict);
+            builder.Entity<FaxAttachmentMetadata>().HasOne(x => x.Transmission).WithMany(x => x.Attachments).HasForeignKey(x => x.TransmissionId).OnDelete(DeleteBehavior.Cascade);
+            builder.Entity<FaxStatusEvent>().HasOne(x => x.Transmission).WithMany(x => x.Events).HasForeignKey(x => x.TransmissionId).OnDelete(DeleteBehavior.Cascade);
 
             // Global filters are fail-closed. A request without a verified tenant
             // sees no operational rows, and SuperAdmin sees no tenant operational

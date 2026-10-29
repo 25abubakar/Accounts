@@ -27,7 +27,7 @@ public sealed partial class AttendanceService
     private static PortalStatusChoice ResolvePortalStatus(
         AttendanceRecord record, EffectiveTiming timing, EffectiveAttendanceRule rule, bool expired)
     {
-        if (expired) return new("Absent");
+        if (expired) return new("Pending Review");
         if (rule.IsOpenAttendance) return new("Present");
         if (!timing.IsOn) return new(timing.HolidayType is HolidayCode or "ANNUAL_HOLIDAY" ? "Holiday" : "Day Off");
         var window = ResolveShiftWindow(record.AttendanceDate, timing.TimeFrom ?? rule.TimeFrom, timing.TimeTo ?? rule.TimeTo);

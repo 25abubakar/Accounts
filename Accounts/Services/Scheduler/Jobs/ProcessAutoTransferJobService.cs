@@ -1,11 +1,11 @@
 using Accounts.Data;
 using Microsoft.EntityFrameworkCore;
 
-namespace Accounts.Services;
+namespace Accounts.Services.Scheduler.Jobs;
 
-public sealed class ProcessReportAutoTransferService(
+public sealed class ProcessAutoTransferJobService(
     IServiceScopeFactory scopeFactory,
-    ILogger<ProcessReportAutoTransferService> logger)
+    ILogger<ProcessAutoTransferJobService> logger)
 {
     public async Task RunAsync(CancellationToken ct)
     {

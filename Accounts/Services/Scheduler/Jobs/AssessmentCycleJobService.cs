@@ -3,9 +3,9 @@ using Accounts.Models;
 using Accounts.Services.Services;
 using Microsoft.EntityFrameworkCore;
 
-namespace Accounts.Services;
+namespace Accounts.Services.Scheduler.Jobs;
 
-public sealed class AssessmentSchedulerService(ApplicationDbContext db, RbacService rbac, ILogger<AssessmentSchedulerService> logger)
+public sealed class AssessmentCycleJobService(ApplicationDbContext db, RbacService rbac, ILogger<AssessmentCycleJobService> logger)
 {
     private readonly SemaphoreSlim _runGate = new(1, 1);
     public async Task RunTenantAsync(int requestedTenantId, bool generate, bool reminders, CancellationToken ct = default)

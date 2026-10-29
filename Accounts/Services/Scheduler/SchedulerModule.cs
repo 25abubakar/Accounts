@@ -24,13 +24,16 @@ public static class SchedulerModule
     {
         var business = configuration.GetConnectionString("DefaultConnection") ?? throw new InvalidOperationException("Accounts connection is required.");
         var scheduler = configuration.GetConnectionString("SchedulerConnection") ?? new SqlConnectionStringBuilder(business) { InitialCatalog = "AccountsScheduler" }.ConnectionString;
+        if(!new SqlConnectionStringBuilder(scheduler).DataSource.Equals(new SqlConnectionStringBuilder(business).DataSource,StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("The SQL-driven scheduler and business database must be on the same SQL Server instance.");
         if (new SqlConnectionStringBuilder(scheduler).InitialCatalog.Equals(new SqlConnectionStringBuilder(business).InitialCatalog, StringComparison.OrdinalIgnoreCase))
             throw new InvalidOperationException("Scheduler storage must use its own database.");
         services.AddSingleton(new SchedulerStorage(scheduler, business));
         services.AddHttpContextAccessor();
         services.AddScoped<SchedulerTenant>();
         services.AddDbContext<SchedulerDbContext>(options => options.UseSqlServer(scheduler));
-        services.AddScoped<BusinessReadConnection>();
+        services.AddSingleton<SchedulerSqlStore>();
+        services.AddScoped<ISchedulerService,SchedulerApplicationService>();
         services.AddScoped<IModuleJob, SchedulerHealthJob>();
         services.AddScoped<IModuleJob, AttendanceFinalizationJob>();
         services.AddScoped<IModuleJob, AssessmentGenerationJob>();
@@ -39,6 +42,7 @@ public static class SchedulerModule
         services.AddScoped<IModuleJob, ChatExpiryJob>();
         services.AddScoped<IModuleJob, ConversionCleanupJob>();
         services.AddScoped<IModuleJob, IdempotencyExpiryJob>();
+        services.AddScoped<IModuleJob, FaxReconciliationJob>();
         services.AddScoped<ScheduledTenantContext>();
         services.AddScoped<SchedulerDefinitionPlan>();
         services.AddSingleton<ScheduleSynchronizer>();

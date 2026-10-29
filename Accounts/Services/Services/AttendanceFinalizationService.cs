@@ -68,10 +68,10 @@ public sealed class AttendanceFinalizationService(
             .Select(group => group.OrderByDescending(item => item.MapId).ThenByDescending(item => item.RuleId).First())
             .ToList();
         if (candidates.Count == 0) return 0;
-        var absentId = await db.PlatformSettingStatuses.AsNoTracking()
-            .Where(status => status.IsActive && status.Name == "Absent")
+        var pendingReviewId = await db.PlatformSettingStatuses.AsNoTracking()
+            .Where(status => status.IsActive && status.Name == "Pending Review")
             .Select(status => (int?)status.Id).SingleOrDefaultAsync(cancellationToken);
-        if (!absentId.HasValue) return 0; // Never invent a status/configuration.
+        if (!pendingReviewId.HasValue) return 0; // Never invent a status/configuration.
         var staffIds = candidates.Select(item => item.StaffId).Distinct().ToArray();
         var schedules = await db.EmployeeTimingSchedules.IgnoreQueryFilters().AsNoTracking()
             .Where(item => item.TenantId == tenantId && staffIds.Contains(item.StaffId) &&
@@ -99,7 +99,7 @@ public sealed class AttendanceFinalizationService(
                     current.CanonicalStatusId == record.CanonicalStatusId && current.AttendanceStatusId == record.AttendanceStatusId &&
                     current.PlatformActionStatusId == record.PlatformActionStatusId)
                 .ExecuteUpdateAsync(setters => setters
-                    .SetProperty(current => current.CanonicalStatusId, absentId)
+                    .SetProperty(current => current.CanonicalStatusId, pendingReviewId)
                     .SetProperty(current => current.ModifiedDate, (DateTime?)DateTime.UtcNow), cancellationToken);
         }
         return changed;
@@ -347,7 +347,9 @@ public sealed class AttendanceFinalizationService(
                     ? ResolveRequiredMinutes(schedule, rule, timeFrom, timeTo)
                     : 0;
                 var shiftWindow = ResolveShiftWindow(date, timeFrom, timeTo);
-                var deadline = shiftWindow.End.AddMinutes(
+                var missingCheckInDeadline = shiftWindow.Start.AddMinutes(
+                    Math.Max(0, rule?.AbsentAfterShiftStartMinutes ?? 120));
+                var missingCheckoutDeadline = shiftWindow.End.AddMinutes(
                     Math.Max(0, rule?.MissingCheckoutAfterShiftEndMinutes ?? 120));
                 var effectiveCheckIn = attendance?.EffectiveCheckInUtc ?? attendance?.CheckInUtc;
                 var effectiveCheckOut = attendance?.EffectiveCheckOutUtc ?? attendance?.CheckOutUtc;
@@ -361,7 +363,8 @@ public sealed class AttendanceFinalizationService(
                         isExcused,
                         requiredMinutes,
                         localNow,
-                        deadline,
+                        missingCheckInDeadline,
+                        missingCheckoutDeadline,
                         effectiveCheckIn,
                         effectiveCheckOut,
                         attendance?.TotalBreakMinutes ?? 0,
