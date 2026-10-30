@@ -16,27 +16,14 @@ public sealed partial class ProcessWorkflowController
     private async Task<long?> ApplyResolvedAttendanceStatusCorrectionAsync(long reportId, CancellationToken ct)
     {
         var tenantId = _tenant.RequiredTenantId;
-        string? json = null;
-        var connection = (SqlConnection)_db.Database.GetDbConnection();
-        var shouldClose = connection.State != System.Data.ConnectionState.Open;
-        if (shouldClose) await connection.OpenAsync(ct);
-        try
-        {
-            await using var command = connection.CreateCommand();
-            command.Transaction = (SqlTransaction?)_db.Database.CurrentTransaction?.GetDbTransaction();
-            command.CommandText = """
-                SELECT report.AttendanceRequestJson
-                FROM dbo.ProcessReports report
-                JOIN dbo.ProcessWorkflowStatuses status ON status.Id=report.StatusId
-                WHERE report.Id=@reportId AND report.TenantId=@tenantId
-                  AND report.SourceModule=N'AttendanceStatusCorrection'
-                  AND status.Code IN(N'APPROVED',N'RESOLVED')
-                """;
-            command.Parameters.AddWithValue("@reportId", reportId);
-            command.Parameters.AddWithValue("@tenantId", tenantId);
-            json = (await command.ExecuteScalarAsync(ct)) as string;
-        }
-        finally { if (shouldClose) await connection.CloseAsync(); }
+        var json = await _db.Database.SqlQueryRaw<string>("""
+            SELECT report.AttendanceRequestJson AS Value
+            FROM dbo.ProcessReports report
+            JOIN dbo.ProcessWorkflowStatuses status ON status.Id=report.StatusId
+            WHERE report.Id={0} AND report.TenantId={1}
+              AND report.SourceModule=N'AttendanceStatusCorrection'
+              AND status.Code IN(N'APPROVED',N'RESOLVED')
+        """, reportId, tenantId).FirstOrDefaultAsync(ct);
 
         if (string.IsNullOrWhiteSpace(json)) return null;
         var details = JsonSerializer.Deserialize<AttendanceRequestDetailsDto>(json);

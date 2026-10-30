@@ -248,6 +248,10 @@ namespace Accounts.Data
         // ── Copay Module ───────────────────────────────────────────────────────
         public DbSet<CopayStatement> CopayStatements => Set<CopayStatement>();
 
+        // ── Email Module ───────────────────────────────────────────────────────
+        public DbSet<tblMessage> tblMessage => Set<tblMessage>();
+        public DbSet<tblEmailDocuments> tblEmailDocuments => Set<tblEmailDocuments>();
+
         protected override void OnModelCreating(ModelBuilder builder)
         {
             base.OnModelCreating(builder);

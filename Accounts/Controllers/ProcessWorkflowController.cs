@@ -243,9 +243,6 @@ public sealed partial class ProcessWorkflowController : ControllerBase
         var strategy = _db.Database.CreateExecutionStrategy();
         return await strategy.ExecuteAsync<IActionResult>(async () =>
         {
-            await using var transaction = finalAttendanceTask.HasValue
-                ? await _db.Database.BeginTransactionAsync(ct)
-                : null;
 
             object? result = null;
             string? resultStatusCode = null;
@@ -275,11 +272,6 @@ public sealed partial class ProcessWorkflowController : ControllerBase
 
             if (failure is not null)
             {
-                if (transaction != null)
-                {
-                    try { await transaction.RollbackAsync(ct); }
-                    catch (InvalidOperationException) { }
-                }
                 return failure.SqlErrorNumber == 51232
                     ? Conflict(new { message = failure.Message })
                     : BadRequest(new { message = failure.Message });
@@ -302,17 +294,10 @@ public sealed partial class ProcessWorkflowController : ControllerBase
                 }
                 catch (InvalidOperationException ex)
                 {
-                    if (transaction != null)
-                    {
-                        try { await transaction.RollbackAsync(ct); }
-                        catch (InvalidOperationException) { }
-                    }
                     return BadRequest(new { message = ex.Message });
                 }
             }
 
-            if (transaction != null)
-                await transaction.CommitAsync(ct);
 
             if (changedAttendanceId.HasValue)
                 await _realtime.PublishEventToTenantAsync(

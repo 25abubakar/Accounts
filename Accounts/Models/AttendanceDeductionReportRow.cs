@@ -27,10 +27,12 @@ public sealed class AttendanceDeductionReportRow
     /// (fallback rule WorkingMinutes). Used for Hrs Adjust = AdjustAbsentDays × this day.
     /// </summary>
     public int OneDayWorkingMinutes { get; set; }
+    /// <summary>Actual full-day absence minutes waived once by AdjustAbsentDays.</summary>
+    public int AdjustedAbsentMinutes { get; set; }
     /// <summary>Raw finalized short minutes (before AdjustAbsentDays hour-bank).</summary>
     public int NetShortMinutes { get; set; }
     public int LatePenaltyMinutes { get; set; }
-    /// <summary>Raw chargeable minutes per day max(Short, LatePenalty), before hour-bank.</summary>
+    /// <summary>Final discrete chargeable minutes after the single absence waiver and rounding policy.</summary>
     public int DeductibleMinutes { get; set; }
     public int NetOvertimeMinutes { get; set; }
     public decimal NetDeduction { get; set; }

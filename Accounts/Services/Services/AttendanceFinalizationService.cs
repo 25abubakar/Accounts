@@ -36,6 +36,28 @@ public sealed class AttendanceFinalizationService(
         return changed.Single();
     }
 
+    public async Task<int> EnsureAbsentRecordsAsync(
+        int tenantId, DateOnly dateFrom, DateOnly dateTo,
+        IReadOnlyCollection<Guid>? scopedPersonIds = null,
+        CancellationToken cancellationToken = default)
+    {
+        if (tenantId <= 0 || scopedPersonIds is { Count: 0 }) return 0;
+        var today = BusinessClock.Today("Asia/Karachi");
+        var currentMonth = new DateOnly(today.Year, today.Month, 1);
+        if (dateFrom < currentMonth) dateFrom = currentMonth;
+        if (dateTo > today) dateTo = today;
+        if (dateFrom > dateTo) return 0;
+        var scopeJson = scopedPersonIds == null ? null : JsonSerializer.Serialize(scopedPersonIds);
+        var changed = await db.Database.SqlQueryRaw<int>(
+            "EXEC dbo.usp_Attendance_EnsureAbsentRecords @TenantId, @DateFrom, @DateTo, @PersonIds",
+            new SqlParameter("@TenantId", tenantId),
+            new SqlParameter("@DateFrom", dateFrom.ToDateTime(TimeOnly.MinValue)),
+            new SqlParameter("@DateTo", dateTo.ToDateTime(TimeOnly.MinValue)),
+            new SqlParameter("@PersonIds", (object?)scopeJson ?? DBNull.Value))
+            .ToListAsync(cancellationToken);
+        return changed.Single();
+    }
+
     // Synchronize only expired, open attendance statuses. No policy, mapping,
     // schedule, punch, or financial value is created/changed by this operation.
     public async Task<int> ExpireMissingCheckoutStatusesAsync(
@@ -196,6 +218,8 @@ public sealed class AttendanceFinalizationService(
         var recoveredCorrections = await ReconcileResolvedStatusCorrectionsAsync(
             tenantId, monthStart, dateTo, scopedPersonIds, cancellationToken);
         var generatedOffDays = await EnsureNonWorkingDayRecordsAsync(
+            tenantId, monthStart, dateTo, scopedPersonIds, cancellationToken);
+        var generatedAbsentDays = await EnsureAbsentRecordsAsync(
             tenantId, monthStart, dateTo, scopedPersonIds, cancellationToken);
         var expiredStatuses = await ExpireMissingCheckoutStatusesAsync(
             tenantId, monthStart, dateTo, scopedPersonIds, cancellationToken);

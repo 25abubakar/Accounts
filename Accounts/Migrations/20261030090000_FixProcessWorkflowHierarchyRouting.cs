@@ -68,23 +68,27 @@ BEGIN
     (
         SELECT employee.PersonId,
                CASE
-                   WHEN overrideManager.PersonId IS NOT NULL THEN overrideManager.PersonId
-                   WHEN fallbackManager.PersonId IS NOT NULL THEN fallbackManager.PersonId
+                   WHEN alternativeManager.PersonId IS NOT NULL
+                    AND leaveProfile.PersonId IS NOT NULL
+                       THEN alternativeManager.PersonId
+                   WHEN primaryManager.PersonId IS NOT NULL THEN primaryManager.PersonId
                    ELSE NULL
                END AS ManagerPersonId
         FROM dbo.Persons employee
-        LEFT JOIN dbo.EmployeeTimingSchedules schedule
-          ON schedule.StaffId = (SELECT TOP(1) StaffId FROM dbo.StaffVacancy WHERE PersonId=employee.PersonId AND TenantId=@TenantId)
-         AND schedule.ScheduleDate = @RouteDate
-         AND schedule.TenantId = @TenantId
-        LEFT JOIN dbo.Persons overrideManager
-          ON overrideManager.PersonId = schedule.TemporaryReportsToPersonId
-         AND overrideManager.TenantId = @TenantId
-         AND overrideManager.IsActive = 1
-        LEFT JOIN dbo.Persons fallbackManager
-          ON fallbackManager.PersonId = employee.ReportsToPersonId
-         AND fallbackManager.TenantId = @TenantId
-         AND fallbackManager.IsActive = 1
+        LEFT JOIN dbo.Persons primaryManager
+          ON primaryManager.PersonId = employee.ReportsToPersonId
+         AND primaryManager.TenantId = @TenantId
+         AND primaryManager.IsActive = 1
+        LEFT JOIN dbo.Persons alternativeManager
+          ON alternativeManager.PersonId = employee.AlternativeReportsToPersonId
+         AND alternativeManager.TenantId = @TenantId
+         AND alternativeManager.IsActive = 1
+        LEFT JOIN dbo.PersonHrProfiles leaveProfile
+          ON leaveProfile.PersonId = primaryManager.PersonId
+         AND leaveProfile.TenantId = @TenantId
+         AND leaveProfile.LeaveFrom IS NOT NULL
+         AND CONVERT(date, leaveProfile.LeaveFrom) <= @RouteDate
+         AND CONVERT(date, COALESCE(leaveProfile.LeaveTo, leaveProfile.LeaveFrom)) >= @RouteDate
         WHERE employee.TenantId = @TenantId AND employee.IsActive = 1
     ),
     HierarchyPath AS
@@ -165,7 +169,8 @@ BEGIN
         SELECT TOP(1) 1, staff.PersonId, staff.StaffId, 0
         FROM dbo.StaffVacancy staff
         JOIN dbo.Persons person ON person.PersonId = staff.PersonId AND person.TenantId = @TenantId AND person.IsActive = 1
-        LEFT JOIN dbo.JobTitles jt ON jt.Id = staff.VacancyId
+        LEFT JOIN dbo.Vacancies vacancy ON vacancy.VacancyId = staff.VacancyId
+        LEFT JOIN dbo.JobTitles jt ON jt.Id = vacancy.JobTitleId
         WHERE staff.TenantId = @TenantId AND staff.StaffId <> @RequesterStaffId
         ORDER BY CASE WHEN jt.TitleName LIKE N'%CEO%' OR jt.TitleName LIKE N'%Director%' THEN 0 ELSE 1 END,
                  person.FullName;
