@@ -99,5 +99,8 @@ public sealed class ProcessReportActionDto
 {
     public string ActionCode { get; set; } = string.Empty;
     public string? Comments { get; set; }
+    public TimeOnly? ApprovedTime { get; set; }
+    public TimeOnly? ApprovedCheckInTime { get; set; }
+    public TimeOnly? ApprovedCheckOutTime { get; set; }
     public string RowVersion { get; set; } = string.Empty;
 }

@@ -54,6 +54,7 @@ public sealed class OcrPipelineCoordinator
         try
         {
             var parsed = _availityParser.Parse(pdfBytes);
+            EnsureCheckIdentity(parsed, fileName);
             var checkNo = parsed.CheckEFT ?? "";
             var existing = await _store.FindExistingCheckAsync(checkNo, "AVAILITY Docs", orgId, ct);
 
@@ -119,6 +120,7 @@ public sealed class OcrPipelineCoordinator
         try
         {
             var parsed = _ccaParser.Parse(pdfBytes);
+            EnsureCheckIdentity(parsed, fileName);
             var checkNo = parsed.CheckEFT ?? "";
             var existing = await _store.FindExistingCheckAsync(checkNo, "CCA Docs", orgId, ct);
 
@@ -186,6 +188,7 @@ public sealed class OcrPipelineCoordinator
         try
         {
             var parsed = _laSalleParser.Parse(pdfBytes);
+            EnsureCheckIdentity(parsed, fileName);
             var checkNo = parsed.CheckEFT ?? "";
             var existing = await _store.FindExistingCheckAsync(checkNo, "Lassale Docs", orgId, ct);
 
@@ -279,6 +282,7 @@ public sealed class OcrPipelineCoordinator
         try
         {
             var parsed = _zelisParser.Parse(pdfBytes);
+            EnsureCheckIdentity(parsed, fileName);
             var checkNo = parsed.CheckEFT ?? "";
             var existing = await _store.FindExistingCheckAsync(checkNo, "Zelis Docs", orgId, ct);
 
@@ -344,10 +348,25 @@ public sealed class OcrPipelineCoordinator
         try
         {
             var parsed = _healthNetParser.Parse(pdfBytes);
+            EnsureCheckIdentity(parsed, fileName);
+            if (!parsed.Patients.SelectMany(x => x.Procedures).Any())
+                throw new InvalidDataException("Health Net PDF requires review; no data was saved or posted.");
             var checkNo = parsed.CheckEFT ?? "";
 
-            // 1. Transaction 1: Save OCR document
-            var uploadId = await _store.SaveNewDocumentAsync(pdfBytes, fileName, parsed, orgId, userId, ct);
+            // Health Net re-uploads reuse the tenant/source/check record rather than
+            // duplicating the OCR header and financial posting identity.
+            var existing = await _store.FindExistingCheckAsync(checkNo, "HEALTH NET Docs", orgId, ct);
+            var uploadId = existing.HasValue && existing.Value.Exists
+                ? await _store.UpsertDocumentAsync(
+                    pdfBytes,
+                    fileName,
+                    parsed,
+                    existing.Value.HeaderId,
+                    existing.Value.UploadId,
+                    orgId,
+                    userId,
+                    ct)
+                : await _store.SaveNewDocumentAsync(pdfBytes, fileName, parsed, orgId, userId, ct);
 
             // Receipt
             var amount = parsed.DocumentTotals?.ProviderPaid ?? parsed.DocumentTotals?.CheckAmount ?? 0;
@@ -397,4 +416,11 @@ public sealed class OcrPipelineCoordinator
             };
         }
     }
+
+    private static void EnsureCheckIdentity(ParsedEobHeader parsed, string fileName)
+    {
+        if (string.IsNullOrWhiteSpace(parsed.CheckEFT))
+            throw new InvalidDataException($"The payer check/EFT number could not be read from '{Path.GetFileName(fileName)}'. No data was saved.");
+    }
 }
+

@@ -62,7 +62,7 @@ public sealed class EobClaimPostingService : IEobClaimPostingService
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Failed to post claims for patient {PatientName}", p.PatientName);
+                _logger.LogError(ex, "Failed to post an OCR claim for tenant {OrgId}", orgId);
                 result.Warnings.Add($"Failed posting patient {p.PatientName}: {ex.Message}");
                 result.SkippedCount++;
             }
@@ -110,7 +110,7 @@ public sealed class EobClaimPostingService : IEobClaimPostingService
     {
         var cleanMidVal = CleanMid(p.MID, "");
         var pat = await _db.BillingPatients.FirstOrDefaultAsync(x =>
-            (x.OrgId == orgId || x.OrgId == null) &&
+            x.OrgId == orgId &&
             ((p.PatientNo != null && x.PatientNo == p.PatientNo) ||
              (cleanMidVal != "" && x.PatientNo == cleanMidVal)), ct);
 
@@ -173,7 +173,7 @@ public sealed class EobClaimPostingService : IEobClaimPostingService
 
         var name = insuranceName.Trim();
         var carrier = await _db.BillingCarriers.FirstOrDefaultAsync(x =>
-            (x.OrgId == orgId || x.OrgId == null) && x.CarrierName == name, ct);
+            x.OrgId == orgId && x.CarrierName == name, ct);
 
         if (carrier != null) return carrier.CarrierId;
 
@@ -234,7 +234,7 @@ public sealed class EobClaimPostingService : IEobClaimPostingService
         var appt = await _db.BillingAppointments.FirstOrDefaultAsync(x =>
             x.PatientId == patient.PatientId &&
             x.AppointmentDate == dosStr &&
-            (x.OrgId == orgId || x.OrgId == null), ct);
+            x.OrgId == orgId, ct);
 
         if (appt == null)
         {
@@ -260,7 +260,8 @@ public sealed class EobClaimPostingService : IEobClaimPostingService
         var claim = await _db.BillingClaims.FirstOrDefaultAsync(x =>
             x.AppointmentId == appt.AppointmentId &&
             x.PatientId == patient.PatientId &&
-            x.EobCheckNo == header.CheckEFT, ct);
+            x.EobCheckNo == header.CheckEFT &&
+            x.OrgId == orgId, ct);
 
         if (claim == null)
         {
@@ -286,7 +287,12 @@ public sealed class EobClaimPostingService : IEobClaimPostingService
         }
         else
         {
-            claim.TotalPaid = (claim.TotalPaid ?? 0) + paid;
+            claim.TotalPaid = p.ProviderPaid ?? paid;
+            claim.TotalBilled = p.Billed ?? proc.Billed;
+            claim.TotalAllowed = p.Allowed ?? proc.Allowed;
+            claim.PatientResponsibility = patientResp;
+            claim.Attachment = header.Attachment;
+            claim.StatusId = claimStatusId;
             await _db.SaveChangesAsync(ct);
         }
 
@@ -317,65 +323,94 @@ public sealed class EobClaimPostingService : IEobClaimPostingService
         else lineEobStatus = 1059;
 
         // 5. ApptCode
-        var apptCode = new BillingApptCode
+        var apptCode = await _db.BillingApptCodes.FirstOrDefaultAsync(x =>
+            x.AppointmentId == appt.AppointmentId &&
+            x.ClaimId == claim.ClaimId &&
+            x.PatientId == patient.PatientId &&
+            x.OrgId == orgId &&
+            x.ProcedureCode == proc.ProcedureCode &&
+            x.DateOfService == dosStr, ct);
+
+        if (apptCode == null)
         {
-            AppointmentId = appt.AppointmentId,
-            ClaimId = claim.ClaimId,
-            PatientId = patient.PatientId,
-            OrgId = orgId,
-            ProcedureCodeId = procCodeId,
-            ProcedureCode = proc.ProcedureCode,
-            DateOfService = dosStr,
-            ClaimAmount = proc.Billed,
-            EobAllowed = proc.Allowed,
-            Paid = proc.ProviderPaid,
-            CoInsurance = proc.CoInsurance,
-            Deductible = proc.Deductible,
-            PatientResponsibility = patientResp,
-            Modifiers = proc.Modifiers,
-            LineEobStatusId = lineEobStatus,
-            CarrierId = carrierId,
-            IsUpload = true,
-            IsCreatedFromEobs = true,
-            CreatedDate = DateTime.UtcNow,
-            CreatedByUserId = userId
-        };
-        _db.BillingApptCodes.Add(apptCode);
+            apptCode = new BillingApptCode
+            {
+                AppointmentId = appt.AppointmentId,
+                ClaimId = claim.ClaimId,
+                PatientId = patient.PatientId,
+                OrgId = orgId,
+                ProcedureCodeId = procCodeId,
+                ProcedureCode = proc.ProcedureCode,
+                DateOfService = dosStr,
+                ClaimAmount = proc.Billed,
+                Modifiers = proc.Modifiers,
+                IsCreatedFromEobs = true,
+                CreatedDate = DateTime.UtcNow,
+                CreatedByUserId = userId
+            };
+            _db.BillingApptCodes.Add(apptCode);
+        }
+
+        apptCode.EobAllowed = proc.Allowed;
+        apptCode.Paid = proc.ProviderPaid;
+        apptCode.CoInsurance = proc.CoInsurance;
+        apptCode.Deductible = proc.Deductible;
+        apptCode.PatientResponsibility = patientResp;
+        apptCode.FillSource = header.Source ?? payer;
+        apptCode.LineEobStatusId = lineEobStatus;
+        apptCode.CarrierId = carrierId;
+        apptCode.IsUpload = true;
         await _db.SaveChangesAsync(ct);
 
         // 6. Payment Row (tblClaimCodeAmountDetails)
-        var payment = new BillingPaymentRow
+        var payment = await _db.BillingPaymentRows.FirstOrDefaultAsync(x =>
+            x.ApptCodeId == apptCode.ApptCodeId &&
+            x.EobCheckNo == header.CheckEFT &&
+            x.OrgId == orgId, ct);
+        if (payment == null)
         {
-            ApptCodeId = apptCode.ApptCodeId,
-            ClaimId = claim.ClaimId,
-            OrgId = orgId,
-            EobCheckNo = header.CheckEFT,
-            PaidAmount = proc.ProviderPaid,
-            PatientResponsibility = patientResp,
-            CreatedDate = DateTime.UtcNow
-        };
-        _db.BillingPaymentRows.Add(payment);
+            payment = new BillingPaymentRow
+            {
+                ApptCodeId = apptCode.ApptCodeId,
+                ClaimId = claim.ClaimId,
+                OrgId = orgId,
+                EobCheckNo = header.CheckEFT,
+                CreatedDate = DateTime.UtcNow
+            };
+            _db.BillingPaymentRows.Add(payment);
+        }
+        payment.PaidAmount = proc.ProviderPaid;
+        payment.PatientResponsibility = patientResp;
 
         // 7. Claim EOB Doc
-        var doc = new BillingClaimEobDoc
+        var docExists = await _db.BillingClaimEobDocs.AnyAsync(x =>
+            x.ClaimId == claim.ClaimId && x.EobCheckNo == header.CheckEFT, ct);
+        if (!docExists)
         {
-            ClaimId = claim.ClaimId,
-            EobCheckNo = header.CheckEFT,
-            Attachment = header.Attachment,
-            UploadDate = DateTime.UtcNow.ToString("MM/dd/yyyy"),
-            CreatedDate = DateTime.UtcNow
-        };
-        _db.BillingClaimEobDocs.Add(doc);
+            _db.BillingClaimEobDocs.Add(new BillingClaimEobDoc
+            {
+                ClaimId = claim.ClaimId,
+                EobCheckNo = header.CheckEFT,
+                Attachment = header.Attachment,
+                UploadDate = header.StatementDate,
+                CreatedDate = DateTime.UtcNow
+            });
+        }
 
         // 8. Claims Log
-        var log = new BillingClaimsLog
+        var logDate = DateTime.UtcNow.ToString("MM/dd/yyyy");
+        var logExists = await _db.BillingClaimsLogs.AnyAsync(x =>
+            x.ClaimId == claim.ClaimId && x.StatusId == claimStatusId && x.LogDate == logDate, ct);
+        if (!logExists)
         {
-            ClaimId = claim.ClaimId,
-            StatusId = claimStatusId,
-            LogDate = DateTime.UtcNow.ToString("MM/dd/yyyy"),
-            CreatedDate = DateTime.UtcNow
-        };
-        _db.BillingClaimsLogs.Add(log);
+            _db.BillingClaimsLogs.Add(new BillingClaimsLog
+            {
+                ClaimId = claim.ClaimId,
+                StatusId = claimStatusId,
+                LogDate = logDate,
+                CreatedDate = DateTime.UtcNow
+            });
+        }
 
         await _db.SaveChangesAsync(ct);
 
@@ -384,7 +419,7 @@ public sealed class EobClaimPostingService : IEobClaimPostingService
         {
             if (payer.Equals("AVAILITY", StringComparison.OrdinalIgnoreCase))
             {
-                _ = SendToBillingAsync(patient.PatientNo ?? "", dosStr, proc.ProcedureCode, payer, orgId, CancellationToken.None);
+                await SendToBillingAsync(patient.PatientNo ?? "", dosStr, proc.ProcedureCode, payer, orgId, ct);
             }
             else
             {
@@ -394,7 +429,7 @@ public sealed class EobClaimPostingService : IEobClaimPostingService
 
         if (payer.Equals("AVAILITY", StringComparison.OrdinalIgnoreCase) && proc.ProcedureCode != null && proc.ProviderPaid.HasValue)
         {
-            _ = AmountSendToBillingAsync(patient.PatientNo ?? "", "", dosStr, [(proc.ProcedureCode, proc.ProviderPaid.Value)], CancellationToken.None);
+            await AmountSendToBillingAsync(patient.PatientNo ?? "", "", dosStr, [(proc.ProcedureCode, proc.ProviderPaid.Value)], ct);
         }
 
         result.PostedCount++;
@@ -452,3 +487,4 @@ public sealed class EobClaimPostingService : IEobClaimPostingService
         }
     }
 }
+

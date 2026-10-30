@@ -13,6 +13,244 @@ namespace Accounts.Controllers;
 
 public sealed partial class ProcessWorkflowController
 {
+    private async Task<long?> ApplyResolvedAttendanceStatusCorrectionAsync(long reportId, CancellationToken ct)
+    {
+        var tenantId = _tenant.RequiredTenantId;
+        string? json = null;
+        var connection = (SqlConnection)_db.Database.GetDbConnection();
+        var shouldClose = connection.State != System.Data.ConnectionState.Open;
+        if (shouldClose) await connection.OpenAsync(ct);
+        try
+        {
+            await using var command = connection.CreateCommand();
+            command.Transaction = (SqlTransaction?)_db.Database.CurrentTransaction?.GetDbTransaction();
+            command.CommandText = """
+                SELECT report.AttendanceRequestJson
+                FROM dbo.ProcessReports report
+                JOIN dbo.ProcessWorkflowStatuses status ON status.Id=report.StatusId
+                WHERE report.Id=@reportId AND report.TenantId=@tenantId
+                  AND report.SourceModule=N'AttendanceStatusCorrection'
+                  AND status.Code IN(N'APPROVED',N'RESOLVED')
+                """;
+            command.Parameters.AddWithValue("@reportId", reportId);
+            command.Parameters.AddWithValue("@tenantId", tenantId);
+            json = (await command.ExecuteScalarAsync(ct)) as string;
+        }
+        finally { if (shouldClose) await connection.CloseAsync(); }
+
+        if (string.IsNullOrWhiteSpace(json)) return null;
+        var details = JsonSerializer.Deserialize<AttendanceRequestDetailsDto>(json);
+        if (details is null || details.Type is not ("Status" or "Check In" or "Check Out")) return null;
+
+        var record = await _db.AttendanceRecords.SingleOrDefaultAsync(item =>
+            item.TenantId == tenantId && item.PersonId == details.PersonId && item.AttendanceDate == details.Date &&
+            (!details.AttendanceId.HasValue || item.Id == details.AttendanceId.Value), ct);
+        if (record == null)
+        {
+            record = new Models.AttendanceRecord
+            {
+                TenantId = tenantId,
+                PersonId = details.PersonId,
+                AttendanceDate = details.Date,
+                CreatedDate = BusinessClock.UtcNow()
+            };
+            _db.AttendanceRecords.Add(record);
+        }
+
+        if (details.Type == "Status")
+        {
+            if (details.RequestedStatusId.HasValue)
+            {
+                var requestedStatusId = details.RequestedStatusId.Value;
+                var validStatus = await _db.PlatformSettingProcessStatuses.AsNoTracking()
+                    .AnyAsync(mapping => mapping.Process.IsActive && mapping.Process.Name == "Attendance" &&
+                        mapping.Status.IsActive && mapping.StatusId == requestedStatusId, ct);
+                if (!validStatus)
+                    throw new InvalidOperationException("The approved attendance status is no longer active in Attendance configuration.");
+
+                record.ApprovedStatusOverrideId = requestedStatusId;
+                record.CanonicalStatusId = requestedStatusId;
+            }
+
+            var checkInTime = details.ApprovedCheckInTime ?? details.RequestedCheckInTime;
+            var checkOutTime = details.ApprovedCheckOutTime ?? details.RequestedCheckOutTime;
+
+            // Backward compatibility for single legacy time:
+            if (!checkInTime.HasValue && !checkOutTime.HasValue && (details.ApprovedTime ?? details.RequestedTime).HasValue)
+            {
+                var legacyTime = (details.ApprovedTime ?? details.RequestedTime)!.Value;
+                if (!record.CheckInUtc.HasValue) checkInTime = legacyTime;
+                else if (!record.CheckOutUtc.HasValue) checkOutTime = legacyTime;
+            }
+
+            if (checkInTime.HasValue)
+            {
+                record.CheckInUtc = details.Date.ToDateTime(checkInTime.Value);
+            }
+
+            if (checkOutTime.HasValue)
+            {
+                var correctedCheckOut = details.Date.ToDateTime(checkOutTime.Value);
+                if (record.CheckInUtc.HasValue && correctedCheckOut <= record.CheckInUtc.Value)
+                {
+                    correctedCheckOut = correctedCheckOut.AddDays(1);
+                }
+                else if (await IsOvernightAttendanceShiftAsync(tenantId, details.PersonId, details.Date, ct) &&
+                         correctedCheckOut.TimeOfDay < (record.CheckInUtc?.TimeOfDay ?? TimeSpan.FromHours(12)))
+                {
+                    correctedCheckOut = correctedCheckOut.AddDays(1);
+                }
+                record.CheckOutUtc = correctedCheckOut;
+            }
+        }
+        else
+        {
+            var approvedTime = details.ApprovedTime ?? details.RequestedTime
+                ?? throw new InvalidOperationException("The approved attendance punch request has no time.");
+            var correctedAt = details.Date.ToDateTime(approvedTime);
+            if (details.Type == "Check In")
+            {
+                if (record.CheckOutUtc.HasValue && correctedAt >= record.CheckOutUtc.Value && record.CheckOutUtc.Value.Date == correctedAt.Date)
+                {
+                    record.CheckOutUtc = record.CheckOutUtc.Value.AddDays(1);
+                }
+                record.CheckInUtc = correctedAt;
+            }
+            else
+            {
+                if (record.CheckInUtc.HasValue && correctedAt <= record.CheckInUtc.Value)
+                {
+                    correctedAt = correctedAt.AddDays(1);
+                }
+                record.CheckOutUtc = correctedAt;
+            }
+
+            // A punch correction must be recalculated from the approved times; it is
+            // deliberately not converted into a permanent manual status override.
+            record.ApprovedStatusOverrideId = null;
+            record.CanonicalStatusId = null;
+        }
+
+        record.ApprovedStatusOverrideReportId = reportId;
+        record.ApprovedStatusOverrideByUserId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+        record.ApprovedStatusOverrideDateUtc = BusinessClock.UtcNow();
+        record.PlatformActionStatusId = null;
+        record.AttendanceStatusId = null;
+        record.ModifiedDate = BusinessClock.UtcNow();
+        await _db.SaveChangesAsync(ct);
+
+        await _attendanceFinalization.RefreshPeriodAsync(
+            tenantId, details.Date.Year, details.Date.Month, [details.PersonId], ct);
+        return record.Id;
+    }
+
+    private async Task<bool> IsOvernightAttendanceShiftAsync(
+        int tenantId, Guid personId, DateOnly date, CancellationToken ct)
+    {
+        var staffId = await _db.StaffVacancies.AsNoTracking()
+            .Where(staff => staff.TenantId == tenantId && staff.PersonId == personId)
+            .Select(staff => (Guid?)staff.StaffId).FirstOrDefaultAsync(ct);
+        if (!staffId.HasValue) return false;
+
+        var daily = await _db.EmployeeTimingSchedules.AsNoTracking()
+            .Where(item => item.TenantId == tenantId && item.StaffId == staffId.Value &&
+                item.ScheduleDate == date && item.IsOn)
+            .Select(item => new { item.TimeFrom, item.TimeTo }).SingleOrDefaultAsync(ct);
+        var from = daily?.TimeFrom;
+        var to = daily?.TimeTo;
+        if (string.IsNullOrWhiteSpace(from) || string.IsNullOrWhiteSpace(to))
+        {
+            var mapped = await _db.AttendanceMapRules.AsNoTracking()
+                .Where(item => item.TenantId == tenantId && item.StaffId == staffId.Value)
+                .Select(item => new { item.TimeFrom, item.TimeTo }).SingleOrDefaultAsync(ct);
+            from = mapped?.TimeFrom;
+            to = mapped?.TimeTo;
+        }
+        return TimeOnly.TryParse(from, out var shiftFrom) &&
+               TimeOnly.TryParse(to, out var shiftTo) && shiftTo <= shiftFrom;
+    }
+
+    [HttpGet("tasks/{reportId:long}/attendance-request")]
+    public async Task<IActionResult> GetAttendanceTaskDetails(long reportId, CancellationToken ct)
+    {
+        var result = await LoadAttendanceTaskDetailsAsync(reportId, requireCurrentFinalApprover: false, ct);
+        return result == null
+            ? NotFound(new { message = "Attendance request details are unavailable or you cannot view this task." })
+            : Ok(new { details = result.Value.Details, canEditTime = result.Value.IsCurrentFinalApprover });
+    }
+
+    private async Task<(AttendanceRequestDetailsDto Details, bool IsCurrentFinalApprover)?> LoadAttendanceTaskDetailsAsync(
+        long reportId, bool requireCurrentFinalApprover, CancellationToken ct)
+    {
+        var tenantId = _tenant.RequiredTenantId;
+        var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+        if (string.IsNullOrWhiteSpace(userId)) return null;
+        string? json = null;
+        var isFinal = false;
+        var connection = (SqlConnection)_db.Database.GetDbConnection();
+        var shouldClose = connection.State != System.Data.ConnectionState.Open;
+        if (shouldClose) await connection.OpenAsync(ct);
+        try
+        {
+            await using var command = connection.CreateCommand();
+            command.Transaction = (SqlTransaction?)_db.Database.CurrentTransaction?.GetDbTransaction();
+            command.CommandText = """
+                DECLARE @ActorStaffId uniqueidentifier;
+                SELECT TOP(1) @ActorStaffId=staff.StaffId
+                FROM dbo.Persons person
+                JOIN dbo.StaffVacancy staff ON staff.PersonId=person.PersonId AND staff.TenantId=person.TenantId
+                WHERE person.TenantId=@tenantId AND person.IdentityUserId=@userId AND person.IsActive=1;
+
+                SELECT report.AttendanceRequestJson,
+                       CONVERT(bit,CASE WHEN report.CurrentApproverStaffId=@ActorStaffId AND EXISTS
+                       (SELECT 1 FROM dbo.ProcessCategoryApprovers authority
+                        WHERE authority.TenantId=report.TenantId AND authority.CategoryId=report.CategoryId
+                          AND authority.StaffId=@ActorStaffId) THEN 1 ELSE 0 END) AS IsCurrentFinalApprover
+                FROM dbo.ProcessReports report
+                WHERE report.Id=@reportId AND report.TenantId=@tenantId
+                  AND report.SourceModule=N'AttendanceStatusCorrection'
+                  AND (@requireFinal=0 AND
+                       (report.RequesterStaffId=@ActorStaffId OR report.SubjectStaffId=@ActorStaffId OR
+                        report.CurrentApproverStaffId=@ActorStaffId OR EXISTS
+                        (SELECT 1 FROM dbo.ProcessReportRouteSteps route
+                         WHERE route.ReportId=report.Id AND route.ApproverStaffId=@ActorStaffId))
+                       OR @requireFinal=1 AND report.CurrentApproverStaffId=@ActorStaffId AND EXISTS
+                        (SELECT 1 FROM dbo.ProcessCategoryApprovers authority
+                         WHERE authority.TenantId=report.TenantId AND authority.CategoryId=report.CategoryId
+                           AND authority.StaffId=@ActorStaffId));
+                """;
+            command.Parameters.AddWithValue("@reportId", reportId);
+            command.Parameters.AddWithValue("@tenantId", tenantId);
+            command.Parameters.AddWithValue("@userId", userId);
+            command.Parameters.AddWithValue("@requireFinal", requireCurrentFinalApprover);
+            await using var reader = await command.ExecuteReaderAsync(ct);
+            if (!await reader.ReadAsync(ct)) return null;
+            json = DbString(reader, "AttendanceRequestJson");
+            isFinal = reader.GetBoolean(reader.GetOrdinal("IsCurrentFinalApprover"));
+        }
+        finally { if (shouldClose) await connection.CloseAsync(); }
+
+        if (string.IsNullOrWhiteSpace(json)) return null;
+        var details = JsonSerializer.Deserialize<AttendanceRequestDetailsDto>(json);
+        return details == null ? null : (details, isFinal);
+    }
+
+    private async Task SaveApprovedAttendanceTimeAsync(
+        long reportId, AttendanceRequestDetailsDto details,
+        TimeOnly? approvedTime, TimeOnly? approvedCheckInTime, TimeOnly? approvedCheckOutTime,
+        CancellationToken ct)
+    {
+        if (approvedTime.HasValue) details.ApprovedTime = approvedTime;
+        if (approvedCheckInTime.HasValue) details.ApprovedCheckInTime = approvedCheckInTime;
+        if (approvedCheckOutTime.HasValue) details.ApprovedCheckOutTime = approvedCheckOutTime;
+        var json = JsonSerializer.Serialize(details);
+        var tenantId = _tenant.RequiredTenantId;
+        var affected = await _db.Database.ExecuteSqlInterpolatedAsync(
+            $"UPDATE dbo.ProcessReports SET AttendanceRequestJson={json} WHERE Id={reportId} AND TenantId={tenantId}", ct);
+        if (affected != 1)
+            throw new InvalidOperationException("The approved attendance request could not be updated.");
+    }
+
     [HttpGet("leave-request-context")]
     public async Task<IActionResult> LeaveRequestContext([FromQuery] DateOnly attendanceDate, CancellationToken ct)
     {
@@ -46,7 +284,7 @@ public sealed partial class ProcessWorkflowController
     {
         if (string.IsNullOrWhiteSpace(dto.Remarks) || dto.Remarks.Trim().Length > 2000)
             return BadRequest(new { message = "Describe the attendance issue using 1–2000 characters." });
-        if (dto.Type is not ("Status" or "Leave" or "Short Leave" or "Over Time" or "Meal Status"))
+        if (dto.Type is not ("Status" or "Check In" or "Check Out" or "Leave" or "Short Leave" or "Over Time" or "Meal Status"))
             return BadRequest(new { message = "Choose a supported attendance request type." });
 
         // Reload the date/status from the caller's authorized report, never trust a supplied person or status label.
@@ -58,16 +296,36 @@ public sealed partial class ProcessWorkflowController
         var details = new AttendanceRequestDetailsDto
         {
             Type = dto.Type, Date = context.AttendanceDate, PersonId = context.PersonId,
-            AttendanceId = context.AttendanceId, CurrentStatus = context.CurrentStatus, Remarks = dto.Remarks.Trim()
+            AttendanceId = context.AttendanceId, CurrentStatus = context.CurrentStatus,
+            CurrentCheckIn = context.CurrentCheckIn, CurrentCheckOut = context.CurrentCheckOut,
+            Remarks = dto.Remarks.Trim()
         };
         if (dto.Type == "Status")
         {
-            var requested = context.Statuses.FirstOrDefault(status => status.Id == dto.RequestedStatusId);
-            if (requested is null) return BadRequest(new { message = "Choose an active status configured for Attendance." });
-            if (string.Equals(requested.Name.Trim(), context.CurrentStatus.Trim(), StringComparison.OrdinalIgnoreCase))
-                return BadRequest(new { message = "Requested status must differ from the current attendance status." });
-            details.RequestedStatusId = requested.Id;
-            details.RequestedStatus = requested.Name;
+            if (dto.RequestedStatusId.HasValue)
+            {
+                var requested = context.Statuses.FirstOrDefault(status => status.Id == dto.RequestedStatusId);
+                if (requested is null) return BadRequest(new { message = "Choose an active status configured for Attendance." });
+                if (string.Equals(requested.Name.Trim(), context.CurrentStatus.Trim(), StringComparison.OrdinalIgnoreCase) &&
+                    !dto.RequestedCheckInTime.HasValue && !dto.RequestedCheckOutTime.HasValue && !dto.RequestedTime.HasValue)
+                    return BadRequest(new { message = "Requested status or times must differ from the current attendance record." });
+                details.RequestedStatusId = requested.Id;
+                details.RequestedStatus = requested.Name;
+            }
+            else if (!dto.RequestedCheckInTime.HasValue && !dto.RequestedCheckOutTime.HasValue && !dto.RequestedTime.HasValue)
+            {
+                return BadRequest(new { message = "Select a requested status or enter attendance times to correct." });
+            }
+
+            details.RequestedTime = dto.RequestedTime;
+            details.RequestedCheckInTime = dto.RequestedCheckInTime;
+            details.RequestedCheckOutTime = dto.RequestedCheckOutTime;
+        }
+        else if (dto.Type is "Check In" or "Check Out")
+        {
+            if (!dto.RequestedTime.HasValue)
+                return BadRequest(new { message = $"Requested {dto.Type.ToLowerInvariant()} time is required." });
+            details.RequestedTime = dto.RequestedTime;
         }
         else if (dto.Type == "Leave")
         {
@@ -98,6 +356,14 @@ public sealed partial class ProcessWorkflowController
         }
 
         // Reuse the existing SQL report/route/history workflow. Submission never edits punches, status or payroll.
+        var timeDesc = new List<string>();
+        if (details.RequestedCheckInTime.HasValue)
+            timeDesc.Add($"Requested check-in: {details.RequestedCheckInTime:HH:mm}");
+        if (details.RequestedCheckOutTime.HasValue)
+            timeDesc.Add($"Requested check-out: {details.RequestedCheckOutTime:HH:mm}");
+        if (!details.RequestedCheckInTime.HasValue && !details.RequestedCheckOutTime.HasValue && details.RequestedTime.HasValue)
+            timeDesc.Add($"Related attendance time: {details.RequestedTime:HH:mm}");
+
         var report = new SubmitProcessReportDto
         {
             CategoryCode = dto.Type == "Leave" ? "LEAVE" : "ATTENDANCE",
@@ -106,12 +372,16 @@ public sealed partial class ProcessWorkflowController
             Description = $"Attendance date: {context.AttendanceDate:yyyy-MM-dd}\n" +
                 $"Attendance ID: {context.AttendanceId?.ToString() ?? "Not yet recorded"}\n" +
                 $"Current status: {context.CurrentStatus}\n" +
+                $"Current check-in: {(context.CurrentCheckIn.HasValue ? context.CurrentCheckIn.Value.ToString("HH:mm") : "Not recorded")}\n" +
+                $"Current check-out: {(context.CurrentCheckOut.HasValue ? context.CurrentCheckOut.Value.ToString("HH:mm") : "Not recorded")}\n" +
                 $"Request type: {details.Type}\n" +
                 (dto.Type == "Leave" ? $"Date From: {details.Date:yyyy-MM-dd}\nDate To: {details.DateTo:yyyy-MM-dd}\nLeave Type: {details.LeaveType}\n" :
-                    details.RequestedStatus != null ? $"Requested status: {details.RequestedStatus}\n" :
-                    $"Time From: {details.TimeFrom:HH:mm}\nTime To: {details.TimeTo:HH:mm}\nHours: {details.Minutes / 60m:0.##}\n") +
+                    dto.Type is "Check In" or "Check Out" ? $"Requested time: {details.RequestedTime:HH:mm}\n" :
+                    (details.RequestedStatus != null ? $"Requested status: {details.RequestedStatus}\n" : string.Empty) +
+                    (timeDesc.Count > 0 ? string.Join("\n", timeDesc) + "\n" : string.Empty)) +
+                (dto.Type is "Short Leave" or "Over Time" ? $"Time From: {details.TimeFrom:HH:mm}\nTime To: {details.TimeTo:HH:mm}\nHours: {details.Minutes / 60m:0.##}\n" : string.Empty) +
                 "\n" + details.Remarks,
-            SourceModule = dto.Type == "Status" ? "AttendanceStatusCorrection" : "AttendanceRequest",
+            SourceModule = dto.Type is "Status" or "Check In" or "Check Out" ? "AttendanceStatusCorrection" : "AttendanceRequest",
             SourceRecordId = $"{context.PersonId:D}:{context.AttendanceDate:yyyy-MM-dd}",
             // NULL means self in usp_ProcessReport_Submit; arbitrary subject/recipient selection is not accepted.
             SubjectStaffId = null
@@ -248,6 +518,8 @@ public sealed partial class ProcessWorkflowController
         {
             PersonId = personId.Value, AttendanceId = row.Id, AttendanceDate = date,
             CurrentStatus = string.IsNullOrWhiteSpace(row.AttendanceStatus) ? row.StatusCode ?? "-" : row.AttendanceStatus,
+            CurrentCheckIn = TimeOnly.TryParse(row.CheckInTime, out var checkIn) ? checkIn : null,
+            CurrentCheckOut = TimeOnly.TryParse(row.CheckOutTime, out var checkOut) ? checkOut : null,
             Statuses = statuses, CanSubmit = capability?.CanSubmit == true && statuses.Count > 0,
             ReportingManagerName = capability?.ReportingManagerName,
             Reason = statuses.Count == 0 ? "No active attendance statuses are configured." : capability?.Reason

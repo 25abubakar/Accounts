@@ -725,15 +725,6 @@ public sealed class AttendanceController : ControllerBase
             .Where(x => x.Code == "CAMERA" && x.TenantId == person.TenantId)
             .Select(x => (int?)x.Id)
             .SingleOrDefaultAsync(ct);
-        var isMappedForCheckInOut = await _db.AttendanceMapRules
-            .AsNoTracking()
-            .AnyAsync(rule =>
-                rule.TenantId == person.TenantId &&
-                rule.StaffId == person.Staff.StaffId &&
-                rule.AttendanceEntryTypeId == checkEntryType.Id,
-                ct);
-        if (!isMappedForCheckInOut)
-            return BadRequest(new { message = "Camera verification is only available for staff mapped to Check in/Out attendance." });
         var workMode = await _db.AttendanceWorkModes.SingleOrDefaultAsync(x => x.Code == "ONSITE" && x.IsActive, ct);
 
         var record = await _db.AttendanceRecords

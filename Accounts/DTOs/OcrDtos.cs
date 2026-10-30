@@ -143,6 +143,10 @@ public sealed class HealthNetFileResult
 public sealed class OcrDocumentListItem
 {
     public int Id { get; set; }
+    public string? DocTitle { get; set; }
+    public string? Address { get; set; }
+    public string? Phone { get; set; }
+    public string? Fax { get; set; }
     public string? CheckEFT { get; set; }
     public string? EobDate { get; set; }
     public DateTime? CreatedDate { get; set; }
@@ -158,8 +162,13 @@ public sealed class OcrDocumentListItem
 public sealed class OcrDocumentDetail
 {
     public int Id { get; set; }
+    public string? DocTitle { get; set; }
+    public string? Address { get; set; }
+    public string? Phone { get; set; }
+    public string? Fax { get; set; }
     public string? CheckEFT { get; set; }
     public string? EobDate { get; set; }
+    public string? StatementDate { get; set; }
     public string? InsuranceName { get; set; }
     public string? InsuranceAddress { get; set; }
     public string? ProviderName { get; set; }

@@ -2,6 +2,7 @@ using Accounts.Authorization;
 using Accounts.Data;
 using Accounts.Models.Scheduler;
 using Accounts.Services.Interfaces;
+using Accounts.Services.Scheduler.Jobs;
 using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 
@@ -9,12 +10,13 @@ namespace Accounts.Services.Scheduler;
 
 public static class SchedulerModule
 {
-    // API registration only: starting Accounts never starts a second execution engine.
+    // Integrated in-process scheduler: runs directly inside the Accounts application host.
     public static IServiceCollection AddAccountsScheduler(this IServiceCollection services, IConfiguration configuration)
     {
         services.AddSchedulerStorage(configuration);
         services.AddScoped<SchedulerAccessFilter>();
         services.AddHostedService<SchedulerRealtimeRelay>();
+        services.AddHostedService<SchedulerExecutionService>();
         services.AddAuthorization(options => options.AddPolicy("SchedulerAdmin", policy => policy.RequireAuthenticatedUser()
             .RequireAssertion(context => context.User.HasClaim("is_tenant_admin", "true") || context.User.IsInRole("TenantAdmin"))));
         return services;
@@ -23,11 +25,7 @@ public static class SchedulerModule
     public static IServiceCollection AddSchedulerStorage(this IServiceCollection services, IConfiguration configuration)
     {
         var business = configuration.GetConnectionString("DefaultConnection") ?? throw new InvalidOperationException("Accounts connection is required.");
-        var scheduler = configuration.GetConnectionString("SchedulerConnection") ?? new SqlConnectionStringBuilder(business) { InitialCatalog = "AccountsScheduler" }.ConnectionString;
-        if(!new SqlConnectionStringBuilder(scheduler).DataSource.Equals(new SqlConnectionStringBuilder(business).DataSource,StringComparison.OrdinalIgnoreCase))
-            throw new InvalidOperationException("The SQL-driven scheduler and business database must be on the same SQL Server instance.");
-        if (new SqlConnectionStringBuilder(scheduler).InitialCatalog.Equals(new SqlConnectionStringBuilder(business).InitialCatalog, StringComparison.OrdinalIgnoreCase))
-            throw new InvalidOperationException("Scheduler storage must use its own database.");
+        var scheduler = configuration.GetConnectionString("SchedulerConnection") ?? business;
         services.AddSingleton(new SchedulerStorage(scheduler, business));
         services.AddHttpContextAccessor();
         services.AddScoped<SchedulerTenant>();
@@ -49,6 +47,14 @@ public static class SchedulerModule
         services.AddSingleton<SchedulerCalendar>();
         services.AddScoped<ModuleJobDispatcher>();
         services.AddSingleton<SchedulerQueue>();
+
+        // Production Job Services executed by the scheduler dispatcher
+        services.AddScoped<AttendanceFinalizationJobService>();
+        services.AddScoped<AssessmentCycleJobService>();
+        services.AddScoped<ProcessAutoTransferJobService>();
+        services.AddScoped<ChatViewOnceExpiryJobService>();
+        services.AddScoped<ConversionFileCleanupJobService>();
+        services.AddScoped<IdempotencyExpiryJobService>();
         return services;
     }
 }

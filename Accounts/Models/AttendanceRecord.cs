@@ -17,6 +17,12 @@ public sealed class AttendanceRecord : ITenantEntity
     public int? AttendanceStatusId { get; set; }
     /// <summary>Canonical Settings status; colors come from the independent Attendance process mapping.</summary>
     public int? CanonicalStatusId { get; set; }
+    /// <summary>Terminally approved manual correction. Automatic evaluation must preserve this status.</summary>
+    public int? ApprovedStatusOverrideId { get; set; }
+    public long? ApprovedStatusOverrideReportId { get; set; }
+    [MaxLength(450)]
+    public string? ApprovedStatusOverrideByUserId { get; set; }
+    public DateTime? ApprovedStatusOverrideDateUtc { get; set; }
     public int? PlatformActionStatusId { get; set; }
     public int? CameraPlatformActionStatusId { get; set; }
     public int? AttendanceEntryTypeId { get; set; }
@@ -46,6 +52,7 @@ public sealed class AttendanceRecord : ITenantEntity
     public Person Person { get; set; } = null!;
     public ProcessStatusStyle? AttendanceStatus { get; set; }
     public PlatformSettingStatus? CanonicalStatus { get; set; }
+    public PlatformSettingStatus? ApprovedStatusOverride { get; set; }
     public PlatformSettingActionStatus? PlatformActionStatus { get; set; }
     public PlatformSettingActionStatus? CameraPlatformActionStatus { get; set; }
     public AttendanceType? AttendanceEntryType { get; set; }

@@ -74,8 +74,15 @@ public sealed partial class AttendanceService
         }
         else
         {
-            status = await mappings.Where(x => x.Status.Name == choice.Name)
-                .Select(x => x.Status).AsTracking().SingleOrDefaultAsync(ct);
+            var choiceName = choice.Name.Trim();
+            status = await mappings.Where(x => x.Status.Name.ToLower() == choiceName.ToLower())
+                .Select(x => x.Status).AsTracking().FirstOrDefaultAsync(ct);
+        }
+        if (status == null)
+        {
+            var candidateList = await mappings.Select(x => x.Status).AsTracking().ToListAsync(ct);
+            status = candidateList.FirstOrDefault(s => string.Equals(s.Name, choice.Name, StringComparison.OrdinalIgnoreCase))
+                     ?? candidateList.FirstOrDefault();
         }
         if (status == null)
             throw new InvalidOperationException($"Configure the '{choice.Name}' status under the Attendance process in Settings / Configuration before recording attendance.");

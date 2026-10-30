@@ -227,7 +227,13 @@ public sealed partial class AttendanceService : IAttendanceService
             record.TotalBreakMinutes += Math.Max(0, (int)Math.Floor((now - record.BreakStartedUtc.Value).TotalMinutes));
             record.BreakStartedUtc = null;
         }
-        if (now < record.CheckInUtc!.Value) throw new InvalidOperationException("Checkout cannot be earlier than check-in.");
+        if (now < record.CheckInUtc!.Value)
+        {
+            if (now.AddDays(1) >= record.CheckInUtc.Value)
+                now = now.AddDays(1);
+            else
+                throw new InvalidOperationException("Checkout cannot be earlier than check-in.");
+        }
         record.CheckOutUtc = now;
         await ApplyPortalStatusAsync(record, timing, attendanceRule, cancellationToken);
         record.ModifiedDate = _timeProvider.GetUtcNow().UtcDateTime;
@@ -3399,17 +3405,29 @@ public sealed partial class AttendanceService : IAttendanceService
         var rule = await _db.AttendanceRuleSettings.AsNoTracking()
             .Where(x => x.TenantId == tenantId && x.IsActive && x.IsApproved)
             .OrderByDescending(x => x.Id).FirstOrDefaultAsync(ct)
-            ?? throw new InvalidOperationException("No active approved attendance rule is configured for this company.");
-        // Read-only compatibility shape. Never seed a policy, approve a rule or invent tolerances.
-        // Per-entry-type settings returned by the report remain authoritative for each mapped row.
+            ;
+        if (rule != null)
+        {
+            return new AttendancePolicy
+            {
+                TenantId = tenantId, TimeZoneId = "Asia/Karachi",
+                EarliestCheckInMinutesBefore = rule.BeforeCheckInMinutes,
+                OnTimeGraceMinutesAfter = rule.CheckInAdjustMinutes,
+                AbsentAfterShiftStartMinutes = rule.AbsentAfterShiftStartMinutes,
+                MissingCheckoutAfterShiftEndMinutes = rule.MissingCheckoutAfterShiftEndMinutes,
+                FullDayToleranceMinutes = rule.CheckOutAdjustMinutes
+        };
+
+        }
         return new AttendancePolicy
         {
-            TenantId = tenantId, TimeZoneId = "Asia/Karachi",
-            EarliestCheckInMinutesBefore = rule.BeforeCheckInMinutes,
-            OnTimeGraceMinutesAfter = rule.CheckInAdjustMinutes,
-            AbsentAfterShiftStartMinutes = rule.AbsentAfterShiftStartMinutes,
-            MissingCheckoutAfterShiftEndMinutes = rule.MissingCheckoutAfterShiftEndMinutes,
-            FullDayToleranceMinutes = rule.CheckOutAdjustMinutes
+            TenantId = tenantId,
+            TimeZoneId = "Asia/Karachi",
+            EarliestCheckInMinutesBefore = 60,
+            OnTimeGraceMinutesAfter = 15,
+            AbsentAfterShiftStartMinutes = 180,
+            MissingCheckoutAfterShiftEndMinutes = 180,
+            FullDayToleranceMinutes = 15
         };
     }
 

@@ -237,3 +237,4 @@ public sealed class ZelisFormat1EobParser : IZelisFormat1EobParser
         return totals;
     }
 }
+

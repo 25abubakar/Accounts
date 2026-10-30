@@ -5,11 +5,11 @@ using Accounts.Services.Ocr.Interfaces;
 
 namespace Accounts.Services.Ocr.Parsers;
 
-public sealed class HealthNetDocumentParser : IHealthNetDocumentParser
+internal sealed class RegexHealthNetDocumentParser : IHealthNetDocumentParser
 {
     private readonly IPdfTextExtractor _extractor;
 
-    public HealthNetDocumentParser(IPdfTextExtractor extractor)
+    public RegexHealthNetDocumentParser(IPdfTextExtractor extractor)
     {
         _extractor = extractor;
     }
@@ -231,3 +231,4 @@ public sealed class HealthNetDocumentParser : IHealthNetDocumentParser
         return totals;
     }
 }
+

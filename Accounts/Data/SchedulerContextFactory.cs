@@ -8,6 +8,6 @@ public sealed class SchedulerContextFactory : IDesignTimeDbContextFactory<Schedu
 {
     public SchedulerDbContext CreateDbContext(string[] args) => new(
         new DbContextOptionsBuilder<SchedulerDbContext>().UseSqlServer(Environment.GetEnvironmentVariable("ConnectionStrings__SchedulerConnection") ??
-            "Server=(localdb)\\MSSQLLocalDB;Database=AccountsScheduler;Trusted_Connection=True;TrustServerCertificate=True").Options,
+            "Server=(localdb)\\MSSQLLocalDB;Database=Account;Trusted_Connection=True;MultipleActiveResultSets=true;TrustServerCertificate=True").Options,
         new SchedulerTenant(new HttpContextAccessor()));
 }

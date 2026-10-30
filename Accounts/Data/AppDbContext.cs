@@ -245,6 +245,9 @@ namespace Accounts.Data
         public DbSet<BillingProcedureCode>  BillingProcedureCodes => Set<BillingProcedureCode>();
         public DbSet<BillingDocumentProcess> BillingDocumentProcesses => Set<BillingDocumentProcess>();
 
+        // ── Copay Module ───────────────────────────────────────────────────────
+        public DbSet<CopayStatement> CopayStatements => Set<CopayStatement>();
+
         protected override void OnModelCreating(ModelBuilder builder)
         {
             base.OnModelCreating(builder);
@@ -252,6 +255,28 @@ namespace Accounts.Data
 
             // -- OCR EOB: keyless view and billing-domain tables (no migrations) --
             builder.Entity<OcrDocumentView>().ToView("vgetOcrUploadedDocsDetails").HasNoKey();
+            builder.Entity<OcrUploadedRecord>().HasQueryFilter(row =>
+                _tenantService != null && _tenantService.TenantId != null && row.OrgId == _tenantService.TenantId);
+            builder.Entity<OcrDocHeader>().HasQueryFilter(row =>
+                _tenantService != null && _tenantService.TenantId != null && row.OrgId == _tenantService.TenantId);
+            builder.Entity<OcrPatientDetail>().HasQueryFilter(row =>
+                _tenantService != null && _tenantService.TenantId != null && row.OrgId == _tenantService.TenantId);
+            builder.Entity<OcrProcedureDetail>().HasQueryFilter(row =>
+                _tenantService != null && _tenantService.TenantId != null && row.OrgId == _tenantService.TenantId);
+            builder.Entity<OcrTotalClaimInfo>().HasQueryFilter(row =>
+                _tenantService != null && _tenantService.TenantId != null && row.OrgId == _tenantService.TenantId);
+            builder.Entity<EobGrpCodeRule>().HasQueryFilter(row =>
+                _tenantService != null && _tenantService.TenantId != null && row.OrgId == _tenantService.TenantId);
+            builder.Entity<OcrDocumentView>().HasQueryFilter(row =>
+                _tenantService != null && _tenantService.TenantId != null && row.OrgId == _tenantService.TenantId);
+            builder.Entity<OcrUploadedRecord>()
+                .HasIndex(x => new { x.OrgId, x.Source, x.Check_EFT })
+                .IsUnique()
+                .HasFilter("[OrgId] IS NOT NULL AND [Source] IS NOT NULL AND [Check_EFT] IS NOT NULL AND [Check_EFT] <> ''");
+            builder.Entity<EobGrpCodeRule>()
+                .HasIndex(x => new { x.OrgId, x.Type, x.ExplanationCodeKey })
+                .IsUnique()
+                .HasFilter("[OrgId] IS NOT NULL AND [Type] IS NOT NULL AND [ExplanationCodeKey] IS NOT NULL");
             builder.Entity<BillingApptCodeView>().ToView("vgetApptCodes").HasNoKey();
             // Billing domain tables already exist in SQL -- exclude from migrations:
             builder.Entity<BillingPatient>().ToTable("tblPatient").HasKey(x => x.PatientId);
@@ -279,6 +304,18 @@ namespace Accounts.Data
             builder.Entity<FaxTransmission>().HasIndex(x => new { x.TenantId, x.IdempotencyKey }).IsUnique();
             builder.Entity<FaxTransmission>().HasIndex(x => new { x.Provider, x.ProviderFaxId }).IsUnique().HasFilter("[ProviderFaxId] IS NOT NULL");
             builder.Entity<FaxStatusEvent>().HasIndex(x => new { x.TenantId, x.ProviderEventReference }).IsUnique().HasFilter("[ProviderEventReference] IS NOT NULL");
+            builder.Entity<CopayStatement>(entity =>
+            {
+                entity.HasQueryFilter(row =>
+                    _tenantService != null && !_tenantService.IsSuperAdmin &&
+                    _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
+                entity.HasIndex(x => new { x.TenantId, x.PaymentDate });
+                entity.HasIndex(x => new { x.TenantId, x.IsSettled, x.StatusId });
+                entity.HasIndex(x => new { x.TenantId, x.Ref })
+                    .IsUnique()
+                    .HasFilter("[Ref] IS NOT NULL");
+                entity.HasIndex(x => new { x.TenantId, x.MatchedRoznamchaEntryId });
+            });
             builder.Entity<FaxTransmission>().HasOne(x => x.Recipient).WithMany().HasForeignKey(x => x.RecipientId).OnDelete(DeleteBehavior.Restrict);
             builder.Entity<FaxAttachmentMetadata>().HasOne(x => x.Transmission).WithMany(x => x.Attachments).HasForeignKey(x => x.TransmissionId).OnDelete(DeleteBehavior.Cascade);
             builder.Entity<FaxStatusEvent>().HasOne(x => x.Transmission).WithMany(x => x.Events).HasForeignKey(x => x.TransmissionId).OnDelete(DeleteBehavior.Cascade);
@@ -1167,6 +1204,8 @@ namespace Accounts.Data
                 e.HasOne(x => x.Person).WithMany().HasForeignKey(x => x.PersonId).OnDelete(DeleteBehavior.Restrict);
                 e.HasOne(x => x.AttendanceStatus).WithMany().HasForeignKey(x => x.AttendanceStatusId).OnDelete(DeleteBehavior.Restrict);
                 e.HasOne(x => x.CanonicalStatus).WithMany().HasForeignKey(x => x.CanonicalStatusId).OnDelete(DeleteBehavior.Restrict);
+                e.HasOne(x => x.ApprovedStatusOverride).WithMany().HasForeignKey(x => x.ApprovedStatusOverrideId).OnDelete(DeleteBehavior.Restrict);
+                e.HasIndex(x => x.ApprovedStatusOverrideReportId);
                 e.HasOne(x => x.PlatformActionStatus).WithMany().HasForeignKey(x => x.PlatformActionStatusId).OnDelete(DeleteBehavior.Restrict);
                 e.HasOne(x => x.AttendanceEntryType).WithMany().HasForeignKey(x => x.AttendanceEntryTypeId).OnDelete(DeleteBehavior.Restrict);
                 e.HasOne(x => x.AttendanceWorkMode).WithMany(x => x.Records).HasForeignKey(x => x.AttendanceWorkModeId).OnDelete(DeleteBehavior.Restrict);

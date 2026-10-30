@@ -206,3 +206,4 @@ public sealed class LaSalleEobParser : ILaSalleEobParser
         return totals;
     }
 }
+

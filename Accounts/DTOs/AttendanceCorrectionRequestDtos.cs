@@ -15,6 +15,8 @@ public sealed class AttendanceCorrectionRequestContextDto
     public long? AttendanceId { get; set; }
     public DateOnly AttendanceDate { get; set; }
     public string CurrentStatus { get; set; } = string.Empty;
+    public TimeOnly? CurrentCheckIn { get; set; }
+    public TimeOnly? CurrentCheckOut { get; set; }
     public bool CanSubmit { get; set; }
     public string? Reason { get; set; }
     public string? ReportingManagerName { get; set; }
@@ -33,6 +35,9 @@ public sealed class SubmitAttendanceRequestDto
     public DateOnly AttendanceDate { get; set; }
     [Required] public string Type { get; set; } = "Status";
     public int? RequestedStatusId { get; set; }
+    public TimeOnly? RequestedTime { get; set; }
+    public TimeOnly? RequestedCheckInTime { get; set; }
+    public TimeOnly? RequestedCheckOutTime { get; set; }
     public TimeOnly? TimeFrom { get; set; }
     public TimeOnly? TimeTo { get; set; }
     public string? MealStatus { get; set; }
@@ -51,8 +56,16 @@ public sealed class AttendanceRequestDetailsDto
     public Guid PersonId { get; set; }
     public long? AttendanceId { get; set; }
     public string CurrentStatus { get; set; } = string.Empty;
+    public TimeOnly? CurrentCheckIn { get; set; }
+    public TimeOnly? CurrentCheckOut { get; set; }
     public int? RequestedStatusId { get; set; }
     public string? RequestedStatus { get; set; }
+    public TimeOnly? RequestedTime { get; set; }
+    public TimeOnly? ApprovedTime { get; set; }
+    public TimeOnly? RequestedCheckInTime { get; set; }
+    public TimeOnly? RequestedCheckOutTime { get; set; }
+    public TimeOnly? ApprovedCheckInTime { get; set; }
+    public TimeOnly? ApprovedCheckOutTime { get; set; }
     public TimeOnly? TimeFrom { get; set; }
     public TimeOnly? TimeTo { get; set; }
     public int? Minutes { get; set; }

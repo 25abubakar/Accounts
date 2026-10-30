@@ -88,3 +88,4 @@ public sealed class PdfTextExtractor : IPdfTextExtractor
         return result;
     }
 }
+

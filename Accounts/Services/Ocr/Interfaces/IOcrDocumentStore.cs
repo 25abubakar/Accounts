@@ -40,10 +40,13 @@ public interface IOcrDocumentStore
         CancellationToken ct = default);
 
     /// <summary>Full detail: header + patients + procedures + GRP + remarks.</summary>
-    Task<OcrDocumentDetail?> GetDocumentDetailAsync(int id, CancellationToken ct = default);
+    Task<OcrDocumentDetail?> GetDocumentDetailAsync(int id, int orgId, CancellationToken ct = default);
+
+    /// <summary>Resolve an attachment only after verifying the upload belongs to the tenant.</summary>
+    Task<(string Path, string FileName)?> GetAttachmentAsync(int id, int orgId, CancellationToken ct = default);
 
     /// <summary>Update ProcedureCode column only on the listed procedure rows.</summary>
-    Task UpdateProcedureCodesAsync(List<ProcedureCodeUpdateItem> items, CancellationToken ct = default);
+    Task UpdateProcedureCodesAsync(List<ProcedureCodeUpdateItem> items, int orgId, CancellationToken ct = default);
 
     /// <summary>
     /// CCA delete: cascade-remove OCR rows, clear claim EOB fields, remove payment rows.
@@ -59,6 +62,6 @@ public interface IOcrDocumentStore
         CancellationToken ct = default);
 
     /// <summary>Set the status id on an upload record.</summary>
-    Task SetStatusAsync(int uploadId, int statusId, CancellationToken ct = default);
+    Task SetStatusAsync(int uploadId, int statusId, int orgId, CancellationToken ct = default);
 }
 

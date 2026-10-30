@@ -1,6 +1,7 @@
 using Accounts.Data;
 using Accounts.DTOs;
 using Accounts.Services.Interfaces;
+using Accounts.Services.Services;
 using Accounts.Idempotency;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -22,15 +23,18 @@ public sealed partial class ProcessWorkflowController : ControllerBase
     private readonly ApplicationDbContext _db;
     private readonly ITenantService _tenant;
     private readonly IRealtimePublisher _realtime;
+    private readonly AttendanceFinalizationService _attendanceFinalization;
 
     public ProcessWorkflowController(
         ApplicationDbContext db,
         ITenantService tenant,
-        IRealtimePublisher realtime)
+        IRealtimePublisher realtime,
+        AttendanceFinalizationService attendanceFinalization)
     {
         _db = db;
         _tenant = tenant;
         _realtime = realtime;
+        _attendanceFinalization = attendanceFinalization;
     }
 
     [HttpGet("lookups")]
@@ -223,36 +227,107 @@ public sealed partial class ProcessWorkflowController : ControllerBase
                 message = "This task contains an outdated version token. Refresh the task list and try again."
             });
 
-        object? result = null;
-        var failure = await TryWithCommandAsync("dbo.usp_ProcessReport_Action", async command =>
+        var finalAttendanceTask = dto.ActionCode.Trim().Equals("APPROVE_FORWARD", StringComparison.OrdinalIgnoreCase)
+            ? await LoadAttendanceTaskDetailsAsync(reportId, requireCurrentFinalApprover: true, ct)
+            : null;
+        var isTimedAttendanceCorrection = finalAttendanceTask?.Details.Type is "Check In" or "Check Out" ||
+            finalAttendanceTask?.Details is { Type: "Status", RequestedTime: not null } ||
+            finalAttendanceTask?.Details is { Type: "Status", RequestedCheckInTime: not null } ||
+            finalAttendanceTask?.Details is { Type: "Status", RequestedCheckOutTime: not null };
+        if ((dto.ApprovedTime.HasValue || dto.ApprovedCheckInTime.HasValue || dto.ApprovedCheckOutTime.HasValue) && !isTimedAttendanceCorrection)
+            return BadRequest(new { message = "Only the final approving authority can edit an attendance correction time." });
+        if (finalAttendanceTask?.Details.Type is "Check In" or "Check Out" &&
+            !dto.ApprovedTime.HasValue && finalAttendanceTask?.Details.RequestedTime is null)
+            return BadRequest(new { message = "An approved attendance time is required." });
+
+        var strategy = _db.Database.CreateExecutionStrategy();
+        return await strategy.ExecuteAsync<IActionResult>(async () =>
         {
-            AddScope(command);
-            command.Parameters.Add("@ReportId", SqlDbType.BigInt).Value = reportId;
-            command.Parameters.Add("@ActionCode", SqlDbType.NVarChar, 40).Value = dto.ActionCode.Trim();
-            command.Parameters.Add("@Comments", SqlDbType.NVarChar, 2000).Value =
-                string.IsNullOrWhiteSpace(dto.Comments) ? DBNull.Value : dto.Comments.Trim();
-            command.Parameters.Add("@ExpectedRowVersionHex", SqlDbType.VarChar, 24).Value = rowVersionHex;
-            await using var reader = await command.ExecuteReaderAsync(ct);
-            if (await reader.ReadAsync(ct))
-                result = new
+            await using var transaction = finalAttendanceTask.HasValue
+                ? await _db.Database.BeginTransactionAsync(ct)
+                : null;
+
+            object? result = null;
+            string? resultStatusCode = null;
+            long? changedAttendanceId = null;
+            var failure = await TryWithCommandAsync("dbo.usp_ProcessReport_Action", async command =>
+            {
+                AddScope(command);
+                command.Parameters.Add("@ReportId", SqlDbType.BigInt).Value = reportId;
+                command.Parameters.Add("@ActionCode", SqlDbType.NVarChar, 40).Value = dto.ActionCode.Trim();
+                command.Parameters.Add("@Comments", SqlDbType.NVarChar, 2000).Value =
+                    string.IsNullOrWhiteSpace(dto.Comments) ? DBNull.Value : dto.Comments.Trim();
+                command.Parameters.Add("@ExpectedRowVersionHex", SqlDbType.VarChar, 24).Value = rowVersionHex;
+                await using var reader = await command.ExecuteReaderAsync(ct);
+                if (await reader.ReadAsync(ct))
                 {
-                    id = reader.GetInt64(reader.GetOrdinal("Id")),
-                    requestNumber = DbString(reader, "RequestNumber"),
-                    statusCode = reader.GetString(reader.GetOrdinal("StatusCode")),
-                    statusName = reader.GetString(reader.GetOrdinal("StatusName")),
-                    rowVersion = reader.GetString(reader.GetOrdinal("RowVersion"))
-                };
-        }, ct);
+                    resultStatusCode = reader.GetString(reader.GetOrdinal("StatusCode"));
+                    result = new
+                    {
+                        id = reader.GetInt64(reader.GetOrdinal("Id")),
+                        requestNumber = DbString(reader, "RequestNumber"),
+                        statusCode = resultStatusCode,
+                        statusName = reader.GetString(reader.GetOrdinal("StatusName")),
+                        rowVersion = reader.GetString(reader.GetOrdinal("RowVersion"))
+                    };
+                }
+            }, ct);
 
-        if (failure is not null)
-        {
-            return failure.SqlErrorNumber == 51232
-                ? Conflict(new { message = failure.Message })
-                : BadRequest(new { message = failure.Message });
-        }
+            if (failure is not null)
+            {
+                if (transaction != null)
+                {
+                    try { await transaction.RollbackAsync(ct); }
+                    catch (InvalidOperationException) { }
+                }
+                return failure.SqlErrorNumber == 51232
+                    ? Conflict(new { message = failure.Message })
+                    : BadRequest(new { message = failure.Message });
+            }
 
-        await PublishProcessChangedAsync(dto.ActionCode.Trim().ToLowerInvariant(), reportId);
-        return Ok(result);
+            if (resultStatusCode is "RESOLVED" or "APPROVED")
+            {
+                if (isTimedAttendanceCorrection)
+                {
+                    var finalDetails = finalAttendanceTask?.Details
+                        ?? throw new InvalidOperationException("Attendance correction details are unavailable.");
+                    var approvedTime = dto.ApprovedTime ?? finalDetails.RequestedTime;
+                    var approvedCheckIn = dto.ApprovedCheckInTime ?? finalDetails.RequestedCheckInTime;
+                    var approvedCheckOut = dto.ApprovedCheckOutTime ?? finalDetails.RequestedCheckOutTime;
+                    await SaveApprovedAttendanceTimeAsync(reportId, finalDetails, approvedTime, approvedCheckIn, approvedCheckOut, ct);
+                }
+                try
+                {
+                    changedAttendanceId = await ApplyResolvedAttendanceStatusCorrectionAsync(reportId, ct);
+                }
+                catch (InvalidOperationException ex)
+                {
+                    if (transaction != null)
+                    {
+                        try { await transaction.RollbackAsync(ct); }
+                        catch (InvalidOperationException) { }
+                    }
+                    return BadRequest(new { message = ex.Message });
+                }
+            }
+
+            if (transaction != null)
+                await transaction.CommitAsync(ct);
+
+            if (changedAttendanceId.HasValue)
+                await _realtime.PublishEventToTenantAsync(
+                    _tenant.RequiredTenantId,
+                    RealtimeEventDto.Create(
+                        RealtimeEventTypes.AttendanceChanged,
+                        "attendance",
+                        "approved-attendance-correction-applied",
+                        _tenant.RequiredTenantId,
+                        changedAttendanceId.Value.ToString()));
+
+            await PublishProcessChangedAsync(dto.ActionCode.Trim().ToLowerInvariant(), reportId);
+            return Ok(result);
+
+        });
     }
 
     private Task PublishProcessChangedAsync(string action, long? reportId = null) =>

@@ -1,6 +1,10 @@
 using System.Globalization;
+using System.Text.Json;
+using System.Text.RegularExpressions;
 using Accounts.Data;
+using Accounts.DTOs;
 using Accounts.Models;
+using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 
 namespace Accounts.Services.Services;
@@ -58,8 +62,8 @@ public sealed class AttendanceFinalizationService(
                 map.TimeFrom, map.TimeTo, person.TimeZoneId, type.Code,
                 rule.MissingCheckoutAfterShiftEndMinutes,
                 StatusName = record.CanonicalStatus != null ? record.CanonicalStatus.Name :
-                    record.PlatformActionStatus != null ? record.PlatformActionStatus.Status.Name :
-                    record.AttendanceStatus != null ? record.AttendanceStatus.Status.StatusName : null
+                    record.PlatformActionStatus != null && record.PlatformActionStatus.Status != null ? record.PlatformActionStatus.Status.Name :
+                    record.AttendanceStatus != null && record.AttendanceStatus.Status != null ? record.AttendanceStatus.Status.StatusName : null
             };
         if (scopedPersonIds != null)
             query = query.Where(item => scopedPersonIds.Contains(item.Record.PersonId));
@@ -71,7 +75,14 @@ public sealed class AttendanceFinalizationService(
         var pendingReviewId = await db.PlatformSettingStatuses.AsNoTracking()
             .Where(status => status.IsActive && status.Name == "Pending Review")
             .Select(status => (int?)status.Id).SingleOrDefaultAsync(cancellationToken);
-        if (!pendingReviewId.HasValue) return 0; // Never invent a status/configuration.
+        if (!pendingReviewId.HasValue)
+        {
+            // Fall back to legacy Status 5 (Absent / full-day deduction equivalent) if Pending Review is unseeded
+            pendingReviewId = await db.PlatformSettingStatuses.AsNoTracking()
+                .Where(status => status.IsActive && (status.Id == 5 || status.Name == "Absent"))
+                .Select(status => (int?)status.Id).FirstOrDefaultAsync(cancellationToken);
+        }
+        if (!pendingReviewId.HasValue) return 0;
         var staffIds = candidates.Select(item => item.StaffId).Distinct().ToArray();
         var schedules = await db.EmployeeTimingSchedules.IgnoreQueryFilters().AsNoTracking()
             .Where(item => item.TenantId == tenantId && staffIds.Contains(item.StaffId) &&
@@ -182,6 +193,8 @@ public sealed class AttendanceFinalizationService(
         if (monthStart > dateTo)
             return 0;
 
+        var recoveredCorrections = await ReconcileResolvedStatusCorrectionsAsync(
+            tenantId, monthStart, dateTo, scopedPersonIds, cancellationToken);
         var generatedOffDays = await EnsureNonWorkingDayRecordsAsync(
             tenantId, monthStart, dateTo, scopedPersonIds, cancellationToken);
         var expiredStatuses = await ExpireMissingCheckoutStatusesAsync(
@@ -250,7 +263,9 @@ public sealed class AttendanceFinalizationService(
         var schedulesByDay = schedules.ToDictionary(
             schedule => (schedule.StaffId, schedule.ScheduleDate));
 
-        var records = await db.AttendanceRecords.IgnoreQueryFilters().AsNoTracking()
+        // Tracking is intentional: the same scheduler pass synchronizes the canonical
+        // display status with the effective daily timing and financial finalization.
+        var records = await db.AttendanceRecords.IgnoreQueryFilters()
             .Where(record =>
                 record.TenantId == tenantId &&
                 personIds.Contains(record.PersonId) &&
@@ -291,14 +306,14 @@ public sealed class AttendanceFinalizationService(
                     false))
                 .ToDictionaryAsync(status => status.Id, cancellationToken);
 
-        var canonicalStatusIds = records.Where(record => record.CanonicalStatusId.HasValue)
-            .Select(record => record.CanonicalStatusId!.Value).Distinct().ToArray();
-        var canonicalStatuses = canonicalStatusIds.Length == 0
-            ? new Dictionary<int, StatusRow>()
-            : await db.PlatformSettingStatuses.AsNoTracking()
-                .Where(status => canonicalStatusIds.Contains(status.Id))
-                .Select(status => new StatusRow(status.Id, status.Name, status.Name, false))
-                .ToDictionaryAsync(status => status.Id, cancellationToken);
+        var canonicalStatuses = await db.PlatformSettingProcessStatuses.AsNoTracking()
+            .Where(mapping => mapping.Process.IsActive && mapping.Process.Name == "Attendance" && mapping.Status.IsActive)
+            .Select(mapping => new StatusRow(mapping.StatusId, mapping.Status.Name, mapping.Status.Name, false))
+            .Distinct()
+            .ToDictionaryAsync(status => status.Id, cancellationToken);
+        var canonicalStatusByName = canonicalStatuses.Values
+            .GroupBy(status => Normalize(status.Name))
+            .ToDictionary(group => group.Key, group => group.OrderBy(status => status.Id).First());
 
         var existingRows = await db.Set<AttendanceDailyFinalization>()
             .IgnoreQueryFilters()
@@ -317,6 +332,7 @@ public sealed class AttendanceFinalizationService(
 
         var utcNow = BusinessClock.UtcNow();
         var changed = 0;
+        var statusChanged = 0;
 
         // One StaffVacancy row per PersonId — avoids double Add for the same day key.
         foreach (var employee in employees
@@ -375,6 +391,41 @@ public sealed class AttendanceFinalizationService(
                         rule?.CompletedLateDeductionPercentage ?? 50m,
                         isExplicitAbsent));
 
+                string? targetStatusName = null;
+                if (attendance?.ApprovedStatusOverrideId is int approvedStatusId &&
+                    canonicalStatuses.TryGetValue(approvedStatusId, out var approvedStatus))
+                {
+                    targetStatusName = approvedStatus.Name;
+                    calculation = ApplyApprovedStatusOverride(calculation, approvedStatus.Name);
+                }
+                else if (attendance is { CheckInUtc: not null, CheckOutUtc: not null } &&
+                         isWorkingDay && !isExcused)
+                {
+                    targetStatusName = ResolveCompletedStatusName(
+                        attendance,
+                        shiftWindow,
+                        requiredMinutes,
+                        rule);
+                }
+                else if (attendance is { CheckInUtc: not null, CheckOutUtc: null } &&
+                         isWorkingDay && !isExcused)
+                {
+                    targetStatusName = calculation.State == AttendanceFinalizationStates.PendingReview
+                        ? "Pending Review"
+                        : ResolveOpenStatusName(attendance, shiftWindow, rule);
+                }
+
+                if (attendance != null && !string.IsNullOrWhiteSpace(targetStatusName) &&
+                    canonicalStatusByName.TryGetValue(Normalize(targetStatusName), out var targetStatus) &&
+                    attendance.CanonicalStatusId != targetStatus.Id)
+                {
+                    attendance.CanonicalStatusId = targetStatus.Id;
+                    attendance.PlatformActionStatusId = null;
+                    attendance.AttendanceStatusId = null;
+                    attendance.ModifiedDate = utcNow;
+                    statusChanged++;
+                }
+
                 if (!existingByDay.TryGetValue((employee.PersonId, date), out var row))
                 {
                     row = new AttendanceDailyFinalization
@@ -399,10 +450,208 @@ public sealed class AttendanceFinalizationService(
             }
         }
 
-        if (changed > 0)
+        if (changed > 0 || statusChanged > 0)
             await SaveFinalizationsWithDuplicateRetryAsync(tenantId, monthStart, dateTo, cancellationToken);
 
-        return changed + expiredStatuses + generatedOffDays;
+        return changed + statusChanged + expiredStatuses + generatedOffDays + recoveredCorrections;
+    }
+
+    private async Task<int> ReconcileResolvedStatusCorrectionsAsync(
+        int tenantId,
+        DateOnly dateFrom,
+        DateOnly dateTo,
+        IReadOnlyCollection<Guid>? scopedPersonIds,
+        CancellationToken ct)
+    {
+        var reports = await db.Database.SqlQueryRaw<ResolvedAttendanceCorrectionRow>(
+            """
+            SELECT report.Id, report.AttendanceRequestJson, report.SourceRecordId, report.Description
+            FROM dbo.ProcessReports report
+            JOIN dbo.ProcessWorkflowStatuses status ON status.Id=report.StatusId
+            WHERE report.TenantId=@tenantId
+              AND report.SourceModule=N'AttendanceStatusCorrection'
+              AND status.Code IN(N'APPROVED',N'RESOLVED')
+            """,
+            new SqlParameter("@tenantId", tenantId)).ToListAsync(ct);
+        if (reports.Count == 0) return 0;
+
+        var activeStatusIds = await db.PlatformSettingProcessStatuses.AsNoTracking()
+            .Where(mapping => mapping.Process.IsActive && mapping.Process.Name == "Attendance" && mapping.Status.IsActive)
+            .Select(mapping => mapping.StatusId)
+            .ToHashSetAsync(ct);
+        var scope = scopedPersonIds?.ToHashSet();
+        var changed = 0;
+
+        foreach (var report in reports)
+        {
+            var details = DeserializeStatusCorrection(report);
+            if (details is null || details.Type != "Status" || !details.RequestedStatusId.HasValue ||
+                !activeStatusIds.Contains(details.RequestedStatusId.Value) ||
+                details.Date < dateFrom || details.Date > dateTo ||
+                scope is not null && !scope.Contains(details.PersonId))
+                continue;
+
+            var record = await db.AttendanceRecords.IgnoreQueryFilters().SingleOrDefaultAsync(item =>
+                item.TenantId == tenantId && item.PersonId == details.PersonId && item.AttendanceDate == details.Date &&
+                (!details.AttendanceId.HasValue || item.Id == details.AttendanceId.Value), ct);
+            if (record is null || record.ApprovedStatusOverrideReportId == report.Id) continue;
+
+            record.ApprovedStatusOverrideId = details.RequestedStatusId.Value;
+            record.ApprovedStatusOverrideReportId = report.Id;
+            record.ApprovedStatusOverrideDateUtc ??= BusinessClock.UtcNow();
+            record.CanonicalStatusId = details.RequestedStatusId.Value;
+            record.PlatformActionStatusId = null;
+            record.AttendanceStatusId = null;
+            record.ModifiedDate = BusinessClock.UtcNow();
+            changed++;
+        }
+
+        if (changed > 0)
+            await db.SaveChangesAsync(ct);
+        return changed;
+    }
+
+    private static AttendanceRequestDetailsDto? DeserializeStatusCorrection(ResolvedAttendanceCorrectionRow report)
+    {
+        if (!string.IsNullOrWhiteSpace(report.AttendanceRequestJson))
+        {
+            try { return JsonSerializer.Deserialize<AttendanceRequestDetailsDto>(report.AttendanceRequestJson); }
+            catch (JsonException) { return null; }
+        }
+
+        // Compatibility for requests approved before structured attendance JSON
+        // was introduced. Only explicit IDs already stored in the audit text are
+        // accepted; labels are never guessed.
+        if (string.IsNullOrWhiteSpace(report.SourceRecordId) || string.IsNullOrWhiteSpace(report.Description))
+            return null;
+        var separator = report.SourceRecordId.LastIndexOf(':');
+        if (separator <= 0 || !Guid.TryParse(report.SourceRecordId[..separator], out var personId) ||
+            !DateOnly.TryParseExact(report.SourceRecordId[(separator + 1)..], "yyyy-MM-dd", CultureInfo.InvariantCulture,
+                DateTimeStyles.None, out var date))
+            return null;
+        var statusMatch = Regex.Match(report.Description, @"Status ID:\s*(\d+)", RegexOptions.IgnoreCase);
+        if (!statusMatch.Success || !int.TryParse(statusMatch.Groups[1].Value, out var statusId)) return null;
+        var attendanceMatch = Regex.Match(report.Description, @"Attendance ID:\s*(\d+)", RegexOptions.IgnoreCase);
+        return new AttendanceRequestDetailsDto
+        {
+            Type = "Status",
+            Date = date,
+            PersonId = personId,
+            AttendanceId = attendanceMatch.Success && long.TryParse(attendanceMatch.Groups[1].Value, out var attendanceId)
+                ? attendanceId : null,
+            RequestedStatusId = statusId
+        };
+    }
+
+    private sealed class ResolvedAttendanceCorrectionRow
+    {
+        public long Id { get; set; }
+        public string? AttendanceRequestJson { get; set; }
+        public string? SourceRecordId { get; set; }
+        public string? Description { get; set; }
+    }
+
+    private static string ResolveCompletedStatusName(
+        AttendanceRecord attendance,
+        (DateTime Start, DateTime End) shiftWindow,
+        int requiredMinutes,
+        AttendanceRuleSetting? rule)
+    {
+        var checkIn = attendance.EffectiveCheckInUtc ?? attendance.CheckInUtc!.Value;
+        var checkOut = attendance.EffectiveCheckOutUtc ?? attendance.CheckOutUtc!.Value;
+        if (checkOut < checkIn ||
+            checkOut > shiftWindow.End.AddMinutes(Math.Max(0, rule?.MissingCheckoutAfterShiftEndMinutes ?? 120)))
+            return "Absent";
+
+        var earlyMinutes = Math.Max(0, (int)Math.Floor((shiftWindow.End - checkOut).TotalMinutes));
+        if (earlyMinutes > Math.Max(0, rule?.EarlyCheckoutAbsentAfterMinutes ?? 120))
+            return "Absent";
+
+        var workedMinutes = Math.Max(
+            0,
+            (int)Math.Floor((checkOut - checkIn).TotalMinutes) - Math.Max(0, attendance.TotalBreakMinutes));
+        var complete = workedMinutes >= Math.Max(0, requiredMinutes - Math.Max(0, rule?.CheckOutAdjustMinutes ?? 0));
+        var lateMinutes = Math.Max(0, (int)Math.Floor((checkIn - shiftWindow.Start).TotalMinutes));
+        var late = checkIn > shiftWindow.Start.AddMinutes(Math.Max(0, rule?.CheckInAdjustMinutes ?? 0));
+        if (late)
+        {
+            if (complete) return "T-Present";
+            return lateMinutes >= Math.Max(1, rule?.ExtremeLateAfterMinutes ?? 60)
+                ? "2 Hr Late"
+                : "1 Hr Late";
+        }
+
+        if (complete) return "Present";
+        return earlyMinutes >= Math.Max(1, rule?.ExtremeEarlyDepartureAfterMinutes ?? 120)
+            ? "2 Hr Early"
+            : "1 Hr Early";
+    }
+
+    private static string ResolveOpenStatusName(
+        AttendanceRecord attendance,
+        (DateTime Start, DateTime End) shiftWindow,
+        AttendanceRuleSetting? rule)
+    {
+        var checkIn = attendance.EffectiveCheckInUtc ?? attendance.CheckInUtc!.Value;
+        var lateMinutes = Math.Max(0, (int)Math.Floor((checkIn - shiftWindow.Start).TotalMinutes));
+        if (checkIn <= shiftWindow.Start.AddMinutes(Math.Max(0, rule?.CheckInAdjustMinutes ?? 0)))
+            return "Present";
+        return lateMinutes >= Math.Max(1, rule?.ExtremeLateAfterMinutes ?? 60)
+            ? "2 Hr Late"
+            : "1 Hr Late";
+    }
+
+    private static AttendanceDayCalculation ApplyApprovedStatusOverride(
+        AttendanceDayCalculation calculation,
+        string statusName)
+    {
+        return Normalize(statusName) switch
+        {
+            "PRESENT" or "TPRESENT" => calculation with
+            {
+                State = AttendanceFinalizationStates.Completed,
+                IsWorkingDay = true,
+                IsFinalized = true,
+                IsFullDayAbsent = false,
+                ShortMinutes = 0,
+                LatePenaltyMinutes = 0
+            },
+            "ABSENT" => calculation with
+            {
+                State = AttendanceFinalizationStates.Absent,
+                IsWorkingDay = true,
+                IsFinalized = true,
+                IsFullDayAbsent = true,
+                WorkedMinutes = 0,
+                ShortMinutes = calculation.RequiredMinutes,
+                OvertimeMinutes = 0,
+                LateMinutes = 0,
+                LateBandMinutes = 0,
+                LatePenaltyMinutes = 0
+            },
+            "DAYOFF" or "HOLIDAY" or "NOTREQUIRED" or "LEAVE" or "ANNUALHOLIDAY" => calculation with
+            {
+                State = AttendanceFinalizationStates.Excused,
+                IsFinalized = true,
+                IsFullDayAbsent = false,
+                ShortMinutes = 0,
+                LatePenaltyMinutes = 0
+            },
+            "PENDINGREVIEW" => calculation with
+            {
+                State = AttendanceFinalizationStates.PendingReview,
+                IsFinalized = false,
+                IsFullDayAbsent = false,
+                ShortMinutes = 0,
+                LatePenaltyMinutes = 0
+            },
+            _ => calculation with
+            {
+                State = AttendanceFinalizationStates.Completed,
+                IsFinalized = true,
+                IsFullDayAbsent = false
+            }
+        };
     }
 
     private async Task SaveFinalizationsWithDuplicateRetryAsync(

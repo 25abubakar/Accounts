@@ -2362,6 +2362,19 @@ namespace Accounts.Migrations
                     b.Property<long?>("ApprovalRequestId")
                         .HasColumnType("bigint");
 
+                    b.Property<string>("ApprovedStatusOverrideByUserId")
+                        .HasMaxLength(450)
+                        .HasColumnType("nvarchar(450)");
+
+                    b.Property<DateTime?>("ApprovedStatusOverrideDateUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<int?>("ApprovedStatusOverrideId")
+                        .HasColumnType("int");
+
+                    b.Property<long?>("ApprovedStatusOverrideReportId")
+                        .HasColumnType("bigint");
+
                     b.Property<DateOnly>("AttendanceDate")
                         .HasColumnType("date");
 
@@ -2454,6 +2467,10 @@ namespace Accounts.Migrations
                     b.HasKey("Id");
 
                     b.HasIndex("ApprovalRequestId");
+
+                    b.HasIndex("ApprovedStatusOverrideId");
+
+                    b.HasIndex("ApprovedStatusOverrideReportId");
 
                     b.HasIndex("AttendanceEntryTypeId");
 
@@ -2893,6 +2910,571 @@ namespace Accounts.Migrations
                     b.HasIndex("TenantId", "StatementDate");
 
                     b.ToTable("BankStatements");
+                });
+
+            modelBuilder.Entity("Accounts.Models.BillingAppointment", b =>
+                {
+                    b.Property<int>("AppointmentId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("AppointmentId"));
+
+                    b.Property<string>("AppointmentDate")
+                        .HasMaxLength(50)
+                        .HasColumnType("nvarchar(50)");
+
+                    b.Property<string>("CreatedByUserId")
+                        .HasMaxLength(450)
+                        .HasColumnType("nvarchar(450)");
+
+                    b.Property<DateTime?>("CreatedDate")
+                        .HasColumnType("datetime2");
+
+                    b.Property<bool?>("IsClaimed")
+                        .HasColumnType("bit");
+
+                    b.Property<bool?>("IsCreatedFromEob")
+                        .HasColumnType("bit");
+
+                    b.Property<int?>("OrgId")
+                        .HasColumnType("int");
+
+                    b.Property<int?>("PatientId")
+                        .HasColumnType("int");
+
+                    b.Property<int?>("StatusId")
+                        .HasColumnType("int");
+
+                    b.HasKey("AppointmentId");
+
+                    b.ToTable("tblAppointment", (string)null);
+                });
+
+            modelBuilder.Entity("Accounts.Models.BillingApptCode", b =>
+                {
+                    b.Property<int>("ApptCodeId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("ApptCodeId"));
+
+                    b.Property<int?>("AppointmentId")
+                        .HasColumnType("int");
+
+                    b.Property<decimal?>("Balance")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<int?>("CarrierId")
+                        .HasColumnType("int");
+
+                    b.Property<decimal?>("ClaimAmount")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<int?>("ClaimId")
+                        .HasColumnType("int");
+
+                    b.Property<decimal?>("CoInsurance")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<string>("CreatedByUserId")
+                        .HasMaxLength(450)
+                        .HasColumnType("nvarchar(450)");
+
+                    b.Property<DateTime?>("CreatedDate")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("DateOfService")
+                        .HasMaxLength(50)
+                        .HasColumnType("nvarchar(50)");
+
+                    b.Property<decimal?>("Deductible")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<decimal?>("EobAllowed")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<string>("FillSource")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<decimal?>("InsuranceAmount")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<int?>("InsuranceCompanyId")
+                        .HasColumnType("int");
+
+                    b.Property<decimal?>("InsuranceRate")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<bool?>("IsCreatedFromEobs")
+                        .HasColumnType("bit");
+
+                    b.Property<bool?>("IsUpload")
+                        .HasColumnType("bit");
+
+                    b.Property<int?>("LineEobStatusId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("Modifiers")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<int?>("OrgId")
+                        .HasColumnType("int");
+
+                    b.Property<decimal?>("Paid")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<int?>("PatientId")
+                        .HasColumnType("int");
+
+                    b.Property<decimal?>("PatientResponsibility")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<string>("PolicyNo")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<string>("PolicyNumber")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<string>("ProcedureCode")
+                        .HasMaxLength(50)
+                        .HasColumnType("nvarchar(50)");
+
+                    b.Property<int?>("ProcedureCodeId")
+                        .HasColumnType("int");
+
+                    b.Property<decimal?>("TotalClaimAmount")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.HasKey("ApptCodeId");
+
+                    b.ToTable("tblApptCodes", (string)null);
+                });
+
+            modelBuilder.Entity("Accounts.Models.BillingApptCodeView", b =>
+                {
+                    b.Property<decimal?>("Allowed")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<int?>("AppointmentId")
+                        .HasColumnType("int");
+
+                    b.Property<int>("ApptCodeId")
+                        .HasColumnType("int");
+
+                    b.Property<decimal?>("Balance")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<decimal?>("Billed")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<int?>("CarrierId")
+                        .HasColumnType("int");
+
+                    b.Property<int?>("ClaimId")
+                        .HasColumnType("int");
+
+                    b.Property<decimal?>("CoInsurance")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<DateTime?>("CreatedDate")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("DateOfService")
+                        .HasMaxLength(50)
+                        .HasColumnType("nvarchar(50)");
+
+                    b.Property<decimal?>("Deductible")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<decimal?>("EobAllowed")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<string>("FillSource")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<int?>("InsuranceCompanyId")
+                        .HasColumnType("int");
+
+                    b.Property<bool?>("IsCreatedFromEobs")
+                        .HasColumnType("bit");
+
+                    b.Property<bool?>("IsUpload")
+                        .HasColumnType("bit");
+
+                    b.Property<int?>("LineEobStatusId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("Modifiers")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<int?>("OrgId")
+                        .HasColumnType("int");
+
+                    b.Property<decimal?>("Paid")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<int?>("PatientId")
+                        .HasColumnType("int");
+
+                    b.Property<decimal?>("PatientResponsibility")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<string>("PolicyNo")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<string>("ProcedureCode")
+                        .HasMaxLength(50)
+                        .HasColumnType("nvarchar(50)");
+
+                    b.Property<int?>("ProcedureCodeId")
+                        .HasColumnType("int");
+
+                    b.ToTable("vgetApptCodes");
+
+                    b.ToView("vgetApptCodes", (string)null);
+                });
+
+            modelBuilder.Entity("Accounts.Models.BillingBaseInsurance", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<string>("InsuranceName")
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)");
+
+                    b.HasKey("Id");
+
+                    b.ToTable("tblBaseDetailsOfInsurance", (string)null);
+                });
+
+            modelBuilder.Entity("Accounts.Models.BillingCarrier", b =>
+                {
+                    b.Property<int>("CarrierId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("CarrierId"));
+
+                    b.Property<int?>("BaseInsuranceId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("CarrierName")
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)");
+
+                    b.Property<DateTime?>("CreatedDate")
+                        .HasColumnType("datetime2");
+
+                    b.Property<int?>("InsuranceGroupId")
+                        .HasColumnType("int");
+
+                    b.Property<int?>("InsuranceNewId")
+                        .HasColumnType("int");
+
+                    b.Property<int?>("OrgId")
+                        .HasColumnType("int");
+
+                    b.HasKey("CarrierId");
+
+                    b.ToTable("tblCarrier", (string)null);
+                });
+
+            modelBuilder.Entity("Accounts.Models.BillingClaim", b =>
+                {
+                    b.Property<int>("ClaimId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("ClaimId"));
+
+                    b.Property<int?>("AppointmentId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("Attachment")
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)");
+
+                    b.Property<string>("CreatedByUserId")
+                        .HasMaxLength(450)
+                        .HasColumnType("nvarchar(450)");
+
+                    b.Property<DateTime?>("CreatedDate")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("EobCheckNo")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<int?>("EobStatusId")
+                        .HasColumnType("int");
+
+                    b.Property<bool?>("IsCreatedFromEob")
+                        .HasColumnType("bit");
+
+                    b.Property<int?>("OrgId")
+                        .HasColumnType("int");
+
+                    b.Property<int?>("PatientId")
+                        .HasColumnType("int");
+
+                    b.Property<decimal?>("PatientResponsibility")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<int?>("StatusId")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime?>("SubmittedDate")
+                        .HasColumnType("datetime2");
+
+                    b.Property<decimal?>("TotalAllowed")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<decimal?>("TotalBilled")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<decimal?>("TotalPaid")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.HasKey("ClaimId");
+
+                    b.ToTable("tblInsPTClaims", (string)null);
+                });
+
+            modelBuilder.Entity("Accounts.Models.BillingClaimEobDoc", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<string>("Attachment")
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)");
+
+                    b.Property<int?>("ClaimId")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime?>("CreatedDate")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("EobCheckNo")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<string>("UploadDate")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.HasKey("Id");
+
+                    b.ToTable("tblClaimEobDocuments", (string)null);
+                });
+
+            modelBuilder.Entity("Accounts.Models.BillingClaimsLog", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<int?>("ClaimId")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime?>("CreatedDate")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("LogDate")
+                        .HasMaxLength(50)
+                        .HasColumnType("nvarchar(50)");
+
+                    b.Property<int?>("StatusId")
+                        .HasColumnType("int");
+
+                    b.HasKey("Id");
+
+                    b.ToTable("tblClaimsLog", (string)null);
+                });
+
+            modelBuilder.Entity("Accounts.Models.BillingDocumentProcess", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<string>("Attachment")
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)");
+
+                    b.Property<DateTime?>("CreatedDate")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("D_Ref")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<string>("EntryRef")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.HasKey("Id");
+
+                    b.ToTable("tblDocumentsProcess", (string)null);
+                });
+
+            modelBuilder.Entity("Accounts.Models.BillingInsuranceNew", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<int?>("BaseInsuranceId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("Name")
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)");
+
+                    b.HasKey("Id");
+
+                    b.ToTable("tblInsuranceNew", (string)null);
+                });
+
+            modelBuilder.Entity("Accounts.Models.BillingPatient", b =>
+                {
+                    b.Property<int>("PatientId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("PatientId"));
+
+                    b.Property<DateTime?>("CreatedDate")
+                        .HasColumnType("datetime2");
+
+                    b.Property<int?>("OrgId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("PatientName")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<string>("PatientNo")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<int?>("PersonId")
+                        .HasColumnType("int");
+
+                    b.HasKey("PatientId");
+
+                    b.ToTable("tblPatient", (string)null);
+                });
+
+            modelBuilder.Entity("Accounts.Models.BillingPaymentRow", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<int?>("ApptCodeId")
+                        .HasColumnType("int");
+
+                    b.Property<int?>("ClaimId")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime?>("CreatedDate")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("EobCheckNo")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<bool?>("IsClosed")
+                        .HasColumnType("bit");
+
+                    b.Property<bool?>("IsReProcess")
+                        .HasColumnType("bit");
+
+                    b.Property<int?>("OrgId")
+                        .HasColumnType("int");
+
+                    b.Property<decimal?>("PaidAmount")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<decimal?>("PatientResponsibility")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<string>("Remark")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.HasKey("Id");
+
+                    b.ToTable("tblClaimCodeAmountDetails", (string)null);
+                });
+
+            modelBuilder.Entity("Accounts.Models.BillingPerson", b =>
+                {
+                    b.Property<int>("PersonId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("PersonId"));
+
+                    b.Property<DateTime?>("CreatedDate")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("FirstName")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<string>("LastName")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.HasKey("PersonId");
+
+                    b.ToTable("tblPerson", (string)null);
+                });
+
+            modelBuilder.Entity("Accounts.Models.BillingProcedureCode", b =>
+                {
+                    b.Property<int>("ProcCodeId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("ProcCodeId"));
+
+                    b.Property<string>("Codes")
+                        .HasMaxLength(50)
+                        .HasColumnType("nvarchar(50)");
+
+                    b.Property<string>("Description")
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)");
+
+                    b.HasKey("ProcCodeId");
+
+                    b.ToTable("tblProcedureCodes", (string)null);
                 });
 
             modelBuilder.Entity("Accounts.Models.BillingRoznamchaImport", b =>
@@ -3443,6 +4025,130 @@ namespace Accounts.Migrations
                     b.ToTable("ColorStyles", (string)null);
                 });
 
+            modelBuilder.Entity("Accounts.Models.CopayStatement", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<long>("Id"));
+
+                    b.Property<string>("ARNNumber")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<int?>("AcctId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("AdjustmentDescription")
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)");
+
+                    b.Property<string>("Attachment")
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)");
+
+                    b.Property<string>("BusinessName")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<string>("CardNumber")
+                        .HasMaxLength(50)
+                        .HasColumnType("nvarchar(50)");
+
+                    b.Property<string>("CopayRef")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<string>("CreatedByUserId")
+                        .HasMaxLength(450)
+                        .HasColumnType("nvarchar(450)");
+
+                    b.Property<DateTime>("CreatedOnUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("Currency")
+                        .HasMaxLength(10)
+                        .HasColumnType("nvarchar(10)");
+
+                    b.Property<string>("FundSource")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<string>("GBOK_BatchID")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<string>("InterchangeDescription")
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)");
+
+                    b.Property<bool>("IsManual")
+                        .HasColumnType("bit");
+
+                    b.Property<bool>("IsSettled")
+                        .HasColumnType("bit");
+
+                    b.Property<long?>("MatchedRoznamchaEntryId")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("MerchantID")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<DateOnly?>("PaymentDate")
+                        .HasColumnType("date");
+
+                    b.Property<string>("PaymentNo")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<string>("PaymentType")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<string>("Ref")
+                        .HasMaxLength(80)
+                        .HasColumnType("nvarchar(80)");
+
+                    b.Property<string>("Remarks")
+                        .HasMaxLength(2000)
+                        .HasColumnType("nvarchar(2000)");
+
+                    b.Property<int?>("StatusId")
+                        .HasColumnType("int");
+
+                    b.Property<int>("TenantId")
+                        .HasColumnType("int");
+
+                    b.Property<decimal?>("TransactionAmount")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<string>("UpdatedByUserId")
+                        .HasMaxLength(450)
+                        .HasColumnType("nvarchar(450)");
+
+                    b.Property<DateTime?>("UpdatedOnUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<int?>("YearId")
+                        .HasColumnType("int");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TenantId", "MatchedRoznamchaEntryId");
+
+                    b.HasIndex("TenantId", "PaymentDate");
+
+                    b.HasIndex("TenantId", "Ref")
+                        .IsUnique()
+                        .HasFilter("[Ref] IS NOT NULL");
+
+                    b.HasIndex("TenantId", "IsSettled", "StatusId");
+
+                    b.ToTable("CopayStatements");
+                });
+
             modelBuilder.Entity("Accounts.Models.DepartmentAccessMatrix", b =>
                 {
                     b.Property<int>("Id")
@@ -3747,6 +4453,41 @@ namespace Accounts.Migrations
                     b.HasIndex("StaffId", "ScheduleYear", "ScheduleMonth");
 
                     b.ToTable("EmployeeTimingSchedules", (string)null);
+                });
+
+            modelBuilder.Entity("Accounts.Models.EobGrpCodeRule", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<DateTime?>("CreatedDate")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("Description")
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)");
+
+                    b.Property<string>("ExplanationCodeKey")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<int?>("OrgId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("Type")
+                        .HasMaxLength(50)
+                        .HasColumnType("nvarchar(50)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("OrgId", "Type", "ExplanationCodeKey")
+                        .IsUnique()
+                        .HasFilter("[OrgId] IS NOT NULL AND [Type] IS NOT NULL AND [ExplanationCodeKey] IS NOT NULL");
+
+                    b.ToTable("tblEOBGrpCodeRules");
                 });
 
             modelBuilder.Entity("Accounts.Models.EobiEligibility", b =>
@@ -4755,6 +5496,482 @@ namespace Accounts.Migrations
                     b.HasIndex("PermissionId");
 
                     b.ToTable("MenuPermissions", (string)null);
+                });
+
+            modelBuilder.Entity("Accounts.Models.OcrDocHeader", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<string>("Address")
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)");
+
+                    b.Property<string>("Check_EFT")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<DateTime?>("CreatedDate")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("DocTitle")
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)");
+
+                    b.Property<int?>("EobAttId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("Fax")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<string>("InsuranceAddress")
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)");
+
+                    b.Property<string>("InsuranceName")
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)");
+
+                    b.Property<string>("NPI")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<int?>("OrgId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("PaymentWeek")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<string>("Phone")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<string>("ProviderAddress")
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)");
+
+                    b.Property<string>("ProviderId")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<string>("ProviderName")
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)");
+
+                    b.Property<string>("Source")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<string>("StatementDate")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<string>("TaxId")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.HasKey("Id");
+
+                    b.ToTable("tblOCRDocHeaderInfo");
+                });
+
+            modelBuilder.Entity("Accounts.Models.OcrDocumentView", b =>
+                {
+                    b.Property<string>("Attachment")
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)");
+
+                    b.Property<string>("Check_EFT")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<string>("ColorCode")
+                        .HasMaxLength(50)
+                        .HasColumnType("nvarchar(50)");
+
+                    b.Property<DateTime?>("CreatedDate")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("Eob_Date")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<string>("FontColor")
+                        .HasMaxLength(50)
+                        .HasColumnType("nvarchar(50)");
+
+                    b.Property<int>("Id")
+                        .HasColumnType("int");
+
+                    b.Property<int?>("OrgId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("Source")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<int?>("StatusId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("StatusName")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<decimal?>("Tot_PaidAmt")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.ToTable((string)null);
+
+                    b.ToView("vgetOcrUploadedDocsDetails", (string)null);
+                });
+
+            modelBuilder.Entity("Accounts.Models.OcrGrpAmtDetail", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<DateTime?>("CreatedDate")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("GRPCode")
+                        .HasMaxLength(50)
+                        .HasColumnType("nvarchar(50)");
+
+                    b.Property<int?>("PatientId")
+                        .HasColumnType("int");
+
+                    b.Property<int?>("ProcCodeId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("REM")
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)");
+
+                    b.Property<decimal?>("Rc_Amt")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.HasKey("Id");
+
+                    b.ToTable("tblOcrGrpAmtDetails");
+                });
+
+            modelBuilder.Entity("Accounts.Models.OcrPatientDetail", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<decimal?>("AdjustmentTotal")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<decimal?>("Allowed")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<decimal?>("Billed")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<decimal?>("CoInsurance")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<DateTime?>("CreatedDate")
+                        .HasColumnType("datetime2");
+
+                    b.Property<decimal?>("Deductible")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<string>("ICN")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<decimal?>("Interest")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<decimal?>("LateFiling")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<string>("MID")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<decimal?>("Net")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<decimal?>("NonCovered")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<int?>("OcrHeaderId")
+                        .HasColumnType("int");
+
+                    b.Property<int?>("OrgId")
+                        .HasColumnType("int");
+
+                    b.Property<decimal?>("OtherAdjustments")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<decimal?>("OtherPlanPayment")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<string>("PatientName")
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)");
+
+                    b.Property<string>("PatientNo")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<decimal?>("PatientResponsibility")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<decimal?>("ProviderDiscount")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<decimal?>("ProviderPaid")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<decimal?>("RcAmount")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<string>("Source")
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)");
+
+                    b.HasKey("Id");
+
+                    b.ToTable("tblOcrPatientDetail");
+                });
+
+            modelBuilder.Entity("Accounts.Models.OcrProRemDetail", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<DateTime?>("CreatedDate")
+                        .HasColumnType("datetime2");
+
+                    b.Property<int?>("OcrPatientId")
+                        .HasColumnType("int");
+
+                    b.Property<int?>("OcrProcCodeId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("REM")
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)");
+
+                    b.HasKey("Id");
+
+                    b.ToTable("tblOcrProREMDetails");
+                });
+
+            modelBuilder.Entity("Accounts.Models.OcrProcedureDetail", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<decimal?>("Allowed")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<decimal?>("Billed")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<decimal?>("CoInsurance")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<decimal?>("Copay")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<DateTime?>("CreatedDate")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("DateOfService")
+                        .HasMaxLength(50)
+                        .HasColumnType("nvarchar(50)");
+
+                    b.Property<string>("DayMonth")
+                        .HasMaxLength(50)
+                        .HasColumnType("nvarchar(50)");
+
+                    b.Property<decimal?>("Deductible")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<string>("FillSource")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<string>("Modifiers")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<string>("NOS")
+                        .HasMaxLength(10)
+                        .HasColumnType("nvarchar(10)");
+
+                    b.Property<decimal?>("NOS_Val")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<decimal?>("NonCovered")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<int?>("OcrPatientId")
+                        .HasColumnType("int");
+
+                    b.Property<int?>("OrgId")
+                        .HasColumnType("int");
+
+                    b.Property<decimal?>("OtherAdjustments")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<decimal?>("OtherPlan")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<string>("POS")
+                        .HasMaxLength(10)
+                        .HasColumnType("nvarchar(10)");
+
+                    b.Property<decimal?>("PatientResponsibility")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<string>("ProcedureCode")
+                        .HasMaxLength(50)
+                        .HasColumnType("nvarchar(50)");
+
+                    b.Property<decimal?>("ProviderDiscount")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<decimal?>("ProviderPaid")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<string>("RenderingProviderId")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<string>("SubNOS")
+                        .HasMaxLength(50)
+                        .HasColumnType("nvarchar(50)");
+
+                    b.HasKey("Id");
+
+                    b.ToTable("tblOcrProcedureDetails");
+                });
+
+            modelBuilder.Entity("Accounts.Models.OcrTotalClaimInfo", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<decimal?>("Adjustment")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<decimal?>("Allowed")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<decimal?>("Billed")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<decimal?>("CheckAmount")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<int?>("ClaimCount")
+                        .HasColumnType("int");
+
+                    b.Property<decimal?>("CoInsurance")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<DateTime?>("CreatedDate")
+                        .HasColumnType("datetime2");
+
+                    b.Property<decimal?>("Deductible")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<int?>("OcrHeaderId")
+                        .HasColumnType("int");
+
+                    b.Property<int?>("OrgId")
+                        .HasColumnType("int");
+
+                    b.Property<decimal?>("OtherPlanPayment")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<decimal?>("ProviderDiscount")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<decimal?>("ProviderPaid")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<decimal?>("RC")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.HasKey("Id");
+
+                    b.ToTable("tblOcrTotalClaimInfo");
+                });
+
+            modelBuilder.Entity("Accounts.Models.OcrUploadedRecord", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<string>("Attachment")
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)");
+
+                    b.Property<string>("Check_EFT")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<string>("CreatedByUserId")
+                        .HasMaxLength(450)
+                        .HasColumnType("nvarchar(450)");
+
+                    b.Property<DateTime?>("CreatedDate")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("Eob_Date")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<int?>("OrgId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("Source")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<int?>("StatusId")
+                        .HasColumnType("int");
+
+                    b.Property<decimal?>("Tot_PaidAmt")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("OrgId", "Source", "Check_EFT")
+                        .IsUnique()
+                        .HasFilter("[OrgId] IS NOT NULL AND [Source] IS NOT NULL AND [Check_EFT] IS NOT NULL AND [Check_EFT] <> ''");
+
+                    b.ToTable("tblUploadedOcrEobRecords");
                 });
 
             modelBuilder.Entity("Accounts.Models.OrganizationTree", b =>
@@ -11476,6 +12693,11 @@ namespace Accounts.Migrations
                         .HasForeignKey("AttendanceEntryTypeId")
                         .OnDelete(DeleteBehavior.Restrict);
 
+                    b.HasOne("Accounts.Models.PlatformSettingStatus", "ApprovedStatusOverride")
+                        .WithMany()
+                        .HasForeignKey("ApprovedStatusOverrideId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
                     b.HasOne("Accounts.Models.ProcessStatusStyle", "AttendanceStatus")
                         .WithMany()
                         .HasForeignKey("AttendanceStatusId")
@@ -11519,6 +12741,8 @@ namespace Accounts.Migrations
                     b.Navigation("ApprovalRequest");
 
                     b.Navigation("AttendanceEntryType");
+
+                    b.Navigation("ApprovedStatusOverride");
 
                     b.Navigation("AttendanceStatus");
 
