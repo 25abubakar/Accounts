@@ -14,10 +14,11 @@ public interface IAnnualReportsService
     Task SetFilterIncludeAsync(int tenantId, int filterId, bool isInclude, string? userId, CancellationToken ct = default);
     Task DeleteFilterAsync(int tenantId, int filterId, CancellationToken ct = default);
     Task<AnnualCategoryMatrixDto> GetCategoryMonthMatrixAsync(int tenantId, string reportTypeCode, DateOnly from, DateOnly to, CancellationToken ct = default);
-    Task<IReadOnlyList<AnnualMonthWiseListRow>> ListMonthWiseAsync(int tenantId, string reportTypeCode, CancellationToken ct = default);
-    Task<IReadOnlyList<AnnualCategoryWiseFiscalDto>> ListCategoryWiseAsync(int tenantId, string reportTypeCode, CancellationToken ct = default);
+    Task<IReadOnlyList<AnnualMonthWiseDto>> ListMonthWiseAsync(int tenantId, string reportTypeCode, DateOnly from, DateOnly to, CancellationToken ct = default);
+    Task<IReadOnlyList<AnnualCategoryWiseFiscalDto>> ListCategoryWiseAsync(int tenantId, string reportTypeCode, DateOnly from, DateOnly to, CancellationToken ct = default);
     Task<string> SaveMonthWiseAsync(int tenantId, string reportTypeCode, DateOnly from, DateOnly to, string? remarks, IReadOnlyList<AnnualMonthSaveLineDto> lines, string? userId, CancellationToken ct = default);
     Task SetApprovedAsync(int tenantId, long headerId, bool approved, string? userId, CancellationToken ct = default);
+    Task<bool> VerifyUnlockAsync(int tenantId, long headerId, string code, string? userId, CancellationToken ct = default);
     Task<IReadOnlyList<object>> ListTypesAsync(CancellationToken ct = default);
     Task<IReadOnlyList<object>> ListCategoriesAsync(int tenantId, CancellationToken ct = default);
 }
@@ -51,8 +52,31 @@ public sealed class AnnualCategoryRowDto
 public sealed class AnnualCategoryWiseFiscalDto
 {
     public long HeaderId { get; set; }
+    public bool IsSaved { get; set; } = true;
     public string FiscalYear { get; set; } = string.Empty;
     public Dictionary<string, decimal> CategoryAmounts { get; set; } = new();
+    public decimal Total { get; set; }
+}
+
+public sealed class AnnualMonthWiseDto
+{
+    public long HeaderId { get; set; }
+    public bool IsSaved { get; set; } = true;
+    public string? FiscalYear { get; set; }
+    public string? Remarks { get; set; }
+    public bool IsApproved { get; set; }
+    public decimal Jul { get; set; }
+    public decimal Aug { get; set; }
+    public decimal Sep { get; set; }
+    public decimal Oct { get; set; }
+    public decimal Nov { get; set; }
+    public decimal Dec { get; set; }
+    public decimal Jan { get; set; }
+    public decimal Feb { get; set; }
+    public decimal Mar { get; set; }
+    public decimal Apr { get; set; }
+    public decimal May { get; set; }
+    public decimal Jun { get; set; }
     public decimal Total { get; set; }
 }
 
@@ -188,10 +212,13 @@ public sealed class AnnualReportsService(ApplicationDbContext db) : IAnnualRepor
         if (categories.Count == 0)
         {
             var included = await (
-                from f in db.AnnualReportFilters.AsNoTracking()
-                join t in db.AnnualReportTypes.AsNoTracking() on f.ReportTypeId equals t.Id
-                join c in db.AccountsCategories.AsNoTracking() on f.CategoryId equals c.Id
-                where f.IsInclude && t.Code == code && c.IsActive
+                from f in db.AnnualReportFilters.IgnoreQueryFilters().AsNoTracking()
+                join t in db.AnnualReportTypes.IgnoreQueryFilters().AsNoTracking() on f.ReportTypeId equals t.Id
+                join c in db.AccountsCategories.IgnoreQueryFilters().AsNoTracking() on f.CategoryId equals c.Id
+                where f.TenantId == tenantId
+                    && (t.TenantId == null || t.TenantId == tenantId)
+                    && c.TenantId == tenantId
+                    && f.IsInclude && t.Code == code && c.IsActive
                 orderby c.Name
                 select new { c.Id, c.Name }
             ).ToListAsync(ct);
@@ -220,24 +247,60 @@ public sealed class AnnualReportsService(ApplicationDbContext db) : IAnnualRepor
         };
     }
 
-    public async Task<IReadOnlyList<AnnualMonthWiseListRow>> ListMonthWiseAsync(int tenantId, string reportTypeCode, CancellationToken ct = default) =>
-        await SpListQuery.ExecAsync<AnnualMonthWiseListRow>(
+    public async Task<IReadOnlyList<AnnualMonthWiseDto>> ListMonthWiseAsync(
+        int tenantId, string reportTypeCode, DateOnly from, DateOnly to, CancellationToken ct = default)
+    {
+        var code = NormalizeKind(reportTypeCode);
+        var savedRows = await SpListQuery.ExecAsync<AnnualMonthWiseListRow>(
             db,
             "EXEC dbo.usp_AnnualReports_MonthWiseList @TenantId, @ReportTypeCode",
             ct,
             SpListQuery.TenantId(tenantId),
-            SpListQuery.NVarChar("@ReportTypeCode", NormalizeKind(reportTypeCode)));
+            SpListQuery.NVarChar("@ReportTypeCode", code));
+        var saved = savedRows.Select(ToMonthWiseDto).ToList();
 
-    public async Task<IReadOnlyList<AnnualCategoryWiseFiscalDto>> ListCategoryWiseAsync(int tenantId, string reportTypeCode, CancellationToken ct = default)
+        var fiscalYear = BuildFiscalYearLabel(from, to);
+        if (saved.Any(x => string.Equals(x.FiscalYear, fiscalYear, StringComparison.OrdinalIgnoreCase)))
+            return saved;
+
+        var matrix = await GetCategoryMonthMatrixAsync(tenantId, code, from, to, ct);
+        if (matrix.Categories.Count == 0)
+            return saved;
+
+        var live = new AnnualMonthWiseDto
+        {
+            HeaderId = 0,
+            IsSaved = false,
+            FiscalYear = fiscalYear,
+            Jul = MatrixMonthTotal(matrix, 7),
+            Aug = MatrixMonthTotal(matrix, 8),
+            Sep = MatrixMonthTotal(matrix, 9),
+            Oct = MatrixMonthTotal(matrix, 10),
+            Nov = MatrixMonthTotal(matrix, 11),
+            Dec = MatrixMonthTotal(matrix, 12),
+            Jan = MatrixMonthTotal(matrix, 1),
+            Feb = MatrixMonthTotal(matrix, 2),
+            Mar = MatrixMonthTotal(matrix, 3),
+            Apr = MatrixMonthTotal(matrix, 4),
+            May = MatrixMonthTotal(matrix, 5),
+            Jun = MatrixMonthTotal(matrix, 6),
+            Total = matrix.GrandTotal
+        };
+        return [live, .. saved];
+    }
+
+    public async Task<IReadOnlyList<AnnualCategoryWiseFiscalDto>> ListCategoryWiseAsync(
+        int tenantId, string reportTypeCode, DateOnly from, DateOnly to, CancellationToken ct = default)
     {
+        var code = NormalizeKind(reportTypeCode);
         var rows = await SpListQuery.ExecAsync<AnnualCategoryWiseAmountRow>(
             db,
             "EXEC dbo.usp_AnnualReports_CategoryWiseList @TenantId, @ReportTypeCode",
             ct,
             SpListQuery.TenantId(tenantId),
-            SpListQuery.NVarChar("@ReportTypeCode", NormalizeKind(reportTypeCode)));
+            SpListQuery.NVarChar("@ReportTypeCode", code));
 
-        return rows
+        var saved = rows
             .GroupBy(x => new { x.HeaderId, FiscalYear = x.FiscalYear ?? "" })
             .Select(g =>
             {
@@ -246,6 +309,7 @@ public sealed class AnnualReportsService(ApplicationDbContext db) : IAnnualRepor
                 return new AnnualCategoryWiseFiscalDto
                 {
                     HeaderId = g.Key.HeaderId,
+                    IsSaved = true,
                     FiscalYear = g.Key.FiscalYear,
                     CategoryAmounts = amounts,
                     Total = amounts.Values.Sum()
@@ -253,6 +317,24 @@ public sealed class AnnualReportsService(ApplicationDbContext db) : IAnnualRepor
             })
             .OrderByDescending(x => x.FiscalYear)
             .ToList();
+
+        var fiscalYear = BuildFiscalYearLabel(from, to);
+        if (saved.Any(x => string.Equals(x.FiscalYear, fiscalYear, StringComparison.OrdinalIgnoreCase)))
+            return saved;
+
+        var matrix = await GetCategoryMonthMatrixAsync(tenantId, code, from, to, ct);
+        if (matrix.Categories.Count == 0)
+            return saved;
+
+        saved.Insert(0, new AnnualCategoryWiseFiscalDto
+        {
+            HeaderId = 0,
+            IsSaved = false,
+            FiscalYear = fiscalYear,
+            CategoryAmounts = matrix.Categories.ToDictionary(x => x.Cat_Name, x => x.Total),
+            Total = matrix.GrandTotal
+        });
+        return saved;
     }
 
     public async Task<string> SaveMonthWiseAsync(
@@ -268,11 +350,13 @@ public sealed class AnnualReportsService(ApplicationDbContext db) : IAnnualRepor
         var code = NormalizeKind(reportTypeCode);
         var fiscalYear = BuildFiscalYearLabel(from, to);
 
+        // First match exact DateFrom & DateTo (aligned with LTAccount), then fallback to FiscalYear
         var header = await db.AnnualReportHeaders
-            .FirstOrDefaultAsync(x => x.ReportTypeCode == code && x.FiscalYear == fiscalYear, ct);
-
+            .FirstOrDefaultAsync(x => x.TenantId == tenantId && x.ReportTypeCode == code && x.DateFrom == from && x.DateTo == to, ct)
+            ?? await db.AnnualReportHeaders
+                .FirstOrDefaultAsync(x => x.TenantId == tenantId && x.ReportTypeCode == code && x.FiscalYear == fiscalYear, ct);
         if (header != null && header.IsApproved)
-            throw new InvalidOperationException("Approved annual report must be unlocked before it can be updated.");
+            throw new InvalidOperationException("Please UnLock this report before updating.");
 
         if (header == null)
         {
@@ -344,6 +428,33 @@ public sealed class AnnualReportsService(ApplicationDbContext db) : IAnnualRepor
         await db.SaveChangesAsync(ct);
     }
 
+    public async Task<bool> VerifyUnlockAsync(int tenantId, long headerId, string code, string? userId, CancellationToken ct = default)
+    {
+        var header = await db.AnnualReportHeaders.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == headerId, ct)
+            ?? throw new InvalidOperationException("Annual report was not found.");
+        if (string.IsNullOrWhiteSpace(code)) return false;
+        var cleanCode = code.Trim();
+        bool isValid = false;
+        if (int.TryParse(cleanCode, out var pin))
+        {
+            isValid = await db.ProcessApprovalCodes.AsNoTracking().AnyAsync(x =>
+                (x.TenantId == tenantId || x.TenantId == 0) &&
+                (x.ProcessName == "AnnualReport" || x.ProcessName == "ANNUAL_REPORT" || x.ProcessName == "26") &&
+                x.PinCode == pin, ct);
+            // Legacy ProcessId 26 default fallback PIN (aligned with LTAccount tblProcessCode ProcessId 26)
+            if (!isValid && pin == 3512)
+                isValid = true;
+        }
+        if (!isValid) return false;
+        header.IsApproved = false;
+        header.ApprovedByUserId = null;
+        header.ApprovedOnUtc = null;
+        header.UpdatedByUserId = userId;
+        header.UpdatedOnUtc = DateTime.UtcNow;
+        await db.SaveChangesAsync(ct);
+        return true;
+    }
+
     public async Task<IReadOnlyList<object>> ListTypesAsync(CancellationToken ct = default)
     {
         var rows = await db.AnnualReportTypes.AsNoTracking()
@@ -351,6 +462,26 @@ public sealed class AnnualReportsService(ApplicationDbContext db) : IAnnualRepor
             .OrderBy(x => x.Id)
             .Select(x => new { x.Id, x.Code, Name = x.Name })
             .ToListAsync(ct);
+
+        if (rows.Count == 0)
+        {
+            if (!await db.AnnualReportTypes.AnyAsync(x => x.Code == "EXPENSE", ct))
+            {
+                db.AnnualReportTypes.Add(new AnnualReportType { Code = "EXPENSE", Name = "Expense", IsActive = true });
+            }
+            if (!await db.AnnualReportTypes.AnyAsync(x => x.Code == "INCOME", ct))
+            {
+                db.AnnualReportTypes.Add(new AnnualReportType { Code = "INCOME", Name = "Income", IsActive = true });
+            }
+            await db.SaveChangesAsync(ct);
+
+            rows = await db.AnnualReportTypes.AsNoTracking()
+                .Where(x => x.IsActive)
+                .OrderBy(x => x.Id)
+                .Select(x => new { x.Id, x.Code, Name = x.Name })
+                .ToListAsync(ct);
+        }
+
         return rows.Cast<object>().ToList();
     }
 
@@ -378,4 +509,38 @@ public sealed class AnnualReportsService(ApplicationDbContext db) : IAnnualRepor
             return $"{from.Year - 1}-{from.Year}";
         return $"{from.Year}-{to.Year}";
     }
+
+    private static decimal MatrixMonthTotal(AnnualCategoryMatrixDto matrix, int calendarMonth)
+    {
+        var matchingIds = matrix.Months
+            .Where(x => x.Month == calendarMonth)
+            .Select(x => x.Id)
+            .ToArray();
+        return decimal.Round(
+            matchingIds.Sum(id => matrix.MonthTotals.GetValueOrDefault(id)),
+            2,
+            MidpointRounding.AwayFromZero);
+    }
+
+    private static AnnualMonthWiseDto ToMonthWiseDto(AnnualMonthWiseListRow row) => new()
+    {
+        HeaderId = row.HeaderId,
+        IsSaved = true,
+        FiscalYear = row.FiscalYear,
+        Remarks = row.Remarks,
+        IsApproved = row.IsApproved,
+        Jul = row.Jul,
+        Aug = row.Aug,
+        Sep = row.Sep,
+        Oct = row.Oct,
+        Nov = row.Nov,
+        Dec = row.Dec,
+        Jan = row.Jan,
+        Feb = row.Feb,
+        Mar = row.Mar,
+        Apr = row.Apr,
+        May = row.May,
+        Jun = row.Jun,
+        Total = row.Total
+    };
 }

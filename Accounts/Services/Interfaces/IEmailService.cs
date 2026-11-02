@@ -13,3 +13,7 @@ public interface ILTEmailService
     Task<List<StaffEmailSuggestionDto>> SearchEmailSuggestionsAsync(string prefix, int? organizationId, CancellationToken ct = default);
     Task<tblMessage?> GetEmailDetailsAsync(int id, string user, CancellationToken ct = default);
 }
+
+public interface IEmailService : ILTEmailService
+{
+}

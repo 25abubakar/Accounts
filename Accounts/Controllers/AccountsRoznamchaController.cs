@@ -785,8 +785,9 @@ public sealed class AccountsRoznamchaController : ControllerBase
     private async Task<bool> HasActionAsync(string route, string action, CancellationToken ct)
     {
         if (TenantPermissionService.IsSuperAdmin(User)) return true;
+        var routes = route == ReceiptRozRoute ? new[] { route, "/billing/receipt-roz" } : new[] { route };
         if (TenantPermissionService.IsTenantAdmin(User))
-            return await _tenantPermissions.HasMenuRouteAsync(User, [route], action, ct);
+            return await _tenantPermissions.HasMenuRouteAsync(User, routes, action, ct);
         if (!_tenant.TenantId.HasValue) return false;
         var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
         if (string.IsNullOrWhiteSpace(userId)) return false;
@@ -795,15 +796,20 @@ public sealed class AccountsRoznamchaController : ControllerBase
             .Select(x => (Guid?)x.Staff!.StaffId)
             .FirstOrDefaultAsync(ct);
         if (!staffId.HasValue) return false;
-        var menuId = await _db.Menus.AsNoTracking()
-            .Where(x => x.IsActive && x.Route == route)
-            .Select(x => (int?)x.Id)
-            .FirstOrDefaultAsync(ct);
-        if (!menuId.HasValue) return false;
+        var menuIds = await _db.Menus.AsNoTracking()
+            .Where(x => x.IsActive && routes.Contains(x.Route))
+            .Select(x => x.Id)
+            .ToListAsync(ct);
+        if (menuIds.Count == 0) return false;
         var normalized = action.Trim().ToUpperInvariant();
-        if (normalized == "VIEW" && await _rbac.HasAccessAsync(staffId.Value, $"MENU_{menuId.Value}"))
-            return true;
-        return await _rbac.HasAccessAsync(staffId.Value, $"MENU_{menuId.Value}_{normalized}");
+        foreach (var mId in menuIds)
+        {
+            if (normalized == "VIEW" && await _rbac.HasAccessAsync(staffId.Value, $"MENU_{mId}"))
+                return true;
+            if (await _rbac.HasAccessAsync(staffId.Value, $"MENU_{mId}_{normalized}"))
+                return true;
+        }
+        return false;
     }
 }
 

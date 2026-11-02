@@ -9,7 +9,18 @@ using Microsoft.Extensions.Logging;
 
 namespace Accounts.Services.Services;
 
-public sealed class LTEmailService : ILTEmailService
+public sealed class EmailService : LTEmailService, IEmailService
+{
+    public EmailService(
+        ApplicationDbContext db,
+        IWebHostEnvironment env,
+        ILogger<LTEmailService> logger)
+        : base(db, env, logger)
+    {
+    }
+}
+
+public class LTEmailService : ILTEmailService
 {
     private readonly ApplicationDbContext _db;
     private readonly IWebHostEnvironment _env;

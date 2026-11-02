@@ -14,19 +14,29 @@ namespace Accounts.Models;
 public sealed class BillingPatient
 {
     [Key] public int PatientId { get; set; }
+    public int? TenantId { get; set; }
     public int? OrgId { get; set; }
+    public int? OfficeId { get; set; }
     [MaxLength(200)] public string? PatientNo { get; set; }
     public int? PersonId { get; set; }
     [MaxLength(200)] public string? PatientName { get; set; }
     public DateTime? CreatedDate { get; set; }
+    [MaxLength(200)] public string? CreatedBy { get; set; }
 }
 
 [Table("tblPerson")]
 public sealed class BillingPerson
 {
     [Key] public int PersonId { get; set; }
+    public int? TenantId { get; set; }
     [MaxLength(200)] public string? FirstName { get; set; }
     [MaxLength(200)] public string? LastName { get; set; }
+    [MaxLength(400)] public string? FullName { get; set; }
+    [MaxLength(100)] public string? PhoneNumber { get; set; }
+    [MaxLength(200)] public string? Email { get; set; }
+    public DateTime? DOB { get; set; }
+    public int? Age { get; set; }
+    public bool? Gender { get; set; }
     public DateTime? CreatedDate { get; set; }
 }
 
@@ -34,10 +44,17 @@ public sealed class BillingPerson
 public sealed class BillingAppointment
 {
     [Key] public int AppointmentId { get; set; }
+    public int? TenantId { get; set; }
     public int? PatientId { get; set; }
     public int? OrgId { get; set; }
     [MaxLength(50)] public string? AppointmentDate { get; set; }
+    public DateTime? DOS { get; set; }
     public int? StatusId { get; set; }
+    public int? AppStatusId { get; set; }
+    public int? OfficeId { get; set; }
+    public int? PtTypeId { get; set; }
+    [MaxLength(200)] public string? ProviderName { get; set; }
+    [MaxLength(200)] public string? InsuranceName { get; set; }
     public bool? IsClaimed { get; set; }
     public bool? IsCreatedFromEob { get; set; }
     public DateTime? CreatedDate { get; set; }
@@ -48,9 +65,12 @@ public sealed class BillingAppointment
 public sealed class BillingClaim
 {
     [Key] public int ClaimId { get; set; }
+    public int? TenantId { get; set; }
     public int? AppointmentId { get; set; }
     public int? PatientId { get; set; }
     public int? OrgId { get; set; }
+    public int? CarrierId { get; set; }
+    [MaxLength(200)] public string? PolicyNumber { get; set; }
     [MaxLength(200)] public string? EobCheckNo { get; set; }
     [MaxLength(500)] public string? Attachment { get; set; }
     [Column(TypeName = "decimal(18,2)")] public decimal? PatientResponsibility { get; set; }
@@ -61,6 +81,7 @@ public sealed class BillingClaim
     public int? EobStatusId { get; set; }
     public bool? IsCreatedFromEob { get; set; }
     public DateTime? SubmittedDate { get; set; }
+    [MaxLength(1000)] public string? Remarks { get; set; }
     public DateTime? CreatedDate { get; set; }
     [MaxLength(450)] public string? CreatedByUserId { get; set; }
 }
@@ -162,9 +183,11 @@ public sealed class BillingClaimEobDoc
 public sealed class BillingClaimsLog
 {
     [Key] public int Id { get; set; }
+    public int? TenantId { get; set; }
     public int? ClaimId { get; set; }
     public int? StatusId { get; set; }
     [MaxLength(50)] public string? LogDate { get; set; }
+    [MaxLength(500)] public string? Remarks { get; set; }
     public DateTime? CreatedDate { get; set; }
 }
 
@@ -199,8 +222,10 @@ public sealed class BillingInsuranceNew
 public sealed class BillingProcedureCode
 {
     [Key] public int ProcCodeId { get; set; }
+    public int? TenantId { get; set; }
     [MaxLength(50)] public string? Codes { get; set; }
     [MaxLength(500)] public string? Description { get; set; }
+    [Column(TypeName = "decimal(18,2)")] public decimal? StandardRate { get; set; }
 }
 
 [Table("tblDocumentsProcess")]
@@ -212,5 +237,43 @@ public sealed class BillingDocumentProcess
     [MaxLength(500)] public string? Attachment { get; set; }
     public DateTime? CreatedDate { get; set; }
 }
+
+[Table("tblBillingRoznamcha")]
+public sealed class BillingRoznamchaStaging
+{
+    [Key] public int Id { get; set; }
+    public int? TenantId { get; set; }
+    public int? OrganizationId { get; set; }
+    public int? Practice { get; set; }
+    [MaxLength(200)] public string? Ins_Name { get; set; }
+    [MaxLength(100)] public string? ChequeNo { get; set; }
+    [Column(TypeName = "decimal(18,2)")] public decimal? Amount { get; set; }
+    public DateTime? Trans_Date { get; set; }
+    public int? StatusId { get; set; }
+    public int? Acc_Ref { get; set; }
+    [MaxLength(100)] public string? Ref { get; set; }
+    public bool? isSettled { get; set; }
+    [MaxLength(200)] public string? CreatedBy { get; set; }
+    public DateTime? CreatedDate { get; set; }
+    [MaxLength(200)] public string? UpdatedBy { get; set; }
+    public DateTime? UpdatedDate { get; set; }
+}
+
+[Table("tblOffices")]
+public sealed class BillingOffice
+{
+    [Key] public int OfficeId { get; set; }
+    public int? TenantId { get; set; }
+    [MaxLength(200)] public string? OfficeName { get; set; }
+}
+
+[Table("tblPatientType")]
+public sealed class BillingPatientType
+{
+    [Key] public int PtTypeId { get; set; }
+    public int? TenantId { get; set; }
+    [MaxLength(200)] public string? PtType { get; set; }
+}
+
 
 

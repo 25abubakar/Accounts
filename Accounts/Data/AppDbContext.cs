@@ -244,6 +244,9 @@ namespace Accounts.Data
         public DbSet<BillingInsuranceNew>   BillingInsuranceNews  => Set<BillingInsuranceNew>();
         public DbSet<BillingProcedureCode>  BillingProcedureCodes => Set<BillingProcedureCode>();
         public DbSet<BillingDocumentProcess> BillingDocumentProcesses => Set<BillingDocumentProcess>();
+        public DbSet<BillingRoznamchaStaging> BillingRoznamchas => Set<BillingRoznamchaStaging>();
+        public DbSet<BillingOffice>         BillingOffices        => Set<BillingOffice>();
+        public DbSet<BillingPatientType>    BillingPatientTypes   => Set<BillingPatientType>();
 
         // ── Copay Module ───────────────────────────────────────────────────────
         public DbSet<CopayStatement> CopayStatements => Set<CopayStatement>();
@@ -296,6 +299,9 @@ namespace Accounts.Data
             builder.Entity<BillingInsuranceNew>().ToTable("tblInsuranceNew").HasKey(x => x.Id);
             builder.Entity<BillingProcedureCode>().ToTable("tblProcedureCodes").HasKey(x => x.ProcCodeId);
             builder.Entity<BillingDocumentProcess>().ToTable("tblDocumentsProcess").HasKey(x => x.Id);
+            builder.Entity<BillingRoznamchaStaging>().ToTable("tblBillingRoznamcha").HasKey(x => x.Id);
+            builder.Entity<BillingOffice>().ToTable("tblOffices").HasKey(x => x.OfficeId);
+            builder.Entity<BillingPatientType>().ToTable("tblPatientType").HasKey(x => x.PtTypeId);
             builder.Entity<FaxRecipient>().HasQueryFilter(row =>
                 _tenantService != null && !_tenantService.IsSuperAdmin && _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
             builder.Entity<FaxTransmission>().HasQueryFilter(row =>

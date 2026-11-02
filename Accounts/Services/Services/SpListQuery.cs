@@ -32,6 +32,9 @@ public static class SpListQuery
     public static SqlParameter NVarChar(string name, string? value) =>
         new(name, SqlDbType.NVarChar) { Value = (object?)value ?? DBNull.Value };
 
+    public static SqlParameter StringNullable(string name, string? value) =>
+        new(name, SqlDbType.NVarChar) { Value = (object?)value ?? DBNull.Value };
+
     public static SqlParameter Date(string name, DateOnly value) =>
         new(name, SqlDbType.Date) { Value = value.ToDateTime(TimeOnly.MinValue) };
 
@@ -40,6 +43,12 @@ public static class SpListQuery
 
     public static SqlParameter Bit(string name, bool value) =>
         new(name, SqlDbType.Bit) { Value = value };
+
+    public static SqlParameter BitNullable(string name, bool? value) =>
+        new(name, SqlDbType.Bit) { Value = value.HasValue ? value.Value : DBNull.Value };
+
+    public static SqlParameter BoolNullable(string name, bool? value) =>
+        new(name, SqlDbType.Bit) { Value = value.HasValue ? value.Value : DBNull.Value };
 
     public static SqlParameter Guid(string name, Guid? value) =>
         new(name, SqlDbType.UniqueIdentifier) { Value = value.HasValue ? value.Value : DBNull.Value };
