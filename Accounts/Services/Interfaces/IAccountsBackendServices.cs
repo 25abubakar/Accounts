@@ -61,6 +61,10 @@ public interface IAccountService
     Task<AccountDto> UpdateBudgetAsync(int id, UpdateAccountBudgetRequest request, CancellationToken ct = default);
     Task<IReadOnlyList<AccountLedgerDto>> LedgerAsync(int id, DateOnly? from, DateOnly? to, bool hidden, CancellationToken ct = default);
     Task TransferLedgerAsync(LedgerTransferRequest request, CancellationToken ct = default);
+    Task<IReadOnlyList<HiddenCategoryRowDto>> ListHiddenCategoriesAsync(CancellationToken ct = default);
+    Task<IReadOnlyList<HiddenAccountRowDto>> ListHiddenAccountsAsync(int? categoryId, int? parentAccountId, CancellationToken ct = default);
+    Task<IReadOnlyList<AccountLedgerDto>> GetHiddenAccountLedgerAsync(int accountId, DateOnly? from, DateOnly? to, CancellationToken ct = default);
+    Task TransferHiddenEntryAsync(HiddenLedgerTransferRequest request, CancellationToken ct = default);
 }
 
 public interface IRoznamchaService
@@ -120,11 +124,21 @@ public interface IReportService
 {
     Task<IReadOnlyList<ReportRowDto>> MonthlyAsync(string? name, DateOnly from, DateOnly to, int? typeId, int? projectId, IReadOnlyList<int>? categoryIds, IReadOnlyList<int>? accountIds, CancellationToken ct = default);
     Task<IReadOnlyList<ReportRowDto>> DailyAsync(DateOnly from, DateOnly to, CancellationToken ct = default);
-    Task<IReadOnlyList<AccountsDailyUpdateDto>> DailyUpdatesAsync(DateOnly from, DateOnly to, CancellationToken ct = default);
+    Task<IReadOnlyList<AccountsDailyUpdateDto>> DailyUpdatesAsync(DateOnly from, DateOnly to, bool includeDeleted = true, bool byTransactionDate = false, CancellationToken ct = default);
+    Task<AccountsDailyUpdateDto> UpdateDailyReportInlineAsync(long id, UpdateReportInlineRequest request, CancellationToken ct = default);
+    Task<IReadOnlyList<AccountsVoucherChangeLogDto>> GetDailyReportChangesAsync(long entryId, CancellationToken ct = default);
     Task<IReadOnlyList<ReportRowDto>> BankAccountAsync(int accountId, DateOnly from, DateOnly to, CancellationToken ct = default);
     Task<IReadOnlyList<ReportFilterDto>> ListFiltersAsync(CancellationToken ct = default);
+    Task<IReadOnlyList<ReportFilterNameLookupDto>> ListFilterNamesAsync(CancellationToken ct = default);
+    Task<IReadOnlyList<ReportFilterDetailRowDto>> ListFilterDetailsAsync(CancellationToken ct = default);
     Task<ReportFilterDto> SaveFilterAsync(int? id, ReportFilterRequest request, CancellationToken ct = default);
+    Task AddAccountsToFilterAsync(int? filterId, AddAccountsToFilterRequest request, CancellationToken ct = default);
+    Task RemoveAccountFromFilterAsync(int filterId, int accountId, CancellationToken ct = default);
+    Task DeleteFilterMappingAsync(int mappingId, CancellationToken ct = default);
     Task DeleteFilterAsync(int id, CancellationToken ct = default);
+    Task<ReportRowDto> UpdateReportInlineAsync(long id, UpdateReportInlineRequest request, CancellationToken ct = default);
+    Task<IReadOnlyList<EntryAttachmentDto>> GetAttachmentsByRefAsync(string reference, CancellationToken ct = default);
+    Task<IReadOnlyList<EntryAttachmentDto>> GetAttachmentsByEntryIdAsync(long entryId, CancellationToken ct = default);
 }
 
 public interface IProjectCostService

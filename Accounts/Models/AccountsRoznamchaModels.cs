@@ -282,6 +282,10 @@ public sealed class RoznamchaEntryProcessLog : ITenantEntity
     public long RoznamchaEntryId { get; set; }
     [Required, MaxLength(60)] public string Action { get; set; } = string.Empty;
     [MaxLength(2000)] public string? Notes { get; set; }
+    [MaxLength(100)] public string? OldCheckNo { get; set; }
+    [MaxLength(100)] public string? NewCheckNo { get; set; }
+    public DateOnly? RemindDate { get; set; }
+    public int? StatusId { get; set; }
     [MaxLength(450)] public string? ProcessedByUserId { get; set; }
     public DateTime ProcessedOnUtc { get; set; } = DateTime.UtcNow;
 }

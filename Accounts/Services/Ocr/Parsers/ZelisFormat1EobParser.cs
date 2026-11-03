@@ -8,233 +8,172 @@ namespace Accounts.Services.Ocr.Parsers;
 public sealed class ZelisFormat1EobParser : IZelisFormat1EobParser
 {
     private readonly IPdfTextExtractor _extractor;
-
-    public ZelisFormat1EobParser(IPdfTextExtractor extractor)
-    {
-        _extractor = extractor;
-    }
+    public ZelisFormat1EobParser(IPdfTextExtractor extractor) => _extractor = extractor;
 
     public ParsedEobHeader Parse(byte[] pdfBytes)
     {
-        var pages = _extractor.ExtractPages(pdfBytes, yTolerance: 3.0, xGap: 0.75);
-        var header = new ParsedEobHeader
-        {
-            Source = "Zelis Docs"
-        };
+        var pages = _extractor.ExtractPages(pdfBytes);
+        var result = new ParsedEobHeader { Source = "Zelis Docs", DocTitle = "ZELIS EXPLANATION OF PAYMENT" };
+        if (pages.Count == 0) return result;
+        ParseHeader(pages[0], result);
 
-        if (pages.Count == 0) return header;
-
-        var firstPage = pages[0];
-        ParseHeader(firstPage, header);
-
-        var patients = new List<ParsedPatient>();
-        ParsedPatient? currentPatient = null;
-
+        ParsedPatient? patient = null;
         foreach (var page in pages)
         {
-            for (int i = 0; i < page.Lines.Count; i++)
+            for (var i = 0; i < page.Lines.Count; i++)
             {
-                var text = page.Lines[i].Text.Trim();
-
-                if (text.Contains("PAYMENT SUMMARY", StringComparison.OrdinalIgnoreCase) ||
-                    text.Contains("TOTALS:", StringComparison.OrdinalIgnoreCase))
+                var line = page.Lines[i];
+                var text = Clean(line.Text);
+                if (text.StartsWith("Patient:", StringComparison.OrdinalIgnoreCase))
                 {
-                    header.DocumentTotals = TryParseTotals(page.Lines, i);
+                    patient = new ParsedPatient { PatientName = Match(text, @"Patient:\s*(.+)$") };
+                    result.Patients.Add(patient);
                     continue;
                 }
-
-                // Check for patient / claim line
-                // In Zelis: Patient Name, Account Number, Claim # / ICN
-                if (text.Contains("Patient:", StringComparison.OrdinalIgnoreCase) ||
-                    text.Contains("Claim Number:", StringComparison.OrdinalIgnoreCase) ||
-                    text.Contains("Member ID:", StringComparison.OrdinalIgnoreCase))
+                if (patient != null && text.StartsWith("Patient Acct", StringComparison.OrdinalIgnoreCase))
                 {
-                    // If previous patient had no procedures, drop it
-                    if (currentPatient != null && currentPatient.Procedures.Count == 0)
-                    {
-                        patients.Remove(currentPatient);
-                    }
-
-                    currentPatient = ParsePatient(page.Lines, i);
-                    if (currentPatient != null)
-                    {
-                        patients.Add(currentPatient);
-                    }
+                    patient.PatientNo = Match(text, @"Patient\s*Acct\s*#:\s*([^\s]+)");
+                    patient.ICN = Match(text, @"Claim\s*#:\s*([^\s]+)");
                     continue;
                 }
-
-                if (currentPatient != null)
+                if (patient != null && text.StartsWith("Insured ID:", StringComparison.OrdinalIgnoreCase))
                 {
-                    // Zelis service line starts with date range e.g. "01/15/26-01/15/26" or "01/15/2026 - 01/15/2026"
-                    var proc = TryParseProcedure(page.Lines, ref i);
-                    if (proc != null)
-                    {
-                        currentPatient.Procedures.Add(proc);
-                    }
+                    patient.MID = Match(text, @"Insured\s*ID:\s*([^\s]+)");
+                    continue;
                 }
+                if (patient != null && text.StartsWith("Totals ", StringComparison.OrdinalIgnoreCase))
+                {
+                    ParsePatientTotals(line, patient);
+                    continue;
+                }
+                if (patient != null && TryParseProcedure(line, out var procedure)) patient.Procedures.Add(procedure);
             }
         }
 
-        // Rule: Open patient at end of file with 0 procedures is dropped
-        if (patients.Count > 0 && patients[^1].Procedures.Count == 0)
-        {
-            patients.RemoveAt(patients.Count - 1);
-        }
-
-        header.Patients = patients;
-        return header;
+        result.Patients = MergeRepeatedClaims(result.Patients);
+        result.DocumentTotals = BuildDocumentTotals(result, pages);
+        if (result.Patients.Count == 0) result.Warnings.Add("Zelis claims were not found.");
+        if (result.Patients.Any(x => x.Procedures.Count == 0)) result.Warnings.Add("One or more Zelis claims contain no service lines.");
+        return result;
     }
 
-    private static void ParseHeader(PdfPageLines page, ParsedEobHeader header)
+    private static void ParseHeader(PdfPageLines page, ParsedEobHeader result)
     {
-        var fullText = page.FullText;
-
-        var checkMatch = Regex.Match(fullText, @"(?:Payment\s*Reference\s*Number|Check\s*Number|Check/EFT|Trace\s*#)[:\s]*([A-Za-z0-9_-]+)", RegexOptions.IgnoreCase);
-        if (checkMatch.Success) header.CheckEFT = checkMatch.Groups[1].Value.Trim();
-
-        var dateMatch = Regex.Match(fullText, @"(?:Payment\s*Date|Issue\s*Date|Date)[:\s]*(\d{1,2}/\d{1,2}/\d{2,4})", RegexOptions.IgnoreCase);
-        if (dateMatch.Success)
-        {
-            header.StatementDate = dateMatch.Groups[1].Value.Trim();
-            header.StatementDateParsed = ServiceDateParser.Parse(header.StatementDate);
-        }
-
-        var provMatch = Regex.Match(fullText, @"(?:Provider\s*Name|Payee)[:\s]*([A-Za-z\s,.-]+?)(?:\s+(?:NPI|Tax|Date)|$)", RegexOptions.IgnoreCase);
-        if (provMatch.Success) header.ProviderName = provMatch.Groups[1].Value.Trim();
-
-        var npiMatch = Regex.Match(fullText, @"NPI[:\s]*(\d{10})", RegexOptions.IgnoreCase);
-        if (npiMatch.Success) header.NPI = npiMatch.Groups[1].Value.Trim();
-
-        var taxMatch = Regex.Match(fullText, @"(?:Tax\s*ID|TIN)[:\s]*([A-Za-z0-9-]+)", RegexOptions.IgnoreCase);
-        if (taxMatch.Success) header.TaxId = taxMatch.Groups[1].Value.Trim();
-
-        header.DocTitle = "ZELIS REMITTANCE ADVICE";
+        var text = page.FullText;
+        result.CheckEFT = Match(text, @"Payment\s*ID:\s*([^\s]+)");
+        // Some Zelis PDFs render the heading as repeated glyphs. The labelled
+        // Date line remains stable and is a safer format-independent anchor.
+        result.StatementDate = page.Lines
+            .Select(x => Clean(x.Text))
+            .Where(x => x.StartsWith("Date:", StringComparison.OrdinalIgnoreCase))
+            .Select(x => Match(x, @"Date:\s*(\d{1,2}/\d{1,2}/\d{2,4})"))
+            .FirstOrDefault(x => x != null);
+        result.StatementDateParsed = ServiceDateParser.Parse(result.StatementDate);
+        result.ProviderId = Match(text, @"Payee\s*ID:\s*([^\s]+)");
+        result.ProviderName = Match(text, @"Payee:\s*(.+?)(?:\r?\n|Payer:)");
+        result.InsuranceName = Match(text, @"Payer:\s*(.+?)(?:\r?\n|Payer\s*Ck)");
+        result.TaxId = result.ProviderId;
     }
 
-    private static ParsedPatient? ParsePatient(IReadOnlyList<TextLine> lines, int i)
+    private static bool TryParseProcedure(TextLine line, out ParsedProcedure procedure)
     {
-        var text = lines[i].Text;
-        var p = new ParsedPatient();
-
-        var nameMatch = Regex.Match(text, @"(?:Patient|Member)[:\s]*([A-Za-z\s,.-]+?)(?:\s+(?:Claim|ID|Account)|$)", RegexOptions.IgnoreCase);
-        if (nameMatch.Success) p.PatientName = nameMatch.Groups[1].Value.Trim();
-
-        var midMatch = Regex.Match(text, @"(?:Member\s*ID|MID)[:\s]*([A-Za-z0-9]+)", RegexOptions.IgnoreCase);
-        if (midMatch.Success) p.MID = midMatch.Groups[1].Value.Trim();
-
-        var acntMatch = Regex.Match(text, @"(?:Account|Acct|Patient\s*#)[:\s]*([A-Za-z0-9]+)", RegexOptions.IgnoreCase);
-        if (acntMatch.Success) p.PatientNo = acntMatch.Groups[1].Value.Trim();
-
-        var icnMatch = Regex.Match(text, @"(?:Claim\s*(?:#|Number)|ICN)[:\s]*([A-Za-z0-9]+)", RegexOptions.IgnoreCase);
-        if (icnMatch.Success) p.ICN = icnMatch.Groups[1].Value.Trim();
-
-        if (string.IsNullOrWhiteSpace(p.PatientName))
+        procedure = null!;
+        var words = line.Words;
+        if (words.Count < 8 || !Regex.IsMatch(words[0].Text, @"^\d{1,2}/\d{1,2}/\d{2,4}-\d{1,2}/\d{1,2}/\d{2,4}$")) return false;
+        var proc = words.FirstOrDefault(w => w.Left >= 95 && w.Left < 155 && Regex.IsMatch(w.Text, @"^[A-Z0-9]{5}$"));
+        if (proc == null) return false;
+        var dateRange = words[0].Text;
+        var date = dateRange.Split('-', 2)[0];
+        var modifier = words.FirstOrDefault(w => w.Left > proc.Right && w.Left < 155 && Regex.IsMatch(w.Text, @"^[A-Z0-9]{2}$"));
+        procedure = new ParsedProcedure
         {
-            p.PatientName = "Unknown Zelis Patient";
-        }
-
-        return p;
-    }
-
-    private static ParsedProcedure? TryParseProcedure(IReadOnlyList<TextLine> lines, ref int i)
-    {
-        var text = lines[i].Text;
-        // Match date range like "01/15/26-01/15/26" or "01/15/2026-01/15/2026"
-        var rangeMatch = Regex.Match(text, @"\b(\d{1,2}/\d{1,2}/\d{2,4})\s*[-–]\s*(\d{1,2}/\d{1,2}/\d{2,4})\b");
-        if (!rangeMatch.Success) return null;
-
-        var procCodeMatch = Regex.Match(text, @"\b([A-Z0-9]{5})\b");
-
-        var tokens = text.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-        var decimals = new List<decimal>();
-        foreach (var t in tokens)
-        {
-            var cleaned = t.Replace("$", "").Replace(",", "").Trim('(', ')', '-');
-            if (decimal.TryParse(cleaned, NumberStyles.Any, CultureInfo.InvariantCulture, out var val))
-            {
-                decimals.Add(val);
-            }
-        }
-
-        if (decimals.Count == 0) return null;
-
-        var proc = new ParsedProcedure
-        {
-            DateOfService = rangeMatch.Groups[1].Value,
-            DateOfServiceParsed = ServiceDateParser.Parse(rangeMatch.Groups[1].Value),
-            ProcedureCode = procCodeMatch.Success ? procCodeMatch.Groups[1].Value : "UNKNOWN"
+            DateOfService = dateRange,
+            DateOfServiceParsed = ServiceDateParser.Parse(date),
+            ProcedureCode = proc.Text,
+            Modifiers = modifier?.Text,
+            NOS = words.FirstOrDefault(w => w.Left >= 155 && w.Left < 200 && Decimal(w.Text).HasValue)?.Text,
+            Billed = MoneyAt(words, 200, 265),
+            ProviderDiscount = MoneyAt(words, 265, 320),
+            OtherAdjustments = MoneyAt(words, 320, 370),
+            Allowed = MoneyAt(words, 370, 435),
+            PatientResponsibility = MoneyAt(words, 435, 485),
+            ProviderPaid = MoneyAt(words, 485, 540)
         };
-
-        if (decimals.Count > 0) proc.Billed = decimals[0];
-        if (decimals.Count > 1) proc.Allowed = decimals[1];
-        if (decimals.Count > 2) proc.Deductible = decimals[2];
-        if (decimals.Count > 3) proc.CoInsurance = decimals[3];
-        if (decimals.Count > 4) proc.ProviderPaid = decimals[4];
-        if (decimals.Count > 5) proc.PatientResponsibility = decimals[5];
-
-        // Reason codes in next lines
-        while (i + 1 < lines.Count)
-        {
-            var next = lines[i + 1].Text.Trim();
-            // Look for reason codes (GRP) like PR-2, CO-45
-            var grpMatches = Regex.Matches(next, @"\b([A-Z]{2}-[A-Z0-9]+)\b");
-            if (grpMatches.Count > 0)
-            {
-                i++;
-                foreach (Match m in grpMatches)
-                {
-                    var code = m.Groups[1].Value;
-                    proc.GrpRows.Add(new ParsedGrp
-                    {
-                        GRPCode = code,
-                        Remark = next
-                    });
-
-                    // PR2 GRP rule: move amount to coins, clear patient responsibility
-                    if (code.Equals("PR-2", StringComparison.OrdinalIgnoreCase) || code.Equals("PR2", StringComparison.OrdinalIgnoreCase))
-                    {
-                        if (proc.PatientResponsibility.HasValue && proc.PatientResponsibility > 0)
-                        {
-                            proc.CoInsurance = (proc.CoInsurance ?? 0) + proc.PatientResponsibility.Value;
-                            proc.PatientResponsibility = 0;
-                        }
-                    }
-                }
-            }
-            else
-            {
-                break;
-            }
-        }
-
-        return proc;
+        var reasonText = string.Join(" ", words.Where(w => w.Left >= 540).Select(w => w.Text));
+        AddReasonCodes(procedure, reasonText);
+        return true;
     }
 
-    private static ParsedDocumentTotals? TryParseTotals(IReadOnlyList<TextLine> lines, int i)
+    private static void AddReasonCodes(ParsedProcedure procedure, string text)
     {
-        var targetLine = lines[i].Text;
-        var tokens = targetLine.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-        var decimals = new List<decimal>();
-        foreach (var t in tokens)
+        foreach (Match match in Regex.Matches(text, @"\b(CO|OA|PR|PI)-?([A-Z0-9]+)\b", RegexOptions.IgnoreCase))
         {
-            var cleaned = t.Replace("$", "").Replace(",", "").Trim('(', ')', '-');
-            if (decimal.TryParse(cleaned, NumberStyles.Any, CultureInfo.InvariantCulture, out var val))
+            var code = $"{match.Groups[1].Value.ToUpperInvariant()}-{match.Groups[2].Value.ToUpperInvariant()}";
+            if (procedure.GrpRows.Any(x => x.GRPCode == code)) continue;
+            var amount = code.StartsWith("PR-", StringComparison.Ordinal) ? procedure.PatientResponsibility : procedure.ProviderDiscount;
+            procedure.GrpRows.Add(new ParsedGrp { GRPCode = code, RcAmt = amount, Remark = text });
+            if (code == "PR-2")
             {
-                decimals.Add(val);
+                procedure.CoInsurance = procedure.PatientResponsibility;
             }
+            else if (code == "PR-3") procedure.Copay = procedure.PatientResponsibility;
+            else if (code == "PR-1") procedure.Deductible = procedure.PatientResponsibility;
         }
-
-        if (decimals.Count == 0) return null;
-
-        var totals = new ParsedDocumentTotals();
-        if (decimals.Count > 0) totals.Billed = decimals[0];
-        if (decimals.Count > 1) totals.Allowed = decimals[1];
-        if (decimals.Count > 2) totals.Deductible = decimals[2];
-        if (decimals.Count > 3) totals.CoInsurance = decimals[3];
-        if (decimals.Count > 4) totals.ProviderPaid = decimals[4];
-        if (decimals.Count > 5) totals.CheckAmount = decimals[5];
-
-        return totals;
     }
-}
 
+    private static void ParsePatientTotals(TextLine line, ParsedPatient patient)
+    {
+        patient.Billed = MoneyAt(line.Words, 200, 265);
+        patient.ProviderDiscount = MoneyAt(line.Words, 265, 320);
+        patient.OtherAdjustments = MoneyAt(line.Words, 320, 370);
+        patient.Allowed = MoneyAt(line.Words, 370, 435);
+        patient.PatientResponsibility = MoneyAt(line.Words, 435, 485);
+        patient.ProviderPaid = MoneyAt(line.Words, 485, 540);
+        patient.Net = patient.ProviderPaid;
+    }
+
+    private static List<ParsedPatient> MergeRepeatedClaims(List<ParsedPatient> source)
+    {
+        var result = new List<ParsedPatient>();
+        foreach (var item in source)
+        {
+            var existing = !string.IsNullOrWhiteSpace(item.ICN)
+                ? result.FirstOrDefault(x => string.Equals(x.ICN, item.ICN, StringComparison.OrdinalIgnoreCase))
+                : null;
+            if (existing == null) { result.Add(item); continue; }
+            foreach (var procedure in item.Procedures)
+                if (!existing.Procedures.Any(x => x.ProcedureCode == procedure.ProcedureCode && x.DateOfService == procedure.DateOfService)) existing.Procedures.Add(procedure);
+            existing.Billed ??= item.Billed;
+            existing.Allowed ??= item.Allowed;
+            existing.ProviderDiscount ??= item.ProviderDiscount;
+            existing.OtherAdjustments ??= item.OtherAdjustments;
+            existing.PatientResponsibility ??= item.PatientResponsibility;
+            existing.ProviderPaid ??= item.ProviderPaid;
+            existing.Net ??= item.Net;
+        }
+        return result;
+    }
+
+    private static ParsedDocumentTotals BuildDocumentTotals(ParsedEobHeader result, IReadOnlyList<PdfPageLines> pages)
+    {
+        var totalLine = pages[0].Lines.FirstOrDefault(x => x.Text.TrimStart().StartsWith("Total Payment:", StringComparison.OrdinalIgnoreCase));
+        var check = totalLine == null ? null : Money(totalLine.Words.LastOrDefault(w => Money(w.Text).HasValue)?.Text);
+        return new ParsedDocumentTotals
+        {
+            ClaimCount = result.Patients.Count,
+            Billed = result.Patients.Sum(x => x.Billed ?? 0m),
+            Allowed = result.Patients.Sum(x => x.Allowed ?? 0m),
+            ProviderDiscount = result.Patients.Sum(x => x.ProviderDiscount ?? 0m),
+            Adjustment = result.Patients.Sum(x => x.OtherAdjustments ?? 0m),
+            RC = result.Patients.Sum(x => x.PatientResponsibility ?? 0m),
+            ProviderPaid = check ?? result.Patients.Sum(x => x.ProviderPaid ?? 0m),
+            CheckAmount = check
+        };
+    }
+
+    private static decimal? MoneyAt(IReadOnlyList<WordBox> words, double min, double max) => Money(words.FirstOrDefault(w => w.Left >= min && w.Left < max && Money(w.Text).HasValue)?.Text);
+    private static decimal? Money(string? value) { var text = value?.Replace("$", "", StringComparison.Ordinal).Replace(",", "", StringComparison.Ordinal); return decimal.TryParse(text, NumberStyles.AllowLeadingSign | NumberStyles.AllowDecimalPoint, CultureInfo.InvariantCulture, out var number) ? number : null; }
+    private static decimal? Decimal(string? value) => decimal.TryParse(value, NumberStyles.Number, CultureInfo.InvariantCulture, out var number) ? number : null;
+    private static string? Match(string text, string pattern) { var m = Regex.Match(text, pattern, RegexOptions.IgnoreCase); return m.Success ? m.Groups[1].Value.Trim() : null; }
+    private static string Clean(string text) => Regex.Replace(text.Trim(), @"\s+", " ");
+}

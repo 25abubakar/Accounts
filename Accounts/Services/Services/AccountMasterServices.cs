@@ -368,57 +368,103 @@ public sealed class AccountService(
 
     public async Task<IReadOnlyList<AccountLedgerDto>> LedgerAsync(int id, DateOnly? from, DateOnly? to, bool hidden, CancellationToken ct = default)
     {
-        if (!await db.AccountsChartAccounts.AsNoTracking().AnyAsync(x => x.Id == id, ct))
-            throw new KeyNotFoundException("Account was not found.");
+        var account = await db.AccountsChartAccounts.AsNoTracking().FirstOrDefaultAsync(x => x.Id == id, ct)
+            ?? throw new KeyNotFoundException("Account was not found.");
+        var isHiddenAccount = account.StatusId == 11 || !account.IsActive;
+
         var query = db.RoznamchaEntries.AsNoTracking()
             .Where(x => !x.IsDeleted && (x.FromAccountId == id || x.ToAccountId == id));
-        query = hidden ? query.Where(x => !x.IsShow) : query.Where(x => x.IsShow && !x.IsLedger);
+        if (hidden)
+        {
+            if (!isHiddenAccount)
+                query = query.Where(x => !x.IsShow);
+        }
+        else
+        {
+            query = query.Where(x => x.IsShow && !x.IsLedger);
+        }
         if (from.HasValue) query = query.Where(x => x.TransDate >= from.Value);
         if (to.HasValue) query = query.Where(x => x.TransDate <= to.Value);
 
-        var rows = await (
-            from e in query
-            join roz in db.AccountsRoznamchaTypes.AsNoTracking() on e.RoznamchaTypeId equals roz.Id into rozRows
-            from roz in rozRows.DefaultIfEmpty()
-            join cat in db.AccountsCategories.AsNoTracking() on e.CategoryId equals cat.Id into catRows
-            from cat in catRows.DefaultIfEmpty()
-            join fromAcc in db.AccountsChartAccounts.AsNoTracking() on e.FromAccountId equals fromAcc.Id into fromRows
-            from fromAcc in fromRows.DefaultIfEmpty()
-            join toAcc in db.AccountsChartAccounts.AsNoTracking() on e.ToAccountId equals toAcc.Id into toRows
-            from toAcc in toRows.DefaultIfEmpty()
-            join tt in db.AccountsTransTypes.AsNoTracking() on e.TransTypeId equals tt.Id into ttRows
-            from tt in ttRows.DefaultIfEmpty()
-            join tm in db.AccountsTransModes.AsNoTracking() on e.TransModeId equals tm.Id into tmRows
-            from tm in tmRows.DefaultIfEmpty()
-            orderby e.TransDate, e.Id
-            select new
+        // Load the tenant-scoped ledger facts first and resolve optional legacy
+        // lookups separately. A missing/orphaned lookup must not make the whole
+        // hidden-ledger request fail (legacy imports commonly contain such IDs).
+        var rows = await query
+            .OrderBy(e => e.TransDate)
+            .ThenBy(e => e.Id)
+            .Select(e => new
             {
                 e.Id,
                 e.SNo,
                 e.Ref,
                 e.OldRef,
-                Type = roz == null ? null : roz.Name,
+                e.RoznamchaTypeId,
                 e.TransDate,
-                Category = cat == null ? null : cat.Name,
-                FromAcc = fromAcc == null ? null : fromAcc.AccountName,
-                FromAccNo = fromAcc == null ? null : fromAcc.AccountNumber,
-                ToAcct = toAcc == null ? null : toAcc.AccountName,
-                ToAcctNo = toAcc == null ? null : toAcc.AccountNumber,
-                TransType = tt == null ? null : tt.Name,
-                TransMode = tm == null ? null : tm.Name,
+                e.CategoryId,
+                e.FromAccountId,
+                e.ToAccountId,
+                e.TransTypeId,
+                e.TransModeId,
                 e.InstrumentDate,
                 e.InstrumentNo,
                 e.Descriptions,
                 e.Amount,
                 e.Adjustment,
-                e.FromAccountId,
-                e.ToAccountId,
-                e.IsShow
-            }).ToListAsync(ct);
+                e.IsShow,
+                e.Attachment,
+                e.Remarks,
+                e.IsDeleted,
+                e.Qty,
+                e.Rate,
+                e.TaxTypeId,
+                e.TaxRate,
+                e.TaxAmt,
+                e.EnterStatusId,
+                e.CreatedOnUtc
+            })
+            .ToListAsync(ct);
+
+        var accountIds = rows
+            .SelectMany(x => new[] { x.FromAccountId, x.ToAccountId })
+            .Where(x => x.HasValue)
+            .Select(x => x!.Value)
+            .Distinct()
+            .ToArray();
+        var categoryIds = rows.Where(x => x.CategoryId.HasValue).Select(x => x.CategoryId!.Value).Distinct().ToArray();
+        var roznamchaTypeIds = rows.Where(x => x.RoznamchaTypeId.HasValue).Select(x => x.RoznamchaTypeId!.Value).Distinct().ToArray();
+        var transTypeIds = rows.Where(x => x.TransTypeId.HasValue).Select(x => x.TransTypeId!.Value).Distinct().ToArray();
+        var transModeIds = rows.Where(x => x.TransModeId.HasValue).Select(x => x.TransModeId!.Value).Distinct().ToArray();
+        var taxTypeIds = rows.Where(x => x.TaxTypeId.HasValue).Select(x => x.TaxTypeId!.Value).Distinct().ToArray();
+        var statusIds = rows.Where(x => x.EnterStatusId.HasValue).Select(x => x.EnterStatusId!.Value).Distinct().ToArray();
+
+        var accountLookups = await db.AccountsChartAccounts.AsNoTracking()
+            .Where(x => accountIds.Contains(x.Id))
+            .Select(x => new { x.Id, x.AccountName, x.AccountNumber })
+            .ToDictionaryAsync(x => x.Id, ct);
+        var categoryLookups = await db.AccountsCategories.AsNoTracking()
+            .Where(x => categoryIds.Contains(x.Id))
+            .ToDictionaryAsync(x => x.Id, x => x.Name, ct);
+        var roznamchaTypeLookups = await db.AccountsRoznamchaTypes.AsNoTracking()
+            .Where(x => roznamchaTypeIds.Contains(x.Id))
+            .ToDictionaryAsync(x => x.Id, x => x.Name, ct);
+        var transTypeLookups = await db.AccountsTransTypes.AsNoTracking()
+            .Where(x => transTypeIds.Contains(x.Id))
+            .ToDictionaryAsync(x => x.Id, x => x.Name, ct);
+        var transModeLookups = await db.AccountsTransModes.AsNoTracking()
+            .Where(x => transModeIds.Contains(x.Id))
+            .ToDictionaryAsync(x => x.Id, x => x.Name, ct);
+        var taxTypeLookups = await db.AccountsTaxTypes.AsNoTracking()
+            .Where(x => taxTypeIds.Contains(x.Id))
+            .ToDictionaryAsync(x => x.Id, x => x.Name, ct);
+        var statusLookups = await db.PlatformSettingStatuses.AsNoTracking()
+            .Where(x => statusIds.Contains(x.Id))
+            .ToDictionaryAsync(x => x.Id, x => x.Name, ct);
 
         decimal running = 0;
         return rows.Select(x =>
         {
+            accountLookups.TryGetValue(x.FromAccountId ?? 0, out var fromAccount);
+            accountLookups.TryGetValue(x.ToAccountId ?? 0, out var toAccount);
             var amount = (x.Amount ?? 0) + (x.Adjustment ?? 0);
             var debit = x.ToAccountId == id ? amount : 0;
             var credit = x.FromAccountId == id ? amount : 0;
@@ -429,44 +475,172 @@ public sealed class AccountService(
                 SNo = x.SNo,
                 ReferenceNo = x.Ref,
                 OldRef = x.OldRef,
-                Type = x.Type,
+                Type = x.RoznamchaTypeId.HasValue && roznamchaTypeLookups.TryGetValue(x.RoznamchaTypeId.Value, out var roznamchaType) ? roznamchaType : null,
                 TransactionDate = x.TransDate,
-                Category = x.Category,
-                FromAcc = x.FromAcc,
-                FromAccNo = x.FromAccNo,
-                ToAcct = x.ToAcct,
-                ToAcctNo = x.ToAcctNo,
-                TransType = x.TransType,
-                TransMode = x.TransMode,
+                Category = x.CategoryId.HasValue && categoryLookups.TryGetValue(x.CategoryId.Value, out var category) ? category : null,
+                FromAcc = fromAccount?.AccountName,
+                FromAccNo = fromAccount?.AccountNumber,
+                ToAcct = toAccount?.AccountName,
+                ToAcctNo = toAccount?.AccountNumber,
+                TransType = x.TransTypeId.HasValue && transTypeLookups.TryGetValue(x.TransTypeId.Value, out var transType) ? transType : null,
+                TransMode = x.TransModeId.HasValue && transModeLookups.TryGetValue(x.TransModeId.Value, out var transMode) ? transMode : null,
                 InstrumentDate = x.InstrumentDate,
                 InstrumentNo = x.InstrumentNo,
                 Descriptions = x.Descriptions,
-                OtherAccount = x.FromAccountId == id ? x.ToAcct : x.FromAcc,
+                OtherAccount = x.FromAccountId == id ? toAccount?.AccountName : fromAccount?.AccountName,
                 Debit = debit,
                 Credit = credit,
                 RunningBalance = running,
-                IsHidden = !x.IsShow
+                IsHidden = !x.IsShow,
+                Attachment = x.Attachment,
+                Remarks = x.Remarks,
+                StatusName = x.EnterStatusId.HasValue && statusLookups.TryGetValue(x.EnterStatusId.Value, out var status) ? status : null,
+                IsDeleted = x.IsDeleted,
+                Quantity = x.Qty,
+                Rate = x.Rate,
+                TaxType = x.TaxTypeId.HasValue && taxTypeLookups.TryGetValue(x.TaxTypeId.Value, out var taxType) ? taxType : null,
+                TaxRate = x.TaxRate,
+                TaxAmt = x.TaxAmt,
+                Adjustment = x.Adjustment,
+                CreatedDate = x.CreatedOnUtc
             };
         }).ToList();
     }
 
-    public async Task TransferLedgerAsync(LedgerTransferRequest request, CancellationToken ct = default)
+    public async Task<IReadOnlyList<HiddenCategoryRowDto>> ListHiddenCategoriesAsync(CancellationToken ct = default)
+    {
+        var categories = await db.AccountsCategories.AsNoTracking()
+            .Where(c => c.IsActive)
+            .OrderBy(c => c.Name)
+            .ToListAsync(ct);
+
+        var hiddenAccountsByCat = await db.AccountsChartAccounts.AsNoTracking()
+            .Where(a => (a.StatusId == 11 || !a.IsActive) && a.CategoryId.HasValue)
+            .GroupBy(a => a.CategoryId!.Value)
+            .Select(g => new { CategoryId = g.Key, Count = g.Count() })
+            .ToDictionaryAsync(g => g.CategoryId, g => g.Count, ct);
+
+        var totalAccountsByCat = await db.AccountsChartAccounts.AsNoTracking()
+            .Where(a => a.CategoryId.HasValue)
+            .GroupBy(a => a.CategoryId!.Value)
+            .Select(g => new { CategoryId = g.Key, Count = g.Count() })
+            .ToDictionaryAsync(g => g.CategoryId, g => g.Count, ct);
+
+        return categories.Select(c => new HiddenCategoryRowDto
+        {
+            Id = c.Id,
+            CategoryName = c.Name,
+            CategoryCode = c.Code,
+            HiddenAccountsCount = hiddenAccountsByCat.TryGetValue(c.Id, out var hc) ? hc : 0,
+            TotalAccountsCount = totalAccountsByCat.TryGetValue(c.Id, out var tc) ? tc : 0
+        }).ToList();
+    }
+
+    public async Task<IReadOnlyList<HiddenAccountRowDto>> ListHiddenAccountsAsync(int? categoryId, int? parentAccountId, CancellationToken ct = default)
+    {
+        var query = db.AccountsChartAccounts.AsNoTracking();
+
+        if (parentAccountId.HasValue)
+        {
+            query = query.Where(x => x.Id == parentAccountId.Value || x.ParentId == parentAccountId.Value);
+        }
+        else
+        {
+            if (categoryId.HasValue)
+                query = query.Where(x => x.CategoryId == categoryId.Value);
+
+            query = query.Where(x => x.ParentId == null && (x.StatusId == 11 || !x.IsActive));
+        }
+
+        var list = await (
+            from a in query
+            join c in db.AccountsCategories.AsNoTracking() on a.CategoryId equals c.Id into catRows
+            from c in catRows.DefaultIfEmpty()
+            orderby a.AccountName
+            select new
+            {
+                Account = a,
+                CategoryName = c != null ? c.Name : null,
+                SubAccountsCount = db.AccountsChartAccounts.Count(sub => sub.ParentId == a.Id)
+            }).ToListAsync(ct);
+
+        return list.Select(x => new HiddenAccountRowDto
+        {
+            Id = x.Account.Id,
+            AccountNumber = x.Account.AccountNumber,
+            AccountName = x.Account.AccountName,
+            AccountCode = x.Account.AccountCode,
+            AccountReference = x.Account.AccountReference,
+            CategoryId = x.Account.CategoryId,
+            CategoryName = x.CategoryName,
+            ParentId = x.Account.ParentId,
+            HasSubAccounts = x.SubAccountsCount > 0,
+            SubAccountsCount = x.SubAccountsCount,
+            BalanceAmount = x.Account.BalanceAmount,
+            StatusId = x.Account.StatusId,
+            IsActive = x.Account.IsActive
+        }).ToList();
+    }
+
+    public Task<IReadOnlyList<AccountLedgerDto>> GetHiddenAccountLedgerAsync(int accountId, DateOnly? from, DateOnly? to, CancellationToken ct = default) =>
+        LedgerAsync(accountId, from, to, hidden: true, ct);
+
+    public async Task TransferHiddenEntryAsync(HiddenLedgerTransferRequest request, CancellationToken ct = default)
     {
         var entry = await db.RoznamchaEntries.FirstOrDefaultAsync(x => x.Id == request.EntryId && !x.IsDeleted, ct)
-            ?? throw new KeyNotFoundException("Ledger entry was not found.");
-        if (!request.IncludeHidden && !entry.IsShow)
-            throw new InvalidOperationException("Hidden ledger entry transfer requires includeHidden=true.");
-        if (!await db.AccountsChartAccounts.AsNoTracking().AnyAsync(x => x.Id == request.TransferAccountId && x.IsActive, ct))
-            throw new InvalidOperationException("Transfer account was not found or is inactive.");
-        var side = request.TransferSide.Trim().ToLowerInvariant();
-        if (side == "from") entry.FromAccountId = request.TransferAccountId;
-        else if (side == "to") entry.ToAccountId = request.TransferAccountId;
-        else throw new InvalidOperationException("transferSide must be 'from' or 'to'.");
+            ?? throw new KeyNotFoundException("Roznamcha entry was not found.");
+
+        var targetAccount = await db.AccountsChartAccounts.FirstOrDefaultAsync(x => x.Id == request.TransferAccountId, ct)
+            ?? throw new InvalidOperationException("Transfer target account was not found.");
+
+        var side = (request.TransferSide ?? "to").Trim().ToLowerInvariant();
+        if (side == "from")
+        {
+            entry.FromAccountId = request.TransferAccountId;
+            if (targetAccount.CategoryId.HasValue)
+                entry.CategoryId = targetAccount.CategoryId.Value;
+        }
+        else if (side == "to")
+        {
+            entry.ToAccountId = request.TransferAccountId;
+        }
+        else
+        {
+            throw new InvalidOperationException("transferSide must be 'from' or 'to'.");
+        }
+
         if (entry.FromAccountId == entry.ToAccountId)
             throw new InvalidOperationException("Cannot transfer both sides of a transaction to the same account.");
+
+        if (request.UnhideEntry)
+        {
+            entry.IsShow = true; // Parity with Old Software data.isSHow = null
+        }
+
         entry.UpdatedByUserId = current.UserId;
         entry.UpdatedOnUtc = DateTime.UtcNow;
+
+        db.RoznamchaEntryProcessLogs.Add(new RoznamchaEntryProcessLog
+        {
+            TenantId = entry.TenantId,
+            RoznamchaEntryId = entry.Id,
+            Action = $"Transferred ({side}) to Acct #{targetAccount.AccountNumber} ({targetAccount.AccountName})" + (request.UnhideEntry ? " & Unhidden" : ""),
+            ProcessedByUserId = current.UserId,
+            ProcessedOnUtc = DateTime.UtcNow
+        });
+
         await db.SaveChangesAsync(ct);
+    }
+
+    public async Task TransferLedgerAsync(LedgerTransferRequest request, CancellationToken ct = default)
+    {
+        await TransferHiddenEntryAsync(new HiddenLedgerTransferRequest
+        {
+            EntryId = request.EntryId,
+            TransferAccountId = request.TransferAccountId,
+            TransferSide = request.TransferSide,
+            UnhideEntry = request.IncludeHidden
+        }, ct);
     }
 
     private IQueryable<AccountDto> AccountQuery() =>

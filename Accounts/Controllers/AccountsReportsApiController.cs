@@ -43,31 +43,123 @@ public sealed class AccountsReportsApiController(
         [FromQuery] int? projectId, CancellationToken ct)
     {
         if (!await HasActionAsync("/accounts/reports", "VIEW", ct)) return Forbid();
+        if ((categoryIds == null || categoryIds.Count == 0) && Request.Query.ContainsKey("categoryIds[]"))
+        {
+            categoryIds = Request.Query["categoryIds[]"].Select(x => int.TryParse(x, out var v) ? v : (int?)null).Where(x => x.HasValue).Select(x => x!.Value).ToList();
+        }
+        if ((accountIds == null || accountIds.Count == 0) && Request.Query.ContainsKey("accountIds[]"))
+        {
+            accountIds = Request.Query["accountIds[]"].Select(x => int.TryParse(x, out var v) ? v : (int?)null).Where(x => x.HasValue).Select(x => x!.Value).ToList();
+        }
         return await Run(async () => ApiResponse<IReadOnlyList<ReportRowDto>>.Ok(await reports.MonthlyAsync(
             name, ResolveFrom(dateFrom), ResolveTo(dateTo), typeId, projectId, categoryIds, accountIds, ct)));
     }
 
+    [HttpPost("monthly/filter")]
+    public async Task<IActionResult> MonthlyFilterPost([FromBody] MonthlyReportFilterPostRequest request, CancellationToken ct)
+    {
+        if (!await HasActionAsync("/accounts/reports", "VIEW", ct)) return Forbid();
+        return await Run(async () => ApiResponse<IReadOnlyList<ReportRowDto>>.Ok(await reports.MonthlyAsync(
+            request.Name, ResolveFrom(request.DateFrom), ResolveTo(request.DateTo), request.TypeId, request.ProjectId, request.CategoryIds, request.AccountIds, ct)));
+    }
+
+    [HttpPut("monthly/{id:long}/inline")]
+    [HttpPatch("monthly/{id:long}/inline")]
+    public async Task<IActionResult> UpdateReportInline(long id, [FromBody] UpdateReportInlineRequest request, CancellationToken ct)
+    {
+        if (!await HasActionAsync("/accounts/reports", "EDIT", ct)) return Forbid();
+        return await Run(async () => ApiResponse<ReportRowDto>.Ok(await reports.UpdateReportInlineAsync(id, request, ct), "Voucher updated successfully."));
+    }
+
+    [HttpGet("attachments/by-ref")]
+    public async Task<IActionResult> AttachmentsByRef([FromQuery] string reference, CancellationToken ct)
+    {
+        if (!await HasActionAsync("/accounts/reports", "VIEW", ct)) return Forbid();
+        return Ok(ApiResponse<IReadOnlyList<EntryAttachmentDto>>.Ok(await reports.GetAttachmentsByRefAsync(reference, ct)));
+    }
+
+    [HttpGet("entries/{id:long}/attachments")]
+    public async Task<IActionResult> AttachmentsByEntryId(long id, CancellationToken ct)
+    {
+        if (!await HasActionAsync("/accounts/reports", "VIEW", ct)) return Forbid();
+        return Ok(ApiResponse<IReadOnlyList<EntryAttachmentDto>>.Ok(await reports.GetAttachmentsByEntryIdAsync(id, ct)));
+    }
+
+    [HttpGet("accounts-by-category")]
+    public async Task<IActionResult> AccountsByCategory([FromQuery] List<int>? categoryIds, CancellationToken ct)
+    {
+        if (!await HasAnyReportViewAsync(ct)) return Forbid();
+        var tenantId = tenant.TenantId ?? current.TenantId;
+        var query = db.AccountsChartAccounts.AsNoTracking().Where(x => x.IsActive && (tenantId == 0 || x.TenantId == tenantId));
+        if (categoryIds != null && categoryIds.Count > 0)
+            query = query.Where(x => x.CategoryId.HasValue && categoryIds.Contains(x.CategoryId.Value));
+
+        var list = await query.OrderBy(x => x.AccountName)
+            .Select(x => new { x.Id, x.CategoryId, x.ParentId, x.AccountCode, x.AccountNumber, x.AccountName })
+            .ToListAsync(ct);
+        return Ok(ApiResponse<object>.Ok(list));
+    }
+
     [HttpGet("daily")]
-    public async Task<IActionResult> Daily([FromQuery] DateOnly? todayDate, [FromQuery] DateOnly? toDate, CancellationToken ct)
+    public async Task<IActionResult> Daily([FromQuery] DateOnly? todayDate, [FromQuery] DateOnly? toDate, [FromQuery] bool includeDeleted = true, [FromQuery] bool byTransactionDate = false, CancellationToken ct = default)
     {
         if (!await HasActionAsync("/accounts/daily-updates", "VIEW", ct)) return Forbid();
-        return await Run(async () => ApiResponse<IReadOnlyList<AccountsDailyUpdateDto>>.Ok(await reports.DailyUpdatesAsync(ResolveFrom(todayDate, true), ResolveTo(toDate), ct)));
+        return await Run(async () => ApiResponse<IReadOnlyList<AccountsDailyUpdateDto>>.Ok(await reports.DailyUpdatesAsync(ResolveFrom(todayDate, true), ResolveTo(toDate), includeDeleted, byTransactionDate, ct)));
+    }
+
+    [HttpPut("daily/{id:long}/inline")]
+    [HttpPatch("daily/{id:long}/inline")]
+    public async Task<IActionResult> UpdateDailyReportInline(long id, [FromBody] UpdateReportInlineRequest request, CancellationToken ct)
+    {
+        if (!await HasActionAsync("/accounts/daily-updates", "EDIT", ct)) return Forbid();
+        return await Run(async () => ApiResponse<AccountsDailyUpdateDto>.Ok(await reports.UpdateDailyReportInlineAsync(id, request, ct)));
+    }
+
+    [HttpGet("daily/{id:long}/changes")]
+    public async Task<IActionResult> GetDailyReportChanges(long id, CancellationToken ct)
+    {
+        if (!await HasActionAsync("/accounts/daily-updates", "VIEW", ct)) return Forbid();
+        return await Run(async () => ApiResponse<IReadOnlyList<AccountsVoucherChangeLogDto>>.Ok(await reports.GetDailyReportChangesAsync(id, ct)));
     }
 
     [HttpGet("lookups")]
     public async Task<IActionResult> Lookups(CancellationToken ct)
     {
         if (!await HasAnyReportViewAsync(ct)) return Forbid();
+        var tenantId = tenant.TenantId ?? current.TenantId;
+
+        var categoriesQuery = db.AccountsCategories.AsNoTracking().Where(x => x.IsActive);
+        var accountsQuery = db.AccountsChartAccounts.AsNoTracking().Where(x => x.IsActive);
+        var projectsQuery = db.AccountsProjects.AsNoTracking().Where(x => x.IsActive);
+
+        if (tenantId > 0)
+        {
+            categoriesQuery = categoriesQuery.Where(x => x.TenantId == tenantId);
+            accountsQuery = accountsQuery.Where(x => x.TenantId == tenantId);
+            projectsQuery = projectsQuery.Where(x => x.TenantId == tenantId);
+        }
+
+        var types = await db.AccountsRoznamchaTypes.AsNoTracking().Where(x => x.IsActive).OrderBy(x => x.Id)
+            .Select(x => new { x.Id, x.Code, x.Name }).ToListAsync(ct);
+        var statuses = await db.AccountsEntryStatuses.AsNoTracking().Where(x => x.IsActive).OrderBy(x => x.Name)
+            .Select(x => new { x.Id, x.Code, x.Name, x.ColorCode, x.FontColor }).ToListAsync(ct);
+
+        var typeList = types.Select(t => new { t.Id, t.Code, t.Name }).Cast<object>().ToList();
+        if (!types.Any(t => t.Id == 3))
+        {
+            typeList.Add(new { Id = 3, Code = "SUMMARY", Name = "All / Summary" });
+        }
+
         return Ok(ApiResponse<object>.Ok(new
         {
-        categories = await db.AccountsCategories.AsNoTracking().Where(x => x.IsActive).OrderBy(x => x.Name)
-            .Select(x => new { x.Id, x.Code, x.Name }).ToListAsync(ct),
-        accounts = await db.AccountsChartAccounts.AsNoTracking().Where(x => x.IsActive).OrderBy(x => x.AccountName)
-            .Select(x => new { x.Id, x.CategoryId, x.ParentId, x.AccountCode, x.AccountNumber, x.AccountName }).ToListAsync(ct),
-        types = await db.AccountsRoznamchaTypes.AsNoTracking().Where(x => x.IsActive).OrderBy(x => x.Name)
-            .Select(x => new { x.Id, x.Code, x.Name }).ToListAsync(ct),
-        projects = await db.AccountsProjects.AsNoTracking().Where(x => x.IsActive).OrderBy(x => x.Name)
-            .Select(x => new { x.Id, x.Name }).ToListAsync(ct)
+            categories = await categoriesQuery.OrderBy(x => x.Name)
+                .Select(x => new { x.Id, x.Code, x.Name }).ToListAsync(ct),
+            accounts = await accountsQuery.OrderBy(x => x.AccountName)
+                .Select(x => new { x.Id, x.CategoryId, x.ParentId, x.AccountCode, x.AccountNumber, x.AccountName }).ToListAsync(ct),
+            types = typeList,
+            statuses,
+            projects = await projectsQuery.OrderBy(x => x.Name)
+                .Select(x => new { x.Id, x.Name }).ToListAsync(ct)
         }));
     }
 
@@ -86,6 +178,67 @@ public sealed class AccountsReportsApiController(
         if (!await HasActionAsync("/accounts/report-filter", "VIEW", ct)
             && !await HasActionAsync("/accounts/reports", "VIEW", ct)) return Forbid();
         return Ok(ApiResponse<IReadOnlyList<ReportFilterDto>>.Ok(await reports.ListFiltersAsync(ct)));
+    }
+
+    [HttpGet("filter-rules/names")]
+    public async Task<IActionResult> FilterNames(CancellationToken ct)
+    {
+        if (!await HasActionAsync("/accounts/report-filter", "VIEW", ct)
+            && !await HasActionAsync("/accounts/reports", "VIEW", ct)) return Forbid();
+        return Ok(ApiResponse<IReadOnlyList<ReportFilterNameLookupDto>>.Ok(await reports.ListFilterNamesAsync(ct)));
+    }
+
+    [HttpGet("filter-rules/details")]
+    public async Task<IActionResult> FilterDetails(CancellationToken ct)
+    {
+        if (!await HasActionAsync("/accounts/report-filter", "VIEW", ct)
+            && !await HasActionAsync("/accounts/reports", "VIEW", ct)) return Forbid();
+        return Ok(ApiResponse<IReadOnlyList<ReportFilterDetailRowDto>>.Ok(await reports.ListFilterDetailsAsync(ct)));
+    }
+
+    [HttpPost("filter-rules/add-accounts")]
+    public async Task<IActionResult> AddAccountsToFilterBody([FromBody] AddAccountsToFilterRequest request, CancellationToken ct)
+    {
+        if (!await HasActionAsync("/accounts/report-filter", "EDIT", ct)) return Forbid();
+        return await Run(async () =>
+        {
+            await reports.AddAccountsToFilterAsync(request.FilterId, request, ct);
+            return ApiResponse<object?>.Ok(null, "Accounts added to report rule successfully.");
+        });
+    }
+
+    [HttpPost("filter-rules/{filterId:int}/add-accounts")]
+    public async Task<IActionResult> AddAccountsToFilter(int filterId, [FromBody] AddAccountsToFilterRequest request, CancellationToken ct)
+    {
+        if (!await HasActionAsync("/accounts/report-filter", "EDIT", ct)) return Forbid();
+        return await Run(async () =>
+        {
+            await reports.AddAccountsToFilterAsync(filterId, request, ct);
+            return ApiResponse<object?>.Ok(null, "Accounts added to report rule successfully.");
+        });
+    }
+
+    [HttpDelete("filter-rules/mappings/{mappingId:int}")]
+    [HttpDelete("filter-rules/entry/{mappingId:int}")]
+    public async Task<IActionResult> RemoveMappingFromFilter(int mappingId, CancellationToken ct)
+    {
+        if (!await HasActionAsync("/accounts/report-filter", "DELETE", ct)) return Forbid();
+        return await Run(async () =>
+        {
+            await reports.DeleteFilterMappingAsync(mappingId, ct);
+            return ApiResponse<object?>.Ok(null, "Account removed from report rule successfully.");
+        });
+    }
+
+    [HttpDelete("filter-rules/{filterId:int}/accounts/{accountId:int}")]
+    public async Task<IActionResult> RemoveAccountFromFilter(int filterId, int accountId, CancellationToken ct)
+    {
+        if (!await HasActionAsync("/accounts/report-filter", "DELETE", ct)) return Forbid();
+        return await Run(async () =>
+        {
+            await reports.RemoveAccountFromFilterAsync(filterId, accountId, ct);
+            return ApiResponse<object?>.Ok(null, "Account removed from report rule successfully.");
+        });
     }
 
     [HttpPost("filter-rules")]

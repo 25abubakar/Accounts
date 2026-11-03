@@ -183,6 +183,7 @@ public sealed class OcrDocumentStore : IOcrDocumentStore
                         Copay = proc.Copay,
                         NonCovered = proc.NonCovered,
                         PatientResponsibility = proc.PatientResponsibility,
+                        Interest = proc.Interest,
                         FillSource = GetFillSource(parsed.Source),
                         CreatedDate = DateTime.UtcNow
                     };
@@ -314,30 +315,28 @@ public sealed class OcrDocumentStore : IOcrDocumentStore
                     totals.OtherPlanPayment = parsed.DocumentTotals.OtherPlanPayment;
                 }
 
-                // Health Net's legacy contract replaces the parsed child graph on
-                // re-upload. This removes stale lines that are absent from the new PDF.
-                if (string.Equals(parsed.Source, "HEALTH NET Docs", StringComparison.Ordinal))
-                {
-                    var oldPatients = await _db.OcrPatientDetails
-                        .Where(x => x.OcrHeaderId == existingHeaderId && x.OrgId == orgId)
-                        .ToListAsync(ct);
-                    var oldPatientIds = oldPatients.Select(x => x.Id).ToList();
-                    var oldProcedures = await _db.OcrProcedureDetails
-                        .Where(x => x.OrgId == orgId && x.OcrPatientId.HasValue && oldPatientIds.Contains(x.OcrPatientId.Value))
-                        .ToListAsync(ct);
-                    var oldProcedureIds = oldProcedures.Select(x => x.Id).ToList();
-                    _db.OcrGrpAmtDetails.RemoveRange(await _db.OcrGrpAmtDetails
-                        .Where(x => (x.PatientId.HasValue && oldPatientIds.Contains(x.PatientId.Value)) ||
-                                    (x.ProcCodeId.HasValue && oldProcedureIds.Contains(x.ProcCodeId.Value)))
-                        .ToListAsync(ct));
-                    _db.OcrProRemDetails.RemoveRange(await _db.OcrProRemDetails
-                        .Where(x => (x.OcrPatientId.HasValue && oldPatientIds.Contains(x.OcrPatientId.Value)) ||
-                                    (x.OcrProcCodeId.HasValue && oldProcedureIds.Contains(x.OcrProcCodeId.Value)))
-                        .ToListAsync(ct));
-                    _db.OcrProcedureDetails.RemoveRange(oldProcedures);
-                    _db.OcrPatientDetails.RemoveRange(oldPatients);
-                    await _db.SaveChangesAsync(ct);
-                }
+                // A re-upload is an authoritative re-parse of the same payer/check.
+                // Replace its OCR child graph for every payer so rows produced by an
+                // older parser cannot survive beside the corrected result.
+                var oldPatients = await _db.OcrPatientDetails
+                    .Where(x => x.OcrHeaderId == existingHeaderId && x.OrgId == orgId)
+                    .ToListAsync(ct);
+                var oldPatientIds = oldPatients.Select(x => x.Id).ToList();
+                var oldProcedures = await _db.OcrProcedureDetails
+                    .Where(x => x.OrgId == orgId && x.OcrPatientId.HasValue && oldPatientIds.Contains(x.OcrPatientId.Value))
+                    .ToListAsync(ct);
+                var oldProcedureIds = oldProcedures.Select(x => x.Id).ToList();
+                _db.OcrGrpAmtDetails.RemoveRange(await _db.OcrGrpAmtDetails
+                    .Where(x => (x.PatientId.HasValue && oldPatientIds.Contains(x.PatientId.Value)) ||
+                                (x.ProcCodeId.HasValue && oldProcedureIds.Contains(x.ProcCodeId.Value)))
+                    .ToListAsync(ct));
+                _db.OcrProRemDetails.RemoveRange(await _db.OcrProRemDetails
+                    .Where(x => (x.OcrPatientId.HasValue && oldPatientIds.Contains(x.OcrPatientId.Value)) ||
+                                (x.OcrProcCodeId.HasValue && oldProcedureIds.Contains(x.OcrProcCodeId.Value)))
+                    .ToListAsync(ct));
+                _db.OcrProcedureDetails.RemoveRange(oldProcedures);
+                _db.OcrPatientDetails.RemoveRange(oldPatients);
+                await _db.SaveChangesAsync(ct);
 
                 foreach (var p in parsed.Patients)
                 {
@@ -418,6 +417,7 @@ public sealed class OcrDocumentStore : IOcrDocumentStore
                         procedure.Copay = proc.Copay;
                         procedure.NonCovered = proc.NonCovered;
                         procedure.PatientResponsibility = proc.PatientResponsibility;
+                        procedure.Interest = proc.Interest;
                         procedure.FillSource = GetFillSource(parsed.Source);
 
                         foreach (var grp in proc.GrpRows)
@@ -496,19 +496,28 @@ public sealed class OcrDocumentStore : IOcrDocumentStore
 
         return await query
             .OrderByDescending(x => x.CreatedDate)
+            .GroupJoin(
+                _db.OcrDocHeaders.AsNoTracking(),
+                upload => upload.Id,
+                header => header.EobAttId,
+                (upload, headers) => new { upload, header = headers.OrderByDescending(h => h.Id).FirstOrDefault() })
             .Select(x => new OcrDocumentListItem
             {
-                Id = x.Id,
-                CheckEFT = x.Check_EFT,
-                EobDate = x.Eob_Date,
-                CreatedDate = x.CreatedDate,
-                StatusId = x.StatusId,
-                StatusName = x.StatusName,
-                ColorCode = x.ColorCode,
-                FontColor = x.FontColor,
-                Attachment = x.Attachment,
-                TotalPaid = x.Tot_PaidAmt,
-                Source = x.Source
+                Id = x.upload.Id,
+                DocTitle = x.header == null ? null : x.header.DocTitle,
+                Address = x.header == null ? null : x.header.Address,
+                Phone = x.header == null ? null : x.header.Phone,
+                Fax = x.header == null ? null : x.header.Fax,
+                CheckEFT = x.upload.Check_EFT,
+                EobDate = x.upload.Eob_Date,
+                CreatedDate = x.upload.CreatedDate,
+                StatusId = x.upload.StatusId,
+                StatusName = x.upload.StatusName,
+                ColorCode = x.upload.ColorCode,
+                FontColor = x.upload.FontColor,
+                Attachment = x.upload.Attachment,
+                TotalPaid = x.upload.Tot_PaidAmt,
+                Source = x.upload.Source
             })
             .ToListAsync(ct);
     }
@@ -562,6 +571,8 @@ public sealed class OcrDocumentStore : IOcrDocumentStore
                 procDtos.Add(new OcrProcedureDto
                 {
                     Id = pr.Id,
+                    RenderingProviderId = pr.RenderingProviderId,
+                    DayMonth = pr.DayMonth,
                     ProcedureCode = pr.ProcedureCode,
                     DateOfService = pr.DateOfService,
                     POS = pr.POS,
@@ -571,13 +582,16 @@ public sealed class OcrDocumentStore : IOcrDocumentStore
                     Allowed = pr.Allowed,
                     Deductible = pr.Deductible,
                     CoInsurance = pr.CoInsurance,
+                    NosValue = pr.NOS_Val,
                     ProviderPaid = pr.ProviderPaid,
+                    SubNos = pr.SubNOS,
                     PatientResponsibility = pr.PatientResponsibility,
                     Copay = pr.Copay,
                     ProviderDiscount = pr.ProviderDiscount,
                     OtherPlan = pr.OtherPlan,
                     OtherAdjustments = pr.OtherAdjustments,
                     NonCovered = pr.NonCovered,
+                    Interest = pr.Interest,
                     GrpRows = grps.Select(g => new OcrGrpDto
                     {
                         Id = g.Id,
@@ -603,8 +617,13 @@ public sealed class OcrDocumentStore : IOcrDocumentStore
                 RcAmount = p.RcAmount,
                 ProviderPaid = p.ProviderPaid,
                 PatientResponsibility = p.PatientResponsibility,
+                AdjustmentTotal = p.AdjustmentTotal,
+                Interest = p.Interest,
+                LateFiling = p.LateFiling,
+                Net = p.Net,
                 ProviderDiscount = p.ProviderDiscount,
                 OtherPlanPayment = p.OtherPlanPayment,
+                OtherAdjustments = p.OtherAdjustments,
                 NonCovered = p.NonCovered,
                 Procedures = procDtos
             });
@@ -688,6 +707,82 @@ public sealed class OcrDocumentStore : IOcrDocumentStore
                 throw new InvalidOperationException("Procedure code cannot exceed 50 characters.");
             procedures[item.Id].ProcedureCode = string.IsNullOrWhiteSpace(code) ? null : code;
         }
+        await _db.SaveChangesAsync(ct);
+    }
+
+    public async Task<List<EobGroupCodeRuleDto>> ListGroupCodeRulesAsync(int orgId, CancellationToken ct = default) =>
+        await _db.EobGrpCodeRules.AsNoTracking()
+            .Where(x => x.OrgId == orgId)
+            .OrderBy(x => x.GroupCode ?? x.ExplanationCodeKey)
+            .ThenBy(x => x.Code)
+            .Select(x => new EobGroupCodeRuleDto
+            {
+                Id = x.Id,
+                GroupCode = x.GroupCode ?? (x.ExplanationCodeKey != null && x.ExplanationCodeKey.Contains("-") ? x.ExplanationCodeKey.Substring(0, x.ExplanationCodeKey.IndexOf("-")) : x.ExplanationCodeKey ?? ""),
+                Code = x.Code ?? (x.ExplanationCodeKey != null && x.ExplanationCodeKey.Contains("-") ? x.ExplanationCodeKey.Substring(x.ExplanationCodeKey.IndexOf("-") + 1) : x.ExplanationCodeKey ?? ""),
+                Description = x.GroupDescription ?? x.Description,
+                ColorId = x.ColorId,
+                ColorCode = x.ColorCode,
+                FontColor = x.FontColor,
+                FontSize = x.FontSize,
+                SourceType = x.Type
+            })
+            .ToListAsync(ct);
+
+    public async Task<EobGroupCodeRuleDto> SaveGroupCodeRuleAsync(
+        int? id,
+        SaveEobGroupCodeRuleRequest request,
+        int orgId,
+        CancellationToken ct = default)
+    {
+        var groupCode = (request.GroupCode ?? "").Trim().ToUpperInvariant();
+        var code = (request.Code ?? "").Trim().ToUpperInvariant();
+        if (string.IsNullOrWhiteSpace(groupCode) || string.IsNullOrWhiteSpace(code))
+            throw new InvalidOperationException("Group code and code are required.");
+        if (groupCode.Length > 50 || code.Length > 50)
+            throw new InvalidOperationException("Group code and code cannot exceed 50 characters.");
+
+        var duplicate = await _db.EobGrpCodeRules.AsNoTracking().AnyAsync(x =>
+            x.OrgId == orgId && x.GroupCode == groupCode && x.Code == code && (!id.HasValue || x.Id != id.Value), ct);
+        if (duplicate) throw new InvalidOperationException("This group-code rule already exists.");
+
+        EobGrpCodeRule row;
+        if (id.HasValue)
+        {
+            row = await _db.EobGrpCodeRules.SingleOrDefaultAsync(x => x.Id == id.Value && x.OrgId == orgId, ct)
+                ?? throw new KeyNotFoundException("Group-code rule was not found.");
+        }
+        else
+        {
+            row = new EobGrpCodeRule { OrgId = orgId, CreatedDate = DateTime.UtcNow };
+            _db.EobGrpCodeRules.Add(row);
+        }
+
+        row.GroupCode = groupCode;
+        row.Code = code;
+        row.GroupDescription = request.Description?.Trim();
+        row.ColorId = request.ColorId;
+        row.ColorCode = request.ColorCode?.Trim();
+        row.FontColor = request.FontColor?.Trim();
+        row.FontSize = request.FontSize?.Trim();
+        row.Type = string.IsNullOrWhiteSpace(request.SourceType) ? row.Type : request.SourceType.Trim();
+        row.ExplanationCodeKey = $"{groupCode}-{code}";
+        row.Description = row.GroupDescription;
+        await _db.SaveChangesAsync(ct);
+
+        return new EobGroupCodeRuleDto
+        {
+            Id = row.Id, GroupCode = groupCode, Code = code, Description = row.GroupDescription,
+            ColorId = row.ColorId, ColorCode = row.ColorCode, FontColor = row.FontColor,
+            FontSize = row.FontSize, SourceType = row.Type
+        };
+    }
+
+    public async Task DeleteGroupCodeRuleAsync(int id, int orgId, CancellationToken ct = default)
+    {
+        var row = await _db.EobGrpCodeRules.SingleOrDefaultAsync(x => x.Id == id && x.OrgId == orgId, ct)
+            ?? throw new KeyNotFoundException("Group-code rule was not found.");
+        _db.EobGrpCodeRules.Remove(row);
         await _db.SaveChangesAsync(ct);
     }
 

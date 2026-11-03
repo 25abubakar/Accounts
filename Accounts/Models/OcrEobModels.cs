@@ -102,6 +102,7 @@ public sealed class OcrProcedureDetail
     [Column(TypeName = "decimal(18,2)")] public decimal? Copay { get; set; }
     [Column(TypeName = "decimal(18,2)")] public decimal? NonCovered { get; set; }
     [Column(TypeName = "decimal(18,2)")] public decimal? PatientResponsibility { get; set; }
+    [Column(TypeName = "decimal(18,2)")] public decimal? Interest { get; set; }
     [MaxLength(100)] public string? FillSource { get; set; }
     public DateTime? CreatedDate { get; set; }
 }
@@ -156,6 +157,13 @@ public sealed class EobGrpCodeRule
     [MaxLength(200)] public string? ExplanationCodeKey { get; set; }
     [MaxLength(1000)] public string? Description { get; set; }
     [MaxLength(50)] public string? Type { get; set; }   // "HealthNet"
+    [Column("Grp_Code"), MaxLength(50)] public string? GroupCode { get; set; }
+    [MaxLength(50)] public string? Code { get; set; }
+    [Column("Grp_Description"), MaxLength(1000)] public string? GroupDescription { get; set; }
+    public int? ColorId { get; set; }
+    [Column("ColorCode"), MaxLength(50)] public string? ColorCode { get; set; }
+    [Column("Font_Color"), MaxLength(50)] public string? FontColor { get; set; }
+    [Column("Font_Size"), MaxLength(20)] public string? FontSize { get; set; }
     public DateTime? CreatedDate { get; set; }
 }
 

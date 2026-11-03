@@ -54,6 +54,7 @@ public sealed class OcrPipelineCoordinator
         try
         {
             var parsed = _availityParser.Parse(pdfBytes);
+            EnsureStructuredResult(parsed, fileName, "Availity");
             EnsureCheckIdentity(parsed, fileName);
             var checkNo = parsed.CheckEFT ?? "";
             var existing = await _store.FindExistingCheckAsync(checkNo, "AVAILITY Docs", orgId, ct);
@@ -120,6 +121,7 @@ public sealed class OcrPipelineCoordinator
         try
         {
             var parsed = _ccaParser.Parse(pdfBytes);
+            EnsureStructuredResult(parsed, fileName, "CCA");
             EnsureCheckIdentity(parsed, fileName);
             var checkNo = parsed.CheckEFT ?? "";
             var existing = await _store.FindExistingCheckAsync(checkNo, "CCA Docs", orgId, ct);
@@ -188,6 +190,7 @@ public sealed class OcrPipelineCoordinator
         try
         {
             var parsed = _laSalleParser.Parse(pdfBytes);
+            EnsureStructuredResult(parsed, fileName, "LaSalle");
             EnsureCheckIdentity(parsed, fileName);
             var checkNo = parsed.CheckEFT ?? "";
             var existing = await _store.FindExistingCheckAsync(checkNo, "Lassale Docs", orgId, ct);
@@ -253,6 +256,7 @@ public sealed class OcrPipelineCoordinator
         {
             // Rule: All Care only reads the PDF and returns parse. Zero DB writes!
             var parsed = _allCareParser.Parse(pdfBytes);
+            EnsureStructuredResult(parsed, fileName, "All Care");
             return Task.FromResult(new AllCareParseResult
             {
                 Success = true,
@@ -282,6 +286,7 @@ public sealed class OcrPipelineCoordinator
         try
         {
             var parsed = _zelisParser.Parse(pdfBytes);
+            EnsureStructuredResult(parsed, fileName, "Zelis");
             EnsureCheckIdentity(parsed, fileName);
             var checkNo = parsed.CheckEFT ?? "";
             var existing = await _store.FindExistingCheckAsync(checkNo, "Zelis Docs", orgId, ct);
@@ -348,9 +353,8 @@ public sealed class OcrPipelineCoordinator
         try
         {
             var parsed = _healthNetParser.Parse(pdfBytes);
+            EnsureStructuredResult(parsed, fileName, "Health Net");
             EnsureCheckIdentity(parsed, fileName);
-            if (!parsed.Patients.SelectMany(x => x.Procedures).Any())
-                throw new InvalidDataException("Health Net PDF requires review; no data was saved or posted.");
             var checkNo = parsed.CheckEFT ?? "";
 
             // Health Net re-uploads reuse the tenant/source/check record rather than
@@ -421,6 +425,17 @@ public sealed class OcrPipelineCoordinator
     {
         if (string.IsNullOrWhiteSpace(parsed.CheckEFT))
             throw new InvalidDataException($"The payer check/EFT number could not be read from '{Path.GetFileName(fileName)}'. No data was saved.");
+    }
+
+    private static void EnsureStructuredResult(ParsedEobHeader parsed, string fileName, string payer)
+    {
+        var safeName = Path.GetFileName(fileName);
+        if (parsed.Patients.Count == 0)
+            throw new InvalidDataException($"{payer} PDF '{safeName}' contains no readable claims. No data was saved or posted.");
+        if (!parsed.Patients.SelectMany(x => x.Procedures).Any())
+            throw new InvalidDataException($"{payer} PDF '{safeName}' contains no readable service lines. No data was saved or posted.");
+        if (parsed.DocumentTotals == null)
+            throw new InvalidDataException($"{payer} PDF '{safeName}' contains no readable document totals. No data was saved or posted.");
     }
 }
 

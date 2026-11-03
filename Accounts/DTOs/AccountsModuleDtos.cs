@@ -149,6 +149,52 @@ public sealed class LedgerTransferRequest
     public bool IncludeHidden { get; set; }
 }
 
+public sealed class HiddenCategoryRowDto
+{
+    public int Id { get; set; }
+    public string CategoryName { get; set; } = string.Empty;
+    public string CategoryCode { get; set; } = string.Empty;
+    public int HiddenAccountsCount { get; set; }
+    public int TotalAccountsCount { get; set; }
+
+    // Legacy aliases matching Old Software frmCategoryList
+    public string Cat_Name => CategoryName;
+    public string Cat_Code => CategoryCode;
+}
+
+public sealed class HiddenAccountRowDto
+{
+    public int Id { get; set; }
+    public string AccountNumber { get; set; } = string.Empty;
+    public string AccountName { get; set; } = string.Empty;
+    public string? AccountCode { get; set; }
+    public string? AccountReference { get; set; }
+    public int? CategoryId { get; set; }
+    public string? CategoryName { get; set; }
+    public int? ParentId { get; set; }
+    public bool HasSubAccounts { get; set; }
+    public int SubAccountsCount { get; set; }
+    public decimal BalanceAmount { get; set; }
+    public int StatusId { get; set; }
+    public bool IsActive { get; set; }
+
+    // Legacy aliases matching Old Software frmShowHiddenAccount
+    public string AcctName => AccountName;
+    public string AcctNo => AccountNumber;
+    public string? Acct_Code => AccountCode;
+    public string? Acc_Ref => AccountReference;
+}
+
+public sealed class HiddenLedgerTransferRequest
+{
+    public long EntryId { get; set; }
+    public int TransferAccountId { get; set; }
+    /// <summary>"to" (default) or "from".</summary>
+    public string TransferSide { get; set; } = "to";
+    /// <summary>Whether to unhide the voucher so it appears in standard roznamcha (default true, matching legacy behavior).</summary>
+    public bool UnhideEntry { get; set; } = true;
+}
+
 public sealed class AccountLedgerDto
 {
     public long EntryId { get; set; }
@@ -172,6 +218,34 @@ public sealed class AccountLedgerDto
     public decimal Credit { get; set; }
     public decimal RunningBalance { get; set; }
     public bool IsHidden { get; set; }
+    public string? Attachment { get; set; }
+    public string? Remarks { get; set; }
+    public string? StatusName { get; set; }
+    public bool IsDeleted { get; set; }
+    public decimal? Quantity { get; set; }
+    public decimal? Rate { get; set; }
+    public string? TaxType { get; set; }
+    public decimal? TaxRate { get; set; }
+    public decimal? TaxAmt { get; set; }
+    public decimal? Adjustment { get; set; }
+    public DateTime? CreatedDate { get; set; }
+
+    // Legacy aliases matching Old Software CustomerhiddenLedger
+    public long Id => EntryId;
+    public string? Ref => ReferenceNo;
+    public string? Old_Ref => OldRef;
+    public string? RoznamchaType => Type;
+    public DateOnly TransDate => TransactionDate;
+    public string? Cat_Name => Category;
+    public string? AcctName => FromAcc;
+    public string? AcctNo => FromAccNo;
+    public string? ToAcctName => ToAcct;
+    public string? RDiscriptions => Descriptions;
+    public decimal Cr_DbAmt => Debit > 0 ? Debit : Credit;
+    public decimal Balance => RunningBalance;
+    public decimal? Qty => Quantity;
+    public decimal? rate => Rate;
+    public bool isDeleted => IsDeleted;
 }
 
 public class SaveRoznamchaEntryRequest
@@ -324,6 +398,82 @@ public sealed class BulkRoznamchaStatusRequest
     public bool LockWhenApproved { get; set; }
 }
 
+public sealed class RoznamchaUpdateListRow
+{
+    public long Id { get; set; }
+    public int? SNo { get; set; }
+    public string? Ref { get; set; }
+    public string? OldRef { get; set; }
+    public string? TypeName { get; set; }
+    public int? FromAccountId { get; set; }
+    public int? ToAccountId { get; set; }
+    public string? CategoryName { get; set; }
+    public string? ToCategoryName { get; set; }
+    public string? AccountName { get; set; }
+    public string? FromAccountNumber { get; set; }
+    public string? ToAccountName { get; set; }
+    public string? ToAccountNumber { get; set; }
+    public string? TransTypeName { get; set; }
+    public string? TransModeName { get; set; }
+    public DateTime? CreatedDate { get; set; }
+    public DateOnly TransDate { get; set; }
+    public string? InstrumentNo { get; set; }
+    public string? Description { get; set; }
+    public decimal? Credit { get; set; }
+    public decimal? UsdCredit { get; set; }
+    public decimal? Adjustment { get; set; }
+    public decimal? Qty { get; set; }
+    public decimal? Rate { get; set; }
+    public string? CheckNo { get; set; }
+    public string? BankLtRef { get; set; }
+    public string? BankRef { get; set; }
+    public string? LibRef { get; set; }
+    public string? Attachment { get; set; }
+    public string? Remarks { get; set; }
+    public int? StatusId { get; set; }
+    public string? StatusName { get; set; }
+    public string? StatusColorCode { get; set; }
+    public string? StatusFontColor { get; set; }
+    public bool IsDeleted { get; set; }
+    public bool IsSettled { get; set; }
+    public DateTime? ProcessDate { get; set; }
+    public DateOnly? RemindDate { get; set; }
+}
+
+public sealed class UpdateRoznamchaInlineRequest
+{
+    public string? InstrumentNo { get; set; }
+    public string? Description { get; set; }
+    public string? CheckNo { get; set; }
+    public string? BankLtRef { get; set; }
+}
+
+public sealed class ChangeRozProcessLogRequest
+{
+    public int UpdatedStatusId { get; set; }
+    public string? Remarks { get; set; }
+    public DateOnly? RemindDate { get; set; }
+    public string? CheckNo { get; set; }
+    public string? SecurityCode { get; set; }
+    public int? DepartmentId { get; set; }
+    public List<Guid>? StaffIds { get; set; }
+}
+
+public sealed class RozEntryProcessLogDto
+{
+    public long Id { get; set; }
+    public DateTime ProcessedOnUtc { get; set; }
+    public int? StatusId { get; set; }
+    public string? StatusName { get; set; }
+    public string? StatusColorCode { get; set; }
+    public string? StatusFontColor { get; set; }
+    public DateOnly? RemindDate { get; set; }
+    public string? Remarks { get; set; }
+    public string? OldCheckNo { get; set; }
+    public string? NewCheckNo { get; set; }
+    public string? ProcessedBy { get; set; }
+}
+
 public sealed class UploadAccountsFileRequest
 {
     public IFormFile File { get; set; } = null!;
@@ -406,11 +556,76 @@ public class ReportFilterRequest
     public List<int> CategoryIds { get; set; } = [];
     public List<int> AccountIds { get; set; } = [];
     public List<int> SubAccountIds { get; set; } = [];
+    public bool IsAllCategoryAccounts { get; set; }
 }
 
 public sealed class ReportFilterDto : ReportFilterRequest
 {
     public int Id { get; set; }
+}
+
+public sealed class ReportFilterNameLookupDto
+{
+    public int Id { get; set; }
+    public string Name { get; set; } = string.Empty;
+    public int? TypeId { get; set; }
+    public string TypeName { get; set; } = string.Empty;
+}
+
+public sealed class ReportFilterDetailRowDto
+{
+    public int FilterId { get; set; }
+    public int AccountMappingId { get; set; }
+    public string RuleName { get; set; } = string.Empty;
+    public int CategoryId { get; set; }
+    public string CategoryName { get; set; } = string.Empty;
+    public int AccountId { get; set; }
+    public string AccountName { get; set; } = string.Empty;
+    public string AccountNumber { get; set; } = string.Empty;
+    public int? TypeId { get; set; }
+    public string TypeName { get; set; } = string.Empty;
+    public DateTime? CreatedDate { get; set; }
+    public string? CreatedBy { get; set; }
+
+    // Legacy Grid Aliases for 100% backward compatibility
+    public int Id => AccountMappingId;
+    public string Name => RuleName;
+    public string Cat_Name => CategoryName;
+    public int CatId => CategoryId;
+    public string AcctName => AccountName;
+    public string AcctNo => AccountNumber;
+    public int AcctId => AccountId;
+}
+
+public sealed class AddAccountsToFilterRequest
+{
+    public int? FilterId { get; set; }
+    public string? RuleName { get; set; }
+    public string? Name { get; set; }
+    public List<int> CategoryIds { get; set; } = [];
+    public List<int> AccountIds { get; set; } = [];
+    public List<int> SubAccountIds { get; set; } = [];
+    public bool IsAllCategoryAccounts { get; set; }
+}
+
+public sealed class UpdateReportInlineRequest
+{
+    public decimal? Debit { get; set; }
+    public decimal? Credit { get; set; }
+    public string? Description { get; set; }
+    public string? Remarks { get; set; }
+    public int? StatusId { get; set; }
+}
+
+public sealed class MonthlyReportFilterPostRequest
+{
+    public string? Name { get; set; }
+    public DateOnly? DateFrom { get; set; }
+    public DateOnly? DateTo { get; set; }
+    public int? TypeId { get; set; }
+    public int? ProjectId { get; set; }
+    public List<int>? CategoryIds { get; set; }
+    public List<int>? AccountIds { get; set; }
 }
 
 public sealed class ReportRowDto
@@ -424,6 +639,7 @@ public sealed class ReportRowDto
     public string? TransType { get; set; }
     public string? TransMode { get; set; }
     public DateTime? CreatedOnUtc { get; set; }
+    public string? CreatedBy { get; set; }
     public string? InstrumentNo { get; set; }
     public string? TaxType { get; set; }
     public decimal? TaxRate { get; set; }
@@ -432,6 +648,8 @@ public sealed class ReportRowDto
     public decimal? Qty { get; set; }
     public decimal? Rate { get; set; }
     public string? Status { get; set; }
+    public int? StatusId { get; set; }
+    public int? EnterStatusId { get; set; }
     public string? StatusColorCode { get; set; }
     public string? StatusFontColor { get; set; }
     public string? Attachment { get; set; }
@@ -441,6 +659,11 @@ public sealed class ReportRowDto
     public string? Category { get; set; }
     public int? AccountId { get; set; }
     public string? Account { get; set; }
+    public int? FromAccountId { get; set; }
+    public int? ToAccountId { get; set; }
+    public int? ProjectId { get; set; }
+    public string? ProjectName { get; set; }
+    public bool? IsDeleted { get; set; }
     public int EntryTypeId { get; set; }
     public decimal Debit { get; set; }
     public decimal Credit { get; set; }
@@ -453,24 +676,112 @@ public sealed class ReportRowDto
     public string? ToAccount { get; set; }
     public string? ReferenceNo { get; set; }
     public string? Description { get; set; }
+
+    // Legacy Grid Aliases for 100% backward compatibility
+    public string? Ref => ReferenceNo;
+    public string? Old_Ref => OldRef;
+    public string? Cat_Name => Category;
+    public string? AcctName => FromAccount;
+    public string? AcctNo => FromAccountNumber;
+    public string? ToAcctName => ToAccount;
+    public string? ToAcctNo => ToAccountNumber;
+    public string? RDiscriptions => Description;
+    public decimal? Bal_Amt => Balance;
+    public string? StatusName => Status;
+    public DateOnly TransDate => Date;
 }
 
 public sealed class AccountsDailyUpdateDto
 {
-    public long LogId { get; set; }
-    public long EntryId { get; set; }
+    public long Id { get; set; }
+    public int? SNo { get; set; }
     public string? ReferenceNo { get; set; }
-    public DateOnly TransactionDate { get; set; }
-    public string? EntryType { get; set; }
+    public string? OldRef { get; set; }
+    public int? RoznamchaTypeId { get; set; }
+    public string? EntryType { get; set; }          // "Payment" or "Receipt"
+    public DateOnly TransactionDate { get; set; }   // Voucher TransDate
+    public DateTime CreatedOnUtc { get; set; }      // System insertion timestamp
+    public string? CreatedBy { get; set; }          // Operator user name / email
+    public int? CategoryId { get; set; }
+    public string? Category { get; set; }
+    public int? ToCategoryId { get; set; }
+    public string? ToCategory { get; set; }
+    public int? FromAccountId { get; set; }
     public string? FromAccount { get; set; }
+    public string? FromAccountNumber { get; set; }
+    public int? ToAccountId { get; set; }
     public string? ToAccount { get; set; }
-    public decimal Amount { get; set; }
-    public decimal UsdAmount { get; set; }
+    public string? ToAccountNumber { get; set; }
+    public decimal? Debit { get; set; }             // Amount if Payment
+    public decimal? Credit { get; set; }            // Amount if Receipt
+    public decimal? UsdDebit { get; set; }
+    public decimal? UsdCredit { get; set; }
+    public decimal? Balance { get; set; }
+    public decimal? Adjustment { get; set; }
+    public string? InstrumentNo { get; set; }
+    public string? Description { get; set; }
+    public string? Remarks { get; set; }
+    public int? EnterStatusId { get; set; }
+    public string? Status { get; set; }
+    public string? StatusColorCode { get; set; }
+    public string? StatusFontColor { get; set; }
+    public string? Attachment { get; set; }
+    public bool IsDeleted { get; set; }
+    public string? UpdatedBy { get; set; }
+    public DateTime? UpdatedOnUtc { get; set; }
+
+    // Backward compatibility aliases
+    public long LogId => Id;
+    public long EntryId => Id;
+    public decimal Amount => (Debit ?? 0) + (Credit ?? 0);
+    public decimal UsdAmount => (UsdDebit ?? 0) + (UsdCredit ?? 0);
+    public string Action => "Create";
+    public string? Notes => Remarks;
+    public string? ChangedByUserId => CreatedBy;
+    public DateTime ChangedOnUtc => CreatedOnUtc;
+
+    // Legacy Grid Aliases for 100% Old Software Parity (AccountReports/DailyReports)
+    public string? Ref => ReferenceNo;
+    public string? Old_Ref => OldRef;
+    public string? RoznamchaType => EntryType;
+    public int? R_TypeId => RoznamchaTypeId;
+    public string? Cat_Name => Category;
+    public int? from_AccId => FromAccountId;
+    public string? AcctName => FromAccount;
+    public string? AcctNo => FromAccountNumber;
+    public int? To_AcctId => ToAccountId;
+    public string? ToAcctName => ToAccount;
+    public string? ToAcctNo => ToAccountNumber;
+    public string? RDiscriptions => Description;
+    public decimal? Bal_Amt => Balance;
+    public string? StatusName => Status;
+    public string? ColorCode => StatusColorCode;
+    public string? FontColor => StatusFontColor;
+    public DateOnly TransDate => TransactionDate;
+    public DateTime? CreatedDate => CreatedOnUtc;
+    public DateTime? UpdatedDate => UpdatedOnUtc;
+    public bool isDeleted => IsDeleted;
+}
+
+public sealed class AccountsVoucherChangeLogDto
+{
+    public long Id { get; set; }
+    public long EntryId { get; set; }
     public string Action { get; set; } = string.Empty;
     public string? Notes { get; set; }
-    public string? ChangedByUserId { get; set; }
-    public DateTime ChangedOnUtc { get; set; }
-    public string? Description { get; set; }
+    public string? OldValue { get; set; }
+    public string? NewValue { get; set; }
+    public string? OldCheckNo { get; set; }
+    public string? NewCheckNo { get; set; }
+    public DateOnly? RemindDate { get; set; }
+    public int? StatusId { get; set; }
+    public string? ProcessedBy { get; set; }
+    public DateTime ChangeDate { get; set; }
+    public DateTime ProcessedOnUtc { get; set; }
+
+    // Legacy tblChangeLog aliases
+    public string TableName => "tblRoznamcha";
+    public string? OperationType => Action;
 }
 
 public sealed class AccountsRecordRowDto

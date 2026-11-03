@@ -27,6 +27,7 @@ public sealed class AccountsRoznamchaController : ControllerBase
     private readonly IAccountsRoznamchaService _roznamcha;
     private readonly IRoznamchaService _transactions;
     private readonly ILibraryService _library;
+    private readonly IAccountService _accounts;
 
     public AccountsRoznamchaController(
         ApplicationDbContext db,
@@ -35,7 +36,8 @@ public sealed class AccountsRoznamchaController : ControllerBase
         RbacService rbac,
         IAccountsRoznamchaService roznamcha,
         IRoznamchaService transactions,
-        ILibraryService library)
+        ILibraryService library,
+        IAccountService accounts)
     {
         _db = db;
         _tenant = tenant;
@@ -44,6 +46,7 @@ public sealed class AccountsRoznamchaController : ControllerBase
         _roznamcha = roznamcha;
         _transactions = transactions;
         _library = library;
+        _accounts = accounts;
     }
 
     /// <summary>Payment (ROZ) list for the selected date range. Empty DB → empty array.</summary>
@@ -129,8 +132,8 @@ public sealed class AccountsRoznamchaController : ControllerBase
     public async Task<IActionResult> ListRoznamchaUpdate(
         [FromQuery] DateOnly? dateFrom,
         [FromQuery] DateOnly? dateTo,
-        [FromQuery] int? rozTypeId,
-        [FromQuery] string? typeCode,
+        [FromQuery] int? departmentId,
+        [FromQuery] Guid? staffId,
         CancellationToken ct)
     {
         if (_tenant.IsSuperAdmin)
@@ -139,25 +142,141 @@ public sealed class AccountsRoznamchaController : ControllerBase
         if (!_tenant.TenantId.HasValue || !await HasActionAsync(RoznamchaUpdateRoute, "VIEW", ct))
             return Forbid();
 
-        var today = DateOnly.FromDateTime(DateTime.UtcNow);
+        var today = BusinessClock.Today(BusinessClock.DefaultTimeZoneId);
         var from = dateFrom ?? new DateOnly(today.Year, today.Month, 1);
         var to = dateTo ?? today;
         if (to < from)
             return BadRequest(new { message = "dateTo must be on or after dateFrom." });
 
-        var tenantId = _tenant.RequiredTenantId;
-        if (!rozTypeId.HasValue && !string.IsNullOrWhiteSpace(typeCode))
-            rozTypeId = await _roznamcha.ResolveRozTypeIdAsync(tenantId, typeCode.Trim(), ct);
-
         try
         {
-            var rows = await _roznamcha.ListRoznamchaAsync(tenantId, from, to, rozTypeId, ct);
+            var rows = await _roznamcha.ListRoznamchaUpdateAsync(
+                _tenant.RequiredTenantId, from, to, departmentId, staffId, ct);
             return Ok(rows);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
             return StatusCode(499);
         }
+    }
+
+    [HttpGet("roznamcha-update/lookups")]
+    public async Task<IActionResult> RoznamchaUpdateLookups(CancellationToken ct)
+    {
+        if (_tenant.IsSuperAdmin || !_tenant.TenantId.HasValue ||
+            !await HasActionAsync(RoznamchaUpdateRoute, "VIEW", ct)) return Forbid();
+
+        var allowedStatusIds = new HashSet<int> { 1074, 1072, 1048, 1075, 1076, 19, 1077, 1078, 1079, 1080, 1059, 1085, 1086 };
+        var configured = from mapping in _db.PlatformSettingProcessStatuses.AsNoTracking()
+                         where mapping.Process.IsActive &&
+                               (mapping.ProcessId == 14 || mapping.Process.Name == "14" || mapping.Process.Name == "Payment" ||
+                                mapping.Process.Name == "Roznamcha" || mapping.Process.Name == "RoznamchaUpdate" || mapping.Process.Name == "Roznamcha Update") &&
+                               mapping.Status.IsActive &&
+                               allowedStatusIds.Contains(mapping.StatusId)
+                         orderby mapping.Status.Name
+                         select new
+                         {
+                             id = mapping.StatusId,
+                             name = mapping.Status.Name,
+                             colorCode = mapping.Color == null ? null : mapping.Color.ColorCode,
+                             fontColor = mapping.Color == null ? null : mapping.Color.FontColor
+                         };
+        var statuses = await configured.Distinct().ToListAsync(ct);
+        if (statuses.Count == 0)
+        {
+            statuses = await (from s in _db.PlatformSettingStatuses.AsNoTracking()
+                              where s.IsActive && allowedStatusIds.Contains(s.Id)
+                              orderby s.Name
+                              select new
+                              {
+                                  id = s.Id,
+                                  name = s.Name,
+                                  colorCode = (string?)null,
+                                  fontColor = (string?)null
+                              }).ToListAsync(ct);
+        }
+        return Ok(new { statuses });
+    }
+
+    [HttpGet("roznamcha-update/{id:long}/history")]
+    public async Task<IActionResult> RoznamchaUpdateHistory(long id, CancellationToken ct)
+    {
+        if (_tenant.IsSuperAdmin || !_tenant.TenantId.HasValue ||
+            !await HasActionAsync(RoznamchaUpdateRoute, "VIEW", ct)) return Forbid();
+        try
+        {
+            return Ok(ApiResponse<IReadOnlyList<RozEntryProcessLogDto>>.Ok(
+                await _roznamcha.ListRoznamchaUpdateHistoryAsync(_tenant.RequiredTenantId, id, ct)));
+        }
+        catch (KeyNotFoundException ex) { return NotFound(ApiResponse<object?>.Fail(ex.Message)); }
+    }
+
+    [HttpPost("roznamcha-update/{id:long}/process-log")]
+    [Idempotent]
+    public async Task<IActionResult> SaveRoznamchaUpdateLog(
+        long id, [FromBody] ChangeRozProcessLogRequest request, CancellationToken ct)
+    {
+        if (_tenant.IsSuperAdmin || !_tenant.TenantId.HasValue ||
+            !await HasActionAsync(RoznamchaUpdateRoute, "EDIT", ct)) return Forbid();
+        try
+        {
+            await _roznamcha.ProcessRoznamchaUpdateAsync(
+                _tenant.RequiredTenantId, id, request, User.FindFirstValue(ClaimTypes.NameIdentifier), ct);
+            return Ok(ApiResponse<object>.Ok(new { id }, "Follow-up saved successfully."));
+        }
+        catch (KeyNotFoundException ex) { return NotFound(ApiResponse<object?>.Fail(ex.Message)); }
+        catch (InvalidOperationException ex) { return BadRequest(ApiResponse<object?>.Fail(ex.Message)); }
+    }
+
+    [HttpPatch("roznamcha-update/{id:long}/inline")]
+    [HttpPut("roznamcha-update/{id:long}/inline")]
+    [Idempotent]
+    public async Task<IActionResult> UpdateRoznamchaInline(
+        long id, [FromBody] UpdateRoznamchaInlineRequest request, CancellationToken ct)
+    {
+        if (_tenant.IsSuperAdmin || !_tenant.TenantId.HasValue ||
+            !await HasActionAsync(RoznamchaUpdateRoute, "EDIT", ct)) return Forbid();
+        try
+        {
+            await _roznamcha.UpdateRoznamchaInlineAsync(
+                _tenant.RequiredTenantId, id, request, User.FindFirstValue(ClaimTypes.NameIdentifier), ct);
+            return Ok(ApiResponse<object>.Ok(new { id }, "Entry updated successfully."));
+        }
+        catch (KeyNotFoundException ex) { return NotFound(ApiResponse<object?>.Fail(ex.Message)); }
+        catch (InvalidOperationException ex) { return BadRequest(ApiResponse<object?>.Fail(ex.Message)); }
+    }
+
+    [HttpDelete("roznamcha-update/{id:long}")]
+    [Idempotent]
+    public Task<IActionResult> DeleteRoznamchaUpdate(
+        long id, [FromBody] DeleteRoznamchaRequest? request, CancellationToken ct) =>
+        DeleteRozEntry(id, "RECEIPT", RoznamchaUpdateRoute, request?.Remarks, ct);
+
+    [HttpGet("roznamcha-update/{id:long}/attachments")]
+    public async Task<IActionResult> RoznamchaUpdateAttachments(long id, CancellationToken ct)
+    {
+        if (_tenant.IsSuperAdmin || !_tenant.TenantId.HasValue ||
+            !await HasActionAsync(RoznamchaUpdateRoute, "VIEW", ct)) return Forbid();
+        try
+        {
+            return Ok(ApiResponse<IReadOnlyList<EntryAttachmentDto>>.Ok(
+                await _transactions.ListAttachmentsAsync(id, ct)));
+        }
+        catch (KeyNotFoundException ex) { return NotFound(ApiResponse<object?>.Fail(ex.Message)); }
+    }
+
+    [HttpGet("roznamcha-update/attachments/{attachmentId:long}/download")]
+    public async Task<IActionResult> DownloadRoznamchaUpdateAttachment(long attachmentId, CancellationToken ct)
+    {
+        if (_tenant.IsSuperAdmin || !_tenant.TenantId.HasValue ||
+            !await HasActionAsync(RoznamchaUpdateRoute, "VIEW", ct)) return Forbid();
+        var entryExists = await _db.AccountsEntryDocuments.AsNoTracking().AnyAsync(
+            x => x.Id == attachmentId && x.RoznamchaEntryId != null, ct);
+        if (!entryExists) return NotFound(ApiResponse<object?>.Fail("Attachment was not found."));
+        var opened = await _transactions.OpenAttachmentAsync(attachmentId, ct);
+        return opened is null
+            ? NotFound(ApiResponse<object?>.Fail("Attachment file was not found."))
+            : File(opened.Value.Stream, opened.Value.ContentType, opened.Value.FileName);
     }
 
     [HttpGet("show-record")]
@@ -218,6 +337,78 @@ public sealed class AccountsRoznamchaController : ControllerBase
         });
         await _db.SaveChangesAsync(ct);
         return Ok(ApiResponse<object>.Ok(new { id }, "Record restored successfully."));
+    }
+
+    [HttpGet("hidden-records/categories")]
+    [HttpGet("show-record/categories")]
+    public async Task<IActionResult> ListHiddenCategories(CancellationToken ct)
+    {
+        if (_tenant.IsSuperAdmin) return Ok(Array.Empty<HiddenCategoryRowDto>());
+        if (!_tenant.TenantId.HasValue || !await HasActionAsync("/accounts/show-record", "VIEW", ct)) return Forbid();
+        var rows = await _accounts.ListHiddenCategoriesAsync(ct);
+        return Ok(rows);
+    }
+
+    [HttpGet("hidden-records/accounts")]
+    [HttpGet("show-record/accounts")]
+    public async Task<IActionResult> ListHiddenAccounts(
+        [FromQuery] int? categoryId, [FromQuery] int? parentAccountId, CancellationToken ct)
+    {
+        if (_tenant.IsSuperAdmin) return Ok(Array.Empty<HiddenAccountRowDto>());
+        if (!_tenant.TenantId.HasValue || !await HasActionAsync("/accounts/show-record", "VIEW", ct)) return Forbid();
+        var rows = await _accounts.ListHiddenAccountsAsync(categoryId, parentAccountId, ct);
+        return Ok(rows);
+    }
+
+    [HttpGet("hidden-records/sub-accounts/{accountId:int}")]
+    [HttpGet("show-record/sub-accounts/{accountId:int}")]
+    public async Task<IActionResult> ListHiddenSubAccounts(int accountId, CancellationToken ct)
+    {
+        if (_tenant.IsSuperAdmin) return Ok(Array.Empty<HiddenAccountRowDto>());
+        if (!_tenant.TenantId.HasValue || !await HasActionAsync("/accounts/show-record", "VIEW", ct)) return Forbid();
+        var rows = await _accounts.ListHiddenAccountsAsync(null, accountId, ct);
+        return Ok(rows);
+    }
+
+    [HttpGet("hidden-records/ledger")]
+    [HttpGet("show-record/ledger")]
+    public async Task<IActionResult> GetHiddenAccountLedger(
+        [FromQuery] int? accountId, [FromQuery] DateOnly? dateFrom, [FromQuery] DateOnly? dateTo, CancellationToken ct)
+    {
+        if (_tenant.IsSuperAdmin) return Ok(Array.Empty<AccountLedgerDto>());
+        if (!_tenant.TenantId.HasValue || !await HasActionAsync("/accounts/show-record", "VIEW", ct)) return Forbid();
+        if (!accountId.HasValue || accountId.Value <= 0)
+            return BadRequest(ApiResponse<object?>.Fail("accountId query parameter is required."));
+        var rows = await _accounts.GetHiddenAccountLedgerAsync(accountId.Value, dateFrom, dateTo, ct);
+        return Ok(rows);
+    }
+
+    [HttpGet("hidden-records/ledger/{accountId:int}")]
+    [HttpGet("show-record/ledger/{accountId:int}")]
+    public async Task<IActionResult> GetHiddenAccountLedgerByRoute(
+        int accountId, [FromQuery] DateOnly? dateFrom, [FromQuery] DateOnly? dateTo, CancellationToken ct)
+    {
+        if (_tenant.IsSuperAdmin) return Ok(Array.Empty<AccountLedgerDto>());
+        if (!_tenant.TenantId.HasValue || !await HasActionAsync("/accounts/show-record", "VIEW", ct)) return Forbid();
+        var rows = await _accounts.GetHiddenAccountLedgerAsync(accountId, dateFrom, dateTo, ct);
+        return Ok(rows);
+    }
+
+    [HttpPost("hidden-records/transfer")]
+    [HttpPost("show-record/transfer")]
+    [Idempotent]
+    public async Task<IActionResult> TransferHiddenEntry(
+        [FromBody] HiddenLedgerTransferRequest request, CancellationToken ct)
+    {
+        if (_tenant.IsSuperAdmin || !_tenant.TenantId.HasValue || !await HasActionAsync("/accounts/show-record", "EDIT", ct))
+            return Forbid();
+        try
+        {
+            await _accounts.TransferHiddenEntryAsync(request, ct);
+            return Ok(ApiResponse<object>.Ok(new { request.EntryId, request.TransferAccountId, request.TransferSide }, "Transfer completed successfully."));
+        }
+        catch (KeyNotFoundException ex) { return NotFound(ApiResponse<object?>.Fail(ex.Message)); }
+        catch (InvalidOperationException ex) { return BadRequest(ApiResponse<object?>.Fail(ex.Message)); }
     }
 
     private async Task<object> LoadRoznamchaLookupsAsync(CancellationToken ct, string processName)
@@ -785,7 +976,9 @@ public sealed class AccountsRoznamchaController : ControllerBase
     private async Task<bool> HasActionAsync(string route, string action, CancellationToken ct)
     {
         if (TenantPermissionService.IsSuperAdmin(User)) return true;
-        var routes = route == ReceiptRozRoute ? new[] { route, "/billing/receipt-roz" } : new[] { route };
+        var routes = route == ReceiptRozRoute
+            ? new[] { route, "/billing/receipt-roz" }
+            : (route == "/accounts/show-record" ? new[] { route, "/accounts/hidden-records", "Roznamcha/ShowHiddenRecords" } : new[] { route });
         if (TenantPermissionService.IsTenantAdmin(User))
             return await _tenantPermissions.HasMenuRouteAsync(User, routes, action, ct);
         if (!_tenant.TenantId.HasValue) return false;

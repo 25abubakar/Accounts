@@ -2931,6 +2931,17 @@ namespace Accounts.Migrations
                     b.Property<DateTime?>("CreatedDate")
                         .HasColumnType("datetime2");
 
+                    b.Property<string>("Code")
+                        .HasMaxLength(50)
+                        .HasColumnType("nvarchar(50)");
+
+                    b.Property<int?>("ColorId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("ColorCode")
+                        .HasMaxLength(50)
+                        .HasColumnType("nvarchar(50)");
+
                     b.Property<bool?>("IsClaimed")
                         .HasColumnType("bit");
 
@@ -2997,6 +3008,9 @@ namespace Accounts.Migrations
                     b.Property<string>("FillSource")
                         .HasMaxLength(100)
                         .HasColumnType("nvarchar(100)");
+
+                    b.Property<decimal?>("Interest")
+                        .HasColumnType("decimal(18,2)");
 
                     b.Property<decimal?>("InsuranceAmount")
                         .HasColumnType("decimal(18,2)");
@@ -4466,6 +4480,17 @@ namespace Accounts.Migrations
                     b.Property<DateTime?>("CreatedDate")
                         .HasColumnType("datetime2");
 
+                    b.Property<string>("Code")
+                        .HasMaxLength(50)
+                        .HasColumnType("nvarchar(50)");
+
+                    b.Property<int?>("ColorId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("ColorCode")
+                        .HasMaxLength(50)
+                        .HasColumnType("nvarchar(50)");
+
                     b.Property<string>("Description")
                         .HasMaxLength(1000)
                         .HasColumnType("nvarchar(1000)");
@@ -4473,6 +4498,26 @@ namespace Accounts.Migrations
                     b.Property<string>("ExplanationCodeKey")
                         .HasMaxLength(200)
                         .HasColumnType("nvarchar(200)");
+
+                    b.Property<string>("FontColor")
+                        .HasMaxLength(50)
+                        .HasColumnType("nvarchar(50)")
+                        .HasColumnName("Font_Color");
+
+                    b.Property<string>("FontSize")
+                        .HasMaxLength(20)
+                        .HasColumnType("nvarchar(20)")
+                        .HasColumnName("Font_Size");
+
+                    b.Property<string>("GroupCode")
+                        .HasMaxLength(50)
+                        .HasColumnType("nvarchar(50)")
+                        .HasColumnName("Grp_Code");
+
+                    b.Property<string>("GroupDescription")
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)")
+                        .HasColumnName("Grp_Description");
 
                     b.Property<int?>("OrgId")
                         .HasColumnType("int");
@@ -4486,6 +4531,10 @@ namespace Accounts.Migrations
                     b.HasIndex("OrgId", "Type", "ExplanationCodeKey")
                         .IsUnique()
                         .HasFilter("[OrgId] IS NOT NULL AND [Type] IS NOT NULL AND [ExplanationCodeKey] IS NOT NULL");
+
+                    b.HasIndex("OrgId", "GroupCode", "Code")
+                        .IsUnique()
+                        .HasFilter("[OrgId] IS NOT NULL AND [Grp_Code] IS NOT NULL AND [Code] IS NOT NULL");
 
                     b.ToTable("tblEOBGrpCodeRules");
                 });
@@ -4961,6 +5010,14 @@ namespace Accounts.Migrations
                     b.Property<string>("Notes")
                         .HasMaxLength(2000)
                         .HasColumnType("nvarchar(2000)");
+
+                    b.Property<string>("NewCheckNo")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<string>("OldCheckNo")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
 
                     b.Property<string>("Status")
                         .IsRequired()
@@ -9709,7 +9766,7 @@ namespace Accounts.Migrations
 
                     b.HasIndex("StaffId");
 
-                    b.HasIndex("TenantId", "RoznamchaEntryId", "DepartmentId")
+                    b.HasIndex("TenantId", "RoznamchaEntryId", "DepartmentId", "StaffId")
                         .IsUnique();
 
                     b.ToTable("RoznamchaEntryAccesses");
@@ -9739,8 +9796,14 @@ namespace Accounts.Migrations
                     b.Property<DateTime>("ProcessedOnUtc")
                         .HasColumnType("datetime2");
 
+                    b.Property<DateOnly?>("RemindDate")
+                        .HasColumnType("date");
+
                     b.Property<long>("RoznamchaEntryId")
                         .HasColumnType("bigint");
+
+                    b.Property<int?>("StatusId")
+                        .HasColumnType("int");
 
                     b.Property<int>("TenantId")
                         .HasColumnType("int");

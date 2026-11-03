@@ -167,6 +167,27 @@ public sealed class ChartAccountsController(IAccountService service) : Controlle
     public Task<IActionResult> HiddenLedger(int id, [FromQuery] DateOnly? dateFrom, [FromQuery] DateOnly? dateTo, CancellationToken ct) =>
         Run(async () => ApiResponse<IReadOnlyList<AccountLedgerDto>>.Ok(await service.LedgerAsync(id, dateFrom, dateTo, true, ct)));
 
+    [HttpGet("hidden-categories")]
+    [HttpGet("hidden-records/categories")]
+    public Task<IActionResult> HiddenCategories(CancellationToken ct) =>
+        Run(async () => ApiResponse<IReadOnlyList<HiddenCategoryRowDto>>.Ok(await service.ListHiddenCategoriesAsync(ct)));
+
+    [HttpGet("hidden-accounts")]
+    [HttpGet("hidden-records/accounts")]
+    public Task<IActionResult> HiddenAccounts([FromQuery] int? categoryId, [FromQuery] int? parentAccountId, CancellationToken ct) =>
+        Run(async () => ApiResponse<IReadOnlyList<HiddenAccountRowDto>>.Ok(await service.ListHiddenAccountsAsync(categoryId, parentAccountId, ct)));
+
+    [HttpGet("hidden-subaccounts/{accountId:int}")]
+    [HttpGet("hidden-records/sub-accounts/{accountId:int}")]
+    public Task<IActionResult> HiddenSubAccounts(int accountId, CancellationToken ct) =>
+        Run(async () => ApiResponse<IReadOnlyList<HiddenAccountRowDto>>.Ok(await service.ListHiddenAccountsAsync(null, accountId, ct)));
+
+    [HttpPost("hidden-transfer")]
+    [HttpPost("hidden-records/transfer")]
+    [Idempotent]
+    public Task<IActionResult> HiddenTransfer([FromBody] HiddenLedgerTransferRequest request, CancellationToken ct) =>
+        Run(async () => { await service.TransferHiddenEntryAsync(request, ct); return ApiResponse<object?>.Ok(null, "Hidden entry transferred successfully."); });
+
     [HttpPost("ledger-transfer")]
     [Idempotent]
     public Task<IActionResult> Transfer([FromBody] LedgerTransferRequest request, CancellationToken ct) =>

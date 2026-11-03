@@ -63,5 +63,9 @@ public interface IOcrDocumentStore
 
     /// <summary>Set the status id on an upload record.</summary>
     Task SetStatusAsync(int uploadId, int statusId, int orgId, CancellationToken ct = default);
+
+    Task<List<EobGroupCodeRuleDto>> ListGroupCodeRulesAsync(int orgId, CancellationToken ct = default);
+    Task<EobGroupCodeRuleDto> SaveGroupCodeRuleAsync(int? id, SaveEobGroupCodeRuleRequest request, int orgId, CancellationToken ct = default);
+    Task DeleteGroupCodeRuleAsync(int id, int orgId, CancellationToken ct = default);
 }
 

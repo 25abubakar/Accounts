@@ -77,6 +77,7 @@ public sealed class ParsedProcedure
     public decimal? Copay { get; set; }
     public decimal? NonCovered { get; set; }
     public decimal? PatientResponsibility { get; set; }
+    public decimal? Interest { get; set; }
     public List<ParsedGrp> GrpRows { get; set; } = [];
     public List<string> Remarks { get; set; } = [];
 }
@@ -136,6 +137,15 @@ public sealed class HealthNetFileResult
     public List<string> Warnings { get; set; } = [];
     public string? Error { get; set; }
     public int? SavedDocumentId { get; set; }
+}
+
+public sealed class OcrProcedureReloadResultDto
+{
+    public bool Success { get; set; }
+    public int PostedCount { get; set; }
+    public int SkippedCount { get; set; }
+    public string Message { get; set; } = string.Empty;
+    public List<string> Warnings { get; set; } = [];
 }
 
 // ── Grid & detail DTOs (API → React) ─────────────────────────────────────────
@@ -212,8 +222,13 @@ public sealed class OcrPatientDto
     public decimal? RcAmount { get; set; }
     public decimal? ProviderPaid { get; set; }
     public decimal? PatientResponsibility { get; set; }
+    public decimal? AdjustmentTotal { get; set; }
+    public decimal? Interest { get; set; }
+    public decimal? LateFiling { get; set; }
+    public decimal? Net { get; set; }
     public decimal? ProviderDiscount { get; set; }
     public decimal? OtherPlanPayment { get; set; }
+    public decimal? OtherAdjustments { get; set; }
     public decimal? NonCovered { get; set; }
     public List<OcrProcedureDto> Procedures { get; set; } = [];
 }
@@ -221,6 +236,8 @@ public sealed class OcrPatientDto
 public sealed class OcrProcedureDto
 {
     public int Id { get; set; }
+    public string? RenderingProviderId { get; set; }
+    public string? DayMonth { get; set; }
     public string? ProcedureCode { get; set; }
     public string? DateOfService { get; set; }
     public string? POS { get; set; }
@@ -230,15 +247,43 @@ public sealed class OcrProcedureDto
     public decimal? Allowed { get; set; }
     public decimal? Deductible { get; set; }
     public decimal? CoInsurance { get; set; }
+    public decimal? NosValue { get; set; }
     public decimal? ProviderPaid { get; set; }
+    public string? SubNos { get; set; }
     public decimal? PatientResponsibility { get; set; }
     public decimal? Copay { get; set; }
     public decimal? ProviderDiscount { get; set; }
     public decimal? OtherPlan { get; set; }
     public decimal? OtherAdjustments { get; set; }
     public decimal? NonCovered { get; set; }
+    public decimal? Interest { get; set; }
     public List<OcrGrpDto> GrpRows { get; set; } = [];
     public List<string> Remarks { get; set; } = [];
+}
+
+public sealed class EobGroupCodeRuleDto
+{
+    public int Id { get; set; }
+    public string GroupCode { get; set; } = string.Empty;
+    public string Code { get; set; } = string.Empty;
+    public string? Description { get; set; }
+    public int? ColorId { get; set; }
+    public string? ColorCode { get; set; }
+    public string? FontColor { get; set; }
+    public string? FontSize { get; set; }
+    public string? SourceType { get; set; }
+}
+
+public sealed class SaveEobGroupCodeRuleRequest
+{
+    public string GroupCode { get; set; } = string.Empty;
+    public string Code { get; set; } = string.Empty;
+    public string? Description { get; set; }
+    public int? ColorId { get; set; }
+    public string? ColorCode { get; set; }
+    public string? FontColor { get; set; }
+    public string? FontSize { get; set; }
+    public string? SourceType { get; set; }
 }
 
 public sealed class OcrGrpDto

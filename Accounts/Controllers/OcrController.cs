@@ -5,6 +5,7 @@ using Accounts.Services.Interfaces;
 using Accounts.Services.Ocr;
 using Accounts.Services.Ocr.Interfaces;
 using Accounts.Services.Services;
+using Accounts.Idempotency;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -20,6 +21,7 @@ namespace Accounts.Controllers;
 public sealed class OcrController : ControllerBase
 {
     private const string MenuRoute = "/ocr/eob";
+    private const string GroupCodesMenuRoute = "/billing-services/grp-codes";
     private const long MaximumPdfBytes = 25L * 1024 * 1024;
     private const long MaximumBatchBytes = 250L * 1024 * 1024;
     private const int MaximumBatchFiles = 50;
@@ -29,6 +31,7 @@ public sealed class OcrController : ControllerBase
     private readonly ApplicationDbContext _db;
     private readonly TenantPermissionService _tenantPermissions;
     private readonly RbacService _rbac;
+    private readonly OcrProcedureReloadService _procedureReload;
 
     public OcrController(
         OcrPipelineCoordinator coordinator,
@@ -36,7 +39,8 @@ public sealed class OcrController : ControllerBase
         ITenantService tenantService,
         ApplicationDbContext db,
         TenantPermissionService tenantPermissions,
-        RbacService rbac)
+        RbacService rbac,
+        OcrProcedureReloadService procedureReload)
     {
         _coordinator = coordinator;
         _store = store;
@@ -44,6 +48,7 @@ public sealed class OcrController : ControllerBase
         _db = db;
         _tenantPermissions = tenantPermissions;
         _rbac = rbac;
+        _procedureReload = procedureReload;
     }
 
     private int CurrentOrgId => _tenantService.RequiredTenantId;
@@ -152,12 +157,6 @@ public sealed class OcrController : ControllerBase
         CancellationToken ct)
     {
         if (!HasTenant || !await HasActionAsync("VIEW", ct)) return Forbid();
-        // Rule: If either date is missing, return an empty list
-        if (!dateFrom.HasValue || !dateTo.HasValue)
-        {
-            return Ok(new List<OcrDocumentListItem>());
-        }
-
         var list = await _store.GetDocumentListAsync(source ?? "", dateFrom, dateTo, CurrentOrgId, ct);
         return Ok(list);
     }
@@ -194,6 +193,21 @@ public sealed class OcrController : ControllerBase
         return Ok(new { success = true });
     }
 
+    [HttpPost("documents/{documentId:int}/procedures/{procedureId:int}/reload")]
+    [Idempotent]
+    public async Task<ActionResult<OcrProcedureReloadResultDto>> ReloadProcedure(
+        int documentId, int procedureId, CancellationToken ct)
+    {
+        if (!HasTenant || !await HasActionAsync("EDIT", ct)) return Forbid();
+        try
+        {
+            return Ok(await _procedureReload.ReloadAsync(
+                documentId, procedureId, CurrentOrgId, CurrentUserId, ct));
+        }
+        catch (KeyNotFoundException ex) { return NotFound(new { message = ex.Message }); }
+        catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
+    }
+
     [HttpDelete("cca/{checkNo}")]
     public async Task<IActionResult> DeleteCcaDocument([FromRoute] string checkNo, CancellationToken ct)
     {
@@ -203,6 +217,40 @@ public sealed class OcrController : ControllerBase
 
         await _store.DeleteCcaByCheckNoAsync(checkNo, CurrentOrgId, ct);
         return NoContent();
+    }
+
+    [HttpGet("group-code-rules")]
+    public async Task<ActionResult<List<EobGroupCodeRuleDto>>> ListGroupCodeRules(CancellationToken ct)
+    {
+        if (!HasTenant || !await HasActionAsync("VIEW", ct, GroupCodesMenuRoute)) return Forbid();
+        return Ok(await _store.ListGroupCodeRulesAsync(CurrentOrgId, ct));
+    }
+
+    [HttpPost("group-code-rules")]
+    public async Task<ActionResult<EobGroupCodeRuleDto>> CreateGroupCodeRule(
+        [FromBody] SaveEobGroupCodeRuleRequest request, CancellationToken ct)
+    {
+        if (!HasTenant || !await HasActionAsync("ADD", ct, GroupCodesMenuRoute)) return Forbid();
+        try { return Ok(await _store.SaveGroupCodeRuleAsync(null, request, CurrentOrgId, ct)); }
+        catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
+    }
+
+    [HttpPut("group-code-rules/{id:int}")]
+    public async Task<ActionResult<EobGroupCodeRuleDto>> UpdateGroupCodeRule(
+        int id, [FromBody] SaveEobGroupCodeRuleRequest request, CancellationToken ct)
+    {
+        if (!HasTenant || !await HasActionAsync("EDIT", ct, GroupCodesMenuRoute)) return Forbid();
+        try { return Ok(await _store.SaveGroupCodeRuleAsync(id, request, CurrentOrgId, ct)); }
+        catch (KeyNotFoundException ex) { return NotFound(new { message = ex.Message }); }
+        catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
+    }
+
+    [HttpDelete("group-code-rules/{id:int}")]
+    public async Task<IActionResult> DeleteGroupCodeRule(int id, CancellationToken ct)
+    {
+        if (!HasTenant || !await HasActionAsync("DELETE", ct, GroupCodesMenuRoute)) return Forbid();
+        try { await _store.DeleteGroupCodeRuleAsync(id, CurrentOrgId, ct); return NoContent(); }
+        catch (KeyNotFoundException ex) { return NotFound(new { message = ex.Message }); }
     }
 
     private bool HasTenant => _tenantService.TenantId.HasValue;
@@ -228,12 +276,12 @@ public sealed class OcrController : ControllerBase
         return null;
     }
 
-    private async Task<bool> HasActionAsync(string action, CancellationToken ct)
+    private async Task<bool> HasActionAsync(string action, CancellationToken ct, string route = MenuRoute)
     {
         if (!HasTenant) return false;
         if (TenantPermissionService.IsSuperAdmin(User)) return false;
         if (TenantPermissionService.IsTenantAdmin(User))
-            return await _tenantPermissions.HasMenuRouteAsync(User, [MenuRoute], action, ct);
+            return await _tenantPermissions.HasMenuRouteAsync(User, [route], action, ct);
 
         var userId = CurrentUserId;
         if (string.IsNullOrWhiteSpace(userId)) return false;
@@ -242,7 +290,7 @@ public sealed class OcrController : ControllerBase
             .Select(x => (Guid?)x.Staff!.StaffId)
             .FirstOrDefaultAsync(ct);
         var menuId = await _db.Menus.AsNoTracking()
-            .Where(x => x.IsActive && x.Route == MenuRoute)
+            .Where(x => x.IsActive && x.Route == route)
             .Select(x => (int?)x.Id)
             .FirstOrDefaultAsync(ct);
         if (!staffId.HasValue || !menuId.HasValue) return false;

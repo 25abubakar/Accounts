@@ -1,4 +1,5 @@
 using Accounts.Models.SpListRows;
+using Accounts.DTOs;
 
 namespace Accounts.Services.Interfaces;
 
@@ -24,4 +25,19 @@ public interface IAccountsRoznamchaService
         CancellationToken cancellationToken = default);
 
     Task<int?> ResolveRozTypeIdAsync(int tenantId, string typeCode, CancellationToken cancellationToken = default);
+
+    Task<IReadOnlyList<RoznamchaUpdateListRow>> ListRoznamchaUpdateAsync(
+        int tenantId, DateOnly dateFrom, DateOnly dateTo, int? departmentId = null,
+        Guid? staffId = null, CancellationToken cancellationToken = default);
+
+    Task<IReadOnlyList<RozEntryProcessLogDto>> ListRoznamchaUpdateHistoryAsync(
+        int tenantId, long entryId, CancellationToken cancellationToken = default);
+
+    Task ProcessRoznamchaUpdateAsync(
+        int tenantId, long entryId, ChangeRozProcessLogRequest request, string? userId,
+        CancellationToken cancellationToken = default);
+
+    Task UpdateRoznamchaInlineAsync(
+        int tenantId, long entryId, UpdateRoznamchaInlineRequest request, string? userId,
+        CancellationToken cancellationToken = default);
 }

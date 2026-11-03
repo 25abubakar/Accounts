@@ -283,6 +283,9 @@ public sealed class HealthNetClaimPostingService
                             ExplanationCodeKey = normalized,
                             Description = grp.Remark ?? normalized,
                             Type = "HealthNet",
+                            GroupCode = normalized.Split('-', 2)[0],
+                            Code = normalized.Contains('-') ? normalized.Split('-', 2)[1] : normalized,
+                            GroupDescription = grp.Remark ?? normalized,
                             CreatedDate = DateTime.UtcNow
                         };
                         _db.EobGrpCodeRules.Add(rule);

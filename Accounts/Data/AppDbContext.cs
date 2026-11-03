@@ -284,6 +284,10 @@ namespace Accounts.Data
                 .HasIndex(x => new { x.OrgId, x.Type, x.ExplanationCodeKey })
                 .IsUnique()
                 .HasFilter("[OrgId] IS NOT NULL AND [Type] IS NOT NULL AND [ExplanationCodeKey] IS NOT NULL");
+            builder.Entity<EobGrpCodeRule>()
+                .HasIndex(x => new { x.OrgId, x.GroupCode, x.Code })
+                .IsUnique()
+                .HasFilter("[OrgId] IS NOT NULL AND [Grp_Code] IS NOT NULL AND [Code] IS NOT NULL");
             builder.Entity<BillingApptCodeView>().ToView("vgetApptCodes").HasNoKey();
             // Billing domain tables already exist in SQL -- exclude from migrations:
             builder.Entity<BillingPatient>().ToTable("tblPatient").HasKey(x => x.PatientId);
@@ -2531,7 +2535,7 @@ namespace Accounts.Data
             });
             builder.Entity<RoznamchaEntryAccess>(e =>
             {
-                e.HasIndex(x => new { x.TenantId, x.RoznamchaEntryId, x.DepartmentId }).IsUnique();
+                e.HasIndex(x => new { x.TenantId, x.RoznamchaEntryId, x.DepartmentId, x.StaffId }).IsUnique();
                 e.HasOne<Tenant>().WithMany().HasForeignKey(x => x.TenantId).OnDelete(DeleteBehavior.Restrict);
                 e.HasOne<RoznamchaEntry>().WithMany().HasForeignKey(x => x.RoznamchaEntryId).OnDelete(DeleteBehavior.Cascade);
                 e.HasOne<StaffVacancy>().WithMany().HasForeignKey(x => x.StaffId).OnDelete(DeleteBehavior.Restrict);
