@@ -29,6 +29,7 @@ public sealed class BillingPerson
 {
     [Key] public int PersonId { get; set; }
     public int? TenantId { get; set; }
+    public int? OrgId { get; set; }
     [MaxLength(200)] public string? FirstName { get; set; }
     [MaxLength(200)] public string? LastName { get; set; }
     [MaxLength(400)] public string? FullName { get; set; }
@@ -80,6 +81,9 @@ public sealed class BillingClaim
     public int? StatusId { get; set; }
     public int? EobStatusId { get; set; }
     public bool? IsCreatedFromEob { get; set; }
+    public bool? IsAr { get; set; }
+    public bool? IsNotOriginalRate { get; set; }
+    public bool? IsRep { get; set; }
     public DateTime? SubmittedDate { get; set; }
     [MaxLength(1000)] public string? Remarks { get; set; }
     public DateTime? CreatedDate { get; set; }
@@ -122,11 +126,14 @@ public sealed class BillingApptCodeView
 public sealed class BillingApptCode
 {
     [Key] public int ApptCodeId { get; set; }
+    public int? TenantId { get; set; }
     public int? AppointmentId { get; set; }
     public int? ClaimId { get; set; }
     public int? PatientId { get; set; }
     public int? OrgId { get; set; }
     public int? ProcedureCodeId { get; set; }
+    public int? Unit { get; set; }
+    public int? TypeId { get; set; }
     [MaxLength(50)] public string? ProcedureCode { get; set; }
     [MaxLength(50)] public string? DateOfService { get; set; }
     [MaxLength(200)] public string? PolicyNo { get; set; }
@@ -142,6 +149,7 @@ public sealed class BillingApptCode
     [MaxLength(100)] public string? Modifiers { get; set; }
     [MaxLength(200)] public string? PolicyNumber { get; set; }
     [MaxLength(100)] public string? FillSource { get; set; }
+    [MaxLength(1000)] public string? Remarks { get; set; }
     public bool? IsUpload { get; set; }
     public bool? IsCreatedFromEobs { get; set; }
     public int? LineEobStatusId { get; set; }
@@ -152,19 +160,52 @@ public sealed class BillingApptCode
     [MaxLength(450)] public string? CreatedByUserId { get; set; }
 }
 
+[Table("tblPatientApptLog")]
+public sealed class BillingPatientAppointmentLog
+{
+    [Key] public int Id { get; set; }
+    public int? TenantId { get; set; }
+    public int? ApptId { get; set; }
+    public DateTime? ProcessDate { get; set; }
+    public int? StatusId { get; set; }
+    [MaxLength(1000)] public string? Remarks { get; set; }
+    [MaxLength(450)] public string? CreatedBy { get; set; }
+    public DateTime? CreatedDate { get; set; }
+}
+
 [Table("tblClaimCodeAmountDetails")]
 public sealed class BillingPaymentRow
 {
     [Key] public int Id { get; set; }
+    public int? TenantId { get; set; }
     public int? ApptCodeId { get; set; }
     public int? ClaimId { get; set; }
     public int? OrgId { get; set; }
     [MaxLength(200)] public string? EobCheckNo { get; set; }
     [Column(TypeName = "decimal(18,2)")] public decimal? PaidAmount { get; set; }
     [Column(TypeName = "decimal(18,2)")] public decimal? PatientResponsibility { get; set; }
-    [MaxLength(200)] public string? Remark { get; set; }
+    [Column(TypeName = "decimal(18,2)")] public decimal? Coinsurance { get; set; }
+    [Column(TypeName = "decimal(18,2)")] public decimal? Deductible { get; set; }
+    [Column(TypeName = "decimal(18,2)")] public decimal? AllowedAmount { get; set; }
+    [MaxLength(100)] public string? LoadDate { get; set; }
+    public int? EobStatusId { get; set; }
+    [MaxLength(1000)] public string? Remark { get; set; }
     public bool? IsClosed { get; set; }
     public bool? IsReProcess { get; set; }
+    public DateTime? CreatedDate { get; set; }
+}
+
+[Table("tblClaimGrpCodeDetails")]
+public sealed class BillingClaimGroupCode
+{
+    [Key] public int Id { get; set; }
+    public int? TenantId { get; set; }
+    public int? OrgId { get; set; }
+    public int? AppClaimId { get; set; }
+    public int? AppCodeId { get; set; }
+    public int? CodeAmtId { get; set; }
+    [Column("Grp_Code"), MaxLength(50)] public string? GroupCode { get; set; }
+    [Column("Grp_Amt", TypeName = "decimal(18,2)")] public decimal? GroupAmount { get; set; }
     public DateTime? CreatedDate { get; set; }
 }
 
@@ -172,6 +213,7 @@ public sealed class BillingPaymentRow
 public sealed class BillingClaimEobDoc
 {
     [Key] public int Id { get; set; }
+    public int? TenantId { get; set; }
     public int? ClaimId { get; set; }
     [MaxLength(200)] public string? EobCheckNo { get; set; }
     [MaxLength(500)] public string? Attachment { get; set; }
@@ -195,6 +237,7 @@ public sealed class BillingClaimsLog
 public sealed class BillingCarrier
 {
     [Key] public int CarrierId { get; set; }
+    public int? TenantId { get; set; }
     [MaxLength(500)] public string? CarrierName { get; set; }
     public int? InsuranceGroupId { get; set; }
     public int? OrgId { get; set; }

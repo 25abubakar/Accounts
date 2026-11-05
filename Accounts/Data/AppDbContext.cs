@@ -237,6 +237,8 @@ namespace Accounts.Data
         public DbSet<BillingApptCodeView>   BillingApptCodeViews  => Set<BillingApptCodeView>();
         public DbSet<BillingApptCode>       BillingApptCodes      => Set<BillingApptCode>();
         public DbSet<BillingPaymentRow>     BillingPaymentRows    => Set<BillingPaymentRow>();
+        public DbSet<BillingPatientAppointmentLog> BillingPatientAppointmentLogs => Set<BillingPatientAppointmentLog>();
+        public DbSet<BillingClaimGroupCode> BillingClaimGroupCodes => Set<BillingClaimGroupCode>();
         public DbSet<BillingClaimEobDoc>    BillingClaimEobDocs   => Set<BillingClaimEobDoc>();
         public DbSet<BillingClaimsLog>      BillingClaimsLogs     => Set<BillingClaimsLog>();
         public DbSet<BillingCarrier>        BillingCarriers       => Set<BillingCarrier>();
@@ -296,6 +298,13 @@ namespace Accounts.Data
             builder.Entity<BillingClaim>().ToTable("tblInsPTClaims").HasKey(x => x.ClaimId);
             builder.Entity<BillingApptCode>().ToTable("tblApptCodes").HasKey(x => x.ApptCodeId);
             builder.Entity<BillingPaymentRow>().ToTable("tblClaimCodeAmountDetails").HasKey(x => x.Id);
+            builder.Entity<BillingPatientAppointmentLog>().ToTable("tblPatientApptLog").HasKey(x => x.Id);
+            builder.Entity<BillingClaimGroupCode>(entity =>
+            {
+                entity.ToTable("tblClaimGrpCodeDetails");
+                entity.HasKey(x => x.Id);
+                entity.HasIndex(x => new { x.TenantId, x.AppClaimId, x.AppCodeId, x.CodeAmtId, x.GroupCode });
+            });
             builder.Entity<BillingClaimEobDoc>().ToTable("tblClaimEobDocuments").HasKey(x => x.Id);
             builder.Entity<BillingClaimsLog>().ToTable("tblClaimsLog").HasKey(x => x.Id);
             builder.Entity<BillingCarrier>().ToTable("tblCarrier").HasKey(x => x.CarrierId);

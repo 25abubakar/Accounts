@@ -24,11 +24,13 @@ public sealed class BillingClaimsService : IBillingClaimsService
         int? carrierId = null,
         CancellationToken ct = default)
     {
+        var orgId = await ResolveOrganizationIdAsync(tenantId, ct);
         return await SpListQuery.ExecAsync<BillingPaymentRowDto>(
             _db,
-            "EXEC dbo.usp_Billing_Claims_List @TenantId, @DateFrom, @DateTo, @Tab, @StatusId, @CarrierId",
+            "EXEC dbo.usp_Billing_Claims_List @TenantId, @OrgId, @DateFrom, @DateTo, @Tab, @StatusId, @CarrierId",
             ct,
             SpListQuery.TenantId(tenantId),
+            SpListQuery.Int("@OrgId", orgId),
             SpListQuery.DateNullable("@DateFrom", dateFrom),
             SpListQuery.DateNullable("@DateTo", dateTo),
             SpListQuery.StringNullable("@Tab", tab),
@@ -36,16 +38,33 @@ public sealed class BillingClaimsService : IBillingClaimsService
             SpListQuery.IntNullable("@CarrierId", carrierId));
     }
 
+    public async Task<IReadOnlyList<BillingEobRowDto>> ListEobsAsync(
+        int tenantId, DateOnly? dateFrom, DateOnly? dateTo, CancellationToken ct = default) =>
+        await SpListQuery.ExecAsync<BillingEobRowDto>(
+            _db, "EXEC dbo.usp_Billing_Eob_List @TenantId, @DateFrom, @DateTo", ct,
+            SpListQuery.TenantId(tenantId),
+            SpListQuery.DateNullable("@DateFrom", dateFrom),
+            SpListQuery.DateNullable("@DateTo", dateTo));
+
+    public async Task<IReadOnlyList<BillingClaimCodeDetailDto>> ListClaimCodeDetailsAsync(
+        int tenantId, int claimId, int? appointmentId, CancellationToken ct = default) =>
+        await SpListQuery.ExecAsync<BillingClaimCodeDetailDto>(
+            _db, "EXEC dbo.usp_Billing_ClaimCodeDetails_List @TenantId, @ClaimId, @AppointmentId", ct,
+            SpListQuery.TenantId(tenantId), SpListQuery.Int("@ClaimId", claimId),
+            SpListQuery.IntNullable("@AppointmentId", appointmentId));
+
     public async Task<BillingPaymentRowDto?> GetClaimByIdAsync(int tenantId, int claimId, CancellationToken ct = default)
     {
+        var orgId = await ResolveOrganizationIdAsync(tenantId, ct);
         var list = await SpListQuery.ExecAsync<BillingPaymentRowDto>(
             _db,
-            "EXEC dbo.usp_Billing_Claims_List @TenantId, @DateFrom, @DateTo, @Tab, @StatusId, @CarrierId",
+            "EXEC dbo.usp_Billing_Claims_List @TenantId, @OrgId, @DateFrom, @DateTo, @Tab, @StatusId, @CarrierId",
             ct,
             SpListQuery.TenantId(tenantId),
+            SpListQuery.Int("@OrgId", orgId),
             SpListQuery.DateNullable("@DateFrom", null),
             SpListQuery.DateNullable("@DateTo", null),
-            SpListQuery.StringNullable("@Tab", "claims"),
+            SpListQuery.StringNullable("@Tab", "payment"),
             SpListQuery.IntNullable("@StatusId", null),
             SpListQuery.IntNullable("@CarrierId", null));
 
@@ -58,63 +77,109 @@ public sealed class BillingClaimsService : IBillingClaimsService
         string? userId,
         CancellationToken ct = default)
     {
+        if (!request.AppointmentId.HasValue)
+            throw new InvalidOperationException("An appointment is required to create a claim.");
+        if (request.CptCodes.Count == 0)
+            throw new InvalidOperationException("At least one CPT line is required.");
+
+        await using var tx = await _db.Database.BeginTransactionAsync(System.Data.IsolationLevel.Serializable, ct);
+        var orgId = await ResolveOrganizationIdAsync(tenantId, ct);
+        var appointment = await _db.BillingAppointments
+            .SingleOrDefaultAsync(x => x.TenantId == tenantId && x.OrgId == orgId && x.AppointmentId == request.AppointmentId.Value, ct)
+            ?? throw new InvalidOperationException("The selected appointment does not belong to this tenant and organization.");
+        if (await _db.BillingClaims.AsNoTracking().AnyAsync(x => x.TenantId == tenantId && x.AppointmentId == appointment.AppointmentId, ct))
+            throw new InvalidOperationException("A claim already exists for the selected appointment.");
+
+        var patientId = appointment.PatientId
+            ?? throw new InvalidOperationException("The selected appointment is not linked to a patient.");
+        var requestedProcedureIds = request.CptCodes.Where(x => x.ProcedureCodeId.HasValue)
+            .Select(x => x.ProcedureCodeId!.Value).Distinct().ToArray();
+        var procedureLookup = await _db.BillingProcedureCodes.AsNoTracking()
+            .Where(x => requestedProcedureIds.Contains(x.ProcCodeId) && (x.TenantId == tenantId || x.TenantId == null))
+            .ToDictionaryAsync(x => x.ProcCodeId, ct);
+        var now = DateTime.UtcNow;
         var claim = new BillingClaim
         {
-            OrgId = tenantId,
-            AppointmentId = request.AppointmentId,
-            PatientId = request.PatientId,
+            TenantId = tenantId,
+            OrgId = orgId,
+            AppointmentId = appointment.AppointmentId,
+            PatientId = patientId,
             CarrierId = request.CarrierId,
             PolicyNumber = request.PolicyNumber,
-            TotalBilled = request.TotalBilled ?? request.CptCodes.Sum(x => x.ClaimAmount ?? 0),
-            TotalAllowed = request.TotalAllowed ?? request.CptCodes.Sum(x => x.InsuranceAmount ?? 0),
+            TotalBilled = request.CptCodes.Sum(x => Math.Max(1, x.Unit) * (x.ClaimAmount ?? 0)),
+            TotalAllowed = request.CptCodes.Sum(x => Math.Max(1, x.Unit) * (x.InsuranceRate ?? 0)),
             PatientResponsibility = request.PatientResponsibility ?? 0,
-            SubmittedDate = request.SubmittedDate ?? DateTime.UtcNow,
+            StatusId = 19,
+            // A pending claim is not submitted until the user explicitly
+            // supplies a submission date or changes it to Submitted.
+            SubmittedDate = request.SubmittedDate,
             Remarks = request.Remarks,
-            CreatedDate = DateTime.UtcNow,
+            CreatedDate = now,
             CreatedByUserId = userId
         };
 
         _db.BillingClaims.Add(claim);
         await _db.SaveChangesAsync(ct);
 
-        if (request.AppointmentId.HasValue)
-        {
-            var appt = await _db.BillingAppointments.FirstOrDefaultAsync(x => x.AppointmentId == request.AppointmentId.Value, ct);
-            if (appt != null)
-            {
-                appt.IsClaimed = true;
-            }
-        }
+        appointment.IsClaimed = true;
 
         foreach (var cpt in request.CptCodes)
         {
+            BillingProcedureCode? procedure = null;
+            if (cpt.ProcedureCodeId.HasValue)
+                procedureLookup.TryGetValue(cpt.ProcedureCodeId.Value, out procedure);
+            var procedureText = (procedure?.Codes ?? cpt.ProcedureCode).Trim();
+            if (procedureText.Length == 0)
+                throw new InvalidOperationException("Every CPT line must have a valid procedure code.");
+            var unit = Math.Max(1, cpt.Unit);
+            var unitCharge = cpt.ClaimAmount ?? procedure?.StandardRate ?? 0;
+            var unitInsurance = cpt.InsuranceRate ?? 0;
             var code = new BillingApptCode
             {
+                TenantId = tenantId,
                 ClaimId = claim.ClaimId,
-                AppointmentId = request.AppointmentId,
-                PatientId = request.PatientId,
-                OrgId = tenantId,
-                ProcedureCode = cpt.ProcedureCode,
-                ClaimAmount = cpt.ClaimAmount,
-                InsuranceAmount = cpt.InsuranceAmount,
-                Modifiers = cpt.Modifiers,
-                CreatedDate = DateTime.UtcNow,
+                AppointmentId = appointment.AppointmentId,
+                PatientId = patientId,
+                OrgId = orgId,
+                ProcedureCodeId = procedure?.ProcCodeId,
+                ProcedureCode = procedureText,
+                Unit = unit,
+                TypeId = cpt.TypeId,
+                ClaimAmount = unitCharge,
+                TotalClaimAmount = unit * unitCharge,
+                InsuranceRate = unitInsurance,
+                InsuranceAmount = unit * unitInsurance,
+                Modifiers = cpt.Modifiers?.Trim(),
+                PolicyNumber = cpt.PolicyNumber ?? request.PolicyNumber,
+                CarrierId = cpt.CarrierId ?? request.CarrierId,
+                InsuranceCompanyId = cpt.InsuranceCompanyId,
+                FillSource = "Manual",
+                CreatedDate = now,
                 CreatedByUserId = userId
             };
             _db.BillingApptCodes.Add(code);
+            await _db.SaveChangesAsync(ct);
+            AddGroupCodes(tenantId, orgId, claim.ClaimId, code.ApptCodeId, null, cpt.GroupCodes);
         }
 
         var log = new BillingClaimsLog
         {
+            TenantId = tenantId,
             ClaimId = claim.ClaimId,
-            StatusId = claim.StatusId,
+            StatusId = 1070,
             LogDate = DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm"),
             Remarks = "Claim created",
-            CreatedDate = DateTime.UtcNow
+            CreatedDate = now
         };
         _db.BillingClaimsLogs.Add(log);
+        _db.BillingPatientAppointmentLogs.Add(new BillingPatientAppointmentLog
+        {
+            TenantId = tenantId, ApptId = appointment.AppointmentId, ProcessDate = now,
+            StatusId = 19, Remarks = "Claim created", CreatedBy = userId, CreatedDate = now
+        });
 
         await _db.SaveChangesAsync(ct);
+        await tx.CommitAsync(ct);
         return claim.ClaimId;
     }
 
@@ -125,7 +190,7 @@ public sealed class BillingClaimsService : IBillingClaimsService
         string? userId,
         CancellationToken ct = default)
     {
-        var claim = await _db.BillingClaims.FirstOrDefaultAsync(x => x.ClaimId == claimId, ct);
+        var claim = await _db.BillingClaims.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.ClaimId == claimId, ct);
         if (claim == null) return false;
 
         claim.CarrierId = request.CarrierId ?? claim.CarrierId;
@@ -138,6 +203,7 @@ public sealed class BillingClaimsService : IBillingClaimsService
 
         var log = new BillingClaimsLog
         {
+            TenantId = tenantId,
             ClaimId = claim.ClaimId,
             StatusId = claim.StatusId,
             LogDate = DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm"),
@@ -145,7 +211,6 @@ public sealed class BillingClaimsService : IBillingClaimsService
             CreatedDate = DateTime.UtcNow
         };
         _db.BillingClaimsLogs.Add(log);
-
         await _db.SaveChangesAsync(ct);
         return true;
     }
@@ -158,10 +223,14 @@ public sealed class BillingClaimsService : IBillingClaimsService
         string? userId,
         CancellationToken ct = default)
     {
-        var claim = await _db.BillingClaims.FirstOrDefaultAsync(x => x.ClaimId == claimId, ct);
+        var claim = await _db.BillingClaims.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.ClaimId == claimId, ct);
         if (claim == null) return false;
 
         claim.StatusId = statusId;
+        if (claim.SubmittedDate == null && statusId is 1049 or 20 or 1059)
+        {
+            claim.SubmittedDate = DateTime.UtcNow;
+        }
         if (!string.IsNullOrWhiteSpace(remarks))
         {
             claim.Remarks = remarks;
@@ -169,6 +238,7 @@ public sealed class BillingClaimsService : IBillingClaimsService
 
         var log = new BillingClaimsLog
         {
+            TenantId = tenantId,
             ClaimId = claim.ClaimId,
             StatusId = statusId,
             LogDate = DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm"),
@@ -176,6 +246,12 @@ public sealed class BillingClaimsService : IBillingClaimsService
             CreatedDate = DateTime.UtcNow
         };
         _db.BillingClaimsLogs.Add(log);
+        if (claim.AppointmentId.HasValue)
+            _db.BillingPatientAppointmentLogs.Add(new BillingPatientAppointmentLog
+            {
+                TenantId = tenantId, ApptId = claim.AppointmentId, ProcessDate = DateTime.UtcNow,
+                StatusId = statusId, Remarks = remarks, CreatedBy = userId, CreatedDate = DateTime.UtcNow
+            });
 
         await _db.SaveChangesAsync(ct);
         return true;
@@ -188,37 +264,69 @@ public sealed class BillingClaimsService : IBillingClaimsService
         string? userId,
         CancellationToken ct = default)
     {
-        var claim = await _db.BillingClaims.FirstOrDefaultAsync(x => x.ClaimId == claimId, ct);
+        await using var tx = await _db.Database.BeginTransactionAsync(System.Data.IsolationLevel.Serializable, ct);
+        var claim = await _db.BillingClaims.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.ClaimId == claimId, ct);
         if (claim == null) return false;
 
-        claim.TotalPaid = (claim.TotalPaid ?? 0) + request.PaidAmount;
-        if (request.PatientResponsibility.HasValue)
-        {
-            claim.PatientResponsibility = request.PatientResponsibility.Value;
-        }
+        var orgId = await ResolveOrganizationIdAsync(tenantId, ct);
+        var apptCodeId = request.ApptCodeId ?? await _db.BillingApptCodes
+            .Where(x => x.TenantId == tenantId && x.ClaimId == claimId)
+            .OrderBy(x => x.ApptCodeId).Select(x => (int?)x.ApptCodeId).FirstOrDefaultAsync(ct);
+        if (!apptCodeId.HasValue) return false;
+
+        var code = await _db.BillingApptCodes.SingleOrDefaultAsync(x => x.TenantId == tenantId && x.ClaimId == claimId && x.ApptCodeId == apptCodeId.Value, ct);
+        if (code == null) return false;
+        var normalizedCheck = request.EobCheckNo?.Trim();
+        var paymentRow = !string.IsNullOrWhiteSpace(normalizedCheck)
+            ? await _db.BillingPaymentRows.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.ApptCodeId == apptCodeId && x.EobCheckNo == normalizedCheck && x.IsClosed != true, ct)
+            : null;
+        var eobStatusId = request.PaidAmount > 0 ? 1059 : 1050;
         if (!string.IsNullOrWhiteSpace(request.EobCheckNo))
         {
             claim.EobCheckNo = request.EobCheckNo.Trim();
         }
 
-        var paymentRow = new BillingPaymentRow
+        paymentRow ??= new BillingPaymentRow
         {
+            TenantId = tenantId,
+            ApptCodeId = apptCodeId,
             ClaimId = claimId,
-            OrgId = tenantId,
-            EobCheckNo = request.EobCheckNo,
-            PaidAmount = request.PaidAmount,
-            PatientResponsibility = request.PatientResponsibility,
-            Remark = request.Remarks,
-            IsClosed = request.IsClosed,
-            IsReProcess = request.IsReProcess,
+            OrgId = orgId,
             CreatedDate = DateTime.UtcNow
         };
-        _db.BillingPaymentRows.Add(paymentRow);
+        paymentRow.EobCheckNo = normalizedCheck;
+        paymentRow.PaidAmount = request.PaidAmount;
+        paymentRow.PatientResponsibility = request.PatientResponsibility;
+        paymentRow.Coinsurance = request.Coinsurance;
+        paymentRow.Deductible = request.Deductible;
+        paymentRow.AllowedAmount = request.AllowedAmount;
+        paymentRow.LoadDate = (request.LoadDate ?? DateTime.UtcNow).ToString("O");
+        paymentRow.EobStatusId = eobStatusId;
+        paymentRow.Remark = request.Remarks;
+        paymentRow.IsClosed = request.IsClosed;
+        paymentRow.IsReProcess = request.IsReProcess;
+        if (paymentRow.Id == 0) _db.BillingPaymentRows.Add(paymentRow);
+        await _db.SaveChangesAsync(ct);
+        var oldGroups = await _db.BillingClaimGroupCodes
+            .Where(x => x.TenantId == tenantId && x.CodeAmtId == paymentRow.Id).ToListAsync(ct);
+        _db.BillingClaimGroupCodes.RemoveRange(oldGroups);
+        AddGroupCodes(tenantId, orgId, claimId, apptCodeId.Value, paymentRow.Id, request.GroupCodes);
+
+        code.Paid = request.PaidAmount;
+        code.PatientResponsibility = request.PatientResponsibility;
+        code.CoInsurance = request.Coinsurance;
+        code.Deductible = request.Deductible;
+        code.EobAllowed = request.AllowedAmount;
+        code.LineEobStatusId = eobStatusId;
+        code.Balance = (code.InsuranceAmount ?? 0) - request.PaidAmount - (request.PatientResponsibility ?? 0);
+        claim.EobStatusId = eobStatusId;
+        if (!string.IsNullOrWhiteSpace(normalizedCheck)) claim.EobCheckNo = normalizedCheck;
 
         var log = new BillingClaimsLog
         {
+            TenantId = tenantId,
             ClaimId = claimId,
-            StatusId = claim.StatusId,
+            StatusId = eobStatusId,
             LogDate = DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm"),
             Remarks = $"Payment posted: {request.PaidAmount} (Check: {request.EobCheckNo})",
             CreatedDate = DateTime.UtcNow
@@ -226,17 +334,52 @@ public sealed class BillingClaimsService : IBillingClaimsService
         _db.BillingClaimsLogs.Add(log);
 
         await _db.SaveChangesAsync(ct);
+        claim.TotalPaid = await _db.BillingPaymentRows.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && x.ClaimId == claimId && x.IsClosed != true)
+            .SumAsync(x => x.PaidAmount ?? 0, ct);
+        claim.PatientResponsibility = await _db.BillingApptCodes.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && x.ClaimId == claimId)
+            .SumAsync(x => x.PatientResponsibility ?? 0, ct);
+        await _db.SaveChangesAsync(ct);
+        await tx.CommitAsync(ct);
         return true;
+    }
+
+    private async Task<int> ResolveOrganizationIdAsync(int tenantId, CancellationToken ct) =>
+        await _db.Tenants.AsNoTracking().Where(x => x.Id == tenantId)
+            .Select(x => x.OrganizationTreeId).SingleAsync(ct);
+
+    private void AddGroupCodes(int tenantId, int orgId, int claimId, int apptCodeId, int? paymentId,
+        IEnumerable<CreateBillingGroupCodeRequest> rows)
+    {
+        foreach (var row in rows.Where(x => !string.IsNullOrWhiteSpace(x.GroupCode)))
+        {
+            _db.BillingClaimGroupCodes.Add(new BillingClaimGroupCode
+            {
+                TenantId = tenantId, OrgId = orgId, AppClaimId = claimId, AppCodeId = apptCodeId,
+                CodeAmtId = paymentId, GroupCode = NormalizeGroupCode(row.GroupCode),
+                GroupAmount = row.GroupAmount, CreatedDate = DateTime.UtcNow
+            });
+        }
+    }
+
+    private static string NormalizeGroupCode(string value)
+    {
+        var code = value.Trim().ToUpperInvariant().Replace(" ", string.Empty);
+        if (!code.Contains('-') && code.Length > 2) code = $"{code[..2]}-{code[2..]}";
+        return code;
     }
 
     public async Task<BillingClaimLookupsDto> GetClaimLookupsAsync(int tenantId, CancellationToken ct = default)
     {
         var carriers = await _db.BillingCarriers.AsNoTracking()
+            .Where(x => x.TenantId == tenantId || x.TenantId == null)
             .OrderBy(x => x.CarrierName)
             .Select(x => new { x.CarrierId, x.CarrierName })
             .ToListAsync(ct);
 
         var codes = await _db.BillingProcedureCodes.AsNoTracking()
+            .Where(x => x.TenantId == tenantId || x.TenantId == null)
             .OrderBy(x => x.Codes)
             .Select(x => new { x.ProcCodeId, x.Codes, x.Description, x.StandardRate })
             .ToListAsync(ct);
@@ -269,7 +412,7 @@ public sealed class BillingClaimsService : IBillingClaimsService
     public async Task<IReadOnlyList<object>> GetClaimLogsAsync(int tenantId, int claimId, CancellationToken ct = default)
     {
         var logs = await _db.BillingClaimsLogs.AsNoTracking()
-            .Where(x => x.ClaimId == claimId)
+            .Where(x => x.TenantId == tenantId && x.ClaimId == claimId)
             .OrderByDescending(x => x.CreatedDate)
             .Select(x => new { x.Id, x.ClaimId, x.StatusId, x.LogDate, x.Remarks, x.CreatedDate })
             .ToListAsync(ct);

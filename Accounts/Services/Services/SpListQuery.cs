@@ -57,6 +57,9 @@ public static class SpListQuery
         ApplicationDbContext db,
         string sql,
         CancellationToken ct,
-        params object[] parameters) =>
-        db.Database.SqlQueryRaw<T>(sql, parameters).ToListAsync(ct);
+        params object[] parameters)
+    {
+        db.Database.SetCommandTimeout(180);
+        return db.Database.SqlQueryRaw<T>(sql, parameters).ToListAsync(ct);
+    }
 }

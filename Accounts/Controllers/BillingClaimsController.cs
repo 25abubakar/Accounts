@@ -22,6 +22,7 @@ public sealed class BillingClaimsController : ControllerBase
     private readonly TenantPermissionService _tenantPermissions;
     private readonly RbacService _rbac;
     private readonly IBillingClaimsService _claims;
+    private readonly IBillingPatientsService _patients;
     private readonly IFileStorageService _files;
 
     public BillingClaimsController(
@@ -30,6 +31,7 @@ public sealed class BillingClaimsController : ControllerBase
         TenantPermissionService tenantPermissions,
         RbacService rbac,
         IBillingClaimsService claims,
+        IBillingPatientsService patients,
         IFileStorageService files)
     {
         _db = db;
@@ -37,6 +39,7 @@ public sealed class BillingClaimsController : ControllerBase
         _tenantPermissions = tenantPermissions;
         _rbac = rbac;
         _claims = claims;
+        _patients = patients;
         _files = files;
     }
 
@@ -78,8 +81,10 @@ public sealed class BillingClaimsController : ControllerBase
         if (_tenant.IsSuperAdmin || !_tenant.TenantId.HasValue || !await HasActionAsync("VIEW", ct))
             return Forbid();
 
-        var rows = await _claims.ListClaimsAsync(_tenant.RequiredTenantId, dateFrom, dateTo, tab, statusId, carrierId, ct);
-        return Ok(rows);
+        if (string.Equals(tab, "eob", StringComparison.OrdinalIgnoreCase))
+            return Ok(await _claims.ListEobsAsync(_tenant.RequiredTenantId, dateFrom, dateTo, ct));
+
+        return Ok(await _claims.ListClaimsAsync(_tenant.RequiredTenantId, dateFrom, dateTo, tab, statusId, carrierId, ct));
     }
 
     [HttpGet("{id:int}")]
@@ -92,6 +97,13 @@ public sealed class BillingClaimsController : ControllerBase
         return claim != null ? Ok(claim) : NotFound(new { message = "Claim was not found." });
     }
 
+    [HttpGet("{id:int}/code-details")]
+    public async Task<IActionResult> GetCodeDetails(int id, [FromQuery] int? appointmentId, CancellationToken ct)
+    {
+        if (_tenant.IsSuperAdmin || !_tenant.TenantId.HasValue || !await HasActionAsync("VIEW", ct)) return Forbid();
+        return Ok(await _claims.ListClaimCodeDetailsAsync(_tenant.RequiredTenantId, id, appointmentId, ct));
+    }
+
     [HttpPost]
     [Idempotent]
     public async Task<IActionResult> Create([FromBody] CreateBillingClaimRequest request, CancellationToken ct)
@@ -99,8 +111,15 @@ public sealed class BillingClaimsController : ControllerBase
         if (_tenant.IsSuperAdmin || !_tenant.TenantId.HasValue || !await HasActionAsync("ADD", ct))
             return Forbid();
 
-        var claimId = await _claims.CreateClaimAsync(_tenant.RequiredTenantId, request, UserId(), ct);
-        return Ok(new { success = true, claimId, message = "Claim created successfully." });
+        try
+        {
+            var claimId = await _claims.CreateClaimAsync(_tenant.RequiredTenantId, request, UserId(), ct);
+            return Ok(new { success = true, claimId, message = "Claim created successfully." });
+        }
+        catch (InvalidOperationException ex)
+        {
+            return Conflict(new { message = ex.Message });
+        }
     }
 
     [HttpPut("{id:int}")]
@@ -144,6 +163,15 @@ public sealed class BillingClaimsController : ControllerBase
         return Ok(lookups);
     }
 
+    [HttpGet("appointments")]
+    public async Task<IActionResult> Appointments(CancellationToken ct)
+    {
+        if (_tenant.IsSuperAdmin || !_tenant.TenantId.HasValue || !await HasActionAsync("VIEW", ct))
+            return Forbid();
+        var rows = await _patients.ListAppointmentsAsync(_tenant.RequiredTenantId, null, null, null, ct);
+        return Ok(rows.Where(x => !x.IsClaimed));
+    }
+
     [HttpGet("{id:int}/logs")]
     public async Task<IActionResult> GetLogs(int id, CancellationToken ct)
     {
@@ -161,7 +189,7 @@ public sealed class BillingClaimsController : ControllerBase
             return Forbid();
 
         var docs = await _db.BillingClaimEobDocs.AsNoTracking()
-            .Where(x => x.ClaimId == id)
+            .Where(x => x.TenantId == _tenant.RequiredTenantId && x.ClaimId == id)
             .OrderByDescending(x => x.CreatedDate)
             .ToListAsync(ct);
 
@@ -176,7 +204,7 @@ public sealed class BillingClaimsController : ControllerBase
         if (_tenant.IsSuperAdmin || !_tenant.TenantId.HasValue || !await HasActionAsync("EDIT", ct))
             return Forbid();
 
-        var claim = await _db.BillingClaims.FirstOrDefaultAsync(x => x.ClaimId == id, ct);
+        var claim = await _db.BillingClaims.FirstOrDefaultAsync(x => x.TenantId == _tenant.RequiredTenantId && x.ClaimId == id, ct);
         if (claim == null) return NotFound(new { message = "Claim was not found." });
 
         if (request.File == null || request.File.Length == 0)
@@ -185,6 +213,7 @@ public sealed class BillingClaimsController : ControllerBase
         var stored = await _files.SaveAccountsFileAsync(_tenant.RequiredTenantId, request.File, ct);
         var doc = new BillingClaimEobDoc
         {
+            TenantId = _tenant.RequiredTenantId,
             ClaimId = id,
             Attachment = stored.StoredPath,
             UploadDate = DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm"),

@@ -94,8 +94,15 @@ public sealed class BillingPatientsController : ControllerBase
         if (_tenant.IsSuperAdmin || !_tenant.TenantId.HasValue || !await HasActionAsync("ADD", ct))
             return Forbid();
 
-        var apptId = await _patients.CreatePatientAndAppointmentAsync(_tenant.RequiredTenantId, request, UserId(), ct);
-        return Ok(new { success = true, appointmentId = apptId, message = "Patient and appointment created successfully." });
+        try
+        {
+            var apptId = await _patients.CreatePatientAndAppointmentAsync(_tenant.RequiredTenantId, request, UserId(), ct);
+            return Ok(new { success = true, appointmentId = apptId, message = "Patient and appointment created successfully." });
+        }
+        catch (InvalidOperationException ex)
+        {
+            return Conflict(new { message = ex.Message });
+        }
     }
 
     [HttpPost("upload-sheet")]

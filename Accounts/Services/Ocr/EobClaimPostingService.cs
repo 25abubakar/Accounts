@@ -39,8 +39,11 @@ public sealed class EobClaimPostingService : IEobClaimPostingService
     {
         var result = new PostingResult();
         if (parsed.Patients.Count == 0) return result;
+        var tenantId = orgId;
+        var organizationId = await _db.Tenants.AsNoTracking().Where(x => x.Id == tenantId)
+            .Select(x => x.OrganizationTreeId).SingleAsync(ct);
 
-        var carrierId = await ResolveCarrierIdAsync(parsed.InsuranceName, orgId, ct);
+        var carrierId = await ResolveCarrierIdAsync(parsed.InsuranceName, tenantId, organizationId, ct);
 
         foreach (var p in parsed.Patients)
         {
@@ -52,12 +55,13 @@ public sealed class EobClaimPostingService : IEobClaimPostingService
 
             try
             {
-                var patient = await ResolveOrCreatePatientAsync(p, orgId, userId, ct);
+                var patient = await ResolveOrCreatePatientAsync(p, tenantId, organizationId, userId, ct);
                 var patientResp = ResolvePatientResponsibility(p, payer);
 
                 foreach (var proc in p.Procedures)
                 {
-                    await PostProcedureLineAsync(parsed, p, proc, patient, carrierId, savedUploadId, patientResp, payer, orgId, userId, result, ct);
+                    await PostProcedureLineAsync(parsed, p, proc, patient, carrierId, savedUploadId, patientResp,
+                        payer, tenantId, organizationId, userId, result, ct);
                 }
             }
             catch (Exception ex)
@@ -106,11 +110,11 @@ public sealed class EobClaimPostingService : IEobClaimPostingService
         return cleaned;
     }
 
-    private async Task<BillingPatient> ResolveOrCreatePatientAsync(ParsedPatient p, int orgId, string? userId, CancellationToken ct)
+    private async Task<BillingPatient> ResolveOrCreatePatientAsync(ParsedPatient p, int tenantId, int orgId, string? userId, CancellationToken ct)
     {
         var cleanMidVal = CleanMid(p.MID, "");
         var pat = await _db.BillingPatients.FirstOrDefaultAsync(x =>
-            x.OrgId == orgId &&
+            x.TenantId == tenantId && x.OrgId == orgId &&
             ((p.PatientNo != null && x.PatientNo == p.PatientNo) ||
              (cleanMidVal != "" && x.PatientNo == cleanMidVal)), ct);
 
@@ -146,6 +150,7 @@ public sealed class EobClaimPostingService : IEobClaimPostingService
 
         var person = new BillingPerson
         {
+            TenantId = tenantId,
             FirstName = firstName,
             LastName = lastName,
             CreatedDate = DateTime.UtcNow
@@ -155,6 +160,7 @@ public sealed class EobClaimPostingService : IEobClaimPostingService
 
         pat = new BillingPatient
         {
+            TenantId = tenantId,
             OrgId = orgId,
             PatientNo = p.PatientNo ?? cleanMidVal,
             PatientName = $"{firstName} {lastName}".Trim(),
@@ -167,13 +173,13 @@ public sealed class EobClaimPostingService : IEobClaimPostingService
         return pat;
     }
 
-    private async Task<int?> ResolveCarrierIdAsync(string? insuranceName, int orgId, CancellationToken ct)
+    private async Task<int?> ResolveCarrierIdAsync(string? insuranceName, int tenantId, int orgId, CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(insuranceName)) return null;
 
         var name = insuranceName.Trim();
         var carrier = await _db.BillingCarriers.FirstOrDefaultAsync(x =>
-            x.OrgId == orgId && x.CarrierName == name, ct);
+            x.TenantId == tenantId && x.OrgId == orgId && x.CarrierName == name, ct);
 
         if (carrier != null) return carrier.CarrierId;
 
@@ -201,6 +207,7 @@ public sealed class EobClaimPostingService : IEobClaimPostingService
 
         carrier = new BillingCarrier
         {
+            TenantId = tenantId,
             CarrierName = name,
             OrgId = orgId,
             InsuranceGroupId = 1,
@@ -223,6 +230,7 @@ public sealed class EobClaimPostingService : IEobClaimPostingService
         int savedUploadId,
         decimal? patientResp,
         string payer,
+        int tenantId,
         int orgId,
         string? userId,
         PostingResult result,
@@ -232,7 +240,7 @@ public sealed class EobClaimPostingService : IEobClaimPostingService
 
         // 1. Appointment
         var appt = await _db.BillingAppointments.FirstOrDefaultAsync(x =>
-            x.PatientId == patient.PatientId &&
+            x.TenantId == tenantId && x.PatientId == patient.PatientId &&
             x.AppointmentDate == dosStr &&
             x.OrgId == orgId, ct);
 
@@ -240,6 +248,7 @@ public sealed class EobClaimPostingService : IEobClaimPostingService
         {
             appt = new BillingAppointment
             {
+                TenantId = tenantId,
                 PatientId = patient.PatientId,
                 OrgId = orgId,
                 AppointmentDate = dosStr,
@@ -255,10 +264,10 @@ public sealed class EobClaimPostingService : IEobClaimPostingService
 
         // 2. Claim
         var paid = proc.ProviderPaid ?? 0;
-        var claimStatusId = paid > 0 ? 1059 : 1049;
+        var claimStatusId = paid > 0 ? 1059 : 1050;
 
         var claim = await _db.BillingClaims.FirstOrDefaultAsync(x =>
-            x.AppointmentId == appt.AppointmentId &&
+            x.TenantId == tenantId && x.AppointmentId == appt.AppointmentId &&
             x.PatientId == patient.PatientId &&
             x.EobCheckNo == header.CheckEFT &&
             x.OrgId == orgId, ct);
@@ -267,6 +276,7 @@ public sealed class EobClaimPostingService : IEobClaimPostingService
         {
             claim = new BillingClaim
             {
+                TenantId = tenantId,
                 AppointmentId = appt.AppointmentId,
                 PatientId = patient.PatientId,
                 OrgId = orgId,
@@ -277,6 +287,7 @@ public sealed class EobClaimPostingService : IEobClaimPostingService
                 TotalBilled = proc.Billed,
                 TotalAllowed = proc.Allowed,
                 StatusId = claimStatusId,
+                EobStatusId = claimStatusId,
                 IsCreatedFromEob = true,
                 SubmittedDate = DateTime.UtcNow,
                 CreatedDate = DateTime.UtcNow,
@@ -293,6 +304,7 @@ public sealed class EobClaimPostingService : IEobClaimPostingService
             claim.PatientResponsibility = patientResp;
             claim.Attachment = header.Attachment;
             claim.StatusId = claimStatusId;
+            claim.EobStatusId = claimStatusId;
             await _db.SaveChangesAsync(ct);
         }
 
@@ -300,11 +312,12 @@ public sealed class EobClaimPostingService : IEobClaimPostingService
         int? procCodeId = null;
         if (!string.IsNullOrWhiteSpace(proc.ProcedureCode))
         {
-            var pCode = await _db.BillingProcedureCodes.FirstOrDefaultAsync(x => x.Codes == proc.ProcedureCode, ct);
+            var pCode = await _db.BillingProcedureCodes.FirstOrDefaultAsync(x => (x.TenantId == tenantId || x.TenantId == null) && x.Codes == proc.ProcedureCode, ct);
             if (pCode == null)
             {
                 pCode = new BillingProcedureCode
                 {
+                    TenantId = tenantId,
                     Codes = proc.ProcedureCode,
                     Description = proc.ProcedureCode
                 };
@@ -316,15 +329,11 @@ public sealed class EobClaimPostingService : IEobClaimPostingService
 
         // 4. Line EOB Status
         var coins = proc.CoInsurance ?? 0;
-        int lineEobStatus;
-        if (paid > 0 && coins > 0) lineEobStatus = 1062;
-        else if (coins > 0 && paid <= 0) lineEobStatus = 1062;
-        else if (paid <= 0 && coins <= 0) lineEobStatus = 1050;
-        else lineEobStatus = 1059;
+        var lineEobStatus = paid > 0 ? 1059 : 1050;
 
         // 5. ApptCode
         var apptCode = await _db.BillingApptCodes.FirstOrDefaultAsync(x =>
-            x.AppointmentId == appt.AppointmentId &&
+            x.TenantId == tenantId && x.AppointmentId == appt.AppointmentId &&
             x.ClaimId == claim.ClaimId &&
             x.PatientId == patient.PatientId &&
             x.OrgId == orgId &&
@@ -335,6 +344,7 @@ public sealed class EobClaimPostingService : IEobClaimPostingService
         {
             apptCode = new BillingApptCode
             {
+                TenantId = tenantId,
                 AppointmentId = appt.AppointmentId,
                 ClaimId = claim.ClaimId,
                 PatientId = patient.PatientId,
@@ -364,13 +374,14 @@ public sealed class EobClaimPostingService : IEobClaimPostingService
 
         // 6. Payment Row (tblClaimCodeAmountDetails)
         var payment = await _db.BillingPaymentRows.FirstOrDefaultAsync(x =>
-            x.ApptCodeId == apptCode.ApptCodeId &&
+            x.TenantId == tenantId && x.ApptCodeId == apptCode.ApptCodeId &&
             x.EobCheckNo == header.CheckEFT &&
             x.OrgId == orgId, ct);
         if (payment == null)
         {
             payment = new BillingPaymentRow
             {
+                TenantId = tenantId,
                 ApptCodeId = apptCode.ApptCodeId,
                 ClaimId = claim.ClaimId,
                 OrgId = orgId,
@@ -381,14 +392,23 @@ public sealed class EobClaimPostingService : IEobClaimPostingService
         }
         payment.PaidAmount = proc.ProviderPaid;
         payment.PatientResponsibility = patientResp;
+        payment.Coinsurance = proc.CoInsurance;
+        payment.Deductible = proc.Deductible;
+        payment.AllowedAmount = proc.Allowed;
+        payment.LoadDate = header.StatementDate;
+        payment.EobStatusId = lineEobStatus;
+        await _db.SaveChangesAsync(ct);
+        await SyncGroupCodesAsync(proc.GrpRows, claim.ClaimId, apptCode.ApptCodeId, payment.Id,
+            tenantId, orgId, ct);
 
         // 7. Claim EOB Doc
         var docExists = await _db.BillingClaimEobDocs.AnyAsync(x =>
-            x.ClaimId == claim.ClaimId && x.EobCheckNo == header.CheckEFT, ct);
+            x.TenantId == tenantId && x.ClaimId == claim.ClaimId && x.EobCheckNo == header.CheckEFT, ct);
         if (!docExists)
         {
             _db.BillingClaimEobDocs.Add(new BillingClaimEobDoc
             {
+                TenantId = tenantId,
                 ClaimId = claim.ClaimId,
                 EobCheckNo = header.CheckEFT,
                 Attachment = header.Attachment,
@@ -400,11 +420,12 @@ public sealed class EobClaimPostingService : IEobClaimPostingService
         // 8. Claims Log
         var logDate = DateTime.UtcNow.ToString("MM/dd/yyyy");
         var logExists = await _db.BillingClaimsLogs.AnyAsync(x =>
-            x.ClaimId == claim.ClaimId && x.StatusId == claimStatusId && x.LogDate == logDate, ct);
+            x.TenantId == tenantId && x.ClaimId == claim.ClaimId && x.StatusId == claimStatusId && x.LogDate == logDate, ct);
         if (!logExists)
         {
             _db.BillingClaimsLogs.Add(new BillingClaimsLog
             {
+                TenantId = tenantId,
                 ClaimId = claim.ClaimId,
                 StatusId = claimStatusId,
                 LogDate = logDate,
@@ -415,7 +436,7 @@ public sealed class EobClaimPostingService : IEobClaimPostingService
         await _db.SaveChangesAsync(ct);
 
         // Triggers
-        if (lineEobStatus == 1062)
+        if (coins > 0)
         {
             if (payer.Equals("AVAILITY", StringComparison.OrdinalIgnoreCase))
             {
@@ -433,6 +454,36 @@ public sealed class EobClaimPostingService : IEobClaimPostingService
         }
 
         result.PostedCount++;
+    }
+
+    private async Task SyncGroupCodesAsync(IEnumerable<ParsedGrp> source, int claimId, int codeId,
+        int paymentId, int tenantId, int orgId, CancellationToken ct)
+    {
+        var incoming = source.Where(x => !string.IsNullOrWhiteSpace(x.GRPCode))
+            .GroupBy(x => NormalizeGroupCode(x.GRPCode!), StringComparer.OrdinalIgnoreCase)
+            .Select(x => new { Code = x.Key, Amount = x.Sum(y => y.RcAmt ?? 0m) }).ToList();
+        if (incoming.Count == 0) return;
+
+        var existing = await _db.BillingClaimGroupCodes.Where(x => x.TenantId == tenantId
+            && x.AppClaimId == claimId && x.AppCodeId == codeId && x.CodeAmtId == paymentId).ToListAsync(ct);
+        foreach (var row in incoming)
+        {
+            var target = existing.FirstOrDefault(x => x.GroupCode == row.Code);
+            if (target == null)
+                _db.BillingClaimGroupCodes.Add(new BillingClaimGroupCode
+                {
+                    TenantId = tenantId, OrgId = orgId, AppClaimId = claimId, AppCodeId = codeId,
+                    CodeAmtId = paymentId, GroupCode = row.Code, GroupAmount = row.Amount, CreatedDate = DateTime.UtcNow
+                });
+            else target.GroupAmount = row.Amount;
+        }
+        await _db.SaveChangesAsync(ct);
+    }
+
+    private static string NormalizeGroupCode(string value)
+    {
+        var code = value.Trim().ToUpperInvariant().Replace(" ", string.Empty);
+        return !code.Contains('-') && code.Length > 2 ? $"{code[..2]}-{code[2..]}" : code;
     }
 
     public async Task SendToBillingAsync(

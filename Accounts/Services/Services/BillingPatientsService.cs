@@ -23,11 +23,13 @@ public sealed class BillingPatientsService : IBillingPatientsService
         int? officeId = null,
         CancellationToken ct = default)
     {
+        var orgId = await ResolveOrganizationIdAsync(tenantId, ct);
         return await SpListQuery.ExecAsync<BillingPatientRowDto>(
             _db,
-            "EXEC dbo.usp_Billing_PatientMaster_List @TenantId, @DateFrom, @DateTo, @OfficeId",
+            "EXEC dbo.usp_Billing_PatientMaster_List @TenantId, @OrgId, @DateFrom, @DateTo, @OfficeId",
             ct,
             SpListQuery.TenantId(tenantId),
+            SpListQuery.Int("@OrgId", orgId),
             SpListQuery.DateNullable("@DateFrom", dateFrom),
             SpListQuery.DateNullable("@DateTo", dateTo),
             SpListQuery.IntNullable("@OfficeId", officeId));
@@ -39,11 +41,13 @@ public sealed class BillingPatientsService : IBillingPatientsService
         CancellationToken ct = default)
     {
         var clean = (search ?? string.Empty).Trim().ToLower();
+        var orgId = await ResolveOrganizationIdAsync(tenantId, ct);
         var list = await SpListQuery.ExecAsync<BillingPatientRowDto>(
             _db,
-            "EXEC dbo.usp_Billing_PatientMaster_List @TenantId, @DateFrom, @DateTo, @OfficeId",
+            "EXEC dbo.usp_Billing_PatientMaster_List @TenantId, @OrgId, @DateFrom, @DateTo, @OfficeId",
             ct,
             SpListQuery.TenantId(tenantId),
+            SpListQuery.Int("@OrgId", orgId),
             SpListQuery.DateNullable("@DateFrom", null),
             SpListQuery.DateNullable("@DateTo", null),
             SpListQuery.IntNullable("@OfficeId", null));
@@ -60,47 +64,88 @@ public sealed class BillingPatientsService : IBillingPatientsService
         string? userId,
         CancellationToken ct = default)
     {
-        var person = new BillingPerson
-        {
-            FirstName = request.FirstName.Trim(),
-            LastName = request.LastName.Trim(),
-            CreatedDate = DateTime.UtcNow
-        };
-        _db.BillingPersons.Add(person);
-        await _db.SaveChangesAsync(ct);
+        var firstName = (request.FirstName ?? string.Empty).Trim();
+        var lastName = (request.LastName ?? string.Empty).Trim();
+        if (firstName.Length == 0 && lastName.Length == 0)
+            throw new InvalidOperationException("Patient first or last name is required.");
 
-        var patientNo = !string.IsNullOrWhiteSpace(request.PatientNo)
-            ? request.PatientNo.Trim()
-            : $"PT-{DateTime.UtcNow:yyyyMMdd}-{person.PersonId}";
+        var orgId = await ResolveOrganizationIdAsync(tenantId, ct);
+        await using var tx = await _db.Database.BeginTransactionAsync(System.Data.IsolationLevel.Serializable, ct);
+        var now = DateTime.UtcNow;
+        var suppliedPatientNo = request.PatientNo?.Trim();
+        BillingPatient? patient = null;
+        BillingPerson? person = null;
 
-        var patient = new BillingPatient
+        if (!string.IsNullOrWhiteSpace(suppliedPatientNo))
         {
-            OrgId = tenantId,
-            PersonId = person.PersonId,
-            PatientNo = patientNo,
-            PatientName = $"{request.FirstName} {request.LastName}".Trim(),
-            OfficeId = request.OfficeId,
-            CreatedDate = DateTime.UtcNow
+            patient = await _db.BillingPatients
+                .OrderBy(x => x.PatientId)
+                .FirstOrDefaultAsync(x => x.TenantId == tenantId && x.OrgId == orgId && x.PatientNo == suppliedPatientNo, ct);
+            if (patient?.PersonId is int existingPersonId)
+                person = await _db.BillingPersons
+                    .SingleOrDefaultAsync(x => x.TenantId == tenantId && x.OrgId == orgId && x.PersonId == existingPersonId, ct);
+        }
+
+        person ??= new BillingPerson
+        {
+            TenantId = tenantId,
+            OrgId = orgId,
+            CreatedDate = now
         };
-        _db.BillingPatients.Add(patient);
-        await _db.SaveChangesAsync(ct);
+        person.FirstName = firstName;
+        person.LastName = lastName;
+        person.FullName = $"{firstName} {lastName}".Trim();
+        person.PhoneNumber = request.PhoneNumber?.Trim();
+        person.Email = request.Email?.Trim();
+        person.DOB = request.DateOfBirth;
+        person.Age = request.DateOfBirth.HasValue
+            ? CalculateAge(request.DateOfBirth.Value, now.Date)
+            : null;
+        if (person.PersonId == 0)
+        {
+            _db.BillingPersons.Add(person);
+            await _db.SaveChangesAsync(ct);
+        }
+
+        patient ??= new BillingPatient
+        {
+            TenantId = tenantId,
+            OrgId = orgId,
+            CreatedDate = now,
+            CreatedBy = userId
+        };
+        patient.PersonId = person.PersonId;
+        patient.PatientNo = !string.IsNullOrWhiteSpace(suppliedPatientNo)
+            ? suppliedPatientNo
+            : $"PT-{now:yyyyMMdd}-{person.PersonId}";
+        patient.PatientName = person.FullName;
+        patient.OfficeId = request.OfficeId ?? patient.OfficeId;
+        if (patient.PatientId == 0)
+        {
+            _db.BillingPatients.Add(patient);
+            await _db.SaveChangesAsync(ct);
+        }
 
         var appointment = new BillingAppointment
         {
-            OrgId = tenantId,
+            TenantId = tenantId,
+            OrgId = orgId,
             PatientId = patient.PatientId,
             OfficeId = request.OfficeId,
             PtTypeId = request.PtTypeId,
             AppointmentDate = request.DateOfService.ToString("yyyy-MM-dd"),
-            ProviderName = request.ProviderName,
-            InsuranceName = request.InsuranceName,
+            DOS = request.DateOfService,
+            StatusId = 1045,
+            AppStatusId = 1045,
+            ProviderName = request.ProviderName?.Trim(),
+            InsuranceName = request.InsuranceName?.Trim(),
             IsClaimed = false,
-            CreatedDate = DateTime.UtcNow,
+            CreatedDate = now,
             CreatedByUserId = userId
         };
         _db.BillingAppointments.Add(appointment);
         await _db.SaveChangesAsync(ct);
-
+        await tx.CommitAsync(ct);
         return appointment.AppointmentId;
     }
 
@@ -130,40 +175,15 @@ public sealed class BillingPatientsService : IBillingPatientsService
             var lastName = parts.Length > 1 ? parts[1].Trim() : string.Empty;
             var patientNo = parts.Length > 2 ? parts[2].Trim() : string.Empty;
 
-            var person = new BillingPerson
+            await CreatePatientAndAppointmentAsync(tenantId, new CreatePatientAppointmentRequest
             {
                 FirstName = firstName,
                 LastName = lastName,
-                CreatedDate = DateTime.UtcNow
-            };
-            _db.BillingPersons.Add(person);
-            await _db.SaveChangesAsync(ct);
-
-            var patient = new BillingPatient
-            {
-                OrgId = tenantId,
-                PersonId = person.PersonId,
-                PatientNo = string.IsNullOrWhiteSpace(patientNo) ? $"PT-{person.PersonId}" : patientNo,
-                PatientName = $"{firstName} {lastName}".Trim(),
-                CreatedDate = DateTime.UtcNow
-            };
-            _db.BillingPatients.Add(patient);
-            await _db.SaveChangesAsync(ct);
-
-            var appointment = new BillingAppointment
-            {
-                OrgId = tenantId,
-                PatientId = patient.PatientId,
-                AppointmentDate = DateTime.UtcNow.ToString("yyyy-MM-dd"),
-                IsClaimed = false,
-                CreatedDate = DateTime.UtcNow,
-                CreatedByUserId = userId
-            };
-            _db.BillingAppointments.Add(appointment);
+                PatientNo = patientNo,
+                DateOfService = DateTime.UtcNow
+            }, userId, ct);
             count++;
         }
-
-        await _db.SaveChangesAsync(ct);
         return count;
     }
 
@@ -174,8 +194,11 @@ public sealed class BillingPatientsService : IBillingPatientsService
         CancellationToken ct = default)
     {
         // EMR sync bridge: check existing appointments for the date
-        var dateStr = date.ToString("yyyy-MM-dd");
-        var existingCount = await _db.BillingAppointments.CountAsync(x => x.OrgId == tenantId && x.AppointmentDate == dateStr, ct);
+        var orgId = await ResolveOrganizationIdAsync(tenantId, ct);
+        var start = date.ToDateTime(TimeOnly.MinValue);
+        var end = start.AddDays(1);
+        var existingCount = await _db.BillingAppointments.CountAsync(
+            x => x.TenantId == tenantId && x.OrgId == orgId && x.DOS >= start && x.DOS < end, ct);
         return existingCount;
     }
 
@@ -202,6 +225,17 @@ public sealed class BillingPatientsService : IBillingPatientsService
             PatientTypes = ptTypes.Cast<object>().ToList(),
             Statuses = statuses.Cast<object>().ToList()
         };
+    }
+
+    private async Task<int> ResolveOrganizationIdAsync(int tenantId, CancellationToken ct) =>
+        await _db.Tenants.AsNoTracking().Where(x => x.Id == tenantId)
+            .Select(x => x.OrganizationTreeId).SingleAsync(ct);
+
+    private static int CalculateAge(DateTime dateOfBirth, DateTime today)
+    {
+        var age = today.Year - dateOfBirth.Year;
+        if (dateOfBirth.Date > today.AddYears(-age)) age--;
+        return Math.Max(age, 0);
     }
 }
 

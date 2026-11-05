@@ -14,7 +14,11 @@ public interface IBillingClaimsService
         int? carrierId = null,
         CancellationToken ct = default);
 
+    Task<IReadOnlyList<BillingEobRowDto>> ListEobsAsync(int tenantId, DateOnly? dateFrom, DateOnly? dateTo, CancellationToken ct = default);
+
     Task<BillingPaymentRowDto?> GetClaimByIdAsync(int tenantId, int claimId, CancellationToken ct = default);
+
+    Task<IReadOnlyList<BillingClaimCodeDetailDto>> ListClaimCodeDetailsAsync(int tenantId, int claimId, int? appointmentId, CancellationToken ct = default);
 
     Task<int> CreateClaimAsync(int tenantId, CreateBillingClaimRequest request, string? userId, CancellationToken ct = default);
 

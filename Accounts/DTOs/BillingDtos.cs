@@ -98,41 +98,51 @@ public sealed class BillingStatusUpdateRequest
 public sealed class BillingPaymentRowDto
 {
     public int Id { get; set; }
-    public string AppointmentId { get; set; } = string.Empty;
-    public string PatientName { get; set; } = string.Empty;
-    public string PatientNumber { get; set; } = string.Empty;
-    public string PatientType { get; set; } = string.Empty;
-    public string DateOfService { get; set; } = string.Empty;
-    public string Office { get; set; } = string.Empty;
-    public string Carrier { get; set; } = string.Empty;
-    public string Insurance { get; set; } = string.Empty;
-    public string PolicyNumber { get; set; } = string.Empty;
-    public string SubmissionDate { get; set; } = string.Empty;
-    public string CptIcd { get; set; } = string.Empty;
-    public string GroupCodes { get; set; } = string.Empty;
-    public string Modifier { get; set; } = string.Empty;
+    public string? AppointmentId { get; set; } = string.Empty;
+    public string? PatientName { get; set; } = string.Empty;
+    public string? PatientNumber { get; set; } = string.Empty;
+    public string? PatientType { get; set; } = string.Empty;
+    public string? DateOfService { get; set; } = string.Empty;
+    public string? Office { get; set; } = string.Empty;
+    public string? Carrier { get; set; } = string.Empty;
+    public string? Insurance { get; set; } = string.Empty;
+    public string? PolicyNumber { get; set; } = string.Empty;
+    public string? SubmissionDate { get; set; } = string.Empty;
+    public string? CptIcd { get; set; } = string.Empty;
+    public string? GroupCodes { get; set; } = string.Empty;
+    public string? Modifier { get; set; } = string.Empty;
     public decimal? ClaimAmount { get; set; }
     public decimal? InsuranceAmount { get; set; }
     public decimal? PaidAmount { get; set; }
     public decimal? PatientAmount { get; set; }
     public decimal? BalanceAmount { get; set; }
     public decimal? CalculatedBalance { get; set; }
-    public string Status { get; set; } = string.Empty;
-    public string EobStatus { get; set; } = string.Empty;
+    public string? Status { get; set; } = string.Empty;
+    public string? EobStatus { get; set; } = string.Empty;
     public bool EobUploaded { get; set; }
-    public string EobCheckNumber { get; set; } = string.Empty;
-    public string Attachment { get; set; } = string.Empty;
+    public string? EobCheckNumber { get; set; } = string.Empty;
+    public string? Attachment { get; set; } = string.Empty;
+    public int? StatusId { get; set; }
+    public int? EobStatusId { get; set; }
+    public string? StatusColorCode { get; set; }
+    public string? StatusFontColor { get; set; }
+    public string? EobStatusColorCode { get; set; }
+    public string? EobStatusFontColor { get; set; }
+    public string? EobUploadDate { get; set; }
 }
 
 public sealed class BillingEobRowDto
 {
     public int Id { get; set; }
-    public string CheckEft { get; set; } = string.Empty;
-    public string StatementDate { get; set; } = string.Empty;
-    public string CreatedDate { get; set; } = string.Empty;
-    public string StatusName { get; set; } = string.Empty;
-    public string Attachment { get; set; } = string.Empty;
+    public string? CheckEft { get; set; } = string.Empty;
+    public string? StatementDate { get; set; } = string.Empty;
+    public string? CreatedDate { get; set; } = string.Empty;
+    public string? StatusName { get; set; } = string.Empty;
+    public string? StatusColorCode { get; set; }
+    public string? StatusFontColor { get; set; }
+    public string? Attachment { get; set; } = string.Empty;
     public decimal? TotalAmount { get; set; }
+    public string? Source { get; set; } = string.Empty;
 }
 
 public sealed class CreateBillingClaimRequest
@@ -151,20 +161,72 @@ public sealed class CreateBillingClaimRequest
 
 public sealed class CreateBillingApptCodeRequest
 {
+    public int? ProcedureCodeId { get; set; }
     public string ProcedureCode { get; set; } = string.Empty;
+    public int Unit { get; set; } = 1;
+    public int? TypeId { get; set; }
     public decimal? ClaimAmount { get; set; }
-    public decimal? InsuranceAmount { get; set; }
+    public decimal? InsuranceRate { get; set; }
+    public int? CarrierId { get; set; }
+    public int? InsuranceCompanyId { get; set; }
+    public string? PolicyNumber { get; set; }
     public string? Modifiers { get; set; }
+    public List<CreateBillingGroupCodeRequest> GroupCodes { get; set; } = [];
+}
+
+public sealed class CreateBillingGroupCodeRequest
+{
+    public string GroupCode { get; set; } = string.Empty;
+    public decimal? GroupAmount { get; set; }
 }
 
 public sealed class PostClaimPaymentRequest
 {
+    public int? ApptCodeId { get; set; }
     public string? EobCheckNo { get; set; }
     public decimal PaidAmount { get; set; }
     public decimal? PatientResponsibility { get; set; }
+    public decimal? Coinsurance { get; set; }
+    public decimal? Deductible { get; set; }
+    public decimal? AllowedAmount { get; set; }
+    public DateTime? LoadDate { get; set; }
     public string? Remarks { get; set; }
     public bool IsClosed { get; set; }
     public bool IsReProcess { get; set; }
+    public List<CreateBillingGroupCodeRequest> GroupCodes { get; set; } = [];
+}
+
+public sealed class BillingClaimCodeDetailDto
+{
+    public int DetailId { get; set; }
+    public int ApptCodeId { get; set; }
+    public int ClaimId { get; set; }
+    public int? AppointmentId { get; set; }
+    public long RowNumber { get; set; }
+    public int? Unit { get; set; }
+    public string ProcedureCode { get; set; } = string.Empty;
+    public string Modifiers { get; set; } = string.Empty;
+    public decimal? ClaimAmount { get; set; }
+    public decimal? TotalClaimAmount { get; set; }
+    public decimal? InsuranceRate { get; set; }
+    public decimal? InsuranceAmount { get; set; }
+    public decimal? AllowedAmount { get; set; }
+    public decimal? PaidAmount { get; set; }
+    public decimal? PatientResponsibility { get; set; }
+    public decimal? Coinsurance { get; set; }
+    public decimal? Deductible { get; set; }
+    public string GroupCodes { get; set; } = string.Empty;
+    public decimal? TotalGroupAmount { get; set; }
+    public decimal? CalculatedBalance { get; set; }
+    public decimal? AdjustmentBalance { get; set; }
+    public string EobCheckNumber { get; set; } = string.Empty;
+    public string FillSource { get; set; } = string.Empty;
+    public string? EobStatus { get; set; }
+    public string? EobStatusColorCode { get; set; }
+    public string? EobStatusFontColor { get; set; }
+    public string? LoadDate { get; set; }
+    public string? Remarks { get; set; }
+    public DateTime? CreatedDate { get; set; }
 }
 
 public sealed class BillingClaimLookupsDto

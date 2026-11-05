@@ -37,6 +37,9 @@ public sealed class HealthNetClaimPostingService
             result.Status = "Successful";
             return result;
         }
+        var tenantId = orgId;
+        var organizationId = await _db.Tenants.AsNoTracking().Where(x => x.Id == tenantId)
+            .Select(x => x.OrganizationTreeId).SingleAsync(ct);
 
         int totalAttempted = 0;
 
@@ -45,7 +48,7 @@ public sealed class HealthNetClaimPostingService
             try
             {
                 // Rule: NEVER creates patient or appointment
-                var patient = await ResolvePatientAsync(p, orgId, ct);
+                var patient = await ResolvePatientAsync(p, tenantId, organizationId, ct);
                 if (patient == null)
                 {
                     result.Warnings.Add($"Patient '{p.PatientName}' (Account: {p.PatientNo}, MID: {p.MID}) not found in database. Skipped.");
@@ -56,7 +59,7 @@ public sealed class HealthNetClaimPostingService
                 foreach (var proc in p.Procedures)
                 {
                     totalAttempted++;
-                    var matched = await PostLineAsync(parsed, p, proc, patient, orgId, userId, result, ct);
+                    var matched = await PostLineAsync(parsed, p, proc, patient, tenantId, organizationId, userId, result, ct);
                     if (matched)
                     {
                         result.PostedClaimCount++;
@@ -94,29 +97,30 @@ public sealed class HealthNetClaimPostingService
         return result;
     }
 
-    private async Task<BillingPatient?> ResolvePatientAsync(ParsedPatient p, int orgId, CancellationToken ct)
+    private async Task<BillingPatient?> ResolvePatientAsync(ParsedPatient p, int tenantId, int orgId, CancellationToken ct)
     {
         // Health Net is intentionally strict: account number is the only patient
         // identity. MID/name fallback can post PHI and money to the wrong person.
         if (string.IsNullOrWhiteSpace(p.PatientNo)) return null;
 
         var tenantMatches = await _db.BillingPatients
-            .Where(x => x.OrgId == orgId && x.PatientNo == p.PatientNo)
+            .Where(x => x.TenantId == tenantId && x.OrgId == orgId && x.PatientNo == p.PatientNo)
             .ToListAsync(ct);
-        var tenantMatch = await ResolveUniqueByServiceDateAsync(tenantMatches, p, orgId, ct);
+        var tenantMatch = await ResolveUniqueByServiceDateAsync(tenantMatches, p, tenantId, orgId, ct);
         if (tenantMatch != null || tenantMatches.Count > 0) return tenantMatch;
 
         // Legacy unassigned patients are considered only when the active tenant
         // has no match. Patients belonging to another tenant are never considered.
         var unassignedMatches = await _db.BillingPatients
-            .Where(x => x.OrgId == null && x.PatientNo == p.PatientNo)
+            .Where(x => x.TenantId == null && x.OrgId == null && x.PatientNo == p.PatientNo)
             .ToListAsync(ct);
-        return await ResolveUniqueByServiceDateAsync(unassignedMatches, p, null, ct);
+        return await ResolveUniqueByServiceDateAsync(unassignedMatches, p, null, null, ct);
     }
 
     private async Task<BillingPatient?> ResolveUniqueByServiceDateAsync(
         List<BillingPatient> candidates,
         ParsedPatient parsed,
+        int? appointmentTenantId,
         int? appointmentOrgId,
         CancellationToken ct)
     {
@@ -132,7 +136,7 @@ public sealed class HealthNetClaimPostingService
 
         var candidateIds = candidates.Select(x => x.PatientId).ToList();
         var appointments = await _db.BillingAppointments.AsNoTracking()
-            .Where(x => x.PatientId.HasValue && candidateIds.Contains(x.PatientId.Value) && x.OrgId == appointmentOrgId)
+            .Where(x => x.PatientId.HasValue && candidateIds.Contains(x.PatientId.Value) && x.TenantId == appointmentTenantId && x.OrgId == appointmentOrgId)
             .Select(x => new { x.PatientId, x.AppointmentDate })
             .ToListAsync(ct);
         var matchingIds = appointments
@@ -150,6 +154,7 @@ public sealed class HealthNetClaimPostingService
         ParsedPatient p,
         ParsedProcedure proc,
         BillingPatient patient,
+        int tenantId,
         int orgId,
         string? userId,
         HealthNetFileResult fileResult,
@@ -159,7 +164,7 @@ public sealed class HealthNetClaimPostingService
 
         // Line matching scoring: base 50 + 30 policy + 15 modifier
         var candidateCodes = await _db.BillingApptCodes
-            .Where(x => x.PatientId == patient.PatientId &&
+            .Where(x => x.TenantId == tenantId && x.PatientId == patient.PatientId &&
                         x.OrgId == orgId &&
                         x.ProcedureCode == proc.ProcedureCode)
             .ToListAsync(ct);
@@ -200,9 +205,9 @@ public sealed class HealthNetClaimPostingService
 
         // Claim update
         var claim = await _db.BillingClaims
-            .FirstOrDefaultAsync(x => x.ClaimId == bestMatch.ClaimId && x.OrgId == orgId, ct);
+            .FirstOrDefaultAsync(x => x.TenantId == tenantId && x.ClaimId == bestMatch.ClaimId && x.OrgId == orgId, ct);
         var paid = proc.ProviderPaid ?? 0;
-        var claimStatusId = paid > 0 ? 1059 : 1049;
+        var claimStatusId = paid > 0 ? 1059 : 1050;
 
         if (claim != null)
         {
@@ -212,15 +217,11 @@ public sealed class HealthNetClaimPostingService
             claim.PatientResponsibility = p.PatientResponsibility;
             claim.EobCheckNo = header.CheckEFT;
             claim.StatusId = claimStatusId;
+            claim.EobStatusId = claimStatusId;
         }
 
         // Line EOB Status
-        var coins = proc.CoInsurance ?? 0;
-        int lineEobStatus;
-        if (paid > 0 && coins > 0) lineEobStatus = 1062;
-        else if (coins > 0 && paid <= 0) lineEobStatus = 1062;
-        else if (paid <= 0 && coins <= 0) lineEobStatus = 1050;
-        else lineEobStatus = 1059;
+        var lineEobStatus = paid > 0 ? 1059 : 1050;
 
         bestMatch.Paid = proc.ProviderPaid;
         bestMatch.CoInsurance = proc.CoInsurance;
@@ -229,31 +230,68 @@ public sealed class HealthNetClaimPostingService
 
         // Dedup payment rows by ApptCodeId + CheckNo
         var existingPayment = await _db.BillingPaymentRows.FirstOrDefaultAsync(x =>
-            x.ApptCodeId == bestMatch.ApptCodeId &&
+            x.TenantId == tenantId && x.ApptCodeId == bestMatch.ApptCodeId &&
             x.EobCheckNo == header.CheckEFT &&
             x.OrgId == orgId, ct);
 
         if (existingPayment == null)
         {
-            var payment = new BillingPaymentRow
+            existingPayment = new BillingPaymentRow
             {
+                TenantId = tenantId,
                 ApptCodeId = bestMatch.ApptCodeId,
                 ClaimId = bestMatch.ClaimId,
                 OrgId = orgId,
                 EobCheckNo = header.CheckEFT,
                 PaidAmount = proc.ProviderPaid,
                 PatientResponsibility = proc.PatientResponsibility,
+                Coinsurance = proc.CoInsurance,
+                Deductible = proc.Deductible,
+                AllowedAmount = proc.Allowed,
+                LoadDate = header.StatementDate,
+                EobStatusId = lineEobStatus,
                 CreatedDate = DateTime.UtcNow
             };
-            _db.BillingPaymentRows.Add(payment);
+            _db.BillingPaymentRows.Add(existingPayment);
         }
         else
         {
             existingPayment.PaidAmount = proc.ProviderPaid;
+            existingPayment.PatientResponsibility = proc.PatientResponsibility;
+            existingPayment.Coinsurance = proc.CoInsurance;
+            existingPayment.Deductible = proc.Deductible;
+            existingPayment.AllowedAmount = proc.Allowed;
+            existingPayment.LoadDate = header.StatementDate;
+            existingPayment.EobStatusId = lineEobStatus;
         }
 
         await _db.SaveChangesAsync(ct);
+        await SyncGroupCodesAsync(proc.GrpRows, bestMatch.ClaimId!.Value, bestMatch.ApptCodeId,
+            existingPayment.Id, tenantId, orgId, ct);
         return true;
+    }
+
+    private async Task SyncGroupCodesAsync(IEnumerable<ParsedGrp> source, int claimId, int codeId,
+        int paymentId, int tenantId, int orgId, CancellationToken ct)
+    {
+        var incoming = source.Where(x => !string.IsNullOrWhiteSpace(x.GRPCode))
+            .GroupBy(x => NormalizeGrpCode(x.GRPCode!), StringComparer.OrdinalIgnoreCase)
+            .Select(x => new { Code = x.Key, Amount = x.Sum(y => y.RcAmt ?? 0m) }).ToList();
+        if (incoming.Count == 0) return;
+        var existing = await _db.BillingClaimGroupCodes.Where(x => x.TenantId == tenantId
+            && x.AppClaimId == claimId && x.AppCodeId == codeId && x.CodeAmtId == paymentId).ToListAsync(ct);
+        foreach (var row in incoming)
+        {
+            var target = existing.FirstOrDefault(x => x.GroupCode == row.Code);
+            if (target == null)
+                _db.BillingClaimGroupCodes.Add(new BillingClaimGroupCode
+                {
+                    TenantId = tenantId, OrgId = orgId, AppClaimId = claimId, AppCodeId = codeId,
+                    CodeAmtId = paymentId, GroupCode = row.Code, GroupAmount = row.Amount, CreatedDate = DateTime.UtcNow
+                });
+            else target.GroupAmount = row.Amount;
+        }
+        await _db.SaveChangesAsync(ct);
     }
 
     private async Task SaveGrpCodeRulesAsync(ParsedEobHeader header, int orgId, CancellationToken ct)

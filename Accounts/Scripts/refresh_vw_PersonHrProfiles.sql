@@ -1,7 +1,7 @@
 CREATE OR ALTER VIEW dbo.vw_PersonHrProfiles AS
 SELECT
     p.PersonId, p.TenantId, p.FullName, s.LoginId, s.StaffId, v.VacancyCode,
-    COALESCE(j.TitleName, v.JobTitle) AS JobTitle, v.Department, p.Phone, p.Email,
+    COALESCE(j.TitleName, v.JobTitle) AS JobTitle, v.Department, contact.Phone, contact.Email,
     COALESCE(p.PersonalEmail, pcPersonal.ContactValue) AS PersonalEmail,
     p.Gender, p.DateOfBirth, p.MaritalStatus, p.ShiftStartTime, p.ShiftEndTime, p.TimeZoneId,
     h.CnicOrLicense, h.Nationality, h.Race, h.Language, h.BloodGroup, h.Disability, h.PoliceStation,
@@ -15,6 +15,7 @@ SELECT
     h.IncrementSalary, h.MaxSalary, h.CurrentPay, h.SalaryAdjustment, h.AccountsPerDay, h.AccountsPerHour,
     h.LeaveFrom, h.LeaveTo, h.LeaveEntitled, h.LeaveAvailed
 FROM dbo.Persons p
+    LEFT JOIN dbo.vw_PersonPrimaryContacts contact ON contact.PersonId=p.PersonId
 LEFT JOIN dbo.PersonHrProfiles h ON h.PersonId = p.PersonId
 LEFT JOIN dbo.StaffVacancy s ON s.PersonId = p.PersonId
 LEFT JOIN dbo.Vacancies v ON v.VacancyId = s.VacancyId
