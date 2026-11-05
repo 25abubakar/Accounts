@@ -15,6 +15,12 @@ public sealed class CopayStatement : ITenantEntity
 
     public int TenantId { get; set; }
 
+    /// <summary>Original tblCopayStatment.Id when imported from LTAccount.</summary>
+    public int? LegacyId { get; set; }
+
+    /// <summary>Original OrganizationId retained for migration reconciliation.</summary>
+    public int? LegacyOrganizationId { get; set; }
+
     /// <summary>Unique generated reference e.g. {OrgCode}-CO-105.</summary>
     [MaxLength(80)]
     public string? Ref { get; set; }
@@ -87,6 +93,13 @@ public sealed class CopayStatement : ITenantEntity
 
     public int? YearId { get; set; }
 
+    public long? ImportBatchId { get; set; }
+
+    public int? SourceRowNumber { get; set; }
+
+    [MaxLength(128)]
+    public string? SourceFingerprint { get; set; }
+
     [MaxLength(450)]
     public string? CreatedByUserId { get; set; }
 
@@ -96,4 +109,41 @@ public sealed class CopayStatement : ITenantEntity
     public string? UpdatedByUserId { get; set; }
 
     public DateTime? UpdatedOnUtc { get; set; }
+}
+
+[Table("CopayImportBatches")]
+public sealed class CopayImportBatch : ITenantEntity
+{
+    [Key]
+    public long Id { get; set; }
+    public int TenantId { get; set; }
+    [Required, MaxLength(40)] public string Stage { get; set; } = string.Empty;
+    [Required, MaxLength(260)] public string FileName { get; set; } = string.Empty;
+    [Required, MaxLength(128)] public string FileHash { get; set; } = string.Empty;
+    [Required, MaxLength(40)] public string Status { get; set; } = "Processing";
+    public int TotalRows { get; set; }
+    public int ImportedRows { get; set; }
+    public int DuplicateRows { get; set; }
+    public int InvalidRows { get; set; }
+    [MaxLength(4000)] public string? ErrorSummary { get; set; }
+    [MaxLength(450)] public string? CreatedByUserId { get; set; }
+    public DateTime CreatedOnUtc { get; set; } = DateTime.UtcNow;
+    public DateTime? CompletedOnUtc { get; set; }
+}
+
+[Table("CopayImportRows")]
+public sealed class CopayImportRow : ITenantEntity
+{
+    [Key]
+    public long Id { get; set; }
+    public int TenantId { get; set; }
+    public long ImportBatchId { get; set; }
+    public int SourceRowNumber { get; set; }
+    [Required, MaxLength(128)] public string Fingerprint { get; set; } = string.Empty;
+    [Required, MaxLength(30)] public string Result { get; set; } = string.Empty;
+    [MaxLength(2000)] public string? Message { get; set; }
+    public long? RoznamchaEntryId { get; set; }
+    public RoznamchaEntry? RoznamchaEntry { get; set; }
+    public long? CopayStatementId { get; set; }
+    public CopayStatement? CopayStatement { get; set; }
 }

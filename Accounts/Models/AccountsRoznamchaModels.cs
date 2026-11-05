@@ -219,6 +219,14 @@ public sealed class AccountsModuleSettings : ITenantEntity
     public int? DefaultCurrencyId { get; set; }
     public int? PaymentRozTypeId { get; set; }
     public int? ReceiptRozTypeId { get; set; }
+    public int? CopayCategoryId { get; set; }
+    public int? CopayHoldingAccountId { get; set; }
+    public int? CopayMerchantClearingAccountId { get; set; }
+    public int? CopayMerchantAccountId { get; set; }
+    public int? CopayCurrencyId { get; set; }
+    public int? CopayReceiptTypeId { get; set; }
+    public int CopayMerchantMatchWindowDays { get; set; } = 14;
+    public int CopayBankMatchWindowDays { get; set; } = 6;
 }
 
 [Table("BillingRoznamchaImports")]

@@ -138,7 +138,7 @@ public sealed class BillingClaimsController : ControllerBase
         if (_tenant.IsSuperAdmin || !_tenant.TenantId.HasValue || !await HasActionAsync("EDIT", ct))
             return Forbid();
 
-        var ok = await _claims.UpdateClaimStatusAsync(_tenant.RequiredTenantId, id, request.StatusId, request.Remarks, UserId(), ct);
+        var ok = await _claims.UpdateClaimStatusAsync(_tenant.RequiredTenantId, id, request.StatusId, request.Remarks, UserId(), request.PolicyNumber, ct);
         return ok ? Ok(new { success = true, message = "Status updated successfully." }) : NotFound(new { message = "Claim was not found." });
     }
 
@@ -188,11 +188,7 @@ public sealed class BillingClaimsController : ControllerBase
         if (_tenant.IsSuperAdmin || !_tenant.TenantId.HasValue || !await HasActionAsync("VIEW", ct))
             return Forbid();
 
-        var docs = await _db.BillingClaimEobDocs.AsNoTracking()
-            .Where(x => x.TenantId == _tenant.RequiredTenantId && x.ClaimId == id)
-            .OrderByDescending(x => x.CreatedDate)
-            .ToListAsync(ct);
-
+        var docs = await _claims.GetClaimDocumentsAsync(_tenant.RequiredTenantId, id, ct);
         return Ok(docs);
     }
 
@@ -225,5 +221,55 @@ public sealed class BillingClaimsController : ControllerBase
         await _db.SaveChangesAsync(ct);
 
         return Ok(new { success = true, message = "Document uploaded successfully." });
+    }
+
+    [HttpPost("correct-reprocess")]
+    public async Task<IActionResult> CorrectReprocess([FromBody] BillingDateRangeActionRequest request, CancellationToken ct)
+    {
+        if (_tenant.IsSuperAdmin || !_tenant.TenantId.HasValue || !await HasActionAsync("EDIT", ct))
+            return Forbid();
+
+        var result = await _claims.CorrectReprocessClaimsAsync(_tenant.RequiredTenantId, request.DateFrom, request.DateTo, ct);
+        return Ok(result);
+    }
+
+    [HttpPost("settled-payment")]
+    public async Task<IActionResult> SettledPayment([FromBody] BillingDateRangeActionRequest request, CancellationToken ct)
+    {
+        if (_tenant.IsSuperAdmin || !_tenant.TenantId.HasValue || !await HasActionAsync("EDIT", ct))
+            return Forbid();
+
+        var result = await _claims.SettledClaimsPaymentAsync(_tenant.RequiredTenantId, request.DateFrom, request.DateTo, ct);
+        return Ok(result);
+    }
+
+    [HttpPost("batch-status")]
+    public async Task<IActionResult> BatchUpdateStatus([FromBody] BillingBatchStatusRequest request, CancellationToken ct)
+    {
+        if (_tenant.IsSuperAdmin || !_tenant.TenantId.HasValue || !await HasActionAsync("EDIT", ct))
+            return Forbid();
+
+        var result = await _claims.BatchUpdateStatusAsync(_tenant.RequiredTenantId, request.ClaimIds, request.StatusId, request.Remarks, UserId(), request.PaymentDate, ct);
+        return Ok(result);
+    }
+
+    [HttpPost("batch-reprocess")]
+    public async Task<IActionResult> BatchReprocess([FromBody] BillingBatchFlagRequest request, CancellationToken ct)
+    {
+        if (_tenant.IsSuperAdmin || !_tenant.TenantId.HasValue || !await HasActionAsync("EDIT", ct))
+            return Forbid();
+
+        var result = await _claims.BatchReprocessClaimsAsync(_tenant.RequiredTenantId, request.ClaimIds, request.Value, UserId(), ct);
+        return Ok(result);
+    }
+
+    [HttpPost("batch-ar")]
+    public async Task<IActionResult> BatchAr([FromBody] BillingBatchFlagRequest request, CancellationToken ct)
+    {
+        if (_tenant.IsSuperAdmin || !_tenant.TenantId.HasValue || !await HasActionAsync("EDIT", ct))
+            return Forbid();
+
+        var result = await _claims.BatchArClaimsAsync(_tenant.RequiredTenantId, request.ClaimIds, request.Value, UserId(), ct);
+        return Ok(result);
     }
 }

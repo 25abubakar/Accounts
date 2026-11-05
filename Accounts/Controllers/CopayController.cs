@@ -1,4 +1,4 @@
-using System.Security.Claims;
+﻿using System.Security.Claims;
 using Accounts.Data;
 using Accounts.DTOs;
 using Accounts.Idempotency;
@@ -50,6 +50,16 @@ public sealed class CopayController(
         return Ok(ApiResponse<SettlementResultDto>.Ok(result, "Merchant to Bank settlement completed."));
     }
 
+    [HttpPost("upload-merchant-payout")]
+    [Consumes("multipart/form-data")]
+    [Idempotent]
+    public async Task<IActionResult> UploadMerchantPayout([FromForm] UploadMerchantPayoutDto dto, CancellationToken ct)
+    {
+        if (!await HasActionAsync(MerchantToBankRoute, "ADD", ct)) return Forbid();
+        var result = await copayService.ImportMerchantPayoutExcelAsync(dto, ct);
+        return Ok(ApiResponse<CopayImportResultDto>.Ok(result, $"Imported {result.ImportedRows} merchant payout rows."));
+    }
+
     // ── 2. Copay IMS To Merchant Statement Grid & Upload ──────────────────────
 
     /// <summary>
@@ -68,11 +78,12 @@ public sealed class CopayController(
     /// </summary>
     [HttpPost("upload-merchant-statement")]
     [Consumes("multipart/form-data")]
+    [Idempotent]
     public async Task<IActionResult> UploadMerchantStatement([FromForm] UploadMerchantStatementDto dto, CancellationToken ct)
     {
         if (!await HasActionAsync(ImsToMerchantRoute, "ADD", ct)) return Forbid();
         var importedCount = await copayService.ImportMerchantStatementExcelAsync(dto, ct);
-        return Ok(ApiResponse<int>.Ok(importedCount, $"Successfully imported {importedCount} merchant statement entries."));
+        return Ok(ApiResponse<CopayImportResultDto>.Ok(importedCount, $"Successfully imported {importedCount.ImportedRows} merchant statement entries."));
     }
 
     // ── 3. Copay IMS - Excel Grid, Upload & Settle ────────────────────────────
@@ -93,11 +104,54 @@ public sealed class CopayController(
     /// </summary>
     [HttpPost("upload-ims-daily-sheet")]
     [Consumes("multipart/form-data")]
+    [Idempotent]
     public async Task<IActionResult> UploadImsDailySheet([FromForm] UploadImsSheetDto dto, CancellationToken ct)
     {
         if (!await HasActionAsync(ImsExcelRoute, "ADD", ct)) return Forbid();
         var count = await copayService.ImportImsDailySheetAsync(dto, ct);
-        return Ok(ApiResponse<int>.Ok(count, $"Successfully imported {count} front desk copay collection rows."));
+        return Ok(ApiResponse<CopayImportResultDto>.Ok(count, $"Successfully imported {count.ImportedRows} front desk copay collection rows."));
+    }
+
+    [HttpGet("ims-verification")]
+    public async Task<IActionResult> GetImsVerification([FromQuery] DateRangeDto dateRange, CancellationToken ct)
+    {
+        if (!await HasActionAsync(ImsExcelRoute, "VIEW", ct)) return Forbid();
+        return Ok(ApiResponse<IReadOnlyList<ImsReceiptItemDto>>.Ok(
+            await copayService.GetImsVerificationAsync(dateRange, ct)));
+    }
+
+    [HttpGet("process-logs/{entryId:long}")]
+    public async Task<IActionResult> GetProcessLogs(long entryId, CancellationToken ct)
+    {
+        if (!await HasActionAsync(ImsExcelRoute, "VIEW", ct)
+            && !await HasActionAsync(ImsToMerchantRoute, "VIEW", ct)
+            && !await HasActionAsync(MerchantToBankRoute, "VIEW", ct)) return Forbid();
+        return Ok(ApiResponse<IReadOnlyList<CopayProcessLogDto>>.Ok(
+            await copayService.GetProcessLogsAsync(entryId, ct)));
+    }
+
+    [HttpGet("entry-documents")]
+    public async Task<IActionResult> GetEntryDocuments([FromQuery] string entryRef, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(entryRef)) return BadRequest(ApiResponse<object?>.Fail("Entry reference is required."));
+        if (!await HasActionAsync(ImsExcelRoute, "VIEW", ct)
+            && !await HasActionAsync(ImsToMerchantRoute, "VIEW", ct)
+            && !await HasActionAsync(MerchantToBankRoute, "VIEW", ct)) return Forbid();
+
+        var docs = await db.BillingDocumentProcesses.AsNoTracking()
+            .Where(x => x.EntryRef == entryRef.Trim())
+            .OrderByDescending(x => x.CreatedDate)
+            .Select(x => new
+            {
+                x.Id,
+                EntryRef = x.EntryRef ?? "",
+                DRef = x.D_Ref ?? "",
+                Attachment = x.Attachment ?? "",
+                CreatedDate = x.CreatedDate
+            })
+            .ToListAsync(ct);
+
+        return Ok(ApiResponse<object>.Ok(docs));
     }
 
     /// <summary>

@@ -1,5 +1,6 @@
 using System.Data;
 using System.Globalization;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
 using Accounts.Data;
@@ -8,23 +9,29 @@ using Accounts.Models;
 using Accounts.Services.Interfaces;
 using ExcelDataReader;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.Extensions.Logging;
 
 namespace Accounts.Services.Services;
 
 public sealed class CopayService(
     ApplicationDbContext db,
     ICurrentUserService current,
-    ILogger<CopayService> logger) : ICopayService
+    IWebHostEnvironment environment) : ICopayService
 {
-    private const int CopayCategoryId = 54;
-    private const int CopayHoldingAccountId = 1567;
-    private const int ReceiptRoznamchaTypeId = 2;
+    private const int LegacyCopayCategoryId = 54;
+    private const int LegacyCopayHoldingAccountId = 1567;
+    private const int LegacyCopayMerchantClearingAccountId = 1568;
+    private const int LegacyReceiptRoznamchaTypeId = 2;
 
     private const int StatusOpen = 14;
     private const int StatusSettled = 20;
     private const int StatusMerchantFee = 1060;
     private const int StatusSettledManually = 1066;
+    private const int StatusCashCopay = 1058;
+    private const int StatusImsWithBank = 1081;
+    private const int StatusTargetSettled = 1082;
+    private const int StatusWithBilling = 1083;
+    private const int StatusWithMachine = 1084;
+    private const int StatusWithCopayExcel = 1087;
 
     static CopayService()
     {
@@ -37,8 +44,9 @@ public sealed class CopayService(
         CopayFilterDto filter, CancellationToken ct = default)
     {
         var tenantId = current.TenantId;
+        var config = await ResolveConfigAsync(tenantId, ct);
         var query = db.RoznamchaEntries.AsNoTracking()
-            .Where(x => x.TenantId == tenantId && x.CategoryId == CopayCategoryId && !x.IsShow);
+            .Where(x => x.TenantId == tenantId && x.CategoryId == config.CategoryId && !x.IsShow);
 
         if (filter.DateFrom.HasValue)
             query = query.Where(x => x.TransDate >= filter.DateFrom.Value);
@@ -81,10 +89,16 @@ public sealed class CopayService(
                 .Where(b => b.TenantId == tenantId && b.ReferenceNumber != null && refs.Contains(b.ReferenceNumber))
                 .ToDictionaryAsync(b => b.ReferenceNumber!, ct)
             : new Dictionary<string, BankStatement>();
+        var statusIds = entries.Where(x => x.EnterStatusId.HasValue).Select(x => x.EnterStatusId!.Value).Distinct().ToList();
+        var statuses = await db.AccountsEntryStatuses.AsNoTracking()
+            .Where(x => statusIds.Contains(x.Id) && (x.TenantId == null || x.TenantId == tenantId))
+            .GroupBy(x => x.Id).Select(x => x.OrderByDescending(s => s.TenantId == tenantId).First())
+            .ToDictionaryAsync(x => x.Id, ct);
 
         var items = entries.Select(e =>
         {
             bankMatches.TryGetValue(e.Ref ?? string.Empty, out var matchedBank);
+            statuses.TryGetValue(e.EnterStatusId ?? 0, out var status);
             return new MerchantToBankItemDto
             {
                 Id = e.Id,
@@ -95,12 +109,15 @@ public sealed class CopayService(
                 BankLtRef = e.BankLtRef,
                 BankRef = e.BankRef,
                 EnterStatusId = e.EnterStatusId,
-                EnterStatusName = GetStatusName(e.EnterStatusId),
+                EnterStatusName = status?.Name ?? GetStatusName(e.EnterStatusId),
+                StatusColor = status?.ColorCode,
+                StatusFontColor = status?.FontColor,
                 IsSettled = e.IsSettled,
                 Remarks = e.Remarks,
                 MatchedBankStatementId = matchedBank?.Id,
                 BankPostingDate = matchedBank?.PostingDate,
-                BankCredit = matchedBank?.Credit
+                BankCredit = matchedBank?.Credit,
+                BankDebit = matchedBank?.Debit
             };
         }).ToList();
 
@@ -117,12 +134,13 @@ public sealed class CopayService(
         DateRangeDto dateRange, CancellationToken ct = default)
     {
         var tenantId = current.TenantId;
-        var tolerance = Math.Clamp(dateRange.ToleranceDays ?? 7, 0, 30);
+        var config = await ResolveConfigAsync(tenantId, ct);
+        var tolerance = Math.Clamp(dateRange.ToleranceDays ?? config.BankMatchWindowDays, 0, 30);
 
         // Fetch unsettled batch copay entries in the specified date range
         var entries = await db.RoznamchaEntries
             .Where(x => x.TenantId == tenantId
-                     && x.CategoryId == CopayCategoryId
+                     && x.CategoryId == config.CategoryId
                      && !x.IsShow
                      && !x.IsSettled
                      && x.TransDate >= dateRange.DateFrom
@@ -160,45 +178,7 @@ public sealed class CopayService(
         foreach (var entry in entries)
         {
             var entryAmount = entry.UsdAmount ?? entry.Amount ?? 0;
-            BankStatement? matchedBank = null;
-
-            if (entryAmount >= 0)
-            {
-                // Positive batch deposit -> matches bank statement Credit
-                // 1. Same-day match
-                matchedBank = bankStatements.FirstOrDefault(b =>
-                    !b.IsSettled && b.PostingDate == entry.TransDate && b.Credit == entryAmount);
-
-                // 2. Tolerance window check (1 to tolerance days ahead)
-                if (matchedBank == null)
-                {
-                    for (var i = 1; i <= tolerance; i++)
-                    {
-                        var targetDate = entry.TransDate.AddDays(i);
-                        matchedBank = bankStatements.FirstOrDefault(b =>
-                            !b.IsSettled && b.PostingDate == targetDate && b.Credit == entryAmount);
-                        if (matchedBank != null) break;
-                    }
-                }
-            }
-            else
-            {
-                // Negative amount (chargeback / refund) -> matches bank statement Debit
-                var absAmount = Math.Abs(entryAmount);
-                matchedBank = bankStatements.FirstOrDefault(b =>
-                    !b.IsSettled && b.PostingDate == entry.TransDate && b.Debit == absAmount);
-
-                if (matchedBank == null)
-                {
-                    for (var i = 1; i <= tolerance; i++)
-                    {
-                        var targetDate = entry.TransDate.AddDays(i);
-                        matchedBank = bankStatements.FirstOrDefault(b =>
-                            !b.IsSettled && b.PostingDate == targetDate && b.Debit == absAmount);
-                        if (matchedBank != null) break;
-                    }
-                }
-            }
+            var matchedBank = FindUniqueBankMatch(bankStatements, entry.TransDate, entryAmount, tolerance);
 
             if (matchedBank != null)
             {
@@ -252,6 +232,107 @@ public sealed class CopayService(
 
     // ── Child Module 2: Copay IMS To Merchant Statement ────────────────────────
 
+    public async Task<CopayImportResultDto> ImportMerchantPayoutExcelAsync(
+        UploadMerchantPayoutDto dto, CancellationToken ct = default)
+    {
+        ValidateSpreadsheet(dto.File, "merchant payout");
+        var tenantId = current.TenantId;
+        var config = await ResolveConfigAsync(tenantId, ct);
+        var batch = await StartImportBatchAsync(tenantId, "MERCHANT_TO_BANK", dto.File, ct);
+        if (batch.Status == "Duplicate") return ToImportResult(batch);
+
+        var table = ReadFirstWorksheet(dto.File);
+        if (table == null || table.Rows.Count == 0)
+            throw new InvalidOperationException("The uploaded payout sheet contains no data rows.");
+
+        var headers = BuildHeaderIndexMap(table);
+        var tenantPrefix = await ResolveTenantPrefixAsync(tenantId, ct);
+        var maxSeq = await GetMaxImsReceiptSequenceAsync(tenantId, tenantPrefix, ct);
+        var attachmentPath = dto.Attachment == null ? null : await SaveUploadAsync(tenantId, dto.Attachment, ct);
+        var existing = (await db.CopayImportRows.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && x.Result == "Imported")
+            .Select(x => x.Fingerprint).ToListAsync(ct)).ToHashSet(StringComparer.Ordinal);
+        var entries = new List<RoznamchaEntry>();
+        var results = new List<CopayImportRow>();
+        var errors = new List<string>();
+
+        for (var r = 0; r < table.Rows.Count; r++)
+        {
+            var sourceRow = r + 2;
+            var row = table.Rows[r];
+            batch.TotalRows++;
+            var amount = ParseDecimalWithBrackets(ReadString(row, headers,
+                "crdbamt", "cr_dbamt", "usdamount", "transactionamount", "amount", "payout", "net"));
+            var date = ReadDateOnly(row, headers, dto.YearId, "transdate", "paymentdate", "date", "postingdate");
+            if (!amount.HasValue || !date.HasValue)
+            {
+                AddImportError(results, batch, tenantId, sourceRow, $"invalid-payout|{sourceRow}",
+                    "A valid payout date and amount are required.", errors);
+                continue;
+            }
+
+            var instrument = ReadString(row, headers, "instrumentno", "batchid", "paymentno", "reference", "authcode");
+            var description = ReadString(row, headers, "rdiscriptions", "rdescriptions", "description", "memo", "remarks");
+            var mode = DetectTransactionModeId(ReadString(row, headers, "trancode", "tran_code", "transmode", "mode"));
+            var fp = HashText($"{tenantId}|PAYOUT|{date:yyyyMMdd}|{amount:F2}|{mode}|{Normalize(instrument)}|{Normalize(description)}");
+            if (existing.Contains(fp))
+            {
+                batch.DuplicateRows++;
+                results.Add(NewImportRow(batch, tenantId, sourceRow, fp, "Duplicate", "The merchant payout row already exists."));
+                continue;
+            }
+            existing.Add(fp);
+            maxSeq++;
+            var entry = new RoznamchaEntry
+            {
+                TenantId = tenantId,
+                Ref = $"{tenantPrefix}CR-{maxSeq}",
+                TransDate = date.Value,
+                Amount = 0,
+                UsdAmount = amount,
+                CategoryId = config.CategoryId,
+                FromAccountId = config.MerchantClearingAccountId ?? config.HoldingAccountId,
+                RoznamchaTypeId = config.ReceiptTypeId,
+                CurrencyId = config.CurrencyId,
+                TransModeId = mode,
+                InstrumentNo = instrument,
+                Descriptions = description,
+                Remarks = description,
+                Attachment = attachmentPath,
+                IsShow = false,
+                IsSettled = false,
+                EnterStatusId = StatusOpen,
+                CreatedByUserId = current.UserId,
+                CreatedOnUtc = DateTime.UtcNow
+            };
+            entries.Add(entry);
+            results.Add(NewImportRow(batch, tenantId, sourceRow, fp, "Imported", null, entry: entry));
+        }
+
+        await using (var tx = await db.Database.BeginTransactionAsync(ct))
+        {
+            if (entries.Count > 0) await db.RoznamchaEntries.AddRangeAsync(entries, ct);
+            if (results.Count > 0) await db.CopayImportRows.AddRangeAsync(results, ct);
+            batch.ImportedRows = entries.Count;
+            CompleteBatch(batch, errors);
+            await db.SaveChangesAsync(ct);
+            await tx.CommitAsync(ct);
+        }
+
+        var response = ToImportResult(batch, errors);
+        if (dto.AutoSettle && entries.Count > 0)
+        {
+            var settlement = await SettleMerchantToBankAutoAsync(new DateRangeDto
+            {
+                DateFrom = entries.Min(x => x.TransDate),
+                DateTo = entries.Max(x => x.TransDate),
+                ToleranceDays = config.BankMatchWindowDays
+            }, ct);
+            response.AutoSettledRows = settlement.MatchedCount;
+        }
+        return response;
+    }
+
     public async Task<PagedResult<MerchantStatementItemDto>> GetMerchantStatementsAsync(
         CopayFilterDto filter, CancellationToken ct = default)
     {
@@ -294,8 +375,21 @@ public sealed class CopayService(
             .Take(pageSize)
             .ToListAsync(ct);
 
-        var items = rows.Select(r => new MerchantStatementItemDto
+        var accountIds = rows.Where(x => x.AcctId.HasValue).Select(x => x.AcctId!.Value).Distinct().ToList();
+        var accountNames = await db.AccountsChartAccounts.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && accountIds.Contains(x.Id))
+            .ToDictionaryAsync(x => x.Id, x => x.AccountName, ct);
+        var statusIds = rows.Where(x => x.StatusId.HasValue).Select(x => x.StatusId!.Value).Distinct().ToList();
+        var statuses = await db.AccountsEntryStatuses.AsNoTracking()
+            .Where(x => statusIds.Contains(x.Id) && (x.TenantId == null || x.TenantId == tenantId))
+            .GroupBy(x => x.Id).Select(x => x.OrderByDescending(s => s.TenantId == tenantId).First())
+            .ToDictionaryAsync(x => x.Id, ct);
+
+        var items = rows.Select(r =>
         {
+            statuses.TryGetValue(r.StatusId ?? 0, out var status);
+            return new MerchantStatementItemDto
+            {
             Id = r.Id,
             Ref = r.Ref,
             AcctId = r.AcctId,
@@ -317,9 +411,13 @@ public sealed class CopayService(
             Remarks = r.Remarks,
             IsSettled = r.IsSettled,
             StatusId = r.StatusId,
-            StatusName = GetStatusName(r.StatusId),
+            StatusName = status?.Name ?? GetStatusName(r.StatusId),
+            StatusColor = status?.ColorCode,
+            StatusFontColor = status?.FontColor,
+            AccountName = r.AcctId.HasValue && accountNames.TryGetValue(r.AcctId.Value, out var accountName) ? accountName : null,
             IsManual = r.IsManual,
             MatchedRoznamchaEntryId = r.MatchedRoznamchaEntryId
+            };
         }).ToList();
 
         return new PagedResult<MerchantStatementItemDto>
@@ -331,7 +429,7 @@ public sealed class CopayService(
         };
     }
 
-    public async Task<int> ImportMerchantStatementExcelAsync(
+    public async Task<CopayImportResultDto> ImportMerchantStatementExcelAsync(
         UploadMerchantStatementDto dto, CancellationToken ct = default)
     {
         if (dto.File == null || dto.File.Length == 0)
@@ -342,6 +440,18 @@ public sealed class CopayService(
             throw new InvalidOperationException("Supported file types are .xlsx, .xls, and .csv.");
 
         var tenantId = current.TenantId;
+        var config = await ResolveConfigAsync(tenantId, ct);
+        var accountId = dto.AccountId ?? config.MerchantAccountId;
+        if (!accountId.HasValue)
+            throw new InvalidOperationException("Select a merchant account or configure the tenant Copay merchant account.");
+        var accountExists = await db.AccountsChartAccounts.AsNoTracking()
+            .AnyAsync(x => x.TenantId == tenantId && x.Id == accountId.Value && x.IsActive, ct);
+        if (!accountExists)
+            throw new InvalidOperationException("The selected merchant account is not available for this tenant.");
+
+        var batch = await StartImportBatchAsync(tenantId, "IMS_TO_MERCHANT", dto.File, ct);
+        if (batch.Status == "Duplicate")
+            return ToImportResult(batch);
         var table = ReadFirstWorksheet(dto.File);
         if (table == null || table.Rows.Count == 0)
             throw new InvalidOperationException("The uploaded statement contains no rows.");
@@ -353,31 +463,28 @@ public sealed class CopayService(
         var maxExistingSeq = await GetMaxStatementSequenceAsync(tenantId, tenantPrefix, ct);
 
         // Pre-fetch active statement fingerprints to avoid duplicates
-        var existingFingerprints = await db.CopayStatements.AsNoTracking()
-            .Where(x => x.TenantId == tenantId && x.PaymentDate != null && x.TransactionAmount != null)
-            .Select(x => new
-            {
-                x.PaymentDate,
-                x.TransactionAmount,
-                Card = x.CardNumber ?? "",
-                PNo = x.PaymentNo ?? "",
-                Batch = x.GBOK_BatchID ?? "",
-                Arn = x.ARNNumber ?? ""
-            })
-            .ToListAsync(ct);
-
-        var fingerprintSet = existingFingerprints
-            .Select(x => $"{x.PaymentDate:yyyyMMdd}|{x.TransactionAmount:F2}|{x.Card}|{x.PNo}|{x.Batch}|{x.Arn}")
-            .ToHashSet();
+        var fingerprintSet = (await db.CopayStatements.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && x.SourceFingerprint != null)
+            .Select(x => x.SourceFingerprint!)
+            .ToListAsync(ct)).ToHashSet(StringComparer.Ordinal);
 
         var importedStatements = new List<CopayStatement>();
+        var rowResults = new List<CopayImportRow>();
+        var errors = new List<string>();
+        var attachmentPath = dto.Attachment == null ? null : await SaveUploadAsync(tenantId, dto.Attachment, ct);
 
         for (var r = 0; r < table.Rows.Count; r++)
         {
             var row = table.Rows[r];
+            var sourceRow = r + 2;
+            batch.TotalRows++;
             var amountStr = ReadString(row, headers, "transactionamount", "amount", "total", "amt", "net");
             var amount = ParseDecimalWithBrackets(amountStr);
-            if (!amount.HasValue || amount == 0) continue;
+            if (!amount.HasValue)
+            {
+                AddImportError(rowResults, batch, tenantId, sourceRow, $"invalid|{sourceRow}", "Transaction amount is missing or invalid.", errors);
+                continue;
+            }
 
             var date = ReadDateOnly(row, headers, dto.YearId, "paymentdate", "date", "transdate", "datetime");
             var card = ReadString(row, headers, "cardnumber", "card", "account", "last4");
@@ -385,11 +492,21 @@ public sealed class CopayService(
             var batchId = ReadString(row, headers, "gbok_batchid", "batchid", "batch");
             var arn = ReadString(row, headers, "arnnumber", "arn", "referencenumber");
             var paymentType = ReadString(row, headers, "paymenttype", "type", "transtype");
+            var interchange = ReadString(row, headers, "interchangedescription");
+            if (!date.HasValue)
+            {
+                AddImportError(rowResults, batch, tenantId, sourceRow, $"invalid-date|{sourceRow}", "Payment date is missing or invalid.", errors);
+                continue;
+            }
 
             // Check duplicate
-            var fp = $"{date:yyyyMMdd}|{amount:F2}|{card ?? ""}|{paymentNo ?? ""}|{batchId ?? ""}|{arn ?? ""}";
+            var fp = HashText($"{tenantId}|{accountId}|{date:yyyyMMdd}|{amount:F2}|{Normalize(card)}|{Normalize(paymentNo)}|{Normalize(batchId)}|{Normalize(interchange)}|{Normalize(arn)}");
             if (fingerprintSet.Contains(fp))
+            {
+                batch.DuplicateRows++;
+                rowResults.Add(NewImportRow(batch, tenantId, sourceRow, fp, "Duplicate", "The merchant statement row already exists."));
                 continue;
+            }
 
             fingerprintSet.Add(fp);
             maxExistingSeq++;
@@ -400,7 +517,7 @@ public sealed class CopayService(
             {
                 TenantId = tenantId,
                 Ref = $"{tenantPrefix}-CO-{maxExistingSeq}",
-                AcctId = dto.AccountId,
+                AcctId = accountId,
                 YearId = dto.YearId,
                 CardNumber = card,
                 Currency = ReadString(row, headers, "currency") ?? "USD",
@@ -413,25 +530,35 @@ public sealed class CopayService(
                 PaymentType = paymentType,
                 AdjustmentDescription = ReadString(row, headers, "adjustmentdescription", "adjustment", "description"),
                 GBOK_BatchID = batchId,
-                InterchangeDescription = ReadString(row, headers, "interchangedescription"),
+                InterchangeDescription = interchange,
                 ARNNumber = arn,
                 Remarks = ReadString(row, headers, "remarks", "note"),
                 IsSettled = false,
                 StatusId = isFee ? StatusMerchantFee : StatusOpen,
+                Attachment = attachmentPath,
+                ImportBatchId = batch.Id,
+                SourceRowNumber = sourceRow,
+                SourceFingerprint = fp,
                 CreatedByUserId = current.UserId,
                 CreatedOnUtc = DateTime.UtcNow
             };
 
             importedStatements.Add(statement);
+            rowResults.Add(NewImportRow(batch, tenantId, sourceRow, fp, "Imported", null, statement: statement));
         }
 
+        await using var tx = await db.Database.BeginTransactionAsync(ct);
         if (importedStatements.Count > 0)
         {
             await db.CopayStatements.AddRangeAsync(importedStatements, ct);
             await db.SaveChangesAsync(ct);
         }
-
-        return importedStatements.Count;
+        if (rowResults.Count > 0) await db.CopayImportRows.AddRangeAsync(rowResults, ct);
+        batch.ImportedRows = importedStatements.Count;
+        CompleteBatch(batch, errors);
+        await db.SaveChangesAsync(ct);
+        await tx.CommitAsync(ct);
+        return ToImportResult(batch, errors);
     }
 
     // ── Child Module 3: Copay IMS - Excel ──────────────────────────────────────
@@ -440,8 +567,9 @@ public sealed class CopayService(
         CopayFilterDto filter, CancellationToken ct = default)
     {
         var tenantId = current.TenantId;
+        var config = await ResolveConfigAsync(tenantId, ct);
         var query = db.RoznamchaEntries.AsNoTracking()
-            .Where(x => x.TenantId == tenantId && x.CategoryId == CopayCategoryId && x.IsShow);
+            .Where(x => x.TenantId == tenantId && x.CategoryId == config.CategoryId && x.IsShow);
 
         if (filter.DateFrom.HasValue)
             query = query.Where(x => x.TransDate >= filter.DateFrom.Value);
@@ -478,23 +606,63 @@ public sealed class CopayService(
             .Take(pageSize)
             .ToListAsync(ct);
 
-        var items = rows.Select(r => new ImsReceiptItemDto
+        var statusIds = rows.Where(x => x.EnterStatusId.HasValue).Select(x => x.EnterStatusId!.Value).Distinct().ToList();
+        var statuses = await db.AccountsEntryStatuses.AsNoTracking()
+            .Where(x => statusIds.Contains(x.Id) && (x.TenantId == null || x.TenantId == tenantId))
+            .GroupBy(x => x.Id).Select(x => x.OrderByDescending(s => s.TenantId == tenantId).First())
+            .ToDictionaryAsync(x => x.Id, ct);
+        var modeIds = rows.Where(x => x.TransModeId.HasValue).Select(x => x.TransModeId!.Value).Distinct().ToList();
+        var modes = await db.AccountsTransModes.AsNoTracking().Where(x => modeIds.Contains(x.Id))
+            .ToDictionaryAsync(x => x.Id, x => x.Name, ct);
+        var typeIds = rows.Where(x => x.TransTypeId.HasValue).Select(x => x.TransTypeId!.Value).Distinct().ToList();
+        var types = await db.AccountsTransTypes.AsNoTracking().Where(x => typeIds.Contains(x.Id))
+            .ToDictionaryAsync(x => x.Id, x => x.Name, ct);
+        var accountIds = rows.SelectMany(x => new int?[] { x.FromAccountId, x.ToAccountId }).Where(x => x.HasValue)
+            .Select(x => x!.Value).Distinct().ToList();
+        var accounts = await db.AccountsChartAccounts.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && accountIds.Contains(x.Id))
+            .ToDictionaryAsync(x => x.Id, x => x.AccountName, ct);
+        var currencyIds = rows.Where(x => x.CurrencyId.HasValue).Select(x => x.CurrencyId!.Value).Distinct().ToList();
+        var currencies = await db.AccountsCurrencies.AsNoTracking().Where(x => currencyIds.Contains(x.Id))
+            .ToDictionaryAsync(x => x.Id, x => x.Code, ct);
+
+        var items = rows.Select(r =>
         {
-            Id = r.Id,
-            Ref = r.Ref,
-            TransDate = r.TransDate,
-            UsdAmount = r.UsdAmount,
-            Amount = r.Amount,
-            PatientInfo = r.PatientInfo,
-            TransModeId = r.TransModeId,
-            TransModeName = GetTransModeName(r.TransModeId),
-            InstrumentNo = r.InstrumentNo,
-            Reference = r.Reference,
-            BankLtRef = r.BankLtRef,
-            IsSettled = r.IsSettled,
-            EnterStatusId = r.EnterStatusId,
-            EnterStatusName = GetStatusName(r.EnterStatusId),
-            Remarks = r.Remarks
+            statuses.TryGetValue(r.EnterStatusId ?? 0, out var status);
+            return new ImsReceiptItemDto
+            {
+                Id = r.Id,
+                Ref = r.Ref,
+                TransDate = r.TransDate,
+                UsdAmount = r.UsdAmount,
+                Amount = r.Amount,
+                PatientInfo = r.PatientInfo,
+                TransModeId = r.TransModeId,
+                TransModeName = r.TransModeId.HasValue && modes.TryGetValue(r.TransModeId.Value, out var modeName) ? modeName : GetTransModeName(r.TransModeId),
+                InstrumentNo = r.InstrumentNo,
+                Reference = r.Reference,
+                BankLtRef = r.BankLtRef,
+                IsSettled = r.IsSettled,
+                EnterStatusId = r.EnterStatusId,
+                EnterStatusName = status?.Name ?? GetStatusName(r.EnterStatusId),
+                StatusColor = status?.ColorCode,
+                StatusFontColor = status?.FontColor,
+                Remarks = r.Remarks,
+                Description = r.Descriptions,
+                PaidCopayAmount = r.PaidCopayAmount,
+                ReferralSource = r.ReferralSource,
+                TransTypeId = r.TransTypeId,
+                TransTypeName = r.TransTypeId.HasValue && types.TryGetValue(r.TransTypeId.Value, out var typeName) ? typeName : null,
+                FromAccountId = r.FromAccountId,
+                FromAccountName = r.FromAccountId.HasValue && accounts.TryGetValue(r.FromAccountId.Value, out var fromName) ? fromName : null,
+                ToAccountId = r.ToAccountId,
+                ToAccountName = r.ToAccountId.HasValue && accounts.TryGetValue(r.ToAccountId.Value, out var toName) ? toName : null,
+                CurrencyId = r.CurrencyId,
+                CurrencyCode = r.CurrencyId.HasValue && currencies.TryGetValue(r.CurrencyId.Value, out var code) ? code : null,
+                Attachment = r.Attachment,
+                CreatedOnUtc = r.CreatedOnUtc,
+                IsManual = r.IsManual
+            };
         }).ToList();
 
         return new PagedResult<ImsReceiptItemDto>
@@ -506,7 +674,54 @@ public sealed class CopayService(
         };
     }
 
-    public async Task<int> ImportImsDailySheetAsync(UploadImsSheetDto dto, CancellationToken ct = default)
+    public async Task<IReadOnlyList<ImsReceiptItemDto>> GetImsVerificationAsync(
+        DateRangeDto dateRange, CancellationToken ct = default)
+    {
+        if (dateRange.DateTo < dateRange.DateFrom)
+            throw new InvalidOperationException("Date To must be on or after Date From.");
+
+        var result = await GetImsReceiptsAsync(new CopayFilterDto
+        {
+            DateFrom = dateRange.DateFrom,
+            DateTo = dateRange.DateTo,
+            PageNumber = 1,
+            PageSize = 200
+        }, ct);
+        return result.Items;
+    }
+
+    public async Task<IReadOnlyList<CopayProcessLogDto>> GetProcessLogsAsync(
+        long entryId, CancellationToken ct = default)
+    {
+        var tenantId = current.TenantId;
+        var entryExists = await db.RoznamchaEntries.AsNoTracking()
+            .AnyAsync(x => x.TenantId == tenantId && x.Id == entryId, ct);
+        if (!entryExists) throw new KeyNotFoundException("Copay entry was not found.");
+
+        var logs = await db.RoznamchaEntryProcessLogs.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && x.RoznamchaEntryId == entryId)
+            .OrderByDescending(x => x.ProcessedOnUtc)
+            .ToListAsync(ct);
+        var statusIds = logs.Where(x => x.StatusId.HasValue).Select(x => x.StatusId!.Value).Distinct().ToList();
+        var statusNames = await db.AccountsEntryStatuses.AsNoTracking()
+            .Where(x => statusIds.Contains(x.Id) && (x.TenantId == null || x.TenantId == tenantId))
+            .GroupBy(x => x.Id).Select(x => x.OrderByDescending(s => s.TenantId == tenantId).First())
+            .ToDictionaryAsync(x => x.Id, x => x.Name, ct);
+
+        return logs.Select(x => new CopayProcessLogDto
+        {
+            Id = x.Id,
+            RoznamchaEntryId = x.RoznamchaEntryId,
+            Action = x.Action,
+            Notes = x.Notes,
+            StatusId = x.StatusId,
+            StatusName = x.StatusId.HasValue && statusNames.TryGetValue(x.StatusId.Value, out var name) ? name : GetStatusName(x.StatusId),
+            ProcessedByUserId = x.ProcessedByUserId,
+            ProcessedOnUtc = x.ProcessedOnUtc
+        }).ToList();
+    }
+
+    public async Task<CopayImportResultDto> ImportImsDailySheetAsync(UploadImsSheetDto dto, CancellationToken ct = default)
     {
         if (dto.File == null || dto.File.Length == 0)
             throw new InvalidOperationException("Please select an IMS collection sheet file to upload.");
@@ -516,6 +731,9 @@ public sealed class CopayService(
             throw new InvalidOperationException("Supported file types are .xlsx, .xls, and .csv.");
 
         var tenantId = current.TenantId;
+        var config = await ResolveConfigAsync(tenantId, ct);
+        var batch = await StartImportBatchAsync(tenantId, "IMS_EXCEL", dto.File, ct);
+        if (batch.Status == "Duplicate") return ToImportResult(batch);
         var table = ReadFirstWorksheet(dto.File);
         if (table == null || table.Rows.Count == 0)
             throw new InvalidOperationException("The uploaded sheet has no data rows.");
@@ -525,66 +743,108 @@ public sealed class CopayService(
         var maxSeq = await GetMaxImsReceiptSequenceAsync(tenantId, tenantPrefix, ct);
 
         var entries = new List<RoznamchaEntry>();
+        var rowResults = new List<CopayImportRow>();
+        var errors = new List<string>();
+        var fingerprints = (await db.CopayImportRows.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && x.Result == "Imported")
+            .Select(x => x.Fingerprint).ToListAsync(ct)).ToHashSet(StringComparer.Ordinal);
+        var attachmentPath = dto.Attachment == null ? null : await SaveUploadAsync(tenantId, dto.Attachment, ct);
 
         for (var r = 0; r < table.Rows.Count; r++)
         {
             var row = table.Rows[r];
+            var sourceRow = r + 2;
+            batch.TotalRows++;
             var amountStr = ReadString(row, headers, "crdbamt", "cr_dbamt", "crdbeamt", "usdamount", "amount", "copay", "amt", "paid");
             var amount = ParseDecimalWithBrackets(amountStr);
-            if (!amount.HasValue || amount == 0) continue;
+            if (!amount.HasValue)
+            {
+                AddImportError(rowResults, batch, tenantId, sourceRow, $"invalid|{sourceRow}", "Copay amount is missing or invalid.", errors);
+                continue;
+            }
 
-            var date = ReadDateOnly(row, headers, dto.YearId, "transdate", "date", "receiptdate") ?? DateOnly.FromDateTime(DateTime.UtcNow);
+            var date = ReadDateOnly(row, headers, dto.YearId, "transdate", "date", "receiptdate");
+            if (!date.HasValue)
+            {
+                AddImportError(rowResults, batch, tenantId, sourceRow, $"invalid-date|{sourceRow}", "Transaction date is missing or invalid.", errors);
+                continue;
+            }
             var modeRaw = ReadString(row, headers, "trancode", "tran_code", "transmode", "mode", "paymentmode", "type");
             var transModeId = DetectTransactionModeId(modeRaw);
 
             var patientInfo = ReadString(row, headers, "rdiscriptions", "rdescriptions", "patientinfo", "patientname", "patient", "mrn", "name");
             var instrumentNo = ReadString(row, headers, "instrumentno", "instrument_no", "checkno", "check_no", "cardlast4", "auth");
             var remarks = ReadString(row, headers, "remarks", "rdiscriptions", "rdescriptions", "description", "note");
+            var reference = ReadString(row, headers, "refrence", "reference", "receiptno", "transactionreference");
+            var referralSource = ReadString(row, headers, "referralsource", "referral", "source");
+            var paidCopay = ParseDecimalWithBrackets(ReadString(row, headers, "paidcopamt", "paidcopayamount", "paid"));
+            var fp = HashText($"{tenantId}|{date:yyyyMMdd}|{amount:F2}|{transModeId}|{Normalize(instrumentNo)}|{Normalize(patientInfo)}|{Normalize(reference)}");
+            if (fingerprints.Contains(fp))
+            {
+                batch.DuplicateRows++;
+                rowResults.Add(NewImportRow(batch, tenantId, sourceRow, fp, "Duplicate", "The IMS Copay row already exists."));
+                continue;
+            }
+            fingerprints.Add(fp);
 
             maxSeq++;
             var entry = new RoznamchaEntry
             {
                 TenantId = tenantId,
                 Ref = $"{tenantPrefix}CR-{maxSeq}",
-                TransDate = date,
-                Amount = amount,
+                TransDate = date.Value,
+                Amount = 0,
                 UsdAmount = amount,
-                CategoryId = CopayCategoryId,
-                FromAccountId = CopayHoldingAccountId,
-                RoznamchaTypeId = ReceiptRoznamchaTypeId,
+                CategoryId = config.CategoryId,
+                FromAccountId = config.HoldingAccountId,
+                ToAccountId = config.MerchantClearingAccountId,
+                RoznamchaTypeId = config.ReceiptTypeId,
+                CurrencyId = config.CurrencyId,
                 TransModeId = transModeId,
                 IsShow = true,
                 IsSettled = false,
-                EnterStatusId = StatusOpen,
+                EnterStatusId = transModeId == 1 ? StatusCashCopay : StatusOpen,
                 PatientInfo = patientInfo,
                 InstrumentNo = instrumentNo,
+                Descriptions = remarks,
                 Remarks = remarks,
+                Reference = reference,
+                ReferralSource = referralSource,
+                PaidCopayAmount = paidCopay,
+                Attachment = attachmentPath,
                 CreatedByUserId = current.UserId,
                 CreatedOnUtc = DateTime.UtcNow
             };
 
             entries.Add(entry);
+            rowResults.Add(NewImportRow(batch, tenantId, sourceRow, fp, "Imported", null, entry: entry));
         }
 
+        await using var tx = await db.Database.BeginTransactionAsync(ct);
         if (entries.Count > 0)
         {
             await db.RoznamchaEntries.AddRangeAsync(entries, ct);
             await db.SaveChangesAsync(ct);
         }
-
-        return entries.Count;
+        if (rowResults.Count > 0) await db.CopayImportRows.AddRangeAsync(rowResults, ct);
+        batch.ImportedRows = entries.Count;
+        CompleteBatch(batch, errors);
+        await db.SaveChangesAsync(ct);
+        await tx.CommitAsync(ct);
+        return ToImportResult(batch, errors);
     }
 
     public async Task<SettlementResultDto> SettleImsAutoAsync(
         DateRangeDto dateRange, CancellationToken ct = default)
     {
         var tenantId = current.TenantId;
-        var tolerance = Math.Clamp(dateRange.ToleranceDays ?? 15, 0, 60);
+        var config = await ResolveConfigAsync(tenantId, ct);
+        var tolerance = Math.Clamp(dateRange.ToleranceDays ?? config.MerchantMatchWindowDays, 0, 60);
 
         // Fetch unsettled patient copay collection entries (excluding Cash (CA), which never appears on a card terminal statement)
         var entries = await db.RoznamchaEntries
             .Where(x => x.TenantId == tenantId
-                     && x.CategoryId == CopayCategoryId
+                     && x.CategoryId == config.CategoryId
                      && x.IsShow
                      && !x.IsSettled
                      && x.TransModeId != 1 // Cash is excluded from merchant terminal reconciliation
@@ -673,23 +933,7 @@ public sealed class CopayService(
                 }
             }
 
-            CopayStatement? match = null;
-
-            // 1. Exact amount and exact date
-            match = statements.FirstOrDefault(s =>
-                !s.IsSettled && s.PaymentDate == entry.TransDate && s.TransactionAmount == amount);
-
-            // 2. Tolerance window
-            if (match == null)
-            {
-                for (var i = 1; i <= tolerance; i++)
-                {
-                    var targetDate = entry.TransDate.AddDays(i);
-                    match = statements.FirstOrDefault(s =>
-                        !s.IsSettled && s.PaymentDate == targetDate && s.TransactionAmount == amount);
-                    if (match != null) break;
-                }
-            }
+            var match = FindUniqueMerchantMatch(statements, entry.TransDate, amount, tolerance);
 
             if (match != null)
             {
@@ -741,12 +985,13 @@ public sealed class CopayService(
         DateRangeDto dateRange, CancellationToken ct = default)
     {
         var tenantId = current.TenantId;
-        var tolerance = Math.Clamp(dateRange.ToleranceDays ?? 7, 0, 30);
+        var config = await ResolveConfigAsync(tenantId, ct);
+        var tolerance = Math.Clamp(dateRange.ToleranceDays ?? config.BankMatchWindowDays, 0, 30);
 
         // Fetch unsettled collection entries (Cheques, direct payments, etc.)
         var entries = await db.RoznamchaEntries
             .Where(x => x.TenantId == tenantId
-                     && x.CategoryId == CopayCategoryId
+                     && x.CategoryId == config.CategoryId
                      && x.IsShow
                      && !x.IsSettled
                      && x.TransDate >= dateRange.DateFrom
@@ -785,21 +1030,7 @@ public sealed class CopayService(
             var amount = entry.UsdAmount ?? entry.Amount ?? 0;
             if (amount <= 0) continue;
 
-            // 1. Exact amount and exact date
-            var matchedBank = bankStatements.FirstOrDefault(b =>
-                !b.IsSettled && b.PostingDate == entry.TransDate && b.Credit == amount);
-
-            // 2. Tolerance window
-            if (matchedBank == null)
-            {
-                for (var i = 1; i <= tolerance; i++)
-                {
-                    var targetDate = entry.TransDate.AddDays(i);
-                    matchedBank = bankStatements.FirstOrDefault(b =>
-                        !b.IsSettled && b.PostingDate == targetDate && b.Credit == amount);
-                    if (matchedBank != null) break;
-                }
-            }
+            var matchedBank = FindUniqueBankMatch(bankStatements, entry.TransDate, amount, tolerance);
 
             if (matchedBank != null)
             {
@@ -855,6 +1086,7 @@ public sealed class CopayService(
             throw new InvalidOperationException("Please select at least one collection row to settle.");
 
         var tenantId = current.TenantId;
+        var config = await ResolveConfigAsync(tenantId, ct);
         var entries = await db.RoznamchaEntries
             .Where(x => x.TenantId == tenantId && request.EntryIds.Contains(x.Id))
             .ToListAsync(ct);
@@ -864,6 +1096,15 @@ public sealed class CopayService(
 
         var calAmount = entries.Sum(e => e.UsdAmount ?? e.Amount ?? 0);
         var tenantPrefix = await ResolveTenantPrefixAsync(tenantId, ct);
+        var targetType = request.TargetType?.Trim().ToUpperInvariant();
+        var manualStatus = targetType switch
+        {
+            "BANK" => StatusImsWithBank,
+            "BILLING" => StatusWithBilling,
+            "MACHINE" or "MERCHANT" => StatusWithMachine,
+            "COPAY_EXCEL" => StatusWithCopayExcel,
+            _ => StatusSettledManually
+        };
 
         await using var tx = await db.Database.BeginTransactionAsync(ct);
 
@@ -882,10 +1123,12 @@ public sealed class CopayService(
                 Ref = batchRef,
                 TransDate = maxDate,
                 UsdAmount = calAmount,
-                Amount = calAmount,
-                CategoryId = CopayCategoryId,
-                FromAccountId = CopayHoldingAccountId,
-                RoznamchaTypeId = ReceiptRoznamchaTypeId,
+                Amount = 0,
+                CategoryId = config.CategoryId,
+                FromAccountId = config.HoldingAccountId,
+                ToAccountId = config.MerchantClearingAccountId,
+                RoznamchaTypeId = config.ReceiptTypeId,
+                CurrencyId = config.CurrencyId,
                 IsShow = false, // batch entry for Merchant To Bank
                 IsSettled = false,
                 EnterStatusId = StatusOpen,
@@ -904,7 +1147,7 @@ public sealed class CopayService(
         foreach (var entry in entries)
         {
             entry.IsSettled = true;
-            entry.EnterStatusId = StatusSettledManually;
+            entry.EnterStatusId = manualStatus;
             entry.Reference = linkedTargetRef;
             if (!string.IsNullOrWhiteSpace(request.Remarks))
                 entry.Remarks = $"{entry.Remarks} {request.Remarks}".Trim();
@@ -917,6 +1160,7 @@ public sealed class CopayService(
                 RoznamchaEntryId = entry.Id,
                 Action = "SettledImsManual",
                 Notes = $"Manually settled with {linkedTargetRef} (Sum: ${calAmount:N2})",
+                StatusId = manualStatus,
                 ProcessedByUserId = current.UserId,
                 ProcessedOnUtc = DateTime.UtcNow
             });
@@ -931,7 +1175,7 @@ public sealed class CopayService(
             if (statement != null)
             {
                 statement.IsSettled = true;
-                statement.StatusId = StatusSettledManually;
+                statement.StatusId = StatusWithMachine;
                 statement.CopayRef = linkedTargetRef;
                 statement.UpdatedByUserId = current.UserId;
                 statement.UpdatedOnUtc = DateTime.UtcNow;
@@ -946,7 +1190,7 @@ public sealed class CopayService(
                 if (bank != null)
                 {
                     bank.IsSettled = true;
-                    bank.StatusId = 1082; // Settled with Bank Manually
+                    bank.StatusId = StatusTargetSettled;
                     bank.ReferenceNumber = linkedTargetRef;
                     bank.UpdatedByUserId = current.UserId;
                     bank.UpdatedOnUtc = DateTime.UtcNow;
@@ -1123,22 +1367,19 @@ public sealed class CopayService(
             })
             .ToListAsync(ct);
 
-        var statuses = new List<LookupItemDto>
-        {
-            new() { Id = StatusOpen, DisplayText = "Open / Pending" },
-            new() { Id = StatusSettled, DisplayText = "Settled" },
-            new() { Id = StatusMerchantFee, DisplayText = "Merchant Fee" },
-            new() { Id = StatusSettledManually, DisplayText = "Settled Manually" },
-            new() { Id = 1081, DisplayText = "Settled with Bank" }
-        };
+        var statuses = await db.AccountsEntryStatuses.AsNoTracking()
+            .Where(x => x.IsActive && (x.TenantId == null || x.TenantId == tenantId))
+            .GroupBy(x => x.Id)
+            .Select(x => x.OrderByDescending(s => s.TenantId == tenantId).First())
+            .OrderBy(x => x.Name)
+            .Select(x => new LookupItemDto { Id = x.Id, DisplayText = x.Name })
+            .ToListAsync(ct);
 
-        var modes = new List<LookupItemDto>
-        {
-            new() { Id = 1, DisplayText = "Cash (CA)" },
-            new() { Id = 2, DisplayText = "Cheque (CK)" },
-            new() { Id = 7, DisplayText = "Debit Card (DT)" },
-            new() { Id = 8, DisplayText = "Credit Card (CT)" }
-        };
+        var modes = await db.AccountsTransModes.AsNoTracking()
+            .Where(x => x.IsActive)
+            .OrderBy(x => x.Name)
+            .Select(x => new LookupItemDto { Id = x.Id, DisplayText = x.Name })
+            .ToListAsync(ct);
 
         var currentYear = DateTime.UtcNow.Year;
         var years = Enumerable.Range(currentYear - 4, 6).OrderByDescending(y => y).ToList();
@@ -1153,6 +1394,34 @@ public sealed class CopayService(
     }
 
     // ── Helper Utilities ───────────────────────────────────────────────────────
+
+    private static BankStatement? FindUniqueBankMatch(
+        IEnumerable<BankStatement> candidates, DateOnly sourceDate, decimal amount, int toleranceDays)
+    {
+        for (var offset = 0; offset <= toleranceDays; offset++)
+        {
+            var date = sourceDate.AddDays(offset);
+            var matches = candidates.Where(x => !x.IsSettled && x.PostingDate == date &&
+                (amount >= 0 ? x.Credit == amount : x.Debit == Math.Abs(amount))).Take(2).ToList();
+            if (matches.Count == 1) return matches[0];
+            if (matches.Count > 1) return null;
+        }
+        return null;
+    }
+
+    private static CopayStatement? FindUniqueMerchantMatch(
+        IEnumerable<CopayStatement> candidates, DateOnly sourceDate, decimal amount, int toleranceDays)
+    {
+        for (var offset = 0; offset <= toleranceDays; offset++)
+        {
+            var date = sourceDate.AddDays(offset);
+            var matches = candidates.Where(x => !x.IsSettled && x.PaymentDate == date && x.TransactionAmount == amount)
+                .Take(2).ToList();
+            if (matches.Count == 1) return matches[0];
+            if (matches.Count > 1) return null;
+        }
+        return null;
+    }
 
     private static string GetStatusName(int? statusId) => statusId switch
     {
@@ -1300,6 +1569,168 @@ public sealed class CopayService(
 
         return null;
     }
+
+    private sealed record CopayConfig(
+        int CategoryId,
+        int HoldingAccountId,
+        int? MerchantClearingAccountId,
+        int? MerchantAccountId,
+        int CurrencyId,
+        int ReceiptTypeId,
+        int MerchantMatchWindowDays,
+        int BankMatchWindowDays);
+
+    private async Task<CopayConfig> ResolveConfigAsync(int tenantId, CancellationToken ct)
+    {
+        var settings = await db.AccountsModuleSettings.AsNoTracking()
+            .FirstOrDefaultAsync(x => x.TenantId == tenantId, ct);
+
+        var categoryId = settings?.CopayCategoryId
+            ?? await db.AccountsCategories.AsNoTracking()
+                .Where(x => x.TenantId == tenantId && x.IsActive && (x.Code == "COPAY" || x.Name == "Copay"))
+                .Select(x => (int?)x.Id).FirstOrDefaultAsync(ct)
+            ?? await db.AccountsCategories.AsNoTracking()
+                .Where(x => x.TenantId == tenantId && x.Id == LegacyCopayCategoryId)
+                .Select(x => (int?)x.Id).FirstOrDefaultAsync(ct);
+
+        var holdingId = settings?.CopayHoldingAccountId
+            ?? await db.AccountsChartAccounts.AsNoTracking()
+                .Where(x => x.TenantId == tenantId && x.IsActive &&
+                    (x.AccountCode == "COPAY_HOLDING" || x.AccountName.Contains("Copay Patient")))
+                .Select(x => (int?)x.Id).FirstOrDefaultAsync(ct)
+            ?? await db.AccountsChartAccounts.AsNoTracking()
+                .Where(x => x.TenantId == tenantId && x.Id == LegacyCopayHoldingAccountId)
+                .Select(x => (int?)x.Id).FirstOrDefaultAsync(ct);
+
+        var clearingId = settings?.CopayMerchantClearingAccountId
+            ?? await db.AccountsChartAccounts.AsNoTracking()
+                .Where(x => x.TenantId == tenantId && x.IsActive &&
+                    (x.AccountCode == "COPAY_MERCHANT_CLEARING" || x.AccountName.Contains("Copay Merchant")))
+                .Select(x => (int?)x.Id).FirstOrDefaultAsync(ct)
+            ?? await db.AccountsChartAccounts.AsNoTracking()
+                .Where(x => x.TenantId == tenantId && x.Id == LegacyCopayMerchantClearingAccountId)
+                .Select(x => (int?)x.Id).FirstOrDefaultAsync(ct);
+
+        var currencyId = settings?.CopayCurrencyId
+            ?? await db.AccountsCurrencies.AsNoTracking().Where(x => x.Code == "USD" && x.IsActive)
+                .Select(x => (int?)x.Id).FirstOrDefaultAsync(ct);
+        var receiptTypeId = settings?.CopayReceiptTypeId ?? settings?.ReceiptRozTypeId
+            ?? await db.AccountsRoznamchaTypes.AsNoTracking()
+                .Where(x => x.IsActive && (x.Code == "RECEIPT" || x.Id == LegacyReceiptRoznamchaTypeId))
+                .Select(x => (int?)x.Id).FirstOrDefaultAsync(ct);
+
+        if (!categoryId.HasValue || !holdingId.HasValue || !currencyId.HasValue || !receiptTypeId.HasValue)
+            throw new InvalidOperationException("Copay tenant configuration is incomplete. Configure category, holding account, USD currency, and receipt type.");
+
+        return new CopayConfig(
+            categoryId.Value,
+            holdingId.Value,
+            clearingId,
+            settings?.CopayMerchantAccountId,
+            currencyId.Value,
+            receiptTypeId.Value,
+            Math.Clamp(settings?.CopayMerchantMatchWindowDays ?? 14, 0, 60),
+            Math.Clamp(settings?.CopayBankMatchWindowDays ?? 6, 0, 30));
+    }
+
+    private static void ValidateSpreadsheet(IFormFile? file, string label)
+    {
+        if (file == null || file.Length == 0)
+            throw new InvalidOperationException($"Please select a {label} Excel or CSV file.");
+        var ext = Path.GetExtension(file.FileName).ToLowerInvariant();
+        if (ext is not (".xlsx" or ".xls" or ".csv"))
+            throw new InvalidOperationException("Supported file types are .xlsx, .xls, and .csv.");
+    }
+
+    private async Task<CopayImportBatch> StartImportBatchAsync(int tenantId, string stage, IFormFile file, CancellationToken ct)
+    {
+        var fileHash = await HashFileAsync(file, ct);
+        var existing = await db.CopayImportBatches.AsNoTracking()
+            .FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Stage == stage && x.FileHash == fileHash, ct);
+        if (existing != null)
+        {
+            existing.Status = "Duplicate";
+            return existing;
+        }
+
+        var batch = new CopayImportBatch
+        {
+            TenantId = tenantId,
+            Stage = stage,
+            FileName = Path.GetFileName(file.FileName),
+            FileHash = fileHash,
+            Status = "Processing",
+            CreatedByUserId = current.UserId,
+            CreatedOnUtc = DateTime.UtcNow
+        };
+        db.CopayImportBatches.Add(batch);
+        await db.SaveChangesAsync(ct);
+        return batch;
+    }
+
+    private static async Task<string> HashFileAsync(IFormFile file, CancellationToken ct)
+    {
+        await using var stream = file.OpenReadStream();
+        var hash = await SHA256.HashDataAsync(stream, ct);
+        return Convert.ToHexString(hash);
+    }
+
+    private static string HashText(string value) => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value)));
+    private static string Normalize(string? value) => (value ?? string.Empty).Trim().ToUpperInvariant();
+
+    private async Task<string> SaveUploadAsync(int tenantId, IFormFile file, CancellationToken ct)
+    {
+        var safeName = Path.GetFileName(file.FileName);
+        var extension = Path.GetExtension(safeName).ToLowerInvariant();
+        var allowed = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { ".xlsx", ".xls", ".csv", ".pdf", ".png", ".jpg", ".jpeg" };
+        if (!allowed.Contains(extension)) throw new InvalidOperationException("Unsupported Copay attachment type.");
+        if (file.Length > 20 * 1024 * 1024) throw new InvalidOperationException("Copay attachment cannot exceed 20 MB.");
+        var folder = Path.Combine(environment.ContentRootPath, "App_Data", "accounts", tenantId.ToString(CultureInfo.InvariantCulture), "copay");
+        Directory.CreateDirectory(folder);
+        var storedName = $"{Guid.NewGuid():N}{extension}";
+        var fullPath = Path.Combine(folder, storedName);
+        await using var output = new FileStream(fullPath, FileMode.CreateNew, FileAccess.Write, FileShare.None, 81920, true);
+        await file.CopyToAsync(output, ct);
+        return Path.Combine("App_Data", "accounts", tenantId.ToString(CultureInfo.InvariantCulture), "copay", storedName).Replace('\\', '/');
+    }
+
+    private static CopayImportRow NewImportRow(CopayImportBatch batch, int tenantId, int rowNumber,
+        string fingerprint, string result, string? message, RoznamchaEntry? entry = null, CopayStatement? statement = null) => new()
+    {
+        TenantId = tenantId,
+        ImportBatchId = batch.Id,
+        SourceRowNumber = rowNumber,
+        Fingerprint = fingerprint,
+        Result = result,
+        Message = message,
+        RoznamchaEntry = entry,
+        CopayStatement = statement
+    };
+
+    private static void AddImportError(List<CopayImportRow> rows, CopayImportBatch batch, int tenantId,
+        int sourceRow, string fingerprint, string message, List<string> errors)
+    {
+        batch.InvalidRows++;
+        if (errors.Count < 100) errors.Add($"Row {sourceRow}: {message}");
+        rows.Add(NewImportRow(batch, tenantId, sourceRow, HashText(fingerprint), "Invalid", message));
+    }
+
+    private static void CompleteBatch(CopayImportBatch batch, IReadOnlyCollection<string> errors)
+    {
+        batch.Status = errors.Count == 0 ? "Completed" : batch.ImportedRows > 0 ? "CompletedWithErrors" : "Failed";
+        batch.CompletedOnUtc = DateTime.UtcNow;
+        batch.ErrorSummary = errors.Count == 0 ? null : string.Join(Environment.NewLine, errors.Take(20));
+    }
+
+    private static CopayImportResultDto ToImportResult(CopayImportBatch batch, List<string>? errors = null) => new()
+    {
+        BatchId = batch.Id,
+        TotalRows = batch.TotalRows,
+        ImportedRows = batch.ImportedRows,
+        DuplicateRows = batch.DuplicateRows,
+        InvalidRows = batch.InvalidRows,
+        Errors = errors ?? (batch.Status == "Duplicate" ? ["This exact file was already imported."] : [])
+    };
 
     private async Task<string> ResolveTenantPrefixAsync(int tenantId, CancellationToken ct)
     {

@@ -252,6 +252,8 @@ namespace Accounts.Data
 
         // ── Copay Module ───────────────────────────────────────────────────────
         public DbSet<CopayStatement> CopayStatements => Set<CopayStatement>();
+        public DbSet<CopayImportBatch> CopayImportBatches => Set<CopayImportBatch>();
+        public DbSet<CopayImportRow> CopayImportRows => Set<CopayImportRow>();
 
         // ── Email Module ───────────────────────────────────────────────────────
         public DbSet<tblMessage> tblMessage => Set<tblMessage>();
@@ -338,6 +340,31 @@ namespace Accounts.Data
                     .IsUnique()
                     .HasFilter("[Ref] IS NOT NULL");
                 entity.HasIndex(x => new { x.TenantId, x.MatchedRoznamchaEntryId });
+                entity.HasIndex(x => new { x.TenantId, x.LegacyId })
+                    .IsUnique()
+                    .HasFilter("[LegacyId] IS NOT NULL");
+                entity.HasIndex(x => new { x.TenantId, x.SourceFingerprint });
+                entity.HasOne<CopayImportBatch>().WithMany().HasForeignKey(x => x.ImportBatchId).OnDelete(DeleteBehavior.Restrict);
+            });
+            builder.Entity<CopayImportBatch>(entity =>
+            {
+                entity.HasQueryFilter(row =>
+                    _tenantService != null && !_tenantService.IsSuperAdmin &&
+                    _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
+                entity.HasIndex(x => new { x.TenantId, x.FileHash, x.Stage }).IsUnique();
+                entity.HasIndex(x => new { x.TenantId, x.CreatedOnUtc });
+                entity.HasOne<Tenant>().WithMany().HasForeignKey(x => x.TenantId).OnDelete(DeleteBehavior.Restrict);
+            });
+            builder.Entity<CopayImportRow>(entity =>
+            {
+                entity.HasQueryFilter(row =>
+                    _tenantService != null && !_tenantService.IsSuperAdmin &&
+                    _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
+                entity.HasIndex(x => new { x.TenantId, x.ImportBatchId, x.SourceRowNumber }).IsUnique();
+                entity.HasIndex(x => new { x.TenantId, x.Fingerprint });
+                entity.HasOne<CopayImportBatch>().WithMany().HasForeignKey(x => x.ImportBatchId).OnDelete(DeleteBehavior.Cascade);
+                entity.HasOne<RoznamchaEntry>().WithMany().HasForeignKey(x => x.RoznamchaEntryId).OnDelete(DeleteBehavior.Restrict);
+                entity.HasOne<CopayStatement>().WithMany().HasForeignKey(x => x.CopayStatementId).OnDelete(DeleteBehavior.Restrict);
             });
             builder.Entity<FaxTransmission>().HasOne(x => x.Recipient).WithMany().HasForeignKey(x => x.RecipientId).OnDelete(DeleteBehavior.Restrict);
             builder.Entity<FaxAttachmentMetadata>().HasOne(x => x.Transmission).WithMany(x => x.Attachments).HasForeignKey(x => x.TransmissionId).OnDelete(DeleteBehavior.Cascade);
@@ -2269,6 +2296,12 @@ namespace Accounts.Data
                 e.HasOne<AccountsCurrency>().WithMany().HasForeignKey(x => x.DefaultCurrencyId).OnDelete(DeleteBehavior.Restrict);
                 e.HasOne<AccountsRoznamchaType>().WithMany().HasForeignKey(x => x.PaymentRozTypeId).OnDelete(DeleteBehavior.Restrict);
                 e.HasOne<AccountsRoznamchaType>().WithMany().HasForeignKey(x => x.ReceiptRozTypeId).OnDelete(DeleteBehavior.Restrict);
+                e.HasOne<AccountsCategory>().WithMany().HasForeignKey(x => x.CopayCategoryId).OnDelete(DeleteBehavior.Restrict);
+                e.HasOne<AccountsChartAccount>().WithMany().HasForeignKey(x => x.CopayHoldingAccountId).OnDelete(DeleteBehavior.Restrict);
+                e.HasOne<AccountsChartAccount>().WithMany().HasForeignKey(x => x.CopayMerchantClearingAccountId).OnDelete(DeleteBehavior.Restrict);
+                e.HasOne<AccountsChartAccount>().WithMany().HasForeignKey(x => x.CopayMerchantAccountId).OnDelete(DeleteBehavior.Restrict);
+                e.HasOne<AccountsCurrency>().WithMany().HasForeignKey(x => x.CopayCurrencyId).OnDelete(DeleteBehavior.Restrict);
+                e.HasOne<AccountsRoznamchaType>().WithMany().HasForeignKey(x => x.CopayReceiptTypeId).OnDelete(DeleteBehavior.Restrict);
             });
             builder.Entity<BillingRoznamchaImport>(e =>
             {

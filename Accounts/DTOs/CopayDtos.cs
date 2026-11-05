@@ -46,6 +46,9 @@ public sealed class MerchantToBankItemDto
     public long? MatchedBankStatementId { get; set; }
     public DateOnly? BankPostingDate { get; set; }
     public decimal? BankCredit { get; set; }
+    public decimal? BankDebit { get; set; }
+    public string? StatusColor { get; set; }
+    public string? StatusFontColor { get; set; }
 }
 
 public sealed class MerchantStatementItemDto
@@ -74,6 +77,9 @@ public sealed class MerchantStatementItemDto
     public string? StatusName { get; set; }
     public bool IsManual { get; set; }
     public long? MatchedRoznamchaEntryId { get; set; }
+    public string? AccountName { get; set; }
+    public string? StatusColor { get; set; }
+    public string? StatusFontColor { get; set; }
 }
 
 public sealed class ImsReceiptItemDto
@@ -93,11 +99,28 @@ public sealed class ImsReceiptItemDto
     public int? EnterStatusId { get; set; }
     public string? EnterStatusName { get; set; }
     public string? Remarks { get; set; }
+    public string? Description { get; set; }
+    public decimal? PaidCopayAmount { get; set; }
+    public string? ReferralSource { get; set; }
+    public int? TransTypeId { get; set; }
+    public string? TransTypeName { get; set; }
+    public int? FromAccountId { get; set; }
+    public string? FromAccountName { get; set; }
+    public int? ToAccountId { get; set; }
+    public string? ToAccountName { get; set; }
+    public int? CurrencyId { get; set; }
+    public string? CurrencyCode { get; set; }
+    public string? Attachment { get; set; }
+    public DateTime CreatedOnUtc { get; set; }
+    public bool IsManual { get; set; }
+    public string? StatusColor { get; set; }
+    public string? StatusFontColor { get; set; }
 }
 
 public sealed class UploadMerchantStatementDto
 {
     public required IFormFile File { get; set; }
+    public IFormFile? Attachment { get; set; }
     public int? AccountId { get; set; }
     public int? YearId { get; set; }
 }
@@ -105,7 +128,16 @@ public sealed class UploadMerchantStatementDto
 public sealed class UploadImsSheetDto
 {
     public required IFormFile File { get; set; }
+    public IFormFile? Attachment { get; set; }
     public int? YearId { get; set; }
+}
+
+public sealed class UploadMerchantPayoutDto
+{
+    public required IFormFile File { get; set; }
+    public IFormFile? Attachment { get; set; }
+    public int? YearId { get; set; }
+    public bool AutoSettle { get; set; } = true;
 }
 
 public sealed class ManualSettleRequestDto
@@ -114,6 +146,8 @@ public sealed class ManualSettleRequestDto
     public string? TargetRef { get; set; }
     public string? Remarks { get; set; }
     public bool CreateSummaryBatch { get; set; } = true;
+    public string? TargetType { get; set; }
+    public long? TargetId { get; set; }
 }
 
 public sealed class UnsettleRequestDto
@@ -129,6 +163,29 @@ public sealed class SettlementResultDto
     public int FailedCount { get; set; }
     public decimal TotalSettledAmount { get; set; }
     public List<string> Messages { get; set; } = [];
+}
+
+public sealed class CopayImportResultDto
+{
+    public long BatchId { get; set; }
+    public int TotalRows { get; set; }
+    public int ImportedRows { get; set; }
+    public int DuplicateRows { get; set; }
+    public int InvalidRows { get; set; }
+    public int AutoSettledRows { get; set; }
+    public List<string> Errors { get; set; } = [];
+}
+
+public sealed class CopayProcessLogDto
+{
+    public long Id { get; set; }
+    public long RoznamchaEntryId { get; set; }
+    public string Action { get; set; } = string.Empty;
+    public string? Notes { get; set; }
+    public int? StatusId { get; set; }
+    public string? StatusName { get; set; }
+    public string? ProcessedByUserId { get; set; }
+    public DateTime ProcessedOnUtc { get; set; }
 }
 
 public sealed class LookupItemDto

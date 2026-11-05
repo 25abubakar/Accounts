@@ -91,6 +91,7 @@ public sealed class BillingStatusUpdateRequest
 {
     public int StatusId { get; set; }
     public string? Remarks { get; set; }
+    public string? PolicyNumber { get; set; }
 }
 
 // ── Child 2: Claims DTOs ───────────────────────────────────────────────────────
@@ -226,6 +227,10 @@ public sealed class BillingClaimCodeDetailDto
     public string? EobStatusFontColor { get; set; }
     public string? LoadDate { get; set; }
     public string? Remarks { get; set; }
+    public string? CarrierName { get; set; }
+    public string? InsuranceName { get; set; }
+    public string? PolicyNumber { get; set; }
+    public string? InsuranceType { get; set; }
     public DateTime? CreatedDate { get; set; }
 }
 
@@ -299,4 +304,57 @@ public sealed class BillingRozExcelSummaryDto
     public decimal SettledAmount { get; set; }
     public decimal PendingAmount { get; set; }
 }
+
+public sealed class BillingClaimLogRowDto
+{
+    public long Id { get; set; }
+    public int ClaimId { get; set; }
+    public int? StatusId { get; set; }
+    public string? StatusName { get; set; }
+    public string? ColorCode { get; set; }
+    public string? FontColor { get; set; }
+    public string? Remarks { get; set; }
+    public string? LogDate { get; set; }
+    public DateTime? CreatedDate { get; set; }
+}
+
+public sealed class BillingClaimDocumentRowDto
+{
+    public long Id { get; set; }
+    public int ClaimId { get; set; }
+    public string? EobCheckNo { get; set; }
+    public string? Attachment { get; set; }
+    public string? UploadDate { get; set; }
+    public DateTime? CreatedDate { get; set; }
+}
+
+public sealed class BillingBatchActionResultDto
+{
+    public bool Success { get; set; } = true;
+    public int AffectedCount { get; set; }
+    public string Message { get; set; } = string.Empty;
+}
+
+public sealed class BillingBatchStatusRequest
+{
+    public List<int> ClaimIds { get; set; } = new();
+    public int StatusId { get; set; }
+    public string? Remarks { get; set; }
+    public DateTime? PaymentDate { get; set; }
+}
+
+public sealed class BillingBatchFlagRequest
+{
+    public List<int> ClaimIds { get; set; } = new();
+    public bool Value { get; set; } = true;
+    public string? Remarks { get; set; }
+}
+
+public sealed class BillingDateRangeActionRequest
+{
+    public DateOnly? DateFrom { get; set; }
+    public DateOnly? DateTo { get; set; }
+}
+
+
 

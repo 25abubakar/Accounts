@@ -221,6 +221,7 @@ public sealed class BillingClaimsService : IBillingClaimsService
         int statusId,
         string? remarks,
         string? userId,
+        string? policyNumber = null,
         CancellationToken ct = default)
     {
         var claim = await _db.BillingClaims.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.ClaimId == claimId, ct);
@@ -234,6 +235,10 @@ public sealed class BillingClaimsService : IBillingClaimsService
         if (!string.IsNullOrWhiteSpace(remarks))
         {
             claim.Remarks = remarks;
+        }
+        if (!string.IsNullOrWhiteSpace(policyNumber))
+        {
+            claim.PolicyNumber = policyNumber.Trim();
         }
 
         var log = new BillingClaimsLog
@@ -409,15 +414,305 @@ public sealed class BillingClaimsService : IBillingClaimsService
         };
     }
 
-    public async Task<IReadOnlyList<object>> GetClaimLogsAsync(int tenantId, int claimId, CancellationToken ct = default)
+    public async Task<IReadOnlyList<BillingClaimLogRowDto>> GetClaimLogsAsync(int tenantId, int claimId, CancellationToken ct = default)
     {
-        var logs = await _db.BillingClaimsLogs.AsNoTracking()
-            .Where(x => x.TenantId == tenantId && x.ClaimId == claimId)
-            .OrderByDescending(x => x.CreatedDate)
-            .Select(x => new { x.Id, x.ClaimId, x.StatusId, x.LogDate, x.Remarks, x.CreatedDate })
+        return await SpListQuery.ExecAsync<BillingClaimLogRowDto>(
+            _db,
+            "EXEC dbo.usp_Billing_ClaimLogs_List @TenantId, @ClaimId",
+            ct,
+            SpListQuery.TenantId(tenantId),
+            SpListQuery.Int("ClaimId", claimId));
+    }
+
+    public async Task<IReadOnlyList<BillingClaimDocumentRowDto>> GetClaimDocumentsAsync(int tenantId, int claimId, CancellationToken ct = default)
+    {
+        return await SpListQuery.ExecAsync<BillingClaimDocumentRowDto>(
+            _db,
+            "EXEC dbo.usp_Billing_ClaimDocuments_List @TenantId, @ClaimId",
+            ct,
+            SpListQuery.TenantId(tenantId),
+            SpListQuery.Int("ClaimId", claimId));
+    }
+
+    public async Task<BillingBatchActionResultDto> CorrectReprocessClaimsAsync(
+        int tenantId, DateOnly? dateFrom, DateOnly? dateTo, CancellationToken ct = default)
+    {
+        var specialStatusIds = await _db.Database.SqlQueryRaw<int>(
+            "SELECT StatusId FROM dbo.tblEobStatusNeglectRule WITH (NOLOCK) WHERE IsActive = 1 ORDER BY SortOrder"
+        ).ToListAsync(ct);
+        var specialSet = specialStatusIds.ToHashSet();
+
+        var mixedDefault = await _db.Database.SqlQueryRaw<int?>(
+            "SELECT TOP 1 MixedDefaultStatusId FROM dbo.tblEobStatusNeglectRule WITH (NOLOCK) WHERE IsActive = 1 AND MixedDefaultStatusId IS NOT NULL"
+        ).FirstOrDefaultAsync(ct) ?? 1074;
+
+        var process20Priorities = await _db.Database.SqlQueryRaw<int>(
+            "SELECT StatusId FROM dbo.tblProcessStatus WITH (NOLOCK) WHERE ProcessId = 20 AND S_Value IS NOT NULL ORDER BY S_Value ASC"
+        ).ToListAsync(ct);
+
+        var query = _db.BillingClaims
+            .Where(x => x.TenantId == tenantId);
+
+        if (dateFrom.HasValue || dateTo.HasValue)
+        {
+            var df = dateFrom?.ToDateTime(TimeOnly.MinValue);
+            var dtLimit = dateTo?.ToDateTime(TimeOnly.MaxValue);
+            query = query.Where(x => _db.BillingAppointments.Any(a => 
+                a.AppointmentId == x.AppointmentId && a.TenantId == tenantId &&
+                (!df.HasValue || a.DOS >= df.Value) &&
+                (!dtLimit.HasValue || a.DOS <= dtLimit.Value)));
+        }
+
+        var candidateClaims = await query.Select(x => new { x.ClaimId, x.AppointmentId, x.EobStatusId }).ToListAsync(ct);
+        if (candidateClaims.Count == 0)
+        {
+            return new BillingBatchActionResultDto { Success = true, AffectedCount = 0, Message = "No claims found for selected range." };
+        }
+
+        var claimIds = candidateClaims.Select(x => x.ClaimId).ToList();
+
+        var amounts = await _db.BillingPaymentRows.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && x.ClaimId.HasValue && claimIds.Contains(x.ClaimId.Value) && x.EobStatusId.HasValue)
+            .Select(x => new { ClaimId = x.ClaimId!.Value, EobStatusId = x.EobStatusId!.Value })
             .ToListAsync(ct);
 
-        return logs.Cast<object>().ToList();
+        var amountsByClaim = amounts.GroupBy(x => x.ClaimId).ToDictionary(g => g.Key, g => g.Select(a => a.EobStatusId).ToList());
+
+        var updates = new List<(int ClaimId, int NewStatusId)>();
+
+        foreach (var claim in candidateClaims)
+        {
+            if (!amountsByClaim.TryGetValue(claim.ClaimId, out var eodStatuses) || eodStatuses.Count == 0)
+                continue;
+
+            int targetStatusId;
+            bool hasOnlySpecial = eodStatuses.All(s => specialSet.Contains(s));
+            if (hasOnlySpecial && specialSet.Count > 0)
+            {
+                var distinct = eodStatuses.Distinct().ToList();
+                targetStatusId = distinct.Count == 1 ? distinct[0] : mixedDefault;
+            }
+            else
+            {
+                int? matched = null;
+                foreach (var priorityStatus in process20Priorities)
+                {
+                    if (eodStatuses.Contains(priorityStatus))
+                    {
+                        matched = priorityStatus;
+                        break;
+                    }
+                }
+                targetStatusId = matched ?? eodStatuses.First();
+            }
+
+            if (claim.EobStatusId != targetStatusId)
+            {
+                updates.Add((claim.ClaimId, targetStatusId));
+            }
+        }
+
+        if (updates.Count > 0)
+        {
+            foreach (var chunk in updates.Chunk(500))
+            {
+                var ids = string.Join(",", chunk.Select(u => $"({u.ClaimId}, {u.NewStatusId})"));
+                var sql = $@"
+UPDATE c
+SET c.EobStatusId = v.NewStatusId
+FROM dbo.tblInsPTClaims c
+JOIN (VALUES {ids}) AS v(ClaimId, NewStatusId) ON c.ClaimId = v.ClaimId
+WHERE c.TenantId = {tenantId};";
+                await _db.Database.ExecuteSqlRawAsync(sql, ct);
+            }
+        }
+
+        return new BillingBatchActionResultDto
+        {
+            Success = true,
+            AffectedCount = updates.Count,
+            Message = $"Correction completed successfully. Updated {updates.Count} claim(s)."
+        };
+    }
+
+    public async Task<BillingBatchActionResultDto> SettledClaimsPaymentAsync(
+        int tenantId, DateOnly? dateFrom, DateOnly? dateTo, CancellationToken ct = default)
+    {
+        var fromDate = dateFrom?.ToString("yyyy-MM-dd");
+        var toDate = dateTo?.ToString("yyyy-MM-dd");
+
+        var sqlAmounts = $@"
+UPDATE cmd
+SET cmd.EobStatusId = 20
+FROM dbo.tblClaimCodeAmountDetails cmd
+JOIN dbo.tblRoznamcha r 
+  ON (r.EobCheckNo = LTRIM(RTRIM(cmd.EobCheckNo)) OR r.InstrumentNo = LTRIM(RTRIM(cmd.EobCheckNo)))
+JOIN dbo.tblInsPTClaims c ON c.ClaimId = cmd.ClaimId
+LEFT JOIN dbo.tblAppointment a ON a.AppointmentId = c.AppointmentId
+WHERE cmd.TenantId = {tenantId}
+  AND cmd.EobCheckNo IS NOT NULL
+  AND cmd.PaidAmount > 0
+  AND (cmd.EobStatusId IS NULL OR cmd.EobStatusId <> 20)
+  AND r.EnterStatusId = 20
+  AND r.isSettled = 1
+  {(fromDate != null ? $"AND (a.DOS >= '{fromDate}')" : "")}
+  {(toDate != null ? $"AND (a.DOS <= '{toDate}')" : "")};";
+
+        var affectedAmounts = await _db.Database.ExecuteSqlRawAsync(sqlAmounts, ct);
+
+        var sqlClaims = $@"
+UPDATE c
+SET c.EobStatusId = 20
+FROM dbo.tblInsPTClaims c
+LEFT JOIN dbo.tblAppointment a ON a.AppointmentId = c.AppointmentId
+WHERE c.TenantId = {tenantId}
+  {(fromDate != null ? $"AND (a.DOS >= '{fromDate}')" : "")}
+  {(toDate != null ? $"AND (a.DOS <= '{toDate}')" : "")}
+  AND EXISTS (
+      SELECT 1 FROM dbo.tblClaimCodeAmountDetails cmd
+      WHERE cmd.ClaimId = c.ClaimId AND cmd.EobStatusId = 20
+  )
+  AND NOT EXISTS (
+      SELECT 1 FROM dbo.tblClaimCodeAmountDetails cmd
+      WHERE cmd.ClaimId = c.ClaimId AND cmd.PaidAmount > 0 AND (cmd.EobStatusId IS NULL OR cmd.EobStatusId <> 20)
+  );";
+
+        var affectedClaims = await _db.Database.ExecuteSqlRawAsync(sqlClaims, ct);
+
+        return new BillingBatchActionResultDto
+        {
+            Success = true,
+            AffectedCount = affectedAmounts,
+            Message = $"Settled payment processed successfully. {affectedAmounts} remittance record(s) and {affectedClaims} claim(s) marked as Settled."
+        };
+    }
+
+    public async Task<BillingBatchActionResultDto> BatchUpdateStatusAsync(
+        int tenantId, IReadOnlyList<int> claimIds, int statusId, string? remarks, string? userId, DateTime? paymentDate = null, CancellationToken ct = default)
+    {
+        if (claimIds == null || claimIds.Count == 0)
+            return new BillingBatchActionResultDto { Success = false, AffectedCount = 0, Message = "No claims provided." };
+
+        var claims = await _db.BillingClaims
+            .Where(x => x.TenantId == tenantId && claimIds.Contains(x.ClaimId))
+            .ToListAsync(ct);
+
+        if (claims.Count == 0)
+            return new BillingBatchActionResultDto { Success = false, AffectedCount = 0, Message = "No matching claims found." };
+
+        var now = DateTime.UtcNow;
+        var logDateStr = now.ToString("yyyy-MM-dd HH:mm");
+
+        foreach (var claim in claims)
+        {
+            claim.StatusId = statusId;
+            if (statusId is 1049 or 20 or 1059)
+            {
+                claim.SubmittedDate ??= paymentDate ?? now;
+            }
+            if (!string.IsNullOrWhiteSpace(remarks))
+            {
+                claim.Remarks = remarks;
+            }
+
+            _db.BillingClaimsLogs.Add(new BillingClaimsLog
+            {
+                TenantId = tenantId,
+                ClaimId = claim.ClaimId,
+                StatusId = statusId,
+                LogDate = logDateStr,
+                Remarks = string.IsNullOrWhiteSpace(remarks) ? $"Status changed to {statusId}" : remarks,
+                CreatedDate = now
+            });
+        }
+
+        await _db.SaveChangesAsync(ct);
+
+        return new BillingBatchActionResultDto
+        {
+            Success = true,
+            AffectedCount = claims.Count,
+            Message = $"Status updated to {statusId} for {claims.Count} claim(s)."
+        };
+    }
+
+    public async Task<BillingBatchActionResultDto> BatchReprocessClaimsAsync(
+        int tenantId, IReadOnlyList<int> claimIds, bool isReProcess, string? userId, CancellationToken ct = default)
+    {
+        if (claimIds == null || claimIds.Count == 0)
+            return new BillingBatchActionResultDto { Success = false, AffectedCount = 0, Message = "No claims provided." };
+
+        var claims = await _db.BillingClaims
+            .Where(x => x.TenantId == tenantId && claimIds.Contains(x.ClaimId))
+            .ToListAsync(ct);
+
+        var now = DateTime.UtcNow;
+        var logDateStr = now.ToString("yyyy-MM-dd HH:mm");
+
+        foreach (var claim in claims)
+        {
+            claim.IsRep = isReProcess;
+            _db.BillingClaimsLogs.Add(new BillingClaimsLog
+            {
+                TenantId = tenantId,
+                ClaimId = claim.ClaimId,
+                StatusId = claim.StatusId,
+                LogDate = logDateStr,
+                Remarks = isReProcess ? "Marked for Reprocess" : "Unmarked from Reprocess",
+                CreatedDate = now
+            });
+        }
+
+        var idList = string.Join(",", claimIds);
+        await _db.Database.ExecuteSqlRawAsync(
+            $"UPDATE dbo.tblClaimCodeAmountDetails SET IsReProcess = {(isReProcess ? 1 : 0)} WHERE TenantId = {tenantId} AND ClaimId IN ({idList});",
+            ct);
+
+        await _db.SaveChangesAsync(ct);
+
+        return new BillingBatchActionResultDto
+        {
+            Success = true,
+            AffectedCount = claims.Count,
+            Message = $"Updated reprocess state for {claims.Count} claim(s)."
+        };
+    }
+
+    public async Task<BillingBatchActionResultDto> BatchArClaimsAsync(
+        int tenantId, IReadOnlyList<int> claimIds, bool isAr, string? userId, CancellationToken ct = default)
+    {
+        if (claimIds == null || claimIds.Count == 0)
+            return new BillingBatchActionResultDto { Success = false, AffectedCount = 0, Message = "No claims provided." };
+
+        var claims = await _db.BillingClaims
+            .Where(x => x.TenantId == tenantId && claimIds.Contains(x.ClaimId))
+            .ToListAsync(ct);
+
+        var now = DateTime.UtcNow;
+        var logDateStr = now.ToString("yyyy-MM-dd HH:mm");
+
+        foreach (var claim in claims)
+        {
+            claim.IsAr = isAr;
+            _db.BillingClaimsLogs.Add(new BillingClaimsLog
+            {
+                TenantId = tenantId,
+                ClaimId = claim.ClaimId,
+                StatusId = claim.StatusId,
+                LogDate = logDateStr,
+                Remarks = isAr ? "Moved to AR" : "Removed from AR",
+                CreatedDate = now
+            });
+        }
+
+        await _db.SaveChangesAsync(ct);
+
+        return new BillingBatchActionResultDto
+        {
+            Success = true,
+            AffectedCount = claims.Count,
+            Message = $"Updated AR state for {claims.Count} claim(s)."
+        };
     }
 }
 

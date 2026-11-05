@@ -7,19 +7,7 @@ using System.Text.Json;
 
 namespace Accounts.Services.Services
 {
-    /// <summary>
-    /// Hierarchical RBAC engine.
-    ///
-    /// Authority chain:
-    ///   Super Admin → TenantMenuPermissions (ceiling)
-    ///   Tenant Admin → /roles TenantRolePermissions (job-title defaults)
-    ///                → Access Control StaffMenuAccess + AccessFeatures (person extras)
-    ///
-    /// Staff effective access = (role defaults ∪ person extras) ∩ tenant ceiling.
-    /// Extras are additive. Nothing may exceed the Super Admin ceiling.
-    /// When Super Admin revokes a menu/CRUD bit, runtime resolution fails closed
-    /// even before cascade prune removes stale rows.
-    /// </summary>
+
     public class RbacService
     {
         private readonly ApplicationDbContext _db;
@@ -66,9 +54,6 @@ namespace Accounts.Services.Services
             return row == null ? null : new StaffAccessContext(row.TenantId, row.JobTitle, row.DeptId);
         }
 
-        /// <summary>
-        /// Job-title defaults from TenantRolePermissions. Dept-specific rows win over tenant-wide (DeptId null).
-        /// </summary>
         private async Task<HashSet<int>> LoadTenantRolePermissionIdsAsync(int tenantId, string? jobTitle, int? deptId)
         {
             if (string.IsNullOrWhiteSpace(jobTitle)) return new HashSet<int>();
