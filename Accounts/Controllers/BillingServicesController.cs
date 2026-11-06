@@ -17,6 +17,7 @@ public sealed class BillingServicesController : ControllerBase
     private const string ReProcessMenuRoute = "/billing-services/re-process";
     private const string CptsProcessedMenuRoute = "/billing-services/cpts-processed";
     private const string ArReportMenuRoute = "/billing-services/ar-report";
+    private const string StatusRulesMenuRoute = "/billing-services/status-rules";
     private readonly ApplicationDbContext _db;
     private readonly ITenantService _tenant;
     private readonly TenantPermissionService _tenantPermissions;
