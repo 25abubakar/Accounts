@@ -318,5 +318,24 @@ public sealed class BillingPatientType
     [MaxLength(200)] public string? PtType { get; set; }
 }
 
+[Table("tblEobStatusNeglectRule")]
+public sealed class BillingEobStatusRule
+{
+    [Key]
+    public int Id { get; set; }
+    public int StatusId { get; set; }
+    [MaxLength(200)]
+    public string? RuleGroup { get; set; }
+    public int? MixedDefaultStatusId { get; set; }
+    public bool IsActive { get; set; }
+    public int? SortOrder { get; set; }
+    [MaxLength(200)]
+    public string? CreatedBy { get; set; }
+    public DateTime? CreatedDate { get; set; }
+    [MaxLength(200)]
+    public string? UpdatedBy { get; set; }
+    public DateTime? UpdatedDate { get; set; }
+}
+
 
 

@@ -147,3 +147,31 @@ public sealed class CopayImportRow : ITenantEntity
     public long? CopayStatementId { get; set; }
     public CopayStatement? CopayStatement { get; set; }
 }
+
+/// <summary>
+/// Normalized equivalent of the legacy Copay_Ref/BankLT_Ref/Acct_Ref links.
+/// A separate row is kept for every source/target pair so grouped settlements
+/// can be reversed without parsing comma-separated references.
+/// </summary>
+[Table("CopaySettlementLinks")]
+public sealed class CopaySettlementLink : ITenantEntity
+{
+    [Key] public long Id { get; set; }
+    public int TenantId { get; set; }
+    public long? SourceRoznamchaEntryId { get; set; }
+    public long? SourceCopayStatementId { get; set; }
+    public long? TargetRoznamchaEntryId { get; set; }
+    public long? TargetCopayStatementId { get; set; }
+    public long? TargetBankStatementId { get; set; }
+    [Required, MaxLength(30)] public string LinkType { get; set; } = string.Empty;
+    [MaxLength(100)] public string? SourceReference { get; set; }
+    [MaxLength(100)] public string? TargetReference { get; set; }
+    public int? StatusId { get; set; }
+    public bool IsManual { get; set; }
+    public bool IsActive { get; set; } = true;
+    [MaxLength(2000)] public string? Remarks { get; set; }
+    [MaxLength(450)] public string? CreatedByUserId { get; set; }
+    public DateTime CreatedOnUtc { get; set; } = DateTime.UtcNow;
+    [MaxLength(450)] public string? VoidedByUserId { get; set; }
+    public DateTime? VoidedOnUtc { get; set; }
+}

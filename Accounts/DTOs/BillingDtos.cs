@@ -356,5 +356,133 @@ public sealed class BillingDateRangeActionRequest
     public DateOnly? DateTo { get; set; }
 }
 
+// ── Billing Services: Child 1 - Re Process DTO ──────────────────────────────
+public sealed class BillingReProcessRowDto
+{
+    public int Id { get; set; }
+    public int PaymentId { get; set; }
+    public int AppointmentId { get; set; }
+    public bool IsClaimed { get; set; }
+    public string PatientName { get; set; } = string.Empty;
+    public string PatientNumber { get; set; } = string.Empty;
+    public string PatientType { get; set; } = string.Empty;
+    public DateTime? DateOfService { get; set; }
+    public string Carrier { get; set; } = string.Empty;
+    public string Insurance { get; set; } = string.Empty;
+    public string PolicyNumber { get; set; } = string.Empty;
+    public string CptIcd { get; set; } = string.Empty;
+    public string Modifier { get; set; } = string.Empty;
+    public decimal ClaimAmount { get; set; }
+    public decimal InsuranceAmount { get; set; }
+    public string? SubmissionDate { get; set; }
+    public decimal PaidAmount { get; set; }
+    public string SubmissionStatus { get; set; } = string.Empty;
+    public string? StatusColorCode { get; set; }
+    public string? StatusFontColor { get; set; }
+    public string Remarks { get; set; } = string.Empty;
+    public string GroupCodes { get; set; } = string.Empty;
+    public string Attachment { get; set; } = string.Empty;
+}
+
+// ── Billing Services: Child 2 - CPT's Processed DTO ─────────────────────────
+public sealed class BillingCptsProcessedRowDto
+{
+    public int Id { get; set; }
+    public int PaymentId { get; set; }
+    public int AppointmentId { get; set; }
+    public bool IsClaimed { get; set; }
+    public string PatientName { get; set; } = string.Empty;
+    public string PatientNumber { get; set; } = string.Empty;
+    public string PatientType { get; set; } = string.Empty;
+    public DateTime? DateOfService { get; set; }
+    public string Carrier { get; set; } = string.Empty;
+    public string Insurance { get; set; } = string.Empty;
+    public string PolicyNumber { get; set; } = string.Empty;
+    public string CptIcd { get; set; } = string.Empty;
+    public string Modifier { get; set; } = string.Empty;
+    public decimal ClaimAmount { get; set; }
+    public decimal InsuranceAmount { get; set; }
+    public string? SubmissionDate { get; set; }
+    public decimal PaidAmount { get; set; }
+    public decimal PatientAmount { get; set; }
+    public string SubmissionStatus { get; set; } = string.Empty;
+    public string GroupCodes { get; set; } = string.Empty;
+    public string Remarks { get; set; } = string.Empty;
+    public DateTime? ProcessDate { get; set; }
+    public DateTime? ReceiveDate { get; set; }
+    public string CheckNumber { get; set; } = string.Empty;
+    public string Attachment { get; set; } = string.Empty;
+}
+
+// ── Billing Services: Child 3 - AR Report DTO ───────────────────────────
+public sealed class BillingArReportRowDto
+{
+    public int Id { get; set; }
+    public int? ApptId { get; set; }
+    public string PatientName { get; set; } = string.Empty;
+    public string PatientNumber { get; set; } = string.Empty;
+    public string PatientType { get; set; } = string.Empty;
+    public DateTime? DateOfService { get; set; }
+    public string Carrier { get; set; } = string.Empty;
+    public string Insurance { get; set; } = string.Empty;
+    public string PolicyNumber { get; set; } = string.Empty;
+    public DateTime? SubmissionDate { get; set; }
+    public string CptCodes { get; set; } = string.Empty;
+    public string Modifier { get; set; } = string.Empty;
+    public decimal ClaimAmount { get; set; }
+    public decimal InsuranceAmount { get; set; }
+    public int DaysSinceDos { get; set; }
+    public string StatusName { get; set; } = string.Empty;
+    public string ColorCode { get; set; } = string.Empty;
+    public string FontColor { get; set; } = string.Empty;
+    public string ArStatusName { get; set; } = string.Empty;
+    public string ArColorCode { get; set; } = string.Empty;
+    public string ArFontColor { get; set; } = string.Empty;
+    public DateTime? ProcessDate { get; set; }
+    public string LogStatus { get; set; } = string.Empty;
+    public string LogStatusColor { get; set; } = string.Empty;
+    public string LogStatusFont { get; set; } = string.Empty;
+    public DateTime? RemindDate { get; set; }
+    public string Remarks { get; set; } = string.Empty;
+}
+
+// ── Child 4: Status Rules DTOs ──────────────────────────────────────────────────
+
+public sealed class BillingStatusRuleDto
+{
+    public int Id { get; set; }
+    public string? RuleKey { get; set; }
+    public int StatusId { get; set; }
+    public string StatusName { get; set; } = string.Empty;
+    public int? MixedDefaultStatusId { get; set; }
+    public int? SortOrder { get; set; }
+    public bool IsActive { get; set; }
+}
+
+public sealed class BillingStatusRuleSaveRequestDto
+{
+    public int Id { get; set; }
+    public string? RuleKey { get; set; }
+    public int StatusId { get; set; }
+    public int? MixedDefaultStatusId { get; set; }
+    public int? SortOrder { get; set; }
+    public bool? IsActive { get; set; }
+}
+
+public sealed class BillingStatusOptionDto
+{
+    public int Id { get; set; }
+    public string Text { get; set; } = string.Empty;
+}
+
+public sealed class BillingServiceActionResultDto
+{
+    public bool Success { get; set; }
+    public string Message { get; set; } = string.Empty;
+    public int? Id { get; set; }
+}
+
+
+
 
 

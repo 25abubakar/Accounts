@@ -23,6 +23,7 @@ public interface ICopayService
 
     // ── Manual Reconciliation & Un-settle ───────────────────────────────────────
     Task<SettlementResultDto> SettleImsManualAsync(ManualSettleRequestDto request, CancellationToken ct = default);
+    Task<SettlementResultDto> SettleMerchantStatementsManualAsync(ManualSettleRequestDto request, CancellationToken ct = default);
     Task<bool> UnsettleEntryAsync(UnsettleRequestDto request, CancellationToken ct = default);
 
     // ── Lookups ────────────────────────────────────────────────────────────────

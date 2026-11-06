@@ -1,4 +1,4 @@
-using Microsoft.AspNetCore.Http;
+﻿using Microsoft.AspNetCore.Http;
 
 namespace Accounts.DTOs;
 
@@ -85,32 +85,45 @@ public sealed class MerchantStatementItemDto
 public sealed class ImsReceiptItemDto
 {
     public long Id { get; set; }
+    public int? SNo { get; set; }
     public string? Ref { get; set; }
-    public DateOnly TransDate { get; set; }
-    public decimal? UsdAmount { get; set; }
-    public decimal? Amount { get; set; }
-    public string? PatientInfo { get; set; }
-    public int? TransModeId { get; set; }
-    public string? TransModeName { get; set; }
-    public string? InstrumentNo { get; set; }
-    public string? Reference { get; set; }
-    public string? BankLtRef { get; set; }
-    public bool IsSettled { get; set; }
-    public int? EnterStatusId { get; set; }
-    public string? EnterStatusName { get; set; }
-    public string? Remarks { get; set; }
-    public string? Description { get; set; }
-    public decimal? PaidCopayAmount { get; set; }
-    public string? ReferralSource { get; set; }
-    public int? TransTypeId { get; set; }
-    public string? TransTypeName { get; set; }
+    public string? RoznamchaTypeName { get; set; }
+    public string? CategoryName { get; set; }
     public int? FromAccountId { get; set; }
     public string? FromAccountName { get; set; }
+    public string? FromAccountNumber { get; set; }
+    public string? ToCategoryName { get; set; }
     public int? ToAccountId { get; set; }
     public string? ToAccountName { get; set; }
+    public string? ToAccountNumber { get; set; }
+    public int? TransTypeId { get; set; }
+    public string? TransTypeName { get; set; }
+    public int? TransModeId { get; set; }
+    public string? TransModeName { get; set; }
+    public DateTime? CreatedDate { get; set; }
+    public string? InstrumentNo { get; set; }
+    public string? Description { get; set; }
+    public string? BankLtRef { get; set; }
+    public DateOnly TransDate { get; set; }
+    public decimal? Adjustment { get; set; }
+    public decimal? Amount { get; set; }
+    public decimal? UsdAmount { get; set; }
+    public decimal? PaidCopayAmount { get; set; }
+    public string? PatientInfo { get; set; }
+    public string? Reference { get; set; }
+    public string? ReferralSource { get; set; }
+    public decimal? Qty { get; set; }
+    public decimal? Rate { get; set; }
+    public int? EnterStatusId { get; set; }
+    public string? EnterStatusName { get; set; }
+    public bool IsDeleted { get; set; }
+    public string? Attachment { get; set; }
+    public string? Image { get; set; }
+    public string? LibRef { get; set; }
+    public string? Remarks { get; set; }
+    public bool IsSettled { get; set; }
     public int? CurrencyId { get; set; }
     public string? CurrencyCode { get; set; }
-    public string? Attachment { get; set; }
     public DateTime CreatedOnUtc { get; set; }
     public bool IsManual { get; set; }
     public string? StatusColor { get; set; }
@@ -179,7 +192,12 @@ public sealed class CopayImportResultDto
 public sealed class CopayProcessLogDto
 {
     public long Id { get; set; }
-    public long RoznamchaEntryId { get; set; }
+    public long? RoznamchaEntryId { get; set; }
+    public long? CopayStatementId { get; set; }
+    public string? SourceReference { get; set; }
+    public string? TargetReference { get; set; }
+    public string? LinkType { get; set; }
+    public bool IsActive { get; set; } = true;
     public string Action { get; set; } = string.Empty;
     public string? Notes { get; set; }
     public int? StatusId { get; set; }

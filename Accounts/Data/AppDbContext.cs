@@ -249,11 +249,13 @@ namespace Accounts.Data
         public DbSet<BillingRoznamchaStaging> BillingRoznamchas => Set<BillingRoznamchaStaging>();
         public DbSet<BillingOffice>         BillingOffices        => Set<BillingOffice>();
         public DbSet<BillingPatientType>    BillingPatientTypes   => Set<BillingPatientType>();
+        public DbSet<BillingEobStatusRule>  BillingEobStatusRules => Set<BillingEobStatusRule>();
 
         // ── Copay Module ───────────────────────────────────────────────────────
         public DbSet<CopayStatement> CopayStatements => Set<CopayStatement>();
         public DbSet<CopayImportBatch> CopayImportBatches => Set<CopayImportBatch>();
         public DbSet<CopayImportRow> CopayImportRows => Set<CopayImportRow>();
+        public DbSet<CopaySettlementLink> CopaySettlementLinks => Set<CopaySettlementLink>();
 
         // ── Email Module ───────────────────────────────────────────────────────
         public DbSet<tblMessage> tblMessage => Set<tblMessage>();
@@ -317,6 +319,7 @@ namespace Accounts.Data
             builder.Entity<BillingRoznamchaStaging>().ToTable("tblBillingRoznamcha").HasKey(x => x.Id);
             builder.Entity<BillingOffice>().ToTable("tblOffices").HasKey(x => x.OfficeId);
             builder.Entity<BillingPatientType>().ToTable("tblPatientType").HasKey(x => x.PtTypeId);
+            builder.Entity<BillingEobStatusRule>().ToTable("tblEobStatusNeglectRule").HasKey(x => x.Id);
             builder.Entity<FaxRecipient>().HasQueryFilter(row =>
                 _tenantService != null && !_tenantService.IsSuperAdmin && _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
             builder.Entity<FaxTransmission>().HasQueryFilter(row =>
@@ -335,6 +338,7 @@ namespace Accounts.Data
                     _tenantService != null && !_tenantService.IsSuperAdmin &&
                     _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
                 entity.HasIndex(x => new { x.TenantId, x.PaymentDate });
+                entity.HasIndex(x => x.AcctId);
                 entity.HasIndex(x => new { x.TenantId, x.IsSettled, x.StatusId });
                 entity.HasIndex(x => new { x.TenantId, x.Ref })
                     .IsUnique()
@@ -344,6 +348,9 @@ namespace Accounts.Data
                     .IsUnique()
                     .HasFilter("[LegacyId] IS NOT NULL");
                 entity.HasIndex(x => new { x.TenantId, x.SourceFingerprint });
+                entity.HasOne<Tenant>().WithMany().HasForeignKey(x => x.TenantId).OnDelete(DeleteBehavior.Restrict);
+                entity.HasOne<AccountsChartAccount>().WithMany().HasForeignKey(x => x.AcctId).OnDelete(DeleteBehavior.Restrict);
+                entity.HasOne<RoznamchaEntry>().WithMany().HasForeignKey(x => x.MatchedRoznamchaEntryId).OnDelete(DeleteBehavior.Restrict);
                 entity.HasOne<CopayImportBatch>().WithMany().HasForeignKey(x => x.ImportBatchId).OnDelete(DeleteBehavior.Restrict);
             });
             builder.Entity<CopayImportBatch>(entity =>
@@ -365,6 +372,24 @@ namespace Accounts.Data
                 entity.HasOne<CopayImportBatch>().WithMany().HasForeignKey(x => x.ImportBatchId).OnDelete(DeleteBehavior.Cascade);
                 entity.HasOne<RoznamchaEntry>().WithMany().HasForeignKey(x => x.RoznamchaEntryId).OnDelete(DeleteBehavior.Restrict);
                 entity.HasOne<CopayStatement>().WithMany().HasForeignKey(x => x.CopayStatementId).OnDelete(DeleteBehavior.Restrict);
+            });
+            builder.Entity<CopaySettlementLink>(entity =>
+            {
+                entity.HasQueryFilter(row =>
+                    _tenantService != null && !_tenantService.IsSuperAdmin &&
+                    _tenantService.TenantId != null && row.TenantId == _tenantService.TenantId);
+                entity.HasIndex(x => new { x.TenantId, x.SourceRoznamchaEntryId, x.IsActive });
+                entity.HasIndex(x => new { x.TenantId, x.SourceCopayStatementId, x.IsActive });
+                entity.HasIndex(x => new { x.TenantId, x.TargetRoznamchaEntryId, x.IsActive });
+                entity.HasIndex(x => new { x.TenantId, x.TargetCopayStatementId, x.IsActive });
+                entity.HasIndex(x => new { x.TenantId, x.TargetBankStatementId, x.IsActive });
+                entity.HasOne<Tenant>().WithMany().HasForeignKey(x => x.TenantId).OnDelete(DeleteBehavior.Restrict);
+                entity.HasOne<RoznamchaEntry>().WithMany().HasForeignKey(x => x.SourceRoznamchaEntryId).OnDelete(DeleteBehavior.Restrict);
+                entity.HasOne<CopayStatement>().WithMany().HasForeignKey(x => x.SourceCopayStatementId).OnDelete(DeleteBehavior.Restrict);
+                entity.HasOne<RoznamchaEntry>().WithMany().HasForeignKey(x => x.TargetRoznamchaEntryId).OnDelete(DeleteBehavior.Restrict);
+                entity.HasOne<CopayStatement>().WithMany().HasForeignKey(x => x.TargetCopayStatementId).OnDelete(DeleteBehavior.Restrict);
+                entity.HasOne<BankStatement>().WithMany().HasForeignKey(x => x.TargetBankStatementId).OnDelete(DeleteBehavior.Restrict);
+                entity.HasOne<PlatformSettingStatus>().WithMany().HasForeignKey(x => x.StatusId).OnDelete(DeleteBehavior.Restrict);
             });
             builder.Entity<FaxTransmission>().HasOne(x => x.Recipient).WithMany().HasForeignKey(x => x.RecipientId).OnDelete(DeleteBehavior.Restrict);
             builder.Entity<FaxAttachmentMetadata>().HasOne(x => x.Transmission).WithMany(x => x.Attachments).HasForeignKey(x => x.TransmissionId).OnDelete(DeleteBehavior.Cascade);

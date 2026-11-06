@@ -1,4 +1,4 @@
-using System.Data;
+﻿using System.Data;
 using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
@@ -20,6 +20,7 @@ public sealed class CopayService(
     private const int LegacyCopayCategoryId = 54;
     private const int LegacyCopayHoldingAccountId = 1567;
     private const int LegacyCopayMerchantClearingAccountId = 1568;
+    private const int LegacyCopayMerchantAccountId = 3608;
     private const int LegacyReceiptRoznamchaTypeId = 2;
 
     private const int StatusOpen = 14;
@@ -90,10 +91,13 @@ public sealed class CopayService(
                 .ToDictionaryAsync(b => b.ReferenceNumber!, ct)
             : new Dictionary<string, BankStatement>();
         var statusIds = entries.Where(x => x.EnterStatusId.HasValue).Select(x => x.EnterStatusId!.Value).Distinct().ToList();
-        var statuses = await db.AccountsEntryStatuses.AsNoTracking()
+        var rawStatuses = await db.AccountsEntryStatuses.AsNoTracking()
             .Where(x => statusIds.Contains(x.Id) && (x.TenantId == null || x.TenantId == tenantId))
-            .GroupBy(x => x.Id).Select(x => x.OrderByDescending(s => s.TenantId == tenantId).First())
-            .ToDictionaryAsync(x => x.Id, ct);
+            .ToListAsync(ct);
+        var statuses = rawStatuses
+            .GroupBy(x => x.Id)
+            .Select(x => x.OrderByDescending(s => s.TenantId == tenantId).First())
+            .ToDictionary(x => x.Id);
 
         var items = entries.Select(e =>
         {
@@ -211,6 +215,10 @@ public sealed class CopayService(
                     ProcessedByUserId = current.UserId,
                     ProcessedOnUtc = DateTime.UtcNow
                 });
+                db.CopaySettlementLinks.Add(NewSettlementLink(
+                    tenantId, "MERCHANT_TO_BANK", entry.Ref, matchedBank.BankRef ?? matchedBank.TransactionReferenceNumber,
+                    sourceRoznamchaEntryId: entry.Id, targetBankStatementId: matchedBank.Id,
+                    statusId: StatusSettled, isManual: false));
 
                 matchedCount++;
                 totalSettled += Math.Abs(entryAmount);
@@ -380,10 +388,13 @@ public sealed class CopayService(
             .Where(x => x.TenantId == tenantId && accountIds.Contains(x.Id))
             .ToDictionaryAsync(x => x.Id, x => x.AccountName, ct);
         var statusIds = rows.Where(x => x.StatusId.HasValue).Select(x => x.StatusId!.Value).Distinct().ToList();
-        var statuses = await db.AccountsEntryStatuses.AsNoTracking()
+        var rawStatuses = await db.AccountsEntryStatuses.AsNoTracking()
             .Where(x => statusIds.Contains(x.Id) && (x.TenantId == null || x.TenantId == tenantId))
-            .GroupBy(x => x.Id).Select(x => x.OrderByDescending(s => s.TenantId == tenantId).First())
-            .ToDictionaryAsync(x => x.Id, ct);
+            .ToListAsync(ct);
+        var statuses = rawStatuses
+            .GroupBy(x => x.Id)
+            .Select(x => x.OrderByDescending(s => s.TenantId == tenantId).First())
+            .ToDictionary(x => x.Id);
 
         var items = rows.Select(r =>
         {
@@ -607,10 +618,13 @@ public sealed class CopayService(
             .ToListAsync(ct);
 
         var statusIds = rows.Where(x => x.EnterStatusId.HasValue).Select(x => x.EnterStatusId!.Value).Distinct().ToList();
-        var statuses = await db.AccountsEntryStatuses.AsNoTracking()
+        var rawStatuses = await db.AccountsEntryStatuses.AsNoTracking()
             .Where(x => statusIds.Contains(x.Id) && (x.TenantId == null || x.TenantId == tenantId))
-            .GroupBy(x => x.Id).Select(x => x.OrderByDescending(s => s.TenantId == tenantId).First())
-            .ToDictionaryAsync(x => x.Id, ct);
+            .ToListAsync(ct);
+        var statuses = rawStatuses
+            .GroupBy(x => x.Id)
+            .Select(x => x.OrderByDescending(s => s.TenantId == tenantId).First())
+            .ToDictionary(x => x.Id);
         var modeIds = rows.Where(x => x.TransModeId.HasValue).Select(x => x.TransModeId!.Value).Distinct().ToList();
         var modes = await db.AccountsTransModes.AsNoTracking().Where(x => modeIds.Contains(x.Id))
             .ToDictionaryAsync(x => x.Id, x => x.Name, ct);
@@ -621,7 +635,19 @@ public sealed class CopayService(
             .Select(x => x!.Value).Distinct().ToList();
         var accounts = await db.AccountsChartAccounts.AsNoTracking()
             .Where(x => x.TenantId == tenantId && accountIds.Contains(x.Id))
-            .ToDictionaryAsync(x => x.Id, x => x.AccountName, ct);
+            .ToDictionaryAsync(x => x.Id, ct);
+
+        var rtypeIds = rows.Where(x => x.RoznamchaTypeId.HasValue).Select(x => x.RoznamchaTypeId!.Value).Distinct().ToList();
+        var rozTypes = await db.AccountsRoznamchaTypes.AsNoTracking()
+            .Where(x => rtypeIds.Contains(x.Id))
+            .ToDictionaryAsync(x => x.Id, x => x.Name, ct);
+
+        var catIds = accounts.Values.Where(a => a.CategoryId.HasValue).Select(a => a.CategoryId!.Value)
+            .Concat(rows.Where(r => r.CategoryId.HasValue).Select(r => r.CategoryId!.Value)).Distinct().ToList();
+        var categories = await db.AccountsCategories.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && catIds.Contains(x.Id))
+            .ToDictionaryAsync(x => x.Id, x => x.Name, ct);
+
         var currencyIds = rows.Where(x => x.CurrencyId.HasValue).Select(x => x.CurrencyId!.Value).Distinct().ToList();
         var currencies = await db.AccountsCurrencies.AsNoTracking().Where(x => currencyIds.Contains(x.Id))
             .ToDictionaryAsync(x => x.Id, x => x.Code, ct);
@@ -629,37 +655,57 @@ public sealed class CopayService(
         var items = rows.Select(r =>
         {
             statuses.TryGetValue(r.EnterStatusId ?? 0, out var status);
+            accounts.TryGetValue(r.FromAccountId ?? 0, out var fromAcc);
+            accounts.TryGetValue(r.ToAccountId ?? 0, out var toAcc);
+
+            var catName = r.CategoryId.HasValue && categories.TryGetValue(r.CategoryId.Value, out var cn) ? cn : "Copay";
+            var toCatName = toAcc?.CategoryId.HasValue == true && categories.TryGetValue(toAcc.CategoryId.Value, out var tcn) ? tcn : catName;
+            var rtypeName = r.RoznamchaTypeId.HasValue && rozTypes.TryGetValue(r.RoznamchaTypeId.Value, out var rtn) ? rtn : "Receipt";
+
             return new ImsReceiptItemDto
             {
                 Id = r.Id,
+                SNo = r.SNo,
                 Ref = r.Ref,
-                TransDate = r.TransDate,
-                UsdAmount = r.UsdAmount,
-                Amount = r.Amount,
-                PatientInfo = r.PatientInfo,
+                RoznamchaTypeName = rtypeName,
+                CategoryName = catName,
+                FromAccountId = r.FromAccountId,
+                FromAccountName = fromAcc?.AccountName,
+                FromAccountNumber = fromAcc?.AccountNumber,
+                ToCategoryName = toCatName,
+                ToAccountId = r.ToAccountId,
+                ToAccountName = toAcc?.AccountName,
+                ToAccountNumber = toAcc?.AccountNumber,
+                TransTypeId = r.TransTypeId,
+                TransTypeName = r.TransTypeId.HasValue && types.TryGetValue(r.TransTypeId.Value, out var typeName) ? typeName : "Not Specified",
                 TransModeId = r.TransModeId,
                 TransModeName = r.TransModeId.HasValue && modes.TryGetValue(r.TransModeId.Value, out var modeName) ? modeName : GetTransModeName(r.TransModeId),
+                CreatedDate = r.CreatedOnUtc,
                 InstrumentNo = r.InstrumentNo,
-                Reference = r.Reference,
+                Description = r.Descriptions,
                 BankLtRef = r.BankLtRef,
-                IsSettled = r.IsSettled,
+                TransDate = r.TransDate,
+                Adjustment = r.Adjustment,
+                Amount = r.Amount,
+                UsdAmount = r.UsdAmount,
+                PaidCopayAmount = r.PaidCopayAmount,
+                PatientInfo = r.PatientInfo,
+                Reference = r.Reference,
+                ReferralSource = r.ReferralSource,
+                Qty = r.Qty,
+                Rate = r.Rate,
                 EnterStatusId = r.EnterStatusId,
                 EnterStatusName = status?.Name ?? GetStatusName(r.EnterStatusId),
+                IsDeleted = r.IsDeleted,
+                Attachment = r.Attachment,
+                Image = r.Attachment,
+                LibRef = r.LibRef,
+                Remarks = r.Remarks,
+                IsSettled = r.IsSettled,
                 StatusColor = status?.ColorCode,
                 StatusFontColor = status?.FontColor,
-                Remarks = r.Remarks,
-                Description = r.Descriptions,
-                PaidCopayAmount = r.PaidCopayAmount,
-                ReferralSource = r.ReferralSource,
-                TransTypeId = r.TransTypeId,
-                TransTypeName = r.TransTypeId.HasValue && types.TryGetValue(r.TransTypeId.Value, out var typeName) ? typeName : null,
-                FromAccountId = r.FromAccountId,
-                FromAccountName = r.FromAccountId.HasValue && accounts.TryGetValue(r.FromAccountId.Value, out var fromName) ? fromName : null,
-                ToAccountId = r.ToAccountId,
-                ToAccountName = r.ToAccountId.HasValue && accounts.TryGetValue(r.ToAccountId.Value, out var toName) ? toName : null,
                 CurrencyId = r.CurrencyId,
                 CurrencyCode = r.CurrencyId.HasValue && currencies.TryGetValue(r.CurrencyId.Value, out var code) ? code : null,
-                Attachment = r.Attachment,
                 CreatedOnUtc = r.CreatedOnUtc,
                 IsManual = r.IsManual
             };
@@ -696,19 +742,31 @@ public sealed class CopayService(
         var tenantId = current.TenantId;
         var entryExists = await db.RoznamchaEntries.AsNoTracking()
             .AnyAsync(x => x.TenantId == tenantId && x.Id == entryId, ct);
-        if (!entryExists) throw new KeyNotFoundException("Copay entry was not found.");
+        var statementExists = await db.CopayStatements.AsNoTracking()
+            .AnyAsync(x => x.TenantId == tenantId && x.Id == entryId, ct);
+        if (!entryExists && !statementExists) throw new KeyNotFoundException("Copay entry was not found.");
 
         var logs = await db.RoznamchaEntryProcessLogs.AsNoTracking()
-            .Where(x => x.TenantId == tenantId && x.RoznamchaEntryId == entryId)
+            .Where(x => entryExists && x.TenantId == tenantId && x.RoznamchaEntryId == entryId)
             .OrderByDescending(x => x.ProcessedOnUtc)
             .ToListAsync(ct);
-        var statusIds = logs.Where(x => x.StatusId.HasValue).Select(x => x.StatusId!.Value).Distinct().ToList();
-        var statusNames = await db.AccountsEntryStatuses.AsNoTracking()
+        var links = await db.CopaySettlementLinks.AsNoTracking()
+            .Where(x => x.TenantId == tenantId &&
+                ((entryExists && (x.SourceRoznamchaEntryId == entryId || x.TargetRoznamchaEntryId == entryId)) ||
+                 (statementExists && (x.SourceCopayStatementId == entryId || x.TargetCopayStatementId == entryId))))
+            .OrderByDescending(x => x.CreatedOnUtc)
+            .ToListAsync(ct);
+        var statusIds = logs.Where(x => x.StatusId.HasValue).Select(x => x.StatusId!.Value)
+            .Concat(links.Where(x => x.StatusId.HasValue).Select(x => x.StatusId!.Value)).Distinct().ToList();
+        var rawStatuses = await db.AccountsEntryStatuses.AsNoTracking()
             .Where(x => statusIds.Contains(x.Id) && (x.TenantId == null || x.TenantId == tenantId))
-            .GroupBy(x => x.Id).Select(x => x.OrderByDescending(s => s.TenantId == tenantId).First())
-            .ToDictionaryAsync(x => x.Id, x => x.Name, ct);
+            .ToListAsync(ct);
+        var statusNames = rawStatuses
+            .GroupBy(x => x.Id)
+            .Select(x => x.OrderByDescending(s => s.TenantId == tenantId).First())
+            .ToDictionary(x => x.Id, x => x.Name);
 
-        return logs.Select(x => new CopayProcessLogDto
+        var result = logs.Select(x => new CopayProcessLogDto
         {
             Id = x.Id,
             RoznamchaEntryId = x.RoznamchaEntryId,
@@ -719,6 +777,23 @@ public sealed class CopayService(
             ProcessedByUserId = x.ProcessedByUserId,
             ProcessedOnUtc = x.ProcessedOnUtc
         }).ToList();
+        result.AddRange(links.Select(x => new CopayProcessLogDto
+        {
+            Id = x.Id,
+            RoznamchaEntryId = x.SourceRoznamchaEntryId,
+            CopayStatementId = x.SourceCopayStatementId,
+            SourceReference = x.SourceReference,
+            TargetReference = x.TargetReference,
+            LinkType = x.LinkType,
+            IsActive = x.IsActive,
+            Action = x.IsActive ? x.LinkType : $"{x.LinkType} (Un-set)",
+            Notes = x.Remarks ?? $"{x.SourceReference} → {x.TargetReference}",
+            StatusId = x.StatusId,
+            StatusName = x.StatusId.HasValue && statusNames.TryGetValue(x.StatusId.Value, out var name) ? name : GetStatusName(x.StatusId),
+            ProcessedByUserId = x.IsActive ? x.CreatedByUserId : x.VoidedByUserId,
+            ProcessedOnUtc = x.IsActive ? x.CreatedOnUtc : x.VoidedOnUtc ?? x.CreatedOnUtc
+        }));
+        return result.OrderByDescending(x => x.ProcessedOnUtc).ToList();
     }
 
     public async Task<CopayImportResultDto> ImportImsDailySheetAsync(UploadImsSheetDto dto, CancellationToken ct = default)
@@ -926,6 +1001,10 @@ public sealed class CopayService(
                         ProcessedByUserId = current.UserId,
                         ProcessedOnUtc = DateTime.UtcNow
                     });
+                    db.CopaySettlementLinks.Add(NewSettlementLink(
+                        tenantId, "IMS_TO_BANK", entry.Ref, bankMatch.BankRef ?? bankMatch.TransactionReferenceNumber,
+                        sourceRoznamchaEntryId: entry.Id, targetBankStatementId: bankMatch.Id,
+                        statusId: StatusSettled, isManual: false));
 
                     matchedCount++;
                     totalSettled += amount;
@@ -962,6 +1041,10 @@ public sealed class CopayService(
                     ProcessedByUserId = current.UserId,
                     ProcessedOnUtc = DateTime.UtcNow
                 });
+                db.CopaySettlementLinks.Add(NewSettlementLink(
+                    tenantId, "IMS_TO_MERCHANT", entry.Ref, match.Ref,
+                    sourceRoznamchaEntryId: entry.Id, targetCopayStatementId: match.Id,
+                    statusId: StatusSettled, isManual: false));
 
                 matchedCount++;
                 totalSettled += amount;
@@ -1058,6 +1141,10 @@ public sealed class CopayService(
                     ProcessedByUserId = current.UserId,
                     ProcessedOnUtc = DateTime.UtcNow
                 });
+                db.CopaySettlementLinks.Add(NewSettlementLink(
+                    tenantId, "IMS_TO_BANK", entry.Ref, matchedBank.BankRef ?? matchedBank.TransactionReferenceNumber,
+                    sourceRoznamchaEntryId: entry.Id, targetBankStatementId: matchedBank.Id,
+                    statusId: StatusImsWithBank, isManual: false));
 
                 matchedCount++;
                 totalSettled += amount;
@@ -1143,12 +1230,15 @@ public sealed class CopayService(
         }
 
         var linkedTargetRef = summaryBatch?.Ref ?? request.TargetRef;
+        var manualLinks = new List<CopaySettlementLink>();
 
         foreach (var entry in entries)
         {
             entry.IsSettled = true;
             entry.EnterStatusId = manualStatus;
             entry.Reference = linkedTargetRef;
+            entry.BankLtRef = linkedTargetRef;
+            entry.IsManual = true;
             if (!string.IsNullOrWhiteSpace(request.Remarks))
                 entry.Remarks = $"{entry.Remarks} {request.Remarks}".Trim();
             entry.UpdatedByUserId = current.UserId;
@@ -1164,44 +1254,84 @@ public sealed class CopayService(
                 ProcessedByUserId = current.UserId,
                 ProcessedOnUtc = DateTime.UtcNow
             });
+            manualLinks.Add(NewSettlementLink(
+                tenantId, $"IMS_TO_{targetType ?? "BATCH"}", entry.Ref, linkedTargetRef,
+                sourceRoznamchaEntryId: entry.Id,
+                targetRoznamchaEntryId: summaryBatch?.Id,
+                statusId: manualStatus, isManual: true, remarks: request.Remarks));
         }
 
         // If target reference is a merchant statement or bank statement, update it
+        CopayStatement? statementTarget = null;
+        BankStatement? bankTarget = null;
+        RoznamchaEntry? rozTarget = null;
         if (!string.IsNullOrWhiteSpace(request.TargetRef))
         {
-            var statement = await db.CopayStatements
-                .FirstOrDefaultAsync(s => s.TenantId == tenantId && s.Ref == request.TargetRef, ct);
-
-            if (statement != null)
+            if (targetType is "MACHINE" or "MERCHANT")
             {
-                statement.IsSettled = true;
-                statement.StatusId = StatusWithMachine;
-                statement.CopayRef = linkedTargetRef;
-                statement.UpdatedByUserId = current.UserId;
-                statement.UpdatedOnUtc = DateTime.UtcNow;
+                statementTarget = await db.CopayStatements
+                    .FirstOrDefaultAsync(s => s.TenantId == tenantId && s.Ref == request.TargetRef, ct)
+                    ?? throw new InvalidOperationException("The target merchant statement was not found for this tenant.");
+                statementTarget.IsSettled = true;
+                statementTarget.StatusId = StatusTargetSettled;
+                statementTarget.IsManual = true;
+                statementTarget.CopayRef = AppendReferences(statementTarget.CopayRef, entries.Select(x => x.Ref));
+                statementTarget.UpdatedByUserId = current.UserId;
+                statementTarget.UpdatedOnUtc = DateTime.UtcNow;
             }
-            else
+            else if (targetType == "BANK")
             {
-                var bank = await db.BankStatements
+                bankTarget = await db.BankStatements
                     .FirstOrDefaultAsync(b => b.TenantId == tenantId &&
                         (b.BankRef == request.TargetRef || b.ReferenceNumber == request.TargetRef ||
-                         b.TransactionReferenceNumber == request.TargetRef || b.Id.ToString() == request.TargetRef), ct);
+                         b.TransactionReferenceNumber == request.TargetRef || b.Id.ToString() == request.TargetRef), ct)
+                    ?? throw new InvalidOperationException("The target bank statement was not found for this tenant.");
 
-                if (bank != null)
+                bankTarget.IsSettled = true;
+                bankTarget.IsManual = true;
+                bankTarget.StatusId = StatusTargetSettled;
+                bankTarget.ReferenceNumber = AppendReferences(bankTarget.ReferenceNumber, entries.Select(x => x.Ref));
+                bankTarget.UpdatedByUserId = current.UserId;
+                bankTarget.UpdatedOnUtc = DateTime.UtcNow;
+
+                if (summaryBatch != null)
                 {
-                    bank.IsSettled = true;
-                    bank.StatusId = StatusTargetSettled;
-                    bank.ReferenceNumber = linkedTargetRef;
-                    bank.UpdatedByUserId = current.UserId;
-                    bank.UpdatedOnUtc = DateTime.UtcNow;
-
-                    if (summaryBatch != null)
-                    {
-                        summaryBatch.ToAccountId = bank.ChartAccountId;
-                        summaryBatch.BankLtRef = bank.BankRef ?? $"BANK-{bank.Id}";
-                    }
+                    summaryBatch.ToAccountId = bankTarget.ChartAccountId;
+                    summaryBatch.BankLtRef = bankTarget.BankRef ?? $"BANK-{bankTarget.Id}";
                 }
             }
+            else if (targetType == "BILLING")
+            {
+                rozTarget = await db.RoznamchaEntries
+                    .FirstOrDefaultAsync(x => x.TenantId == tenantId && !x.IsDeleted && x.Ref == request.TargetRef, ct)
+                    ?? throw new InvalidOperationException("The target Billing Roznamcha entry was not found for this tenant.");
+                rozTarget.BankLtRef = AppendReferences(rozTarget.BankLtRef, entries.Select(x => x.Ref));
+                rozTarget.IsSettled = true;
+                rozTarget.IsManual = true;
+                rozTarget.IsClosed = true;
+                rozTarget.EnterStatusId = StatusTargetSettled;
+                rozTarget.UpdatedByUserId = current.UserId;
+                rozTarget.UpdatedOnUtc = DateTime.UtcNow;
+            }
+            else if (targetType != "COPAY_EXCEL")
+            {
+                throw new InvalidOperationException("Target type must be BANK, COPAY_EXCEL, BILLING, or MACHINE.");
+            }
+        }
+        else if (summaryBatch == null)
+        {
+            throw new InvalidOperationException("Target reference is required when a summary batch is not created.");
+        }
+
+        foreach (var link in manualLinks)
+        {
+            if (summaryBatch == null)
+            {
+                link.TargetCopayStatementId = statementTarget?.Id;
+                link.TargetBankStatementId = bankTarget?.Id;
+                link.TargetRoznamchaEntryId = rozTarget?.Id;
+            }
+            db.CopaySettlementLinks.Add(link);
         }
 
         await db.SaveChangesAsync(ct);
@@ -1216,10 +1346,121 @@ public sealed class CopayService(
         };
     }
 
+    public async Task<SettlementResultDto> SettleMerchantStatementsManualAsync(
+        ManualSettleRequestDto request, CancellationToken ct = default)
+    {
+        if (request.EntryIds == null || request.EntryIds.Count == 0)
+            throw new InvalidOperationException("Please select at least one merchant statement row.");
+        if (string.IsNullOrWhiteSpace(request.TargetType) || string.IsNullOrWhiteSpace(request.TargetRef))
+            throw new InvalidOperationException("Target type and target reference are required.");
+
+        var tenantId = current.TenantId;
+        var entries = await db.CopayStatements
+            .Where(x => x.TenantId == tenantId && request.EntryIds.Contains(x.Id))
+            .ToListAsync(ct);
+        if (entries.Count != request.EntryIds.Distinct().Count())
+            throw new InvalidOperationException("One or more selected merchant statement rows are unavailable for this tenant.");
+
+        var targetType = request.TargetType.Trim().ToUpperInvariant();
+        var targetRef = request.TargetRef.Trim();
+        var now = DateTime.UtcNow;
+        BankStatement? bankTarget = null;
+        CopayStatement? statementTarget = null;
+        RoznamchaEntry? rozTarget = null;
+
+        if (targetType == "BANK")
+        {
+            bankTarget = await db.BankStatements.FirstOrDefaultAsync(x => x.TenantId == tenantId &&
+                (x.BankRef == targetRef || x.ReferenceNumber == targetRef || x.TransactionReferenceNumber == targetRef || x.Id.ToString() == targetRef), ct)
+                ?? throw new InvalidOperationException("The selected bank statement was not found for this tenant.");
+        }
+        else if (targetType is "MACHINE" or "MERCHANT")
+        {
+            statementTarget = await db.CopayStatements.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Ref == targetRef, ct)
+                ?? throw new InvalidOperationException("The target merchant statement was not found for this tenant.");
+            if (entries.Any(x => x.Id == statementTarget.Id))
+                throw new InvalidOperationException("The target merchant statement cannot also be a selected source row.");
+        }
+        else if (targetType == "BILLING")
+        {
+            rozTarget = await db.RoznamchaEntries.FirstOrDefaultAsync(x => x.TenantId == tenantId && !x.IsDeleted && x.Ref == targetRef, ct)
+                ?? throw new InvalidOperationException("The target Billing Roznamcha entry was not found for this tenant.");
+        }
+        else if (targetType != "COPAY_EXCEL")
+        {
+            throw new InvalidOperationException("Target type must be BANK, COPAY_EXCEL, BILLING, or MACHINE.");
+        }
+
+        await using var tx = await db.Database.BeginTransactionAsync(ct);
+        var sourceStatus = targetType switch
+        {
+            "BANK" => StatusImsWithBank,
+            "COPAY_EXCEL" => StatusWithCopayExcel,
+            _ => StatusWithBilling
+        };
+
+        foreach (var entry in entries)
+        {
+            entry.CopayRef = targetRef;
+            entry.IsSettled = true;
+            entry.IsManual = true;
+            entry.StatusId = sourceStatus;
+            entry.UpdatedByUserId = current.UserId;
+            entry.UpdatedOnUtc = now;
+            db.CopaySettlementLinks.Add(NewSettlementLink(
+                tenantId, $"STATEMENT_TO_{targetType}", entry.Ref, targetRef,
+                sourceCopayStatementId: entry.Id,
+                targetRoznamchaEntryId: rozTarget?.Id,
+                targetCopayStatementId: statementTarget?.Id,
+                targetBankStatementId: bankTarget?.Id,
+                statusId: sourceStatus, isManual: true, remarks: request.Remarks));
+        }
+
+        if (bankTarget != null)
+        {
+            bankTarget.IsSettled = true;
+            bankTarget.IsManual = true;
+            bankTarget.StatusId = StatusTargetSettled;
+            bankTarget.ReferenceNumber = AppendReferences(bankTarget.ReferenceNumber, entries.Select(x => x.Ref));
+            bankTarget.UpdatedByUserId = current.UserId;
+            bankTarget.UpdatedOnUtc = now;
+        }
+        if (statementTarget != null)
+        {
+            statementTarget.CopayRef = AppendReferences(statementTarget.CopayRef, entries.Select(x => x.Ref));
+            statementTarget.IsSettled = true;
+            statementTarget.IsManual = true;
+            statementTarget.StatusId = StatusTargetSettled;
+            statementTarget.UpdatedByUserId = current.UserId;
+            statementTarget.UpdatedOnUtc = now;
+        }
+        if (rozTarget != null)
+        {
+            rozTarget.BankLtRef = AppendReferences(rozTarget.BankLtRef, entries.Select(x => x.Ref));
+            rozTarget.IsSettled = true;
+            rozTarget.IsManual = true;
+            rozTarget.IsClosed = true;
+            rozTarget.EnterStatusId = StatusWithMachine;
+            rozTarget.UpdatedByUserId = current.UserId;
+            rozTarget.UpdatedOnUtc = now;
+        }
+
+        await db.SaveChangesAsync(ct);
+        await tx.CommitAsync(ct);
+        return new SettlementResultDto
+        {
+            MatchedCount = entries.Count,
+            TotalSettledAmount = entries.Sum(x => Math.Abs(x.TransactionAmount ?? 0)),
+            Messages = [$"{entries.Count} merchant statement row(s) linked to {targetType} {targetRef}."]
+        };
+    }
+
     public async Task<bool> UnsettleEntryAsync(UnsettleRequestDto request, CancellationToken ct = default)
     {
         var tenantId = current.TenantId;
         await using var tx = await db.Database.BeginTransactionAsync(ct);
+        var hasNormalizedLinks = await DeactivateSettlementLinksAsync(
+            tenantId, request.RoznamchaEntryId, request.StatementId, request.Remarks, ct);
 
         if (request.RoznamchaEntryId.HasValue)
         {
@@ -1229,7 +1470,7 @@ public sealed class CopayService(
             if (entry != null)
             {
                 // 1. If this was a summary batch (isSHow == false), rollback all child items linked to it
-                if (!entry.IsShow && !string.IsNullOrEmpty(entry.Ref))
+                if (!hasNormalizedLinks && !entry.IsShow && !string.IsNullOrEmpty(entry.Ref))
                 {
                     var childEntries = await db.RoznamchaEntries
                         .Where(x => x.TenantId == tenantId && x.Reference == entry.Ref)
@@ -1256,7 +1497,7 @@ public sealed class CopayService(
                 }
 
                 // 2. Clear any linked CopayStatement
-                if (!string.IsNullOrEmpty(entry.Reference) || !string.IsNullOrEmpty(entry.Ref))
+                if (!hasNormalizedLinks && (!string.IsNullOrEmpty(entry.Reference) || !string.IsNullOrEmpty(entry.Ref)))
                 {
                     var statements = await db.CopayStatements
                         .Where(s => s.TenantId == tenantId &&
@@ -1275,7 +1516,7 @@ public sealed class CopayService(
                 }
 
                 // 3. Clear any linked BankStatement
-                if (!string.IsNullOrEmpty(entry.Ref))
+                if (!hasNormalizedLinks && !string.IsNullOrEmpty(entry.Ref))
                 {
                     var bankStatements = await db.BankStatements
                         .Where(b => b.TenantId == tenantId &&
@@ -1321,7 +1562,7 @@ public sealed class CopayService(
             if (statement != null)
             {
                 // Revert linked roznamcha entry if present
-                if (!string.IsNullOrEmpty(statement.CopayRef) || statement.MatchedRoznamchaEntryId.HasValue)
+                if (!hasNormalizedLinks && (!string.IsNullOrEmpty(statement.CopayRef) || statement.MatchedRoznamchaEntryId.HasValue))
                 {
                     var linkedEntries = await db.RoznamchaEntries
                         .Where(x => x.TenantId == tenantId &&
@@ -1367,13 +1608,15 @@ public sealed class CopayService(
             })
             .ToListAsync(ct);
 
-        var statuses = await db.AccountsEntryStatuses.AsNoTracking()
+        var rawStatuses = await db.AccountsEntryStatuses.AsNoTracking()
             .Where(x => x.IsActive && (x.TenantId == null || x.TenantId == tenantId))
+            .ToListAsync(ct);
+        var statuses = rawStatuses
             .GroupBy(x => x.Id)
             .Select(x => x.OrderByDescending(s => s.TenantId == tenantId).First())
             .OrderBy(x => x.Name)
             .Select(x => new LookupItemDto { Id = x.Id, DisplayText = x.Name })
-            .ToListAsync(ct);
+            .ToList();
 
         var modes = await db.AccountsTransModes.AsNoTracking()
             .Where(x => x.IsActive)
@@ -1394,6 +1637,114 @@ public sealed class CopayService(
     }
 
     // ── Helper Utilities ───────────────────────────────────────────────────────
+
+    private async Task<bool> DeactivateSettlementLinksAsync(
+        int tenantId, long? sourceRoznamchaId, long? sourceStatementId, string? remarks, CancellationToken ct)
+    {
+        var links = await db.CopaySettlementLinks
+            .Where(x => x.TenantId == tenantId && x.IsActive &&
+                ((sourceRoznamchaId.HasValue && x.SourceRoznamchaEntryId == sourceRoznamchaId) ||
+                 (sourceStatementId.HasValue && x.SourceCopayStatementId == sourceStatementId)))
+            .ToListAsync(ct);
+        if (links.Count == 0) return false;
+
+        var now = DateTime.UtcNow;
+        foreach (var link in links)
+        {
+            link.IsActive = false;
+            link.VoidedByUserId = current.UserId;
+            link.VoidedOnUtc = now;
+            if (!string.IsNullOrWhiteSpace(remarks))
+                link.Remarks = $"{link.Remarks} {remarks}".Trim();
+        }
+
+        var linkIds = links.Select(x => x.Id).ToList();
+        foreach (var targetId in links.Where(x => x.TargetBankStatementId.HasValue).Select(x => x.TargetBankStatementId!.Value).Distinct())
+        {
+            var stillLinked = await db.CopaySettlementLinks.AnyAsync(x => x.TenantId == tenantId && x.IsActive &&
+                x.TargetBankStatementId == targetId && !linkIds.Contains(x.Id), ct);
+            if (!stillLinked)
+            {
+                var target = await db.BankStatements.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == targetId, ct);
+                if (target != null)
+                {
+                    target.IsSettled = false; target.IsManual = false; target.StatusId = null;
+                    target.ReferenceNumber = null; target.MatchedRoznamchaEntryId = null;
+                    target.UpdatedByUserId = current.UserId; target.UpdatedOnUtc = now;
+                }
+            }
+        }
+        foreach (var targetId in links.Where(x => x.TargetCopayStatementId.HasValue).Select(x => x.TargetCopayStatementId!.Value).Distinct())
+        {
+            var stillLinked = await db.CopaySettlementLinks.AnyAsync(x => x.TenantId == tenantId && x.IsActive &&
+                x.TargetCopayStatementId == targetId && !linkIds.Contains(x.Id), ct);
+            if (!stillLinked)
+            {
+                var target = await db.CopayStatements.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == targetId, ct);
+                if (target != null)
+                {
+                    target.IsSettled = false; target.IsManual = false; target.StatusId = StatusOpen;
+                    target.CopayRef = null; target.MatchedRoznamchaEntryId = null;
+                    target.UpdatedByUserId = current.UserId; target.UpdatedOnUtc = now;
+                }
+            }
+        }
+        foreach (var targetId in links.Where(x => x.TargetRoznamchaEntryId.HasValue).Select(x => x.TargetRoznamchaEntryId!.Value).Distinct())
+        {
+            var stillLinked = await db.CopaySettlementLinks.AnyAsync(x => x.TenantId == tenantId && x.IsActive &&
+                x.TargetRoznamchaEntryId == targetId && !linkIds.Contains(x.Id), ct);
+            if (!stillLinked && targetId != sourceRoznamchaId)
+            {
+                var target = await db.RoznamchaEntries.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == targetId, ct);
+                if (target != null)
+                {
+                    target.IsSettled = false; target.IsManual = false; target.IsClosed = false;
+                    target.EnterStatusId = StatusOpen; target.BankLtRef = null; target.Reference = null;
+                    target.UpdatedByUserId = current.UserId; target.UpdatedOnUtc = now;
+                }
+            }
+        }
+        return true;
+    }
+
+    private CopaySettlementLink NewSettlementLink(
+        int tenantId,
+        string linkType,
+        string? sourceReference,
+        string? targetReference,
+        long? sourceRoznamchaEntryId = null,
+        long? sourceCopayStatementId = null,
+        long? targetRoznamchaEntryId = null,
+        long? targetCopayStatementId = null,
+        long? targetBankStatementId = null,
+        int? statusId = null,
+        bool isManual = false,
+        string? remarks = null) => new()
+    {
+        TenantId = tenantId,
+        LinkType = linkType,
+        SourceReference = sourceReference,
+        TargetReference = targetReference,
+        SourceRoznamchaEntryId = sourceRoznamchaEntryId,
+        SourceCopayStatementId = sourceCopayStatementId,
+        TargetRoznamchaEntryId = targetRoznamchaEntryId,
+        TargetCopayStatementId = targetCopayStatementId,
+        TargetBankStatementId = targetBankStatementId,
+        StatusId = statusId,
+        IsManual = isManual,
+        Remarks = remarks,
+        CreatedByUserId = current.UserId,
+        CreatedOnUtc = DateTime.UtcNow
+    };
+
+    private static string? AppendReferences(string? existing, IEnumerable<string?> values)
+    {
+        var refs = (existing ?? string.Empty).Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Concat(values.Where(x => !string.IsNullOrWhiteSpace(x)).Select(x => x!.Trim()))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        return refs.Count == 0 ? null : string.Join(',', refs);
+    }
 
     private static BankStatement? FindUniqueBankMatch(
         IEnumerable<BankStatement> candidates, DateOnly sourceDate, decimal amount, int toleranceDays)
@@ -1626,7 +1977,10 @@ public sealed class CopayService(
             categoryId.Value,
             holdingId.Value,
             clearingId,
-            settings?.CopayMerchantAccountId,
+            settings?.CopayMerchantAccountId
+                ?? await db.AccountsChartAccounts.AsNoTracking()
+                    .Where(x => x.TenantId == tenantId && x.Id == LegacyCopayMerchantAccountId && x.IsActive)
+                    .Select(x => (int?)x.Id).FirstOrDefaultAsync(ct),
             currencyId.Value,
             receiptTypeId.Value,
             Math.Clamp(settings?.CopayMerchantMatchWindowDays ?? 14, 0, 60),

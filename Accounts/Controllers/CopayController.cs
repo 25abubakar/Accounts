@@ -192,6 +192,15 @@ public sealed class CopayController(
         return Ok(ApiResponse<SettlementResultDto>.Ok(result, "Manual settlement completed."));
     }
 
+    [HttpPost("settle-merchant-statements-manual")]
+    [Idempotent]
+    public async Task<IActionResult> SettleMerchantStatementsManual([FromBody] ManualSettleRequestDto request, CancellationToken ct)
+    {
+        if (!await HasActionAsync(ImsToMerchantRoute, "EDIT", ct)) return Forbid();
+        var result = await copayService.SettleMerchantStatementsManualAsync(request, ct);
+        return Ok(ApiResponse<SettlementResultDto>.Ok(result, "Merchant statement settlement completed."));
+    }
+
     /// <summary>
     /// Rolls back settlement for an entry or merchant statement, reverting status to Open.
     /// </summary>
