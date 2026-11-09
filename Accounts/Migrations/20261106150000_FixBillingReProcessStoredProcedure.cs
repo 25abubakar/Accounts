@@ -13,6 +13,7 @@ public sealed class FixBillingReProcessStoredProcedure : Migration
     protected override void Up(MigrationBuilder migrationBuilder)
     {
         ApplyEmbeddedProcedure(migrationBuilder, "Accounts.Sql.StoredProcedures.usp_Billing_ReProcess_List.sql");
+        ApplyEmbeddedProcedure(migrationBuilder, "Accounts.Sql.StoredProcedures.usp_Billing_PatientMaster_List.sql");
     }
 
     private static void ApplyEmbeddedProcedure(MigrationBuilder migrationBuilder, string resourceName)

@@ -172,8 +172,8 @@ public sealed class BankStatementService(
                 var createdRows = valid.Select(item => new BankStatement
                 {
                     TenantId = current.TenantId,
-                    ChartAccountId = account.Id,
-                    AccountNumber = Clean(account.AccountReference ?? account.AccountNumber, 50),
+                    ChartAccountId = item.AccountId ?? account.Id,
+                    AccountNumber = Clean(item.AccountReference, 50),
                     ValueDate = item.ValueDate,
                     PostingDate = item.PostingDate,
                     StatementDate = item.PostingDate ?? item.ValueDate,
@@ -184,17 +184,15 @@ public sealed class BankStatementService(
                     Credit = decimal.Round(item.Credit, 2),
                     Balance = decimal.Round(item.Balance, 2),
                     Remarks = Clean(item.Remarks, 2000),
+                    ReferenceNumber = Clean(item.ReferenceNo, 80),
                     DateFormat = format,
                     YearId = request.YearId,
-                    Attachment = attachmentPath,
+                    Attachment = Clean(!string.IsNullOrWhiteSpace(item.Attachment) ? item.Attachment : attachmentPath, 500),
                     IsManual = false,
                     CreatedByUserId = current.UserId
                 }).ToList();
 
                 db.BankStatements.AddRange(createdRows);
-                await db.SaveChangesAsync(ct);
-                foreach (var row in createdRows)
-                    row.ReferenceNumber = $"BS-{row.Id}";
                 await db.SaveChangesAsync(ct);
                 await tx.CommitAsync(ct);
                 return createdRows.Select(x => x.Id).ToList();
@@ -470,7 +468,10 @@ public sealed class BankStatementService(
             "postingdate" or "postdate" or "date" or "transdate" or "transactiondate" => "postingdate",
             "instrumentno" or "instrument" or "chequeno" or "checkno" => "instrumentno",
             "transactiondetails" or "details" or "description" or "narration" or "particulars" => "transactiondetails",
-            "transactionrefno" or "transactionref" or "refno" or "reference" or "bankref" => "transactionrefno",
+            "transactionrefno" or "transactionref" or "transactionreferenceno" or "transactionreferencenumber" or "txnref" or "bankref" => "transactionrefno",
+            "ref" or "statementref" or "statementrefno" or "statementreferenceno" or "statementreference" or "referenceno" or "referencenumber" or "reference" or "refno" => "referenceno",
+            "acctref" or "accountref" or "acctreference" or "accountreference" or "accountno" or "accountnumber" => "accountref",
+            "acctid" or "accountid" => "accountid",
             "debit" or "debitamount" or "withdrawal" or "dr" => "debit",
             "credit" or "creditamount" or "deposit" or "cr" => "credit",
             "type" or "transactiontype" or "amounttype" or "debitcredit" or "drcr" or "entrytype" => "amounttype",
@@ -478,6 +479,7 @@ public sealed class BankStatementService(
             "category" or "transactioncategory" => "category",
             "balance" or "runningbalance" => "balance",
             "remarks" or "remark" or "note" or "notes" => "remarks",
+            "attachment" or "attachmentname" or "file" or "filename" => "attachment",
             _ => raw
         };
     }
@@ -506,6 +508,9 @@ public sealed class BankStatementService(
             || HasText(dataRow, map, "instrumentno")
             || HasText(dataRow, map, "transactiondetails")
             || HasText(dataRow, map, "transactionrefno")
+            || HasText(dataRow, map, "referenceno")
+            || HasText(dataRow, map, "accountref")
+            || HasText(dataRow, map, "attachment")
             || HasText(dataRow, map, "category")
             || HasText(dataRow, map, "remarks"));
     }
@@ -561,6 +566,10 @@ public sealed class BankStatementService(
             InstrumentNo = ReadString(dataRow, map, "instrumentno"),
             TransactionDetails = details,
             TransactionReferenceNo = ReadString(dataRow, map, "transactionrefno"),
+            ReferenceNo = ReadString(dataRow, map, "referenceno"),
+            AccountReference = ReadString(dataRow, map, "accountref"),
+            AccountId = ReadInt(dataRow, map, "accountid"),
+            Attachment = ReadString(dataRow, map, "attachment"),
             Debit = debit,
             Credit = credit,
             Balance = balance,
@@ -601,6 +610,18 @@ public sealed class BankStatementService(
         if (value == null || value == DBNull.Value) return null;
         var text = Convert.ToString(value, CultureInfo.InvariantCulture)?.Trim();
         return string.IsNullOrWhiteSpace(text) ? null : text;
+    }
+
+    private static int? ReadInt(DataRow row, IReadOnlyDictionary<string, int> map, string key)
+    {
+        if (!map.TryGetValue(key, out var index)) return null;
+        var value = row[index];
+        if (value == null || value == DBNull.Value) return null;
+        if (value is int i) return i;
+        if (value is long l) return (int)l;
+        if (value is double d) return (int)d;
+        var text = Convert.ToString(value, CultureInfo.InvariantCulture)?.Trim();
+        return int.TryParse(text, NumberStyles.Any, CultureInfo.InvariantCulture, out var parsed) ? parsed : null;
     }
 
     private static decimal ReadDecimal(DataRow row, IReadOnlyDictionary<string, int> map, string key, List<string> errors, string label)

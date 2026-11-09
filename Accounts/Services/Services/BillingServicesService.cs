@@ -216,5 +216,99 @@ public sealed class BillingServicesService : IBillingServicesService
 
         return await _db.Database.SqlQueryRaw<BillingStatusOptionDto>(sql).ToListAsync(ct);
     }
+
+    // ── Child 4: Call List ──────────────────────────────────────────────────────
+    public async Task<IReadOnlyList<BillingCallListRowDto>> ListCallListAsync(
+        int tenantId,
+        DateOnly? dateTo,
+        CancellationToken ct = default)
+    {
+        return await SpListQuery.ExecAsync<BillingCallListRowDto>(
+            _db,
+            "EXEC dbo.usp_Billing_CallList_List @TenantId, @DateTo",
+            ct,
+            SpListQuery.TenantId(tenantId),
+            SpListQuery.DateNullable("@DateTo", dateTo));
+    }
+
+    // ── Child 5: Closed List ────────────────────────────────────────────────────
+    public async Task<IReadOnlyList<BillingClosedListRowDto>> ListClosedListAsync(
+        int tenantId,
+        DateOnly? dateFrom,
+        DateOnly? dateTo,
+        CancellationToken ct = default)
+    {
+        return await SpListQuery.ExecAsync<BillingClosedListRowDto>(
+            _db,
+            "EXEC dbo.usp_Billing_ClosedList_List @TenantId, @DateFrom, @DateTo",
+            ct,
+            SpListQuery.TenantId(tenantId),
+            SpListQuery.DateNullable("@DateFrom", dateFrom),
+            SpListQuery.DateNullable("@DateTo", dateTo));
+    }
+
+    // ── Child 6: Master List ────────────────────────────────────────────────────
+    public async Task<IReadOnlyList<BillingMasterListRowDto>> ListMasterListAsync(
+        int tenantId,
+        DateOnly? dateFrom,
+        DateOnly? dateTo,
+        CancellationToken ct = default)
+    {
+        return await SpListQuery.ExecAsync<BillingMasterListRowDto>(
+            _db,
+            "EXEC dbo.usp_Billing_PatientMaster_List @TenantId = @TenantId, @DateFrom = @DateFrom, @DateTo = @DateTo",
+            ct,
+            SpListQuery.TenantId(tenantId),
+            SpListQuery.DateNullable("@DateFrom", dateFrom),
+            SpListQuery.DateNullable("@DateTo", dateTo));
+    }
+
+    // ── Child 8: Mics Report ────────────────────────────────────────────────────
+    public async Task<IReadOnlyList<BillingMicsReportRowDto>> ListMicsReportAsync(
+        int tenantId,
+        DateOnly? dateTo,
+        CancellationToken ct = default)
+    {
+        return await SpListQuery.ExecAsync<BillingMicsReportRowDto>(
+            _db,
+            "EXEC dbo.usp_Billing_MicsReport_List @TenantId, @DateTo",
+            ct,
+            SpListQuery.TenantId(tenantId),
+            SpListQuery.DateNullable("@DateTo", dateTo));
+    }
+
+    // ── Child 9: Claim Master List ──────────────────────────────────────────────
+    public async Task<IReadOnlyList<BillingClaimMasterListRowDto>> ListClaimMasterListAsync(
+        int tenantId,
+        DateOnly? dateFrom,
+        DateOnly? dateTo,
+        CancellationToken ct = default)
+    {
+        return await SpListQuery.ExecAsync<BillingClaimMasterListRowDto>(
+            _db,
+            "EXEC dbo.usp_Billing_ClaimMasterList_List @TenantId, @DateFrom, @DateTo",
+            ct,
+            SpListQuery.TenantId(tenantId),
+            SpListQuery.DateNullable("@DateFrom", dateFrom),
+            SpListQuery.DateNullable("@DateTo", dateTo));
+    }
+
+    // ── Child 11: Code Usage ────────────────────────────────────────────────────
+    public async Task<IReadOnlyList<BillingCodeUsageRowDto>> ListCodeUsageAsync(
+        int tenantId,
+        string code,
+        DateOnly? dateFrom,
+        DateOnly? dateTo,
+        CancellationToken ct = default)
+    {
+        return await SpListQuery.ExecAsync<BillingCodeUsageRowDto>(
+            _db,
+            "EXEC dbo.usp_Billing_CodeUsage_List @TenantId, @Code, @DateFrom, @DateTo",
+            ct,
+            SpListQuery.TenantId(tenantId),
+            SpListQuery.NVarChar("@Code", code ?? string.Empty),
+            SpListQuery.DateNullable("@DateFrom", dateFrom),
+            SpListQuery.DateNullable("@DateTo", dateTo));
+    }
 }
 

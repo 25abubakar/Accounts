@@ -248,19 +248,19 @@ public sealed class BillingClaimLookupsDto
 public sealed class BillingPatientRowDto
 {
     public int Id { get; set; }
-    public string PatientId { get; set; } = string.Empty;
-    public string FirstName { get; set; } = string.Empty;
-    public string LastName { get; set; } = string.Empty;
-    public string FullName { get; set; } = string.Empty;
-    public string PatientType { get; set; } = string.Empty;
-    public string Office { get; set; } = string.Empty;
-    public string PatientNumber { get; set; } = string.Empty;
-    public string Phone { get; set; } = string.Empty;
-    public string Email { get; set; } = string.Empty;
-    public string DateOfBirth { get; set; } = string.Empty;
-    public string DateOfService { get; set; } = string.Empty;
-    public string AppointmentStatus { get; set; } = string.Empty;
-    public string ProviderName { get; set; } = string.Empty;
+    public string? PatientId { get; set; }
+    public string? FirstName { get; set; }
+    public string? LastName { get; set; }
+    public string? FullName { get; set; }
+    public string? PatientType { get; set; }
+    public string? Office { get; set; }
+    public string? PatientNumber { get; set; }
+    public string? Phone { get; set; }
+    public string? Email { get; set; }
+    public string? DateOfBirth { get; set; }
+    public string? DateOfService { get; set; }
+    public string? AppointmentStatus { get; set; }
+    public string? ProviderName { get; set; }
     public bool IsClaimed { get; set; }
 }
 
@@ -486,3 +486,219 @@ public sealed class BillingServiceActionResultDto
 
 
 
+
+// ── Billing Services: Child 4 - Call List ───────────────────────────────────
+public sealed class BillingCallListRowDto
+{
+    public int Id { get; set; }
+    public int PaymentId { get; set; }
+    public int AppointmentId { get; set; }
+    public bool IsClaimed { get; set; }
+    public string PatientName { get; set; } = string.Empty;
+    public string PatientNumber { get; set; } = string.Empty;
+    public string PatientType { get; set; } = string.Empty;
+    public DateTime? DateOfService { get; set; }
+    public string Carrier { get; set; } = string.Empty;
+    public string Insurance { get; set; } = string.Empty;
+    public string PolicyNumber { get; set; } = string.Empty;
+    public string CptIcd { get; set; } = string.Empty;
+    public string Modifier { get; set; } = string.Empty;
+    public decimal ClaimAmount { get; set; }
+    public decimal InsuranceAmount { get; set; }
+    public DateTime? EobDate { get; set; }
+    public decimal PaidAmount { get; set; }
+    public string EobStatus { get; set; } = string.Empty;
+    public string? EobStatusColorCode { get; set; }
+    public string? EobStatusFontColor { get; set; }
+    public string GroupCodes { get; set; } = string.Empty;
+    public string Remarks { get; set; } = string.Empty;
+    public DateTime? ProcessDate { get; set; }
+    public DateTime? RemindDate { get; set; }
+}
+
+// ── Billing Services: Child 5 - Closed List ─────────────────────────────────
+public sealed class BillingClosedListRowDto
+{
+    public int Id { get; set; }
+    public int PaymentId { get; set; }
+    public int AppointmentId { get; set; }
+    public bool IsClaimed { get; set; }
+    public string PatientName { get; set; } = string.Empty;
+    public string PatientNumber { get; set; } = string.Empty;
+    public string PatientType { get; set; } = string.Empty;
+    public DateTime? DateOfService { get; set; }
+    public string Carrier { get; set; } = string.Empty;
+    public string Insurance { get; set; } = string.Empty;
+    public string PolicyNumber { get; set; } = string.Empty;
+    public string CptIcd { get; set; } = string.Empty;
+    public string Modifier { get; set; } = string.Empty;
+    public decimal ClaimAmount { get; set; }
+    public decimal InsuranceAmount { get; set; }
+    public DateTime? EobDate { get; set; }
+    public decimal PaidAmount { get; set; }
+    public decimal PatientAmount { get; set; }
+    public string EobStatus { get; set; } = string.Empty;
+    public string? EobStatusColorCode { get; set; }
+    public string? EobStatusFontColor { get; set; }
+    public string CheckNumber { get; set; } = string.Empty;
+    public string GroupCodes { get; set; } = string.Empty;
+    public string Remarks { get; set; } = string.Empty;
+    public DateTime? ProcessDate { get; set; }
+    public DateTime? RemindDate { get; set; }
+}
+
+// ── Billing Services: Child 6 - Master List (patient-appointment level) ──────
+public sealed class BillingMasterListRowDto
+{
+    public int Id { get; set; }
+    public string PatientId { get; set; } = string.Empty;
+    public string FirstName { get; set; } = string.Empty;
+    public string LastName { get; set; } = string.Empty;
+    public string FullName { get; set; } = string.Empty;
+    public string PatientType { get; set; } = string.Empty;
+    public string Office { get; set; } = string.Empty;
+    public string PatientNumber { get; set; } = string.Empty;
+    public string Phone { get; set; } = string.Empty;
+    public string Email { get; set; } = string.Empty;
+    public string DateOfBirth { get; set; } = string.Empty;
+    public string DateOfService { get; set; } = string.Empty;
+    public string AppointmentStatus { get; set; } = string.Empty;
+    public string ProviderName { get; set; } = string.Empty;
+    public bool IsClaimed { get; set; }
+}
+
+// ── Billing Services: Child 8 - Mics Report ─────────────────────────────────
+public sealed class BillingMicsReportRowDto
+{
+    public int Id { get; set; }
+    public int? ApptId { get; set; }
+    public string PatientName { get; set; } = string.Empty;
+    public string PatientNumber { get; set; } = string.Empty;
+    public string PatientType { get; set; } = string.Empty;
+    public DateTime? DateOfService { get; set; }
+    public string Carrier { get; set; } = string.Empty;
+    public string Insurance { get; set; } = string.Empty;
+    public string Remarks { get; set; } = string.Empty;
+    public DateTime? SubmittedDate { get; set; }
+    public decimal BilledAmount { get; set; }
+    public string StatusName { get; set; } = string.Empty;
+    public string? StatusColorCode { get; set; }
+    public string? StatusFontColor { get; set; }
+    public bool IsCreatedFromEob { get; set; }
+    public string Attachment { get; set; } = string.Empty;
+    public string EobCheckNo { get; set; } = string.Empty;
+    public decimal TotalClaimAmount { get; set; }
+    public decimal InsuranceAmount { get; set; }
+    public string CptCodes { get; set; } = string.Empty;
+    public string Modifier { get; set; } = string.Empty;
+    public string PolicyNumber { get; set; } = string.Empty;
+    public string ArRemarks { get; set; } = string.Empty;
+    public int? UpdatedStatusId { get; set; }
+    public string UpdatedStatus { get; set; } = string.Empty;
+    public string? UpdatedStatusColor { get; set; }
+    public string? UpdatedStatusFont { get; set; }
+    public DateTime? RemindDate { get; set; }
+    public DateTime? ProcessDate { get; set; }
+}
+
+// ── Billing Services: Child 9 - Claim Master List (CPT code level) ───────────
+public sealed class BillingClaimMasterListRowDto
+{
+    public int Id { get; set; }
+    public int AppointmentId { get; set; }
+    public string Codes { get; set; } = string.Empty;
+    public decimal BalanceAmount { get; set; }
+    public decimal ClaimAmount { get; set; }
+    public decimal InsuranceRate { get; set; }
+    public decimal PaidAmount { get; set; }
+    public DateTime? ProcessDate { get; set; }
+    public string Remarks { get; set; } = string.Empty;
+    public int? PatientId { get; set; }
+    public int? CodeId { get; set; }
+    public decimal PatientResponsibility { get; set; }
+    public int? InsuranceCompanyId { get; set; }
+    public int? TypeId { get; set; }
+    public decimal TotalClaimAmount { get; set; }
+    public int? Unit { get; set; }
+    public int? CarrierId { get; set; }
+    public int? ClaimId { get; set; }
+    public string InsuranceType { get; set; } = string.Empty;
+    public string CarrierName { get; set; } = string.Empty;
+    public string InsuranceName { get; set; } = string.Empty;
+    public decimal InsuranceAmount { get; set; }
+    public string Modifiers { get; set; } = string.Empty;
+    public decimal EobAllowedAmount { get; set; }
+    public bool IsCreatedFromEobs { get; set; }
+    public string PolicyNumber { get; set; } = string.Empty;
+    public DateTime? DateOfService { get; set; }
+    public decimal CoinsuranceAmount { get; set; }
+    public decimal DeductibleAmount { get; set; }
+    public int? EobStatusId { get; set; }
+    public string EobStatusName { get; set; } = string.Empty;
+    public string? EobColorCode { get; set; }
+    public string? EobFontColor { get; set; }
+    public string FillSource { get; set; } = string.Empty;
+    public string PatientNumber { get; set; } = string.Empty;
+    public bool IsUpload { get; set; }
+    public string FullName { get; set; } = string.Empty;
+    public string PatientType { get; set; } = string.Empty;
+    public decimal ClaimPaidAmount { get; set; }
+    public decimal ClaimPatientResponsibility { get; set; }
+    public DateTime? LoadDate { get; set; }
+    public int? PaymentId { get; set; }
+    public string EobRemarks { get; set; } = string.Empty;
+    public bool IsReProcess { get; set; }
+    public bool IsClosed { get; set; }
+    public string CheckNumber { get; set; } = string.Empty;
+    public string GroupCodes { get; set; } = string.Empty;
+    public DateTime? WorkProcessDate { get; set; }
+    public DateTime? RemindDate { get; set; }
+}
+
+// ── Billing Services: Child 11 - Code Usage ──────────────────────────────────
+public sealed class BillingCodeUsageRowDto
+{
+    public int RowNo { get; set; }
+    public int? ApptCodeId { get; set; }
+    public int? AppointmentId { get; set; }
+    public string ProcedureCode { get; set; } = string.Empty;
+    public decimal ClaimAmount { get; set; }
+    public decimal TotalClaimAmount { get; set; }
+    public decimal InsuranceRate { get; set; }
+    public decimal InsuranceAmount { get; set; }
+    public decimal EobAllowedAmount { get; set; }
+    public decimal PaidAmount { get; set; }
+    public decimal PatientResponsibility { get; set; }
+    public decimal CoinsuranceAmount { get; set; }
+    public decimal DeductibleAmount { get; set; }
+    public decimal BalanceAmount { get; set; }
+    public string Modifiers { get; set; } = string.Empty;
+    public int? Unit { get; set; }
+    public string PatientNumber { get; set; } = string.Empty;
+    public int? PatientId { get; set; }
+    public DateTime? DateOfService { get; set; }
+    public string CarrierName { get; set; } = string.Empty;
+    public string InsuranceName { get; set; } = string.Empty;
+    public string InsuranceType { get; set; } = string.Empty;
+    public string PolicyNumber { get; set; } = string.Empty;
+    public string StatusName { get; set; } = string.Empty;
+    public int? EobStatusId { get; set; }
+    public string FillSource { get; set; } = string.Empty;
+    public DateTime? ProcessDate { get; set; }
+    public DateTime? CreatedDate { get; set; }
+    public string Remarks { get; set; } = string.Empty;
+    public int? AmountDetailId { get; set; }
+    public int? ClaimId { get; set; }
+    public decimal DetailPaidAmount { get; set; }
+    public decimal DetailPatientResponsibility { get; set; }
+    public decimal DetailAllowedAmount { get; set; }
+    public decimal DetailCoinsurance { get; set; }
+    public decimal DetailDeductible { get; set; }
+    public string EobCheckNumber { get; set; } = string.Empty;
+    public DateTime? LoadDate { get; set; }
+    public string EobRemarks { get; set; } = string.Empty;
+    public bool IsReProcess { get; set; }
+    public bool IsClosed { get; set; }
+    public decimal? RemovedAmount { get; set; }
+    public int? InactiveDays { get; set; }
+}

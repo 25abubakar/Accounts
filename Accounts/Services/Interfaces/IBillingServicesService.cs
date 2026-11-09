@@ -38,5 +38,46 @@ public interface IBillingServicesService
 
     Task<IReadOnlyList<BillingStatusOptionDto>> ListStatusOptionsAsync(
         CancellationToken ct = default);
+
+    // ── Child 4: Call List ──────────────────────────────────────────────────
+    Task<IReadOnlyList<BillingCallListRowDto>> ListCallListAsync(
+        int tenantId,
+        DateOnly? dateTo,
+        CancellationToken ct = default);
+
+    // ── Child 5: Closed List ────────────────────────────────────────────────
+    Task<IReadOnlyList<BillingClosedListRowDto>> ListClosedListAsync(
+        int tenantId,
+        DateOnly? dateFrom,
+        DateOnly? dateTo,
+        CancellationToken ct = default);
+
+    // ── Child 6: Master List ────────────────────────────────────────────────
+    Task<IReadOnlyList<BillingMasterListRowDto>> ListMasterListAsync(
+        int tenantId,
+        DateOnly? dateFrom,
+        DateOnly? dateTo,
+        CancellationToken ct = default);
+
+    // ── Child 8: Mics Report ────────────────────────────────────────────────
+    Task<IReadOnlyList<BillingMicsReportRowDto>> ListMicsReportAsync(
+        int tenantId,
+        DateOnly? dateTo,
+        CancellationToken ct = default);
+
+    // ── Child 9: Claim Master List ──────────────────────────────────────────
+    Task<IReadOnlyList<BillingClaimMasterListRowDto>> ListClaimMasterListAsync(
+        int tenantId,
+        DateOnly? dateFrom,
+        DateOnly? dateTo,
+        CancellationToken ct = default);
+
+    // ── Child 11: Code Usage ────────────────────────────────────────────────
+    Task<IReadOnlyList<BillingCodeUsageRowDto>> ListCodeUsageAsync(
+        int tenantId,
+        string code,
+        DateOnly? dateFrom,
+        DateOnly? dateTo,
+        CancellationToken ct = default);
 }
 

@@ -894,6 +894,10 @@ public sealed class BankStatementPreviewRowDto
     public string? InstrumentNo { get; set; }
     public string? TransactionDetails { get; set; }
     public string? TransactionReferenceNo { get; set; }
+    public string? ReferenceNo { get; set; }
+    public string? AccountReference { get; set; }
+    public int? AccountId { get; set; }
+    public string? Attachment { get; set; }
     public decimal Debit { get; set; }
     public decimal Credit { get; set; }
     public decimal Balance { get; set; }
